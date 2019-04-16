@@ -862,6 +862,7 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 										  allowSystemTableMods,
 										  false,
 										  InvalidOid,
+										  stmt->ivm,
 										  typaddress);
 
 	/*
