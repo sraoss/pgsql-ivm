@@ -21,7 +21,7 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
+CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
     [ (<replaceable>column_name</replaceable> [, ...] ) ]
     [ USING <replaceable class="parameter">method</replaceable> ]
     [ WITH ( <replaceable class="parameter">storage_parameter</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) ]
@@ -54,6 +54,16 @@ CREATE MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_name</replaceable>
   <title>Parameters</title>
 
   <variablelist>
+   <varlistentry>
+    <term><literal>INCREMENTAL</literal></term>
+    <listitem>
+     <para>
+      If specified, a materialized view enables incremental view maintenance.
+      You can replace only the contents of a materialized view, which based rows are changed.
+     </para>
+    </listitem>
+   </varlistentry>
+
    <varlistentry>
     <term><literal>IF NOT EXISTS</literal></term>
     <listitem>
