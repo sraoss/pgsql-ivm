@@ -418,6 +418,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 %type <range>	OptTempTableName
 %type <into>	into_clause create_as_target create_mv_target
+%type <boolean>	incremental
 
 %type <defelt>	createfunc_opt_item common_func_opt_item dostmt_opt_item
 %type <fun_param> func_arg func_arg_with_default table_func_column aggr_arg
@@ -645,7 +646,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	HANDLER HAVING HEADER_P HOLD HOUR_P
 
 	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
-	INCLUDING INCREMENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
+	INCLUDING INCREMENT INCREMENTAL INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
 	INNER_P INOUT INPUT_P INSENSITIVE INSERT INSTEAD INT_P INTEGER
 	INTERSECT INTERVAL INTO INVOKER IS ISNULL ISOLATION
 
@@ -4054,30 +4055,32 @@ opt_with_data:
  *****************************************************************************/
 
 CreateMatViewStmt:
-		CREATE OptNoLog MATERIALIZED VIEW create_mv_target AS SelectStmt opt_with_data
+		CREATE OptNoLog incremental MATERIALIZED VIEW create_mv_target AS SelectStmt opt_with_data
 				{
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
-					ctas->query = $7;
-					ctas->into = $5;
+					ctas->query = $8;
+					ctas->into = $6;
 					ctas->relkind = OBJECT_MATVIEW;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = false;
 					/* cram additional flags into the IntoClause */
-					$5->rel->relpersistence = $2;
-					$5->skipData = !($8);
+					$6->rel->relpersistence = $2;
+					$6->skipData = !($9);
+					$6->ivm = $3;
 					$$ = (Node *) ctas;
 				}
-		| CREATE OptNoLog MATERIALIZED VIEW IF_P NOT EXISTS create_mv_target AS SelectStmt opt_with_data
+		| CREATE OptNoLog incremental MATERIALIZED VIEW IF_P NOT EXISTS create_mv_target AS SelectStmt opt_with_data
 				{
 					CreateTableAsStmt *ctas = makeNode(CreateTableAsStmt);
-					ctas->query = $10;
-					ctas->into = $8;
+					ctas->query = $11;
+					ctas->into = $9;
 					ctas->relkind = OBJECT_MATVIEW;
 					ctas->is_select_into = false;
 					ctas->if_not_exists = true;
 					/* cram additional flags into the IntoClause */
-					$8->rel->relpersistence = $2;
-					$8->skipData = !($11);
+					$9->rel->relpersistence = $2;
+					$9->skipData = !($12);
+					$9->ivm = $3;
 					$$ = (Node *) ctas;
 				}
 		;
@@ -4094,7 +4097,12 @@ create_mv_target:
 					$$->tableSpaceName = $5;
 					$$->viewQuery = NULL;		/* filled at analysis time */
 					$$->skipData = false;		/* might get changed later */
+					$$->ivm = false;
 				}
+		;
+
+incremental:	INCREMENTAL				{ $$ = true; }
+				| /*EMPTY*/				{ $$ = false; }
 		;
 
 OptNoLog:	UNLOGGED					{ $$ = RELPERSISTENCE_UNLOGGED; }
@@ -15125,6 +15133,7 @@ unreserved_keyword:
 			| INCLUDE
 			| INCLUDING
 			| INCREMENT
+			| INCREMENTAL
 			| INDEX
 			| INDEXES
 			| INHERIT
