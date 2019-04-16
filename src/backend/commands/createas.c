@@ -109,6 +109,8 @@ create_ctas_internal(List *attrList, IntoClause *into)
 	create->oncommit = into->onCommit;
 	create->tablespacename = into->tableSpaceName;
 	create->if_not_exists = false;
+	/* Using Materialized view only */
+	create->ivm = into->ivm;
 	create->accessMethod = into->accessMethod;
 
 	/*
