@@ -891,6 +891,7 @@ InsertPgClassTuple(Relation pg_class_desc,
 	values[Anum_pg_class_relrewrite - 1] = ObjectIdGetDatum(rd_rel->relrewrite);
 	values[Anum_pg_class_relfrozenxid - 1] = TransactionIdGetDatum(rd_rel->relfrozenxid);
 	values[Anum_pg_class_relminmxid - 1] = MultiXactIdGetDatum(rd_rel->relminmxid);
+	values[Anum_pg_class_relisivm - 1] = BoolGetDatum(rd_rel->relisivm);
 	if (relacl != (Datum) 0)
 		values[Anum_pg_class_relacl - 1] = relacl;
 	else
@@ -1083,6 +1084,7 @@ heap_create_with_catalog(const char *relname,
 						 bool allow_system_table_mods,
 						 bool is_internal,
 						 Oid relrewrite,
+						 bool relisivm,
 						 ObjectAddress *typaddress)
 {
 	Relation	pg_class_desc;
@@ -1233,6 +1235,7 @@ heap_create_with_catalog(const char *relname,
 	Assert(relid == RelationGetRelid(new_rel_desc));
 
 	new_rel_desc->rd_rel->relrewrite = relrewrite;
+	new_rel_desc->rd_rel->relisivm = relisivm;
 
 	/*
 	 * Decide whether to create an array type over the relation's rowtype. We
