@@ -46,6 +46,9 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+#include "utils/regproc.h"
+#include "nodes/makefuncs.h"
+
 
 typedef struct
 {
@@ -65,6 +68,7 @@ static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void transientrel_shutdown(DestReceiver *self);
 static void transientrel_destroy(DestReceiver *self);
 static uint64 refresh_matview_datafill(DestReceiver *dest, Query *query,
+						 QueryEnvironment *queryEnv,
 						 const char *queryString);
 static char *make_temptable_name_n(char *tempname, int n);
 static void refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
@@ -73,6 +77,9 @@ static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersist
 static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
 static void CloseMatViewIncrementalMaintenance(void);
+
+static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
+			Oid relowner, int save_sec_context);
 
 /*
  * SetMatViewPopulatedState
@@ -311,7 +318,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	/* Generate the data, if wanted. */
 	if (!stmt->skipData)
-		processed = refresh_matview_datafill(dest, dataQuery, queryString);
+		processed = refresh_matview_datafill(dest, dataQuery, NULL, queryString);
 
 	/* Make the matview match the newly generated data. */
 	if (concurrent)
@@ -369,6 +376,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
  */
 static uint64
 refresh_matview_datafill(DestReceiver *dest, Query *query,
+						 QueryEnvironment *queryEnv,
 						 const char *queryString)
 {
 	List	   *rewritten;
@@ -405,7 +413,7 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	/* Create a QueryDesc, redirecting output to our tuple receiver */
 	queryDesc = CreateQueryDesc(plan, queryString,
 								GetActiveSnapshot(), InvalidSnapshot,
-								dest, NULL, NULL, 0);
+								dest, NULL, queryEnv ? queryEnv: NULL, 0);
 
 	/* call ExecutorStart to prepare the plan for execution */
 	ExecutorStart(queryDesc, 0);
@@ -925,4 +933,315 @@ CloseMatViewIncrementalMaintenance(void)
 {
 	matview_maintenance_depth--;
 	Assert(matview_maintenance_depth >= 0);
+}
+
+/*
+ * IVM trigger function
+ */
+
+Datum
+IVM_immediate_maintenance(PG_FUNCTION_ARGS)
+{
+	TriggerData *trigdata = (TriggerData *) fcinfo->context;
+	Relation	rel;
+	Oid relid;
+	Oid matviewOid;
+	Query *query, *old_delta_qry, *new_delta_qry;
+	char* 	matviewname = trigdata->tg_trigger->tgargs[0];
+	List	   *names;
+	Relation matviewRel;
+	int old_depth = matview_maintenance_depth;
+
+	Oid			tableSpace;
+	Oid			relowner;
+	Oid			OIDDelta_new;
+	Oid			OIDDelta_old;
+	DestReceiver *dest_new = NULL, *dest_old = NULL;
+	char		relpersistence;
+	Oid			save_userid;
+	int			save_sec_context;
+	int			save_nestlevel;
+
+	ParseState *pstate;
+	QueryEnvironment *queryEnv = create_queryEnv();
+
+	/* Create a dummy ParseState for addRangeTableEntryForENR */
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+
+	names = stringToQualifiedNameList(matviewname);
+	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), AccessShareLock, true);
+	matviewRel = heap_open(matviewOid, NoLock);
+
+	/* Make sure it is a materialized view. */
+	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("\"%s\" is not a materialized view",
+						RelationGetRelationName(matviewRel))));
+
+	rel = trigdata->tg_relation;
+	relid = rel->rd_id;
+
+	query = get_view_query(matviewRel);
+
+	new_delta_qry = copyObject(query);
+	old_delta_qry = copyObject(query);
+
+	if (trigdata->tg_newtable)
+	{
+		RangeTblEntry *rte;
+		ListCell   *lc;
+
+		EphemeralNamedRelation enr =
+			palloc(sizeof(EphemeralNamedRelationData));
+
+		enr->md.name = trigdata->tg_trigger->tgnewtable;
+		enr->md.reliddesc = trigdata->tg_relation->rd_id;
+		enr->md.tupdesc = NULL;
+		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
+		enr->md.enrtuples = tuplestore_tuple_count(trigdata->tg_newtable);
+		enr->reldata = trigdata->tg_newtable;
+		register_ENR(queryEnv, enr);
+
+		rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+		new_delta_qry->rtable = lappend(new_delta_qry->rtable, rte);
+
+		foreach(lc, new_delta_qry->rtable)
+		{
+			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
+			if (r->relid == relid)
+			{
+				lfirst(lc) = rte;
+				break;
+			}
+		}
+	}
+
+	if (trigdata->tg_oldtable)
+	{
+		RangeTblEntry *rte;
+		ListCell   *lc;
+
+		EphemeralNamedRelation enr =
+			palloc(sizeof(EphemeralNamedRelationData));
+
+		enr->md.name = trigdata->tg_trigger->tgoldtable;
+		enr->md.reliddesc = trigdata->tg_relation->rd_id;
+		enr->md.tupdesc = NULL;
+		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
+		enr->md.enrtuples = tuplestore_tuple_count(trigdata->tg_oldtable);
+		enr->reldata = trigdata->tg_oldtable;
+		register_ENR(queryEnv, enr);
+
+		rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+		old_delta_qry->rtable = lappend(old_delta_qry->rtable, rte);
+
+		foreach(lc, old_delta_qry->rtable)
+		{
+			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
+			if (r->relid == relid)
+			{
+				lfirst(lc) = rte;
+				break;
+			}
+		}
+	}
+
+
+	/*
+	 * Check for active uses of the relation in the current transaction, such
+	 * as open scans.
+	 *
+	 * NB: We count on this to protect us against problems with refreshing the
+	 * data using TABLE_INSERT_FROZEN.
+	 */
+	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
+
+	/*
+	 * Tentatively mark the matview as populated or not (this will roll back
+	 * if we fail later).
+	 */
+	SetMatViewPopulatedState(matviewRel, true);
+
+	relowner = matviewRel->rd_rel->relowner;
+
+	/*
+	 * Switch to the owner's userid, so that any functions are run as that
+	 * user.  Also arrange to make GUC variable changes local to this command.
+	 * Don't lock it down too tight to create a temporary table just yet.  We
+	 * will switch modes when we are about to execute user code.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	save_nestlevel = NewGUCNestLevel();
+
+	tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+	relpersistence = RELPERSISTENCE_TEMP;
+
+	/*
+	 * Create the transient table that will receive the regenerated data. Lock
+	 * it against access by any other process until commit (by which time it
+	 * will be gone).
+	 */
+	if (trigdata->tg_newtable)
+	{
+		OIDDelta_new = make_new_heap(matviewOid, tableSpace, relpersistence,
+									 ExclusiveLock);
+		LockRelationOid(OIDDelta_new, AccessExclusiveLock);
+		dest_new = CreateTransientRelDestReceiver(OIDDelta_new);
+	}
+	if (trigdata->tg_oldtable)
+	{
+		if (trigdata->tg_newtable)
+			OIDDelta_old = make_new_heap(OIDDelta_new, tableSpace, relpersistence,
+										 ExclusiveLock);
+		else
+			OIDDelta_old = make_new_heap(matviewOid, tableSpace, relpersistence,
+										 ExclusiveLock);
+		LockRelationOid(OIDDelta_old, AccessExclusiveLock);
+		dest_old = CreateTransientRelDestReceiver(OIDDelta_old);
+	}
+
+	/*
+	 * Now lock down security-restricted operations.
+	 */
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+
+	/* Generate the data. */
+	if (trigdata->tg_newtable)
+		refresh_matview_datafill(dest_new, new_delta_qry, queryEnv, NULL);
+	if (trigdata->tg_oldtable)
+		refresh_matview_datafill(dest_old, old_delta_qry, queryEnv, NULL);
+
+	PG_TRY();
+	{
+		apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, relowner,
+							   save_sec_context);
+	}
+	PG_CATCH();
+	{
+		matview_maintenance_depth = old_depth;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	heap_close(matviewRel, NoLock);
+
+	/* Roll back any GUC changes */
+	AtEOXact_GUC(false, save_nestlevel);
+
+	/* Restore userid and security context */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	return PointerGetDatum(NULL);
+}
+
+static void
+apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
+			Oid relowner, int save_sec_context)
+{
+	StringInfoData querybuf;
+	Relation	matviewRel;
+	Relation	tempRel_new = NULL, tempRel_old = NULL;
+	char	   *matviewname;
+	char	   *tempname_new = NULL, *tempname_old = NULL;
+
+
+	initStringInfo(&querybuf);
+	matviewRel = heap_open(matviewOid, NoLock);
+	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+											 RelationGetRelationName(matviewRel));
+
+	if (OidIsValid(tempOid_new))
+	{
+		tempRel_new = heap_open(tempOid_new, NoLock);
+		tempname_new = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_new)),
+										  	RelationGetRelationName(tempRel_new));
+	}
+	if (OidIsValid(tempOid_old))
+	{
+		tempRel_old = heap_open(tempOid_old, NoLock);
+		tempname_old = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_old)),
+										  	RelationGetRelationName(tempRel_old));
+	}
+
+	/* Open SPI context. */
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	/* Analyze the temp table with the new contents. */
+	if (tempname_new)
+	{
+		appendStringInfo(&querybuf, "ANALYZE %s", tempname_new);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+	if (tempname_old)
+	{
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf, "ANALYZE %s", tempname_old);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+
+	OpenMatViewIncrementalMaintenance();
+
+	if (tempname_old)
+	{
+		/* Inserts go last. */
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf,
+					 	"DELETE FROM %s "
+					 	"where %s IN (SELECT %s from %s)",
+					 	matviewname, RelationGetRelationName(matviewRel), RelationGetRelationName(tempRel_old), tempname_old);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+	if (tempname_new)
+	{
+		/* Inserts go last. */
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf,
+					 	"INSERT INTO %s SELECT * "
+					 	"FROM %s diff",
+					 	matviewname, tempname_new);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+
+	/* We're done maintaining the materialized view. */
+	CloseMatViewIncrementalMaintenance();
+
+	if (OidIsValid(tempOid_new))
+		heap_close(tempRel_new, NoLock);
+	if (OidIsValid(tempOid_old))
+		heap_close(tempRel_old, NoLock);
+
+	heap_close(matviewRel, NoLock);
+
+	/* Clean up temp tables. */
+	if (OidIsValid(tempOid_new))
+	{
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_new);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+	if (OidIsValid(tempOid_old))
+	{
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_old);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+
+	/* Close SPI context. */
+	if (SPI_finish() != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed");
 }

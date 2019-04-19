@@ -51,6 +51,11 @@
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
 
+#include "catalog/pg_trigger.h"
+#include "commands/trigger.h"
+#include "parser/parser.h"
+#include "parser/parsetree.h"
+
 
 typedef struct
 {
@@ -74,6 +79,8 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
+static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname);
 
 /*
  * create_ctas_internal
@@ -380,9 +387,67 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		/* Restore userid and security context */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
+
+
+		if (into->ivm)
+		{
+			Query	   *copied_query;
+			char	   *matviewname;
+			Oid matviewOid = address.objectId;
+			Relation matviewRel = heap_open(matviewOid, NoLock);
+			matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+											 		RelationGetRelationName(matviewRel));
+
+			copied_query = copyObject(query);
+			AcquireRewriteLocks(copied_query, true, false);
+
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname);
+
+			heap_close(matviewRel, NoLock);
+		}
 	}
 
 	return address;
+}
+
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname)
+{
+
+	if (jtnode == NULL)
+		return;
+	if (IsA(jtnode, RangeTblRef))
+	{
+		int			rti = ((RangeTblRef *) jtnode)->rtindex;
+		RangeTblEntry *rte = rt_fetch(rti, qry->rtable);
+
+		if (rte->rtekind == RTE_RELATION)
+		{
+			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT);
+			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE);
+			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE);
+		}
+		else
+			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
+	}
+	else if (IsA(jtnode, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) jtnode;
+		ListCell   *l;
+
+		foreach(l, f->fromlist)
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname);
+	}
+	else if (IsA(jtnode, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) jtnode;
+
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname);
+	}
+	else
+		elog(ERROR, "unrecognized node type: %d",
+		 	(int) nodeTag(jtnode));
+
 }
 
 /*
@@ -620,4 +685,75 @@ static void
 intorel_destroy(DestReceiver *self)
 {
 	pfree(self);
+}
+
+static void
+CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
+{
+	CreateTrigStmt *ivm_trigger;
+	List *transitionRels = NIL;
+	ObjectAddress address, refaddr;
+
+	refaddr.classId = RelationRelationId;
+	refaddr.objectId = viewOid;
+	refaddr.objectSubId = 0;
+
+
+	ivm_trigger = makeNode(CreateTrigStmt);
+	ivm_trigger->relation = NULL;
+	ivm_trigger->row = false;
+	ivm_trigger->timing = TRIGGER_TYPE_AFTER;
+
+	ivm_trigger->events = type;
+
+	switch (type)
+	{
+		case TRIGGER_TYPE_INSERT:
+			ivm_trigger->trigname = "IVM_trigger_ins";
+			break;
+		case TRIGGER_TYPE_DELETE:
+			ivm_trigger->trigname = "IVM_trigger_del";
+			break;
+		case TRIGGER_TYPE_UPDATE:
+			ivm_trigger->trigname = "IVM_trigger_upd";
+			break;
+	}
+
+	if (type == TRIGGER_TYPE_INSERT || type == TRIGGER_TYPE_UPDATE)
+	{
+		TriggerTransition *n = makeNode(TriggerTransition);
+		n->name = "ivm_newtable";
+		n->isNew = true;
+		n->isTable = true;
+
+		transitionRels = lappend(transitionRels, n); 
+	}
+	if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
+	{
+		TriggerTransition *n = makeNode(TriggerTransition);
+		n->name = "ivm_oldtable";
+		n->isNew = false;
+		n->isTable = true;
+
+		transitionRels = lappend(transitionRels, n); 
+	}
+
+	ivm_trigger->funcname = SystemFuncName("IVM_immediate_maintenance");
+
+	ivm_trigger->columns = NIL;
+	ivm_trigger->transitionRels = transitionRels;
+	ivm_trigger->whenClause = NULL;
+	ivm_trigger->isconstraint = false;
+	ivm_trigger->deferrable = false;
+	ivm_trigger->initdeferred = false;
+	ivm_trigger->constrrel = NULL;
+	ivm_trigger->args = list_make1(makeString(matviewname));//list_make1(makeString(psprintf("%d", viewOid)));
+
+	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
+						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
+
+	recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+
+	/* Make changes-so-far visible */
+	CommandCounterIncrement();
 }
