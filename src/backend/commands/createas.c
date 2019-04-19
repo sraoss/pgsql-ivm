@@ -446,7 +446,6 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
-
 }
 
 /*
@@ -725,7 +724,11 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 		n->isNew = true;
 		n->isTable = true;
 
+<<<<<<< HEAD
 		transitionRels = lappend(transitionRels, n);
+=======
+		transitionRels = lappend(transitionRels, n); 
+>>>>>>> First commits for immediate IVM
 	}
 	if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
 	{
@@ -734,7 +737,11 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 		n->isNew = false;
 		n->isTable = true;
 
+<<<<<<< HEAD
 		transitionRels = lappend(transitionRels, n);
+=======
+		transitionRels = lappend(transitionRels, n); 
+>>>>>>> First commits for immediate IVM
 	}
 
 	ivm_trigger->funcname = SystemFuncName("IVM_immediate_maintenance");
