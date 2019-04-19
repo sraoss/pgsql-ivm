@@ -397,7 +397,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			Relation matviewRel = heap_open(matviewOid, NoLock);
 			matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 													 RelationGetRelationName(matviewRel));
-
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
@@ -446,7 +445,6 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
-
 }
 
 /*
