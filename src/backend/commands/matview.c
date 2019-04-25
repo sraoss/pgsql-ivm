@@ -946,8 +946,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Relation	rel;
 	Oid relid;
 	Oid matviewOid;
-	Query *query, *old_delta_qry, *new_delta_qry;
-	char* 	matviewname = trigdata->tg_trigger->tgargs[0];
+	Query	   *query, *old_delta_qry, *new_delta_qry;
+	char*		matviewname = trigdata->tg_trigger->tgargs[0];
 	List	   *names;
 	Relation matviewRel;
 	int old_depth = matview_maintenance_depth;
@@ -1159,13 +1159,13 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	{
 		tempRel_new = heap_open(tempOid_new, NoLock);
 		tempname_new = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_new)),
-										  	RelationGetRelationName(tempRel_new));
+												  RelationGetRelationName(tempRel_new));
 	}
 	if (OidIsValid(tempOid_old))
 	{
 		tempRel_old = heap_open(tempOid_old, NoLock);
 		tempname_old = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_old)),
-										  	RelationGetRelationName(tempRel_old));
+												  RelationGetRelationName(tempRel_old));
 	}
 
 	/* Open SPI context. */
@@ -1197,9 +1197,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		/* Inserts go last. */
 		resetStringInfo(&querybuf);
 		appendStringInfo(&querybuf,
-					 	"DELETE FROM %s "
-					 	"where %s IN (SELECT %s from %s)",
-					 	matviewname, RelationGetRelationName(matviewRel), RelationGetRelationName(tempRel_old), tempname_old);
+						"DELETE FROM %s "
+						"where %s IN (SELECT %s from %s)",
+						matviewname, RelationGetRelationName(matviewRel), RelationGetRelationName(tempRel_old), tempname_old);
 		if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
@@ -1208,9 +1208,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		/* Inserts go last. */
 		resetStringInfo(&querybuf);
 		appendStringInfo(&querybuf,
-					 	"INSERT INTO %s SELECT * "
-					 	"FROM %s diff",
-					 	matviewname, tempname_new);
+						"INSERT INTO %s SELECT * "
+						"FROM %s diff",
+						matviewname, tempname_new);
 		if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
