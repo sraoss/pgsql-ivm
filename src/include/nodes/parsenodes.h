@@ -1764,6 +1764,7 @@ typedef enum AlterTableType
 	AT_ColumnDefault,			/* alter column default */
 	AT_DropNotNull,				/* alter column drop not null */
 	AT_SetNotNull,				/* alter column set not null */
+	AT_CheckNotNull,			/* check column is already marked not null */
 	AT_SetStatistics,			/* alter column set statistics */
 	AT_SetOptions,				/* alter column set ( options ) */
 	AT_ResetOptions,			/* alter column reset ( options ) */
@@ -2743,10 +2744,6 @@ typedef struct FetchStmt
  * index, just a UNIQUE/PKEY constraint using an existing index.  isconstraint
  * must always be true in this case, and the fields describing the index
  * properties are empty.
- *
- * The relation to build the index on can be represented either by name
- * (in which case the RangeVar indicates whether to recurse or not) or by OID
- * (in which case the command is always recursive).
  * ----------------------
  */
 typedef struct IndexStmt
