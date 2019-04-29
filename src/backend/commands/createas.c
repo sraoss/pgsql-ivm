@@ -396,8 +396,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = heap_open(matviewOid, NoLock);
 			matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
-											 		RelationGetRelationName(matviewRel));
-
+													 RelationGetRelationName(matviewRel));
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
@@ -445,8 +444,12 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname);
 	}
 	else
+<<<<<<< HEAD
 		elog(ERROR, "unrecognized node type: %d",
 		 	(int) nodeTag(jtnode));
+=======
+		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
+>>>>>>> fef3573ab2ed15bd642646e9d8ca3261fd8632e9
 
 }
 
@@ -726,7 +729,11 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 		n->isNew = true;
 		n->isTable = true;
 
+<<<<<<< HEAD
 		transitionRels = lappend(transitionRels, n); 
+=======
+		transitionRels = lappend(transitionRels, n);
+>>>>>>> fef3573ab2ed15bd642646e9d8ca3261fd8632e9
 	}
 	if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
 	{
@@ -735,7 +742,11 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 		n->isNew = false;
 		n->isTable = true;
 
+<<<<<<< HEAD
 		transitionRels = lappend(transitionRels, n); 
+=======
+		transitionRels = lappend(transitionRels, n);
+>>>>>>> fef3573ab2ed15bd642646e9d8ca3261fd8632e9
 	}
 
 	ivm_trigger->funcname = SystemFuncName("IVM_immediate_maintenance");
