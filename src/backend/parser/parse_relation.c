@@ -37,6 +37,7 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+#include "commands/matview.h"
 
 #define MAX_FUZZY_DISTANCE				3
 
@@ -1238,6 +1239,7 @@ addRangeTableEntry(ParseState *pstate,
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
 	rte->rellockmode = lockmode;
+	rte->relisivm = rel->rd_rel->relisivm;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -1317,6 +1319,7 @@ addRangeTableEntryForRelation(ParseState *pstate,
 	rte->relid = RelationGetRelid(rel);
 	rte->relkind = rel->rd_rel->relkind;
 	rte->rellockmode = lockmode;
+	rte->relisivm = rel->rd_rel->relisivm;
 
 	/*
 	 * Build the list of effective column names using user-supplied aliases
@@ -2604,6 +2607,9 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 	for (varattno = 0; varattno < count; varattno++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, varattno);
+
+		if (!strcmp("__ivm_count__", NameStr(attr->attname)) && !MatViewIncrementalMaintenanceIsEnabled())
+			continue;
 
 		if (attr->attisdropped)
 		{

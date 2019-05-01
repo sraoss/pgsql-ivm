@@ -52,9 +52,12 @@
 #include "utils/snapmgr.h"
 
 #include "catalog/pg_trigger.h"
+#include "catalog/pg_type.h"
 #include "commands/trigger.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
+#include "parser/parse_func.h"
+#include "nodes/print.h"
 
 
 typedef struct
@@ -248,6 +251,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
+	Query	   *copied_query;
 
 	if (stmt->if_not_exists)
 	{
@@ -328,7 +332,34 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * and is executed repeatedly.  (See also the same hack in EXPLAIN and
 		 * PREPARE.)
 		 */
-		rewritten = QueryRewrite(copyObject(query));
+
+		copied_query = copyObject(query);
+		if (is_matview && into->ivm)
+		{
+			TargetEntry *tle;
+			Node *node;
+			ParseState *pstate = make_parsestate(NULL);
+
+			FuncCall *fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+			fn->agg_star = true;
+
+			copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
+			//elog_node_display(INFO, "add groupClause", copied_query, true);
+			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+			//elog_node_display(INFO, "count node", node, true);
+
+			tle = makeTargetEntry((Expr *) node,
+									  list_length(copied_query->targetList) + 1,
+									  pstrdup("__ivm_count__"),
+									  false);
+			copied_query->targetList = lappend(copied_query->targetList, tle);
+			copied_query->hasAggs = true;
+
+			elog_node_display(INFO, "add count", copied_query, true);
+
+		}
+
+		rewritten = QueryRewrite(copied_query);
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
 		if (list_length(rewritten) != 1)
@@ -391,7 +422,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		if (into->ivm)
 		{
-			Query	   *copied_query;
 			char	   *matviewname;
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = heap_open(matviewOid, NoLock);
