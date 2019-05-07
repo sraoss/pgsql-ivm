@@ -344,9 +344,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			fn->agg_star = true;
 
 			copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
-			//elog_node_display(INFO, "add groupClause", copied_query, true);
 			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-			//elog_node_display(INFO, "count node", node, true);
 
 			tle = makeTargetEntry((Expr *) node,
 									  list_length(copied_query->targetList) + 1,
@@ -354,9 +352,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 									  false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
 			copied_query->hasAggs = true;
-
-			elog_node_display(INFO, "add count", copied_query, true);
-
 		}
 
 		rewritten = QueryRewrite(copied_query);
