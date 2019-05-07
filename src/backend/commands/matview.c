@@ -293,7 +293,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
 	if (concurrent)
 	{
-		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+		tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP, false);
 		relpersistence = RELPERSISTENCE_TEMP;
 	}
 	else
@@ -1109,7 +1109,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	save_nestlevel = NewGUCNestLevel();
 
-	tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP);
+	tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP, false);
 	relpersistence = RELPERSISTENCE_TEMP;
 
 	/*

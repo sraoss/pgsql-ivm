@@ -5084,10 +5084,11 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         The allowed values of <varname>constraint_exclusion</varname> are
         <literal>on</literal> (examine constraints for all tables),
         <literal>off</literal> (never examine constraints), and
-        <literal>partition</literal> (examine constraints only for inheritance child
-        tables and <literal>UNION ALL</literal> subqueries).
+        <literal>partition</literal> (examine constraints only for inheritance
+        child tables and <literal>UNION ALL</literal> subqueries).
         <literal>partition</literal> is the default setting.
-        It is often used with inheritance tables to improve performance.
+        It is often used with traditional inheritance trees to improve
+        performance.
       </para>
 
        <para>
@@ -5111,15 +5112,19 @@ SELECT * FROM parent WHERE key = 2400;
        <para>
         Currently, constraint exclusion is enabled by default
         only for cases that are often used to implement table partitioning via
-        inheritance tables.  Turning it on for all tables imposes extra
+        inheritance trees.  Turning it on for all tables imposes extra
         planning overhead that is quite noticeable on simple queries, and most
         often will yield no benefit for simple queries.  If you have no
-        inheritance partitioned tables you might prefer to turn it off entirely.
+        tables that are partitioned using traditional inheritance, you might
+        prefer to turn it off entirely.  (Note that the equivalent feature for
+        partitioned tables is controlled by a separate parameter,
+        <xref linkend="guc-enable-partition-pruning"/>.)
        </para>
 
        <para>
         Refer to <xref linkend="ddl-partitioning-constraint-exclusion"/> for
-        more information on using constraint exclusion and partitioning.
+        more information on using constraint exclusion to implement
+        partitioning.
        </para>
       </listitem>
      </varlistentry>
@@ -6942,8 +6947,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         Causes each action executed by autovacuum to be logged if it ran for at
         least the specified number of milliseconds.  Setting this to zero logs
-        all autovacuum actions. Minus-one (the default) disables logging
-        autovacuum actions.  For example, if you set this to
+        all autovacuum actions. <literal>-1</literal> (the default) disables
+        logging autovacuum actions.  For example, if you set this to
         <literal>250ms</literal> then all automatic vacuums and analyzes that run
         250ms or longer will be logged.  In addition, when this parameter is
         set to any value other than <literal>-1</literal>, a message will be
@@ -7356,7 +7361,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         This variable specifies the default tablespace in which to create
         objects (tables and indexes) when a <command>CREATE</command> command does
-        not explicitly specify a tablespace.
+        not explicitly specify a tablespace.  It also determines the tablespace
+        that a partitioned relation will direct future partitions to.
        </para>
 
        <para>

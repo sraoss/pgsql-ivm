@@ -89,6 +89,7 @@ static void RangeVarCallbackForReindexIndex(const RangeVar *relation,
 								Oid relId, Oid oldRelId, void *arg);
 static bool ReindexRelationConcurrently(Oid relationOid, int options);
 static void ReindexPartitionedIndex(Relation parentIdx);
+static void update_relispartition(Oid relationId, bool newval);
 
 /*
  * CheckIndexCompatible
@@ -467,8 +468,21 @@ DefineIndex(Oid relationId,
 	LOCKTAG		heaplocktag;
 	LOCKMODE	lockmode;
 	Snapshot	snapshot;
+	int			save_nestlevel = -1;
 	int			i;
 
+	/*
+	 * Some callers need us to run with an empty default_tablespace; this is a
+	 * necessary hack to be able to reproduce catalog state accurately when
+	 * recreating indexes after table-rewriting ALTER TABLE.
+	 */
+	if (stmt->reset_default_tblspc)
+	{
+		save_nestlevel = NewGUCNestLevel();
+		(void) set_config_option("default_tablespace", "",
+								 PGC_USERSET, PGC_S_SESSION,
+								 GUC_ACTION_SAVE, true, 0, false);
+	}
 
 	/*
 	 * Start progress report.  If we're building a partition, this was already
@@ -622,10 +636,15 @@ DefineIndex(Oid relationId,
 	if (stmt->tableSpace)
 	{
 		tablespaceId = get_tablespace_oid(stmt->tableSpace, false);
+		if (partitioned && tablespaceId == MyDatabaseTableSpace)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot specify default tablespace for partitioned relations")));
 	}
 	else
 	{
-		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence);
+		tablespaceId = GetDefaultTablespace(rel->rd_rel->relpersistence,
+											partitioned);
 		/* note InvalidOid is OK in this case */
 	}
 
@@ -980,6 +999,13 @@ DefineIndex(Oid relationId,
 
 	ObjectAddressSet(address, RelationRelationId, indexRelationId);
 
+	/*
+	 * Revert to original default_tablespace.  Must do this before any return
+	 * from this function, but after index_create, so this is a good time.
+	 */
+	if (save_nestlevel >= 0)
+		AtEOXact_GUC(true, save_nestlevel);
+
 	if (!OidIsValid(indexRelationId))
 	{
 		table_close(rel, NoLock);
@@ -1125,6 +1151,18 @@ DefineIndex(Oid relationId,
 					ListCell   *lc;
 
 					/*
+					 * We can't use the same index name for the child index,
+					 * so clear idxname to let the recursive invocation choose
+					 * a new name.  Likewise, the existing target relation
+					 * field is wrong, and if indexOid or oldNode are set,
+					 * they mustn't be applied to the child either.
+					 */
+					childStmt->idxname = NULL;
+					childStmt->relation = NULL;
+					childStmt->indexOid = InvalidOid;
+					childStmt->oldNode = InvalidOid;
+
+					/*
 					 * Adjust any Vars (both in expressions and in the index's
 					 * WHERE clause) to match the partition's column numbering
 					 * in case it's different from the parent's.
@@ -1155,8 +1193,6 @@ DefineIndex(Oid relationId,
 					if (found_whole_row)
 						elog(ERROR, "cannot convert whole-row table reference");
 
-					childStmt->idxname = NULL;
-					childStmt->relation = NULL;
 					DefineIndex(childRelid, childStmt,
 								InvalidOid, /* no predefined OID */
 								indexRelationId,	/* this is our child */
@@ -3363,6 +3399,9 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 	if (OidIsValid(parentOid))
 		SetRelationHasSubclass(parentOid, true);
 
+	/* set relispartition correctly on the partition */
+	update_relispartition(partRelid, OidIsValid(parentOid));
+
 	if (fix_dependencies)
 	{
 		/*
@@ -3398,4 +3437,24 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 		/* make our updates visible */
 		CommandCounterIncrement();
 	}
+}
+
+/*
+ * Subroutine of IndexSetParentIndex to update the relispartition flag of the
+ * given index to the given value.
+ */
+static void
+update_relispartition(Oid relationId, bool newval)
+{
+	HeapTuple	tup;
+	Relation	classRel;
+
+	classRel = table_open(RelationRelationId, RowExclusiveLock);
+	tup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relationId));
+	Assert(((Form_pg_class) GETSTRUCT(tup))->relispartition != newval);
+	((Form_pg_class) GETSTRUCT(tup))->relispartition = newval;
+	CatalogTupleUpdate(classRel, &tup->t_self, tup);
+	heap_freetuple(tup);
+
+	table_close(classRel, RowExclusiveLock);
 }
