@@ -769,7 +769,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 	ivm_trigger->deferrable = false;
 	ivm_trigger->initdeferred = false;
 	ivm_trigger->constrrel = NULL;
-	ivm_trigger->args = list_make1(makeString(matviewname));//list_make1(makeString(psprintf("%d", viewOid)));
+	ivm_trigger->args = list_make1(makeString(matviewname));
 
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
