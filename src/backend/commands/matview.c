@@ -956,8 +956,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	Oid			tableSpace;
 	Oid			relowner;
-	Oid			OIDDelta_new;
-	Oid			OIDDelta_old;
+	Oid			OIDDelta_new = InvalidOid;
+	Oid			OIDDelta_old = InvalidOid;
 	DestReceiver *dest_new = NULL, *dest_old = NULL;
 	char		relpersistence;
 	Oid			save_userid;
