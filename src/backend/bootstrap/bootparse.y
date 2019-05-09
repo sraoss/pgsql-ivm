@@ -258,7 +258,6 @@ Boot_CreateStmt:
 													  true,
 													  false,
 													  InvalidOid,
-													  false,
 													  NULL);
 						elog(DEBUG4, "relation created with OID %u", id);
 					}

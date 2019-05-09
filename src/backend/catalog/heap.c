@@ -1084,7 +1084,6 @@ heap_create_with_catalog(const char *relname,
 						 bool allow_system_table_mods,
 						 bool is_internal,
 						 Oid relrewrite,
-						 bool relisivm,
 						 ObjectAddress *typaddress)
 {
 	Relation	pg_class_desc;
@@ -1235,7 +1234,6 @@ heap_create_with_catalog(const char *relname,
 	Assert(relid == RelationGetRelid(new_rel_desc));
 
 	new_rel_desc->rd_rel->relrewrite = relrewrite;
-	new_rel_desc->rd_rel->relisivm = relisivm;
 
 	/*
 	 * Decide whether to create an array type over the relation's rowtype. We

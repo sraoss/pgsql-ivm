@@ -124,6 +124,46 @@ SetMatViewPopulatedState(Relation relation, bool newstate)
 }
 
 /*
+ * SetMatViewIVMState
+ *		Mark a materialized view as IVM, or not.
+ *
+ * NOTE: caller must be holding an appropriate lock on the relation.
+ */
+void
+SetMatViewIVMState(Relation relation, bool newstate)
+{
+	Relation	pgrel;
+	HeapTuple	tuple;
+
+	Assert(relation->rd_rel->relkind == RELKIND_MATVIEW);
+
+	/*
+	 * Update relation's pg_class entry.  Crucial side-effect: other backends
+	 * (and this one too!) are sent SI message to make them rebuild relcache
+	 * entries.
+	 */
+	pgrel = table_open(RelationRelationId, RowExclusiveLock);
+	tuple = SearchSysCacheCopy1(RELOID,
+								ObjectIdGetDatum(RelationGetRelid(relation)));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for relation %u",
+			 RelationGetRelid(relation));
+
+	((Form_pg_class) GETSTRUCT(tuple))->relisivm = newstate;
+
+	CatalogTupleUpdate(pgrel, &tuple->t_self, tuple);
+
+	heap_freetuple(tuple);
+	table_close(pgrel, RowExclusiveLock);
+
+	/*
+	 * Advance command counter to make the updated pg_class row locally
+	 * visible.
+	 */
+	CommandCounterIncrement();
+}
+
+/*
  * ExecRefreshMatView -- execute a REFRESH MATERIALIZED VIEW command
  *
  * This refreshes the materialized view by creating a new table and swapping
