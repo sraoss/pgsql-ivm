@@ -637,6 +637,11 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 		SetMatViewPopulatedState(intoRelationDesc, true);
 
 	/*
+	 * Mark relisivm field, if it's a matview and into->ivm is true.
+	 */
+	if (is_matview && into->ivm)
+		SetMatViewIVMState(intoRelationDesc, true);
+	/*
 	 * Fill private fields of myState for use by later routines
 	 */
 	myState->rel = intoRelationDesc;
