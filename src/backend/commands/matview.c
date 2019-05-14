@@ -1130,12 +1130,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 */
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
 
-	/*
-	 * Tentatively mark the matview as populated or not (this will roll back
-	 * if we fail later).
-	 */
-	SetMatViewPopulatedState(matviewRel, true);
-
 	relowner = matviewRel->rd_rel->relowner;
 
 	/*
