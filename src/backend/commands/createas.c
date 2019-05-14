@@ -419,7 +419,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		{
 			char	   *matviewname;
 			Oid matviewOid = address.objectId;
-			Relation matviewRel = heap_open(matviewOid, NoLock);
+			Relation matviewRel = table_open(matviewOid, NoLock);
 			matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 													 RelationGetRelationName(matviewRel));
 			copied_query = copyObject(query);
@@ -427,7 +427,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname);
 
-			heap_close(matviewRel, NoLock);
+			table_close(matviewRel, NoLock);
 		}
 	}
 

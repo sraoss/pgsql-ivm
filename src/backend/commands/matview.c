@@ -1013,7 +1013,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	names = stringToQualifiedNameList(matviewname);
 	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), AccessShareLock, true);
-	matviewRel = heap_open(matviewOid, NoLock);
+	matviewRel = table_open(matviewOid, NoLock);
 
 	/* Make sure it is a materialized view. */
 	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
@@ -1194,7 +1194,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	}
 	PG_END_TRY();
 
-	heap_close(matviewRel, NoLock);
+	table_close(matviewRel, NoLock);
 
 	/* Roll back any GUC changes */
 	AtEOXact_GUC(false, save_nestlevel);
@@ -1219,19 +1219,19 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 
 	initStringInfo(&querybuf);
-	matviewRel = heap_open(matviewOid, NoLock);
+	matviewRel = table_open(matviewOid, NoLock);
 	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 											 RelationGetRelationName(matviewRel));
 
 	if (OidIsValid(tempOid_new))
 	{
-		tempRel_new = heap_open(tempOid_new, NoLock);
+		tempRel_new = table_open(tempOid_new, NoLock);
 		tempname_new = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_new)),
 												  RelationGetRelationName(tempRel_new));
 	}
 	if (OidIsValid(tempOid_old))
 	{
-		tempRel_old = heap_open(tempOid_old, NoLock);
+		tempRel_old = table_open(tempOid_old, NoLock);
 		tempname_old = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_old)),
 												  RelationGetRelationName(tempRel_old));
 	}
@@ -1313,11 +1313,11 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	CloseMatViewIncrementalMaintenance();
 
 	if (OidIsValid(tempOid_new))
-		heap_close(tempRel_new, NoLock);
+		table_close(tempRel_new, NoLock);
 	if (OidIsValid(tempOid_old))
-		heap_close(tempRel_old, NoLock);
+		table_close(tempRel_old, NoLock);
 
-	heap_close(matviewRel, NoLock);
+	table_close(matviewRel, NoLock);
 
 	/* Clean up temp tables. */
 	if (OidIsValid(tempOid_new))
