@@ -6,7 +6,7 @@
 
   <formalpara>
    <title>Release date:</title>
-   <para>2019-??-?? AS OF 2019-05-04</para>
+   <para>2019-??-?? AS OF 2019-05-09</para>
   </formalpara>
 
   <sect2>
@@ -56,13 +56,16 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Remove the special behavior of OID columns (Andres Freund, John Naylor)
+Remove the special behavior of <link linkend="datatype-oid">OID</link> columns (Andres Freund, John Naylor)
 </para>
 
 <para>
-Previously, a normally-invisible OID column could be specified during table creation using WITH OIDS;  that ability has been removed. Columns can still be explicitly
-specified as type OID.  pg_dump and pg_upgrade operations on databases using WITH OIDS will need adjustment.  Many system tables now have an 'oid' column that will be
-expanded with SELECT * by default.
+Previously, a normally-invisible <type>OID</type> column could be specified during table
+creation using <literal>WITH OIDS</literal>;  that ability has been removed.  Columns can
+still be explicitly specified as type <type>OID</type>.  Operations on tables that
+have columns named <type>OID</type> (created using <literal>WITH OIDS</literal>) will need adjustment.
+<command>SELECT *</command> will now output those columns for the many system tables which
+have them.  Previously, the columns had to be selected explicitly.
 </para>
 </listitem>
 
@@ -73,7 +76,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Remove data types abstime, reltime, and tinterval (Andres Freund)
+Remove data types <type>abstime</type>, <type>reltime</type>, and <type>tinterval</type> (Andres Freund)
 </para>
 </listitem>
 
@@ -84,7 +87,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Remove the timetravel extension (Andres Freund)
+Remove the <productname>timetravel</productname> extension (Andres Freund)
 </para>
 </listitem>
 
@@ -95,12 +98,13 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Move recovery.conf settings into postgresql.conf (Fujii Masao, Simon Riggs, Abhijit Menon-Sen, Sergei Kornilov)
+Move <filename>recovery.conf</filename> settings into <link linkend="runtime-config-wal-archive-recovery"><filename>postgresql.conf</filename></link> (Fujii Masao, Simon Riggs, Abhijit Menon-Sen, Sergei Kornilov)
 </para>
 
 <para>
-recovery.conf is no longer used, and recovery.signal and standby.signal are used to switch into non-primary mode.
-trigger_file has been renamed to promote_trigger_file.  The standby_mode setting has been removed.
+<filename>recovery.conf</filename> is no longer used, and the server will not start if the
+file exists.  <link linkend="runtime-config-wal-archive-recovery">recovery.signal</link> and standby.signal are now used to switch into non-primary mode.
+<varname>trigger_file</varname> has been renamed to <xref linkend="guc-promote-trigger-file"/>.  The <varname>standby_mode</varname> setting has been removed.
 </para>
 </listitem>
 
@@ -111,11 +115,11 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Do not allow multiple different recovery_target* specifications (Peter Eisentraut)
+Do not allow multiple different <link linkend="runtime-config-wal-recovery-target"><varname>recovery_target</varname>*</link> specifications (Peter Eisentraut)
 </para>
 
 <para>
-Previously multiple different recovery_target* variables could be specified, and last one specified was honored.  Now, only one can be specified, though the same one can
+Previously, multiple different <varname>recovery_target</varname>* variables could be specified, and the last one specified was honored.  Now, only one can be specified, though the same one can
 be specified multiple times and the last specification is honored.
 </para>
 </listitem>
@@ -123,15 +127,15 @@ be specified multiple times and the last specification is honored.
 <listitem>
 <!--
 Author: Peter Eisentraut <peter@eisentraut.org>
-2019-01-13 [0acb3bc33] Change default of recovery_target_timeline to 'latest'
+2019-01-13 [0acb3bc33] Change default of recovery_target_timeline to <literal>latest</literal>
 -->
 
 <para>
-Cause recovery to recover to the latest timeline by default (Peter Eisentraut)
+Cause recovery to advance to the latest timeline by default (Peter Eisentraut)
 </para>
 
 <para>
-Specifically, recovery_target_timeline now defaults to 'latest'.  Previously, it defaulted to current.
+Specifically, <xref linkend="guc-recovery-target-time"/> now defaults to <literal>latest</literal>.  Previously, it defaulted to <literal>current</literal>.
 </para>
 </listitem>
 
@@ -142,7 +146,7 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Refactor geometric functions and operators (Emre Hasegeli)
+Refactor <link linkend="functions-geometry">geometric functions</link> and operators (Emre Hasegeli)
 </para>
 
 <para>
@@ -157,7 +161,7 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Restructure geometric types to handle NaN, underflow, overflow and division by zero more consistently (Emre Hasegeli)
+Restructure <link linkend="datatype-geometric">geometric types</link> to handle NaN, underflow, overflow and division by zero more consistently (Emre Hasegeli)
 </para>
 </listitem>
 
@@ -168,7 +172,25 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Improve behavior and error reporting for the line data type (Emre Hasegeli)
+Improve behavior and error reporting for the <link linkend="datatype-geometric">line data type</link> (Emre Hasegeli)
+</para>
+</listitem>
+
+<listitem>
+<!--
+Author: Andrew Gierth <rhodiumtoad@postgresql.org>
+2019-02-13 [02ddd4993] Change floating-point output format for improved perform
+-->
+
+<para>
+Avoid performing unnecessary rounding of <link linkend="datatype-float"><type>REAL</type></link> and <type>DOUBLE PRECISION</type> values (Andrew Gierth)
+</para>
+
+<para>
+This dramatically speeds up processing of floating-point values but causes
+additional trailing digits to potentially be displayed.  Users wishing
+to have output that is rounded to match the previous behavior can set
+<link linkend="guc-extra-float-digits"><literal>extra_float_digits=0</literal></link>, which is no longer the default.
 </para>
 </listitem>
 
@@ -179,11 +201,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Change XML functions like xpath() to never pretty-print their output (Tom Lane)
+Change <link linkend="functions-xml"><acronym>XML</acronym></link> functions like <function>xpath()</function> to never pretty-print their output (Tom Lane)
 </para>
 
 <para>
-Previously this happened in some rare cases.  ACCURATE?  HOW TO GET PRETTY PRINT OUTPUT?
+Previously, this happened in some rare cases.  ACCURATE?  HOW TO GET PRETTY PRINT OUTPUT?
 </para>
 </listitem>
 
@@ -194,18 +216,18 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Rename command-line tool pg_verify_checksums to pg_checksums (Michael Paquier)
+Rename command-line tool <application>pg_verify_checksums</application> to <xref linkend="app-pgchecksums"/> (Michaël Paquier)
 </para>
 </listitem>
 
 <listitem>
 <!--
 Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
-2019-04-04 [413ccaa74] pg_restore: Require "-f -" to mean stdout
+2019-04-04 [413ccaa74] pg_restore: Require -f - to mean stdout
 -->
 
 <para>
-Require pg_restore to use "-f -" to output the dump contents to stdout (Euler Taveira)
+Require specification of <xref linkend="app-pgrestore"/> <literal>-f -</literal> to send the dump contents to stdout (Euler Taveira)
 </para>
 
 <para>
@@ -222,11 +244,21 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Disallow psql's "\pset format" command from using non-unique abbreviations (Daniel Vérité)
+Disallow <application>psql</application>'s <command>\pset format</command> command from using non-unique abbreviations (Daniel Vérité)
 </para>
 
 <para>
-Previously, "\pset format a" chose 'aligned';  it will now error.
+Previously, <command>\pset format a</command> chose <literal>aligned</literal>;  it will now error.
+</para>
+</listitem>
+
+<listitem>
+<!--
+This is caused by adding the tid to the btree entry, as listed later.
+-->
+
+<para>
+The maximum btree index length is now reduced by eight bytes;  a <xref linkend="sql-reindex"/> operation could potentially fail.
 </para>
 </listitem>
 
@@ -239,12 +271,12 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow data type name to use non-C collations (Tom Lane, Daniel Vérité)
+Allow data type <link linkend="datatype-character-special-table">name</link> to use non-C collations (Tom Lane, Daniel Vérité)
 </para>
 
 <para>
 It still uses the "C" collation by default, rather than defaulting to the database collation.  Regular expression operations on data type name columns will now use the
-"C" collation;  you will need to override the collation if you want to use locale-specific regular expression patterns, e.g., '\w'.
+"C" collation;  you will need to override the collation if you want to use locale-specific regular expression patterns, e.g., <command>\w</command>.
 </para>
 </listitem>
 
@@ -255,7 +287,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Cause DROP IF EXISTS FUNCTION/PROCEDURE/AGGREGATE/ROUTINE to generate an error if no arguments are supplied and there are multiple matching objects (David Rowley)
+Cause <link linkend="sql-dropfunction"><command>DROP IF EXISTS FUNCTION</command></link>/<literal>PROCEDURE</literal>/<literal>AGGREGATE</literal>/<literal>ROUTINE</literal> to generate an error if no arguments are supplied and there are multiple matching objects (David Rowley)
 </para>
 
 <para>
@@ -266,11 +298,11 @@ Also improve the error message in such cases.
 <listitem>
 <!--
 Author: Peter Eisentraut <peter_e@gmx.net>
-2018-11-01 [96b00c433] Remove obsolete pg_constraint.consrc column
+2018-11-01 [96b00c433] Remove obsolete <structname>pg_constraint</structname>.consrc column
 -->
 
 <para>
-Remove obsolete pg_constraint.consrc column (Peter Eisentraut)
+Remove obsolete <link linkend="catalog-pg-constraint"><structname>pg_constraint</structname></link>.<structfield>consrc</structfield> column (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -281,7 +313,7 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Remove obsolete pg_attrdef.adsrc column (Peter Eisentraut)
+Remove obsolete <link linkend="catalog-pg-attrdef"><structname>pg_attrdef</structname></link>.<structfield>adsrc</structfield> column (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -296,7 +328,7 @@ Remove the ability to disable dynamic shared memory (Kyotaro Horiguchi)
 </para>
 
 <para>
-Specifically, dynamic_shared_memory_type can no longer be set to 'none'.
+Specifically, <xref linkend="guc-dynamic-shared-memory-type"/> can no longer be set to <literal>none</literal>.
 </para>
 </listitem>
 
@@ -317,7 +349,7 @@ Specifically, dynamic_shared_memory_type can no longer be set to 'none'.
     <title>Server</title>
 
     <sect4>
-     <title>Partitioning</title>
+     <title><link linkend="ddl-partitioning">Partitioning</link></title>
 
      <itemizedlist>
 
@@ -338,11 +370,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Improve performance of pruning many partitions (Amit Langote, David Rowley, Tom Lane, Álvaro Herrera)
+Improve performance of many operations on partitioned tables (Amit Langote, David Rowley, Tom Lane, Álvaro Herrera)
 </para>
 
 <para>
-Now thousands of partitions can be pruned efficiently.
+Tables with thousands of child partitions can now be processed efficiently.
 </para>
 </listitem>
 
@@ -353,11 +385,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Allow foreign keys to reference partitioned tables (Alvaro Herrera)
-</para>
-
-<para>
-LIMITATIONS?
+Allow <link linkend="ddl-constraints-fk">foreign keys</link> to reference partitioned tables (Álvaro Herrera)
 </para>
 </listitem>
 
@@ -368,7 +396,7 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Improve speed of COPY into partitioned tables (David Rowley)
+Improve speed of <command>COPY</command> into partitioned tables (David Rowley)
 </para>
 </listitem>
 
@@ -383,7 +411,7 @@ Allow partitions bounds to be any expression (Kyotaro Horiguchi, Tom Lane, Amit 
 </para>
 
 <para>
-Expressions are evaluated at table partitioned table creation time.  Previously only constants were allowed as partitions bounds.
+Expressions are evaluated at table partitioned table creation time.  Previously, only constants were allowed as partitions bounds.
 </para>
 </listitem>
 
@@ -394,7 +422,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Allow CREATE TABLE's tablespace specification for a partitioned table to affect the tablespace of its children (David Rowley, Álvaro Herrera)
+Allow <command>CREATE TABLE</command>'s tablespace specification for a partitioned table to affect the tablespace of its children (David Rowley, Álvaro Herrera)
 </para>
 </listitem>
 
@@ -405,7 +433,7 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-Allow ATTACH PARTITION to be performed with reduced locking requirements (Robert Haas)
+<link linkend="sql-altertable"><command>ATTACH PARTITION</command></link> is now performed with reduced locking requirements (Robert Haas)
 </para>
 </listitem>
 
@@ -416,7 +444,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add function pg_partition_root() to return top-most parent of a partition tree (Michael Paquier)
+Add function <link linkend="functions-info-partition"><function>pg_partition_root()</function></link> to return top-most parent of a partition tree (Michaël Paquier)
 </para>
 </listitem>
 
@@ -427,7 +455,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Add function pg_partition_ancestors() to report all ancestors of a partition (Alvaro Herrera)
+Add function <link linkend="functions-info-partition"><function>pg_partition_ancestors()</function></link> to report all ancestors of a partition (Álvaro Herrera)
 </para>
 </listitem>
 
@@ -438,7 +466,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add function pg_partition_tree() to display information about partitions (Amit Langote)
+Add function <link linkend="functions-info-partition"><function>pg_partition_tree()</function></link> to display information about partitions (Amit Langote)
 </para>
 </listitem>
 
@@ -449,7 +477,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Include partitioned indexes in the system view pg_indexes (Suraj Kharage)
+Include partitioned indexes in the system view <link linkend="view-pg-indexes"><structname>pg_indexes</structname></link> (Suraj Kharage)
 </para>
 </listitem>
 
@@ -460,7 +488,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Add psql command \dP to list partitioned tables and indexes (Pavel Stěhule)
+Add <application>psql</application> command <command>\dP</command> to list partitioned tables and indexes (Pavel Stěhule)
 </para>
 </listitem>
 
@@ -475,7 +503,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Improve psql \d and \z display of partitioned tables (Pavel Stehule, Michaël Paquier, Álvaro Herrera)
+Improve <application>psql</application> <command>\d</command> and <command>\z</command> display of partitioned tables (Pavel Stěhule, Michaël Paquier, Álvaro Herrera)
 </para>
 </listitem>
 
@@ -499,41 +527,6 @@ This prevents the creation of inconsistent partition hierarchies in rare cases.
     </sect4>
 
     <sect4>
-     <title>Parallel Queries</title>
-
-     <itemizedlist>
-
-<listitem>
-<!--
-Author: Thomas Munro <tmunro@postgresql.org>
-2019-03-15 [bb16aba50] Enable parallel query with SERIALIZABLE isolation.
--->
-
-<para>
-Allow parallel query when in SERIALIZABLE ISOLATION MODE (Thomas Munro)
-</para>
-
-<para>
-Previously parallelism was disabled when in this mode.
-</para>
-</listitem>
-
-<listitem>
-<!--
-Author: Michael Paquier <michael@paquier.xyz>
-2019-03-27 [5bde1651b] Switch function current_schema[s]() to be parallel-unsaf
--->
-
-<para>
-Prevent current_schema and current_schemas() from being run by parallel workers (Michael Paquier)
-</para>
-</listitem>
-
-     </itemizedlist>
-
-    </sect4>
-
-    <sect4>
      <title>Indexes</title>
 
      <itemizedlist>
@@ -544,16 +537,16 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 2018-07-28 [d2086b08b] Reduce path length for locking leaf B-tree pages during 
 Author: Peter Geoghegan <pg@bowt.ie>
 2019-03-25 [f21668f32] Add "split after new tuple" nbtree optimization.
-Author: Peter Geoghegan <pg@bowt.ie>
-2019-04-23 [9b1092626] Prevent O(N^2) unique index insertion edge case.
 -->
 
 <para>
-Improve speed of btree index insertions (Alexander Korotkov, Peter Geoghegan)
+Improve speed of btree index insertions (Peter Geoghegan, Alexander Korotkov)
 </para>
 
 <para>
- LOOKUP, INDEX CLEANUP IMPROVEMENTS?
+The new code improves the space-efficiency of page splits, reduces locking
+overhead, and gives better performance for <command>UPDATE</command>s
+and <command>DELETE</command>s on indexes with many duplicates.
 </para>
 </listitem>
 
@@ -564,7 +557,7 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 -->
 
 <para>
-Support INCLUDE columns in GiST indexes (Andrey Borodin)
+Support <link linkend="sql-createindex"><literal>INCLUDE</literal></link> columns in <link linkend="gist">GiST</link> indexes (Andrey Borodin)
 </para>
 </listitem>
 
@@ -575,7 +568,7 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 -->
 
 <para>
-Add support for nearest-neighbor (KNN) searches of SP-GiST indexes (Nikita Glukhov, Alexander Korotkov, Vlad Sterzhanov)
+Add support for nearest-neighbor (<acronym>KNN</acronym>) searches of <link linkend="spgist">SP-GiST</link> indexes (Nikita Glukhov, Alexander Korotkov, Vlad Sterzhanov)
 </para>
 
 <para>
@@ -589,7 +582,7 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 -->
 
 <para>
-Reduce the WAL write overhead of GiST, GIN and SP-GiST index creation (Anastasia Lubennikova, Andrey V. Lepikhov)
+Reduce the <acronym>WAL</acronym> write overhead of <acronym>GiST</acronym>, <acronym>GIN</acronym> and <acronym>SP-GiST</acronym> index creation (Anastasia Lubennikova, Andrey V. Lepikhov)
 </para>
 </listitem>
 
@@ -613,11 +606,11 @@ Author: Peter Geoghegan <pg@bowt.ie>
 -->
 
 <para>
-Have new btree indexes sort duplicate index entries in heap-storage order (Peter Geoghegan)
+Have new btree indexes sort duplicate index entries in heap-storage order (Peter Geoghegan, Heikki Linnakangas)
 </para>
 
 <para>
-Btree indexes pg_upgraded from previous releases will not have this ordering.  This does slightly reduce the maximum length of indexed values.
+Indexes <application>pg_upgraded</application> from previous releases will not have this ordering.
 </para>
 </listitem>
 
@@ -639,7 +632,7 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 -->
 
 <para>
-Delete empty leaf pages during GiST VACUUM (Andrey Borodin)
+Delete empty leaf pages during <acronym>GiST</acronym> <command>VACUUM</command> (Andrey Borodin)
 </para>
 </listitem>
 
@@ -672,11 +665,11 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Allow CREATE STATISTICS to create most-common-value statistics for multiple columns (Tomas Vondra)
+Allow <xref linkend="sql-createstatistics"/> to create most-common-value statistics for multiple columns (Tomas Vondra)
 </para>
 
 <para>
-This improve optimization for columns with non-uniform distributions that often appear in WHERE clauses.
+This improves optimization for columns with non-uniform distributions that often appear in <literal>WHERE</literal> clauses.
 </para>
 </listitem>
 
@@ -689,12 +682,27 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow common table expressions (CTE) to be inlined in later parts of the query (Andreas Karlsson, Andrew Gierth, David Fetter, Tom Lane)
+Allow <link linkend="queries-with">common table expressions</link> (<acronym>CTE</acronym>) to be inlined in later parts of the query (Andreas Karlsson, Andrew Gierth, David Fetter, Tom Lane)
 </para>
 
 <para>
-Specifically, CTEs are inlined if they are not recursive and are referenced only once later in the query.  Inlining can be prevented by specifying MATERIALIZED, and
-forced by specifying NOT MATERIALIZED.  Previously, CTEs were never inlined and were always evaluated before the rest of the query.
+Specifically, <acronym>CTE</acronym>s are inlined if they are not recursive and are referenced only once later in the query.  Inlining can be prevented by specifying <literal>MATERIALIZED</literal>, and
+forced by specifying <literal>NOT MATERIALIZED</literal>.  Previously, <acronym>CTE</acronym>s were never inlined and were always evaluated before the rest of the query.
+</para>
+</listitem>
+
+<listitem>
+<!--
+Author: Peter Eisentraut <peter_e@gmx.net>
+2018-07-16 [f7cb2842b] Add plan_cache_mode setting
+-->
+
+<para>
+Allow control over when generic plans are used for prepared statements (Pavel Stěhule)
+</para>
+
+<para>
+This is controlled by the <xref linkend="guc-plan-cache_mode"/> server variable.
 </para>
 </listitem>
 
@@ -718,7 +726,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Add support for function selectivity (Tom Lane)
+Add support for <link linkend="sql-createfunction">function selectivity</link> (Tom Lane)
 </para>
 </listitem>
 
@@ -733,7 +741,7 @@ Use the new support function capability to improve optimizer estimates for some 
 </para>
 
 <para>
-Specifically, improve them for generate_series(), unnest(), and functions that return boolean values.
+Specifically, improve them for <function>generate_series()</function>, <function>unnest()</function>, and functions that return boolean values.
 </para>
 </listitem>
 
@@ -744,7 +752,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Improve optimizations for domains that have no check constraints (Tom Lane)
+Improve optimizations for <link linkend="sql-createdomain">domains</link> that have no check constraints (Tom Lane)
 </para>
 </listitem>
 
@@ -755,7 +763,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Inline calls to LEAST and GREATEST to improve optimization (Vik Fearing)
+Inline calls to <link linkend="functions-greatest-least"><literal>LEAST</literal></link> and <literal>GREATEST</literal> to improve optimization (Vik Fearing)
 </para>
 </listitem>
 
@@ -766,7 +774,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow IS NOT NULL with mis-matching types to use partial indexes more frequently (Tom Lane)
+Allow <literal>IS NOT NULL</literal> with mis-matching types to use partial indexes more frequently (Tom Lane)
 </para>
 </listitem>
 
@@ -777,7 +785,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow IN comparisons with arrays to use IS NOT NULL partial indexes more frequently (Tom Lane)
+Allow IN comparisons with arrays to use <literal>IS NOT NULL</literal> partial indexes more frequently (James Coleman)
 </para>
 </listitem>
 
@@ -792,7 +800,7 @@ Store statistics using the collation defined for each column (Tom Lane)
 </para>
 
 <para>
-Previously the default collation was used for all statistics storage.  This potentially gives better optimizer behavior for columns with non-default collations.
+Previously, the default collation was used for all statistics storage.  This potentially gives better optimizer behavior for columns with non-default collations.
 </para>
 </listitem>
 
@@ -803,7 +811,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Improve optimizer estimates for tid inequality comparisons (Edmund Horner)
+Improve optimizer estimates for <link linkend="datatype-oid"><type>tid</type></link> inequality comparisons (Edmund Horner)
 </para>
 </listitem>
 
@@ -838,7 +846,7 @@ Author: Bruce Momjian <bruce@momjian.us>
 -->
 
 <para>
-Enable Just-in-Time (JIT) compilation by default (Andres Freund)
+Enable <link linkend="jit">Just-in-Time</link> (<acronym>JIT</acronym>) compilation by default (Andres Freund)
 </para>
 </listitem>
 
@@ -853,7 +861,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Greatly reduce memory consumption of COPY and function calls (Andres Freund, Tomas Vondra, Tom Lane)
+Greatly reduce memory consumption of <xref linkend="sql-copy"/> and function calls (Andres Freund, Tomas Vondra, Tom Lane)
 </para>
 </listitem>
 
@@ -888,11 +896,11 @@ Author: Stephen Frost <sfrost@snowman.net>
 -->
 
 <para>
-Allow TOAST values to be minimally decompressed (Paul Ramsey)
+Allow <link linkend="storage-toast"><literal>TOAST</literal></link> values to be minimally decompressed (Paul Ramsey)
 </para>
 
 <para>
-This is useful for routines that only look at values at the start of the TOAST field.
+This is useful for routines that only look at values at the start of the <literal>TOAST</literal> field.
 </para>
 </listitem>
 
@@ -903,7 +911,7 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-Allow ALTER TABLE .. SET NOT NULL to avoid unnecessary checking (Sergei Kornilov)
+Allow <link linkend="sql-altertable"><command>ALTER TABLE .. SET NOT NULL</command></link> to avoid unnecessary checking (Sergei Kornilov)
 </para>
 
 <para>
@@ -918,11 +926,11 @@ Author: Noah Misch <noah@leadboat.com>
 -->
 
 <para>
-Allow ALTER TABLE .. SET DATA TYPE timestamp/timestamptz to avoid a table rewrite when the session time zone is UTC (Noah Misch)
+Allow <command>ALTER TABLE .. SET DATA TYPE</command> <type>timestamp/timestamptz</type> to avoid a table rewrite when the session time zone is <acronym>UTC</acronym> (Noah Misch)
 </para>
 
 <para>
-In the UTC time zone, the data types are binary compatible.
+In the <acronym>UTC</acronym> time zone, the data types are binary compatible.
 </para>
 </listitem>
 
@@ -933,37 +941,22 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Improve speed in converting strings to int2/int4 integers (Andres Freund)
+Improve speed in converting strings to <type>int2</type>/<type>int4</type> integers (Andres Freund)
 </para>
 </listitem>
 
 <listitem>
 <!--
-Author: Andrew Gierth <rhodiumtoad@postgresql.org>
-2019-02-13 [02ddd4993] Change floating-point output format for improved perform
+Author: Thomas Munro <tmunro@postgresql.org>
+2019-03-15 [bb16aba50] Enable parallel query with SERIALIZABLE isolation.
 -->
 
 <para>
-Avoid performing unnecessary rounding of REAL and DOUBLE PRECISION values (Andrew Gierth)
+Allow parallelized queries when in <link linkend="sql-set-transaction"><literal>SERIALIZABLE</literal></link> isolation mode (Thomas Munro)
 </para>
 
 <para>
-This dramatically speeds up processing of floating-point values.  Users who wish to have output that is rounded can set extra_float_digits=0.
-</para>
-</listitem>
-
-<listitem>
-<!--
-Author: Amit Kapila <akapila@postgresql.org>
-2019-02-04 [b0eaa4c51] Avoid creation of the free space map for small heap rela
--->
-
-<para>
-Avoid creation of the free space map files for small table (John Naylor, Amit Kapila)
-</para>
-
-<para>
-Such files are not useful.
+Previously, parallelism was disabled when in this mode.
 </para>
 </listitem>
 
@@ -976,7 +969,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Use pread() and pwrite() for random I/O (Thomas Munro)
+Use <function>pread()</function> and <function>pwrite()</function> for random I/O (Oskari Saarenmaa, Thomas Munro)
 </para>
 
 <para>
@@ -992,7 +985,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Improve the speed of setting the process title on FreeBSD (Thomas Munro)
+Improve the speed of setting the <link linkend="guc-update-process-title">process title</link> on <systemitem class="osname">FreeBSD</systemitem> (Thomas Munro)
 </para>
 </listitem>
 
@@ -1014,11 +1007,11 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Allow logging of only a percentage of statements and transactions meeting log_min_duration_statement criteria (Adrien Nayrat)
+Allow logging of only a percentage of statements and transactions meeting <xref linkend="guc-log-min-duration-statement"/> criteria (Adrien Nayrat)
 </para>
 
 <para>
-The parameters log_statement_sample_rate and log_transaction_sample_rate controls this.
+The parameters <xref linkend="guc-log-statement-sample-rate"/> and <xref linkend="guc-log-transaction-sample-rate"/> control this.
 </para>
 </listitem>
 
@@ -1031,11 +1024,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Report progress of CREATE INDEX and REINDEX operations (Alvaro Herrera, Peter Eisentraut)
+Report progress of <command>CREATE INDEX</command> and <command>REINDEX</command> operations (Álvaro Herrera, Peter Eisentraut)
 </para>
 
 <para>
-Progress is reported in the pg_stat_progress_create_index system view
+Progress is reported in the <link linkend="progress-reporting"><structname>pg_stat_progress_create_index</structname></link> system view
 </para>
 </listitem>
 
@@ -1046,11 +1039,11 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-Add progress reporting to CLUSTER and VACUUM FULL (Tatsuro Yamada)
+Add progress reporting to <command>CLUSTER</command> and <command>VACUUM FULL</command> (Tatsuro Yamada)
 </para>
 
 <para>
-Progress is reported in the pg_stat_progress_cluster system view.
+Progress is reported in the <link linkend="vacuum-progress-reporting"><structname>pg_stat_progress_cluster</structname></link> system view.
 </para>
 </listitem>
 
@@ -1061,11 +1054,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add progress reporting to pg_checksums (Michael Banck, Bernd Helmle)
+Add progress reporting to <xref linkend="app-pgchecksums"/> (Michael Banck, Bernd Helmle)
 </para>
 
 <para>
-This is enabled with the option --progress.
+This is enabled with the option <option>--progress</option>.
 </para>
 </listitem>
 
@@ -1076,7 +1069,7 @@ Author: Magnus Hagander <magnus@hagander.net>
 -->
 
 <para>
-Add counter of checksum failures to pg_stat_database (Magnus Hagander)
+Add counter of checksum failures to <structname>pg_stat_database</structname> (Magnus Hagander)
 </para>
 </listitem>
 
@@ -1087,11 +1080,11 @@ Author: Magnus Hagander <magnus@hagander.net>
 -->
 
 <para>
-Add tracking of global objects in system view pg_stat_database (Julien Rouhaud)
+Add tracking of global objects in system view <structname>pg_stat_database</structname> (Julien Rouhaud)
 </para>
 
 <para>
-The system view row's datoid is reported as zero.
+Global objects have a <link linkend="pg-stat-database-view"><structname>pg_stat_database</structname></link>.<structfield>datoid</structfield> value of zero.
 </para>
 </listitem>
 
@@ -1106,7 +1099,7 @@ Add the ability to list the contents of the archive directory (Christoph Moench-
 </para>
 
 <para>
-The function is pg_ls_archive_statusdir().
+The function is <link linkend="functions-admin-genfile-table"><function>pg_ls_archive_statusdir()</function></link>.
 </para>
 </listitem>
 
@@ -1121,7 +1114,7 @@ Add the ability to list the contents of temporary directories (Nathan Bossart)
 </para>
 
 <para>
-The function, pg_ls_tmpdir(), optionally allows specification of a tablespace.
+The function, <link linkend="functions-admin-genfile-table"><function>pg_ls_tmpdir()</function></link>, optionally allows specification of a tablespace.
 </para>
 </listitem>
 
@@ -1132,11 +1125,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add information about the client certificate to the system view pg_stat_ssl (Peter Eisentraut)
+Add information about the client certificate to the system view <structname>pg_stat_ssl</structname> (Peter Eisentraut)
 </para>
 
 <para>
-The new columns are client_serial and issuer_dn.  Column clientdn has been renamed to client_dn, for clarity.
+The new columns are <structfield>client_serial</structfield> and <structfield>issuer_dn</structfield>.  Column <structfield>clientdn</structfield> has been renamed to <structfield>client_dn</structfield>, for clarity.
 </para>
 </listitem>
 
@@ -1147,7 +1140,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Allow viewers of pg_stat_ssl to only see their own rows (Peter Eisentraut)
+Restrict visibility of rows in <link linkend="pg-stat-ssl-view"><structname>pg_stat_ssl</structname></link> by unprivileged users (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -1180,7 +1173,7 @@ Author: Stephen Frost <sfrost@snowman.net>
 -->
 
 <para>
-Unconditionally include application_name in server log authentication messages (Don Seiler)
+Unconditionally include <xref linkend="guc-application-name"/> in server log authentication messages (Don Seiler)
 </para>
 </listitem>
 
@@ -1202,7 +1195,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add the timestamp of the last received standby message to pg_stat_replication (MyungKyu LIM)
+Add the timestamp of the last received standby message to <link linkend="pg-stat-replication-view"><structname>pg_stat_replication</structname></link> (Lim MyungKyu)
 </para>
 </listitem>
 
@@ -1213,7 +1206,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add wait event for fsync of WAL segments (Konstantin Knizhnik)
+Add <link linkend="wait-event-table">wait event</link> for fsync of <acronym>WAL</acronym> segments (Konstantin Knizhnik)
 </para>
 </listitem>
 
@@ -1231,7 +1224,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow more comparisons with information_schema text columns use indexes (Tom Lane)
+Allow more use of indexes for text comparisons with <structname>information_schema</structname> columns (Tom Lane)
 </para>
 </listitem>
 
@@ -1242,7 +1235,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Use "C" collation for information_schema and the system tables (Tom Lane)
+Use "C" collation for <structname>information_schema</structname> and the system tables (Tom Lane)
 </para>
 
 <para>
@@ -1258,7 +1251,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Force information_schema outputs to honor the system-defined maximum 63-byte identifier length (Tom Lane)
+Force <structname>information_schema</structname> outputs to honor the system-defined maximum 63-byte identifier length (Tom Lane)
 </para>
 </listitem>
 
@@ -1279,12 +1272,12 @@ Author: Stephen Frost <sfrost@snowman.net>
 -->
 
 <para>
-Add GSSAPI client and server-side encryption support (Robbie Harwood, Stephen Frost)
+Add <link linkend="gssapi-auth"><acronym>GSSAPI</acronym></link> client and server-side encryption support (Robbie Harwood, Stephen Frost)
 </para>
 
 <para>
-Add pg_hba.conf "hostgssenc" and "hostnogssenc" record types.  This would typically use the "gss" authentication method.  This also adds a libpq "gssencmode" option, and
-a pg_stat_gssapi system view.
+Add <link linkend="auth-pg-hba-conf"><filename>pg_hba.conf</filename></link> <link linkend="auth-pg-hba-conf"><literal>hostgssenc</literal></link> and <literal>hostnogssenc</literal> record types.  This would typically use the <literal>gss</literal> authentication method.  This also adds a libpq <xref linkend="libpq-connect-gssencmode"/> option, and
+a <xref linkend="pg-stat-gssapi-view"/> system view.
 </para>
 </listitem>
 
@@ -1295,11 +1288,11 @@ Author: Magnus Hagander <magnus@hagander.net>
 -->
 
 <para>
-Allow the clientcert pg_hba.conf option to check the database user name matches the certificate common name (Julian Markwort, Marius Timmer)
+Allow the <link linkend="auth-cert"><literal>clientcert</literal></link> <filename>pg_hba.conf</filename> option to check that the database user name matches the certificate common name (Julian Markwort, Marius Timmer)
 </para>
 
 <para>
-The new check is enabled with clientcert=verify-full.
+The new check is enabled with <literal>clientcert=verify-full</literal>.
 </para>
 </listitem>
 
@@ -1310,11 +1303,11 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Allow discovery of the LDAP server using DNS (Thomas Munro)
+Allow discovery of the <link linkend="auth-ldap"><acronym>LDAP</acronym></link> server using <acronym>DNS SRV</acronym> records (Thomas Munro)
 </para>
 
 <para>
-This avoids the requirement of specifying 'ldapserver', and is only supported if Postgres is compiled with OpenLDAP.
+This avoids the requirement of specifying <literal>ldapserver</literal>, and is only supported if <productname>PostgreSQL</productname> is compiled with <productname>OpenLDAP</productname>.
 </para>
 </listitem>
 
@@ -1325,7 +1318,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Prevent TRUNCATE from requesting a lock on tables for which it lacks permission (Michael Paquier)
+Prevent <xref linkend="sql-truncate"/> from requesting a lock on tables for which it lacks permission (Michaël Paquier)
 </para>
 
 <para>
@@ -1340,7 +1333,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Prevent VACUUM and ANALYZE from requesting a lock on tables for which it lacks permission (Michael Paquier)
+Prevent <command>VACUUM</command> and <command>ANALYZE</command> from requesting a lock on tables for which it lacks permission (Michaël Paquier)
 </para>
 
 <para>
@@ -1364,7 +1357,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add ability to enable/disable cluster checksums using pg_checksums (Michael Banck, Michael Paquier)
+Add ability to enable/disable cluster checksums using <xref linkend="app-pgchecksums"/> (Michael Banck, Michaël Paquier)
 </para>
 
 <para>
@@ -1379,7 +1372,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Reduce the default value of autovacuum_vacuum_cost_delay to 2ms (Tom Lane)
+Reduce the default value of <xref linkend="guc-autovacuum-vacuum-cost-delay"/> to 2ms (Tom Lane)
 </para>
 </listitem>
 
@@ -1390,7 +1383,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow vacuum_cost_delay to specify sub-millisecond delays (Tom Lane)
+Allow <xref linkend="guc-vacuum-cost-delay"/> to specify sub-millisecond delays (Tom Lane)
 </para>
 
 <para>
@@ -1405,7 +1398,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow time-based server variables to use micro-seconds (us) (Tom Lane)
+Allow time-based server variables to use <link linkend="config-setting">micro-seconds</link> (us) (Tom Lane)
 </para>
 </listitem>
 
@@ -1420,7 +1413,7 @@ Allow fractional input for integer server variables (Tom Lane)
 </para>
 
 <para>
-For example, SET work_mem = '30.1GB'.
+For example, <command>SET work_mem = '30.1GB'</command>.
 </para>
 </listitem>
 
@@ -1442,11 +1435,11 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Add wal_recycle and wal_init_zero server variables to avoid WAL file recycling (Jerry Jelinek)
+Add <xref linkend="guc-wal-recycle"/> and <xref linkend="guc-wal-init-zero"/> server variables to avoid <acronym>WAL</acronym> file recycling (Jerry Jelinek)
 </para>
 
 <para>
-This can be beneficial on copy-on-write file systems like ZFS.
+This can be beneficial on copy-on-write file systems like <productname>ZFS</productname>.
 </para>
 </listitem>
 
@@ -1457,11 +1450,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add parameter to control the server TCP timeout (Ryohei Nagaura)
+Add parameter to control the server <acronym>TCP</acronym> timeout (Ryohei Nagaura)
 </para>
 
 <para>
-The parameter is tcp_user_timeout.
+The parameter is <xref linkend="guc-tcp-user-timeout"/>.
 </para>
 </listitem>
 
@@ -1472,11 +1465,11 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Allow control of the minimum and maximum SSL protocol versions (Peter Eisentraut)
+Allow control of the minimum and maximum <acronym>SSL</acronym>> protocol versions (Peter Eisentraut)
 </para>
 
 <para>
-The server settings are ssl_min_protocol_version and ssl_max_protocol_version.
+The server settings are <xref linkend="guc-ssl-min-protocol-version"/> and <xref linkend="guc-ssl-max-protocol-version"/>.
 </para>
 </listitem>
 
@@ -1487,7 +1480,7 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Add server variable ssl_library to report the SSL library version used by the server (Peter Eisentraut)
+Add server variable <xref linkend="guc-ssl-library"/> to report the <acronym>SSL</acronym> library version used by the server (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -1502,7 +1495,7 @@ Add server variable to control the type of shared memory to use (Andres Freund)
 </para>
 
 <para>
-The variable is shared_memory_type.  It purpose is to allow selection of System V shared memory, if desired.
+The variable is <xref linkend="guc-shared-memory-type"/>.  Its purpose is to allow selection of <productname>System V</productname> shared memory, if desired.
 </para>
 </listitem>
 
@@ -1528,7 +1521,7 @@ Allow some recovery parameters to be changed with reload (Peter Eisentraut)
 </para>
 
 <para>
-These parameters are archive_cleanup_command, promote_trigger_file, recovery_end_command, and recovery_min_apply_delay.
+These parameters are <xref linkend="guc-archive-cleanup-command"/>, <xref linkend="guc-promote-trigger-file"/>, <xref linkend="guc-recovery-end-command"/>, and <xref linkend="guc-recovery-min-apply-delay"/>.
 </para>
 </listitem>
 
@@ -1539,11 +1532,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Allow the streaming replication timeout to be set per connection (Tsunakawa Takayuki)
+Allow the streaming replication timeout (<xref linkend="guc-wal-sender-timeout"/>) to be set per connection (Tsunakawa Takayuki)
 </para>
 
 <para>
-Previously this could only be set cluster-wide.
+Previously, this could only be set cluster-wide.
 </para>
 </listitem>
 
@@ -1556,11 +1549,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add function pg_promote() to promote standbys to primaries (Laurenz Albe, Michael Paquier)
+Add function <link linkend="functions-recovery-control"><function>pg_promote()</function></link> to promote standbys to primaries (Laurenz Albe, Michaël Paquier)
 </para>
 
 <para>
-Previously, this operation was only possible by using pg_ctl or creating a trigger file.
+Previously, this operation was only possible by using <xref linkend="app-pg-ctl"/> or creating a trigger file.
 </para>
 </listitem>
 
@@ -1575,7 +1568,7 @@ Allow replication slots to be copied (Masahiko Sawada)
 </para>
 
 <para>
-The functions are pg_copy_physical_replication_slot() and pg_copy_logical_replication_slot().
+The functions are <link linkend="functions-replication-table"><function>pg_copy_physical_replication_slot()</function></link> and <function>pg_copy_logical_replication_slot()</function>.
 </para>
 </listitem>
 
@@ -1586,7 +1579,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Have max_wal_senders not count as part of max_connections (Alexander Kukushkin)
+Have <xref linkend="guc-max-wal-senders"/> not count as part of <xref linkend="guc-max-connections"/> (Alexander Kukushkin)
 </para>
 </listitem>
 
@@ -1597,7 +1590,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add an explicit value of 'current' for recovery_target_timeline (Peter Eisentraut)
+Add an explicit value of <literal>current</literal> for <xref linkend="guc-recovery-target-time"/> (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -1608,7 +1601,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Have recovery fail if a two-phase transaction status file is corrupt (Michael Paquier)
+Have recovery fail if a <link linkend="sql-prepare-transaction">two-phase transaction</link> status file is corrupt (Michaël Paquier)
 </para>
 
 <para>
@@ -1632,11 +1625,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add REINDEX CONCURRENTLY to allow reindexing concurrently (Michael Paquier, Andreas Karlsson, Peter Eisentraut)
+Add <xref linkend="sql-reindex"/> <literal>CONCURRENTLY</literal> to allow reindexing concurrently (Michaël Paquier, Andreas Karlsson, Peter Eisentraut)
 </para>
 
 <para>
-This is also controlled by the reindexdb --concurrently option.
+This is also controlled by the <xref linkend="app-reindexdb"/> <option>--concurrently</option> option.
 </para>
 </listitem>
 
@@ -1647,7 +1640,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add support for generated columns (Peter Eisentraut)
+Add support for <link linkend="sql-createtable">generated columns</link> (Peter Eisentraut)
 </para>
 
 <para>
@@ -1662,7 +1655,7 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Add a WHERE clause to COPY FROM which controls which rows are output (Surafel Temesgen)
+Add a <literal>WHERE</literal> clause to <command>COPY FROM</command> which controls which rows are output (Surafel Temesgen)
 </para>
 </listitem>
 
@@ -1677,7 +1670,7 @@ Allow enumerated values to be added in more transaction types (Andrew Dunstan, T
 </para>
 
 <para>
-Previously, ALTER TYPE ... ADD VALUE could only be called in a transaction that created the enumerated type.  Now, the only restriction is that the new enumerated value
+Previously, <link linkend="sql-altertype"><command>ALTER TYPE ... ADD VALUE</command></link> could only be called in a transaction that created the enumerated type.  Now, the only restriction is that the new enumerated value
 cannot be referenced until the transaction commits.
 </para>
 </listitem>
@@ -1693,7 +1686,7 @@ Add command to end a transaction and start a new one (Peter Eisentraut)
 </para>
 
 <para>
-The commands are COMMIT AND CHAIN and ROLLBACK AND CHAIN.
+The commands are <link linkend="sql-commit"><command>COMMIT AND CHAIN</command></link> and <command>ROLLBACK AND CHAIN</command>.
 </para>
 </listitem>
 
@@ -1704,11 +1697,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Allow the creation of collations that report string equality for strings that are not byte-wise equal (Peter Eisentraut)
+Allow the creation of <link linkend="sql-createcollation">collations</link> that report string equality for strings that are not byte-wise equal (Peter Eisentraut)
 </para>
 
 <para>
-This allows case and accent-agnostic equality comparisons using "nondeterministic" collations.  This is only supported for ICU collations.
+This allows case and accent-agnostic equality comparisons using "nondeterministic" collations.  This is only supported for <acronym>ICU</acronym> collations.
 MENTION ITS AFFECT ON ORDERING?
 </para>
 </listitem>
@@ -1717,14 +1710,16 @@ MENTION ITS AFFECT ON ORDERING?
 <!--
 Author: Fujii Masao <fujii@postgresql.org>
 2019-04-08 [119dcfad9] Add vacuum_truncate reloption.
+Author: Fujii Masao <fujii@postgresql.org>
+2019-05-08 [b84dbc8eb] Add TRUNCATE parameter to VACUUM.
 -->
 
 <para>
-Add CREATE TABLE option to prevent VACUUM from truncating trailing empty pages (Tsunakawa Takayuki)
+Add <xref linkend="sql-vacuum"/> and <command>CREATE TABLE</command> options to prevent <command>VACUUM</command> from truncating trailing empty pages (Tsunakawa Takayuki)
 </para>
 
 <para>
-The options are vacuum_truncate and toast.vacuum_truncate.  This reduces vacuum locking requirements.
+The options are <varname>vacuum_truncate</varname> and <varname>toast.vacuum_truncate</varname>.  This reduces vacuum locking requirements.
 </para>
 </listitem>
 
@@ -1735,7 +1730,7 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-Allow vacuum to avoid index cleanup with the INDEX_CLEANUP option (Masahiko Sawada)
+Allow vacuum to avoid index cleanup with the <literal>INDEX_CLEANUP</literal> option (Masahiko Sawada)
 </para>
 </listitem>
 
@@ -1746,11 +1741,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add the ability to skip VACUUM and ANALYZE operations on tables that cannot be immediately locked (Nathan Bossart)
+Add the ability to skip <command>VACUUM</command> and <command>ANALYZE</command> operations on tables that cannot be immediately locked (Nathan Bossart)
 </para>
 
 <para>
-This option is called SKIP_LOCKED.
+This option is called <literal>SKIP_LOCKED</literal>.
 </para>
 </listitem>
 
@@ -1761,7 +1756,7 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-Allow VACUUM to take optional boolean argument specifications (Masahiko Sawada)
+Allow <command>VACUUM</command> to take optional boolean argument specifications (Masahiko Sawada)
 </para>
 </listitem>
 
@@ -1772,11 +1767,11 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Add EXPLAIN option SETTINGS to output non-default optimizer settings (Tomas Vondra)
+Add <xref linkend="sql-explain"/> option <literal>SETTINGS</literal> to output non-default optimizer settings (Tomas Vondra)
 </para>
 
 <para>
-This can also be output in auto-explain via auto_explain.log_settings.
+This can also be output in auto-explain via <xref linkend="auto-explain"/>.<literal>log_settings</literal>.
 </para>
 </listitem>
 
@@ -1791,7 +1786,7 @@ Allow aggregates to be replaced (Andrew Gierth)
 </para>
 
 <para>
-The command is CREATE OR REPLACE AGGREGATE.
+The command is <link linkend="sql-createaggregate"><command>CREATE OR REPLACE AGGREGATE</command></link>.
 </para>
 </listitem>
 
@@ -1802,11 +1797,11 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Allow modifications of system tables using ALTER TABLE (Peter Eisentraut)
+Allow modifications of system tables using <xref linkend="sql-altertable"/> (Peter Eisentraut)
 </para>
 
 <para>
-This allows modifications of reloptions and autovacuum settings.
+This allows modifications of <literal>reloptions</literal> and autovacuum settings.
 </para>
 </listitem>
 
@@ -1817,7 +1812,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow RECORD and RECORD[] to be specified as a function return-value record (Elvis Pranskevichus)
+Allow <type>RECORD</type> and <type>RECORD[]</type> to be specified as a function <link linkend="sql-createfunction">return-value record</link> (Elvis Pranskevichus)
 </para>
 
 <para>
@@ -1836,7 +1831,7 @@ Use all column names when creating default foreign key constraint names (Peter E
 </para>
 
 <para>
-Previously only the first column name was used.
+Previously, only the first column name was used.
 </para>
 </listitem>
 
@@ -1858,6 +1853,10 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 <para>
 Update Snowball stemmer dictionaries with support for new languages (Arthur Zakirov)
 </para>
+
+<para>
+This adds additional stemming languages to <link linkend="textsearch">full text search</link>.
+</para>
 </listitem>
 
 <listitem>
@@ -1867,7 +1866,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add support for ICU collation customization attributes (Peter Eisentraut)
+Add support for <acronym>ICU</acronym> collation customization attributes (Peter Eisentraut)
 </para>
 
 <para>
@@ -1882,7 +1881,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow data type name to more seamlessly be compared to other text types (Tom Lane)
+Allow data type <link linkend="datatype-oid">name</link> to more seamlessly be compared to other text types (Tom Lane)
 </para>
 </listitem>
 
@@ -1906,11 +1905,11 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 -->
 
 <para>
-Add support for the SQL/JSON path language (Nikita Glukhov, Teodor Sigaev, Alexander Korotkov, Oleg Bartunov, Liudmila Mantrova)
+Add support for the <acronym>SQL/JSON</acronym> <link linkend="functions-json-processing-table">path</link> language (Nikita Glukhov, Teodor Sigaev, Alexander Korotkov, Oleg Bartunov, Liudmila Mantrova)
 </para>
 
 <para>
-This allows JSON values to be selected using an SQL-standard language.
+This allows execution of complex queries on <type>JSON</type> values using an <acronym>SQL</acronym>-standard language.
 </para>
 </listitem>
 
@@ -1921,11 +1920,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Add support for hyperbolic functions (Lætitia Avrot)
+Add support for <link linkend="functions-math-hyp-table">hyperbolic functions</link> (Lætitia Avrot)
 </para>
 
 <para>
-Also add log10() as alias for log(), for standards compliance.
+Also add <function>log10()</function> as alias for <function>log()</function>, for standards compliance.
 </para>
 </listitem>
 
@@ -1934,9 +1933,8 @@ Also add log10() as alias for log(), for standards compliance.
 Author: Dean Rasheed <dean.a.rasheed@gmail.com>
 2018-10-06 [e954a727f] Improve the accuracy of floating point statistical aggre
 -->
-
 <para>
-Improve the accuracy of statistical aggregates like variance() by using more precise algorithms (Dean Rasheed)
+Improve the accuracy of statistical aggregates like <link linkend="functions-aggregate-statistics-table"><function>variance()</function></link> by using more precise algorithms (Dean Rasheed)
 </para>
 </listitem>
 
@@ -1947,11 +1945,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow date_trunc() to have an additional argument to control the time zone (Vik Fearing, Tom Lane)
+Allow <link linkend="functions-datetime-table"><function>date_trunc()</function></link> to have an additional argument to control the time zone (Vik Fearing, Tom Lane)
 </para>
 
 <para>
-This is faster and simpler than using the AT TIME ZONE clause.
+This is faster and simpler than using the <literal>AT TIME ZONE</literal> clause.
 </para>
 </listitem>
 
@@ -1962,11 +1960,11 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 -->
 
 <para>
-Adjust to_timestamp()/to_date() functions to be more forgiving of template mismatches (Artur Zakirov, Alexander Korotkov, Liudmila Mantrova)
+Adjust <link linkend="functions-formatting-table"><function>to_timestamp()</function></link>/<function>to_date()</function> functions to be more forgiving of template mismatches (Artur Zakirov, Alexander Korotkov, Liudmila Mantrova)
 </para>
 
 <para>
-This new behavior more closely matches the Oracle functions of the same name.  DETAILS?
+This new behavior more closely matches the <productname>Oracle</productname> functions of the same name.  DETAILS?
 </para>
 </listitem>
 
@@ -1977,11 +1975,11 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Improve node detection and escaping of XML functions (Pavel Stehule, Markus Winand, Chapman Flack)
+Improve node detection and escaping of <link linkend="functions-xml"><acronym>XML</acronym> functions</link> (Pavel Stěhule, Markus Winand, Chapman Flack)
 </para>
 
 <para>
-Specifically, in XMLTABLE, xpath(), and xmlexists().
+Specifically, in <literal>XMLTABLE</literal>, <function>xpath()</function>, and <function>xmlexists()</function>.
 </para>
 </listitem>
 
@@ -1992,7 +1990,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Allow the XML BY VALUE clause (Chapman Flack)
+Allow the <literal>XML BY VALUE</literal> clause (Chapman Flack)
 </para>
 
 <para>
@@ -2002,12 +2000,12 @@ The clause has no effect.
 
 <listitem>
 <!--
-Author: Joe Conway <mail@joeconway.com>
-2019-02-17 [290e3b77f] Mark pg_config() stable rather than immutable
+Author: Michael Paquier <michael@paquier.xyz>
+2019-03-27 [5bde1651b] Switch function current_schema[s]() to be parallel-unsaf
 -->
 
 <para>
-Mark pg_config() stable rather than immutable (Joe Conway)
+Prevent <link linkend="functions-info-session-table"><function>current_schema()</function></link> and <function>current_schemas()</function> from being run by parallel workers (Michaël Paquier)
 </para>
 </listitem>
 
@@ -2016,7 +2014,7 @@ Mark pg_config() stable rather than immutable (Joe Conway)
    </sect3>
 
    <sect3>
-    <title>Server-Side Languages</title>
+    <title><link linkend="plpgsql">PL/pgSQL</link></title>
 
     <itemizedlist>
 
@@ -2027,11 +2025,12 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow commands and variables with the same name as commands to be used in the same PL/pgsql function (Tom Lane)
+Allow commands and variables with the same name as commands to be used in the same
+PL/pgSQL function (Tom Lane)
 </para>
 
 <para>
-For example, allow a variable called comment to exist in the same function that calls the comment SQL command.
+For example, allow a variable called comment to exist in the same function that calls the comment <acronym>SQL</acronym> command.
 </para>
 </listitem>
 
@@ -2042,11 +2041,11 @@ Author: Tomas Vondra <tomas.vondra@postgresql.org>
 -->
 
 <para>
-Add new optional warning and error checks to PL/pgSQL (Pavel Stehule)
+Add new optional warning and error checks to PL/pgSQL (Pavel Stěhule)
 </para>
 
 <para>
-The new checks allow for run-time validation of INTO column counts and single-row results.
+The new checks allow for run-time validation of <literal>INTO</literal> column counts and single-row results.
 </para>
 </listitem>
 
@@ -2066,11 +2065,11 @@ Author: Michael Meskes <meskes@postgresql.org>
 -->
 
 <para>
-Allow ECPG to create variables of data type bytea (Ryo Matsumura)
+Allow <xref linkend="app-ecpg"/> to create variables of data type bytea (Ryo Matsumura)
 </para>
 
 <para>
-This allows to interaction with bytea data directly, rather than using a binary encoding.
+This allows to interaction with <type>bytea</type> data directly, rather than using a binary encoding.
 </para>
 </listitem>
 
@@ -2081,7 +2080,7 @@ Author: Michael Meskes <meskes@postgresql.org>
 -->
 
 <para>
-Add DECLARE STATEMENT support to ECPG (Takeshi Ideriha, Hayato Kuroda)
+Add <command>DECLARE STATEMENT</command> support to <productname>ECPG</productname> (Takeshi Ideriha, Hayato Kuroda)
 </para>
 
 <para>
@@ -2096,12 +2095,12 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Add parameter to control libpq's TCP timeout (Ryohei Nagaura)
+Add parameter to control libpq's <acronym>TCP</acronym> timeout (Ryohei Nagaura)
 </para>
 
 <para>
 
-The parameter is tcp_user_timeout.
+The parameter is <xref linkend="libpq-tcp-user-timeout"/>.
 </para>
 </listitem>
 
@@ -2112,7 +2111,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow libpq to report the SQLSTATE to output only this value (Didier Gautheron)
+Allow libpq to report the <literal>SQLSTATE</literal> to output only this value (Didier Gautheron)
 </para>
 </listitem>
 
@@ -2127,7 +2126,7 @@ Add libpq function to report the memory size of the query result (Lars Kanis, To
 </para>
 
 <para>
-The function is PQresultMemorySize().
+The function is <link linkend="libpq-pqresultmemorysize"><function>PQresultMemorySize()</function></link>.
 </para>
 </listitem>
 
@@ -2138,11 +2137,11 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Remove the no-display/debug flag from the libpq "options" parameter (Peter Eisentraut)
+Remove the no-display/debug flag from the libpq <literal>options</literal> parameter (Peter Eisentraut)
 </para>
 
 <para>
-This allows the option to be used by postgres_fdw.
+This allows the option to be used by <application>postgres_fdw</application>.
 </para>
 </listitem>
 
@@ -2166,7 +2165,7 @@ Add colorization to the output of command-line utilities (Peter Eisentraut)
 </para>
 
 <para>
-This is enabled with by setting environment variable PG_COLORS.  EXAMPLE?
+This is enabled with by setting environment variable <envar>PG_COLORS</envar>.  EXAMPLE?
 </para>
 </listitem>
 
@@ -2184,11 +2183,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Add CSV table output mode in psql (Daniel Vérité)
+Add <acronym>CSV</acronym> table output mode in <application>psql</application> (Daniel Vérité)
 </para>
 
 <para>
-This is controlled by "\pset format csv" or the command-line --csv option.
+This is controlled by <command>\pset format csv</command> or the command-line <option>--csv</option> option.
 </para>
 </listitem>
 
@@ -2199,7 +2198,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Show the manual page URL in psql's \help output (Peter Eisentraut)
+Show the manual page <acronym>URL</acronym> in <application>psql</application>'s <command>\help</command> output (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -2210,7 +2209,7 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Display the IP address in psql's \conninfo (Fabien Coelho)
+Display the <acronym>IP</acronym> address in <application>psql</application>'s <command>\conninfo</command> (Fabien Coelho)
 </para>
 </listitem>
 
@@ -2237,7 +2236,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Improve tab completion of CREATE TABLE, CREATE TRIGGER, CREATE EVENT TRIGGER, ANALYZE, EXPLAIN, VACUUM, ALTER TABLE, ALTER INDEX, ALTER DATABASE, ALTER INDEX ALTER COLUMN (Dagfinn Ilmari Mannsåker, Tatsuro Yamada, Michael Paquier, Tom Lane, Justin Pryzby)
+Improve tab completion of <command>CREATE TABLE, CREATE TRIGGER, CREATE EVENT TRIGGER, ANALYZE, EXPLAIN, VACUUM, ALTER TABLE, ALTER INDEX, ALTER DATABASE, ALTER INDEX ALTER COLUMN</command> (Dagfinn Ilmari Mannsåker, Tatsuro Yamada, Michaël Paquier, Tom Lane, Justin Pryzby)
 </para>
 </listitem>
 
@@ -2263,7 +2262,7 @@ Allow values produced by queries to be assigned to pgbench variables (Fabien Coe
 </para>
 
 <para>
-The commands is \gset.
+The commands is <command>\gset</command>.
 </para>
 </listitem>
 
@@ -2274,7 +2273,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Compute behavior based on pgbench's --rate value more precisely (Tom Lane)
+Compute behavior based on pgbench's <option>--rate</option> value more precisely (Tom Lane)
 </para>
 </listitem>
 
@@ -2284,7 +2283,7 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 2018-10-15 [5b75a4f82] pgbench: Report errors during run better
 -->
 <para>
-Improve pgbench error reporting with clearer messages and return codes (Fabien Coelho)
+Improve pgbench error reporting with clearer messages and return codes (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -2306,11 +2305,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Allow vacuumdb to select tables for vacuum based on their wraparound horizon (Nathan Bossart)
+Allow <xref linkend="app-vacuumdb"/> to select tables for vacuum based on their wraparound horizon (Nathan Bossart)
 </para>
 
 <para>
-The options are --min-xid-age and --min-mxid-age.
+The options are <option>--min-xid-age</option> and <option>--min-mxid-age</option>.
 </para>
 </listitem>
 
@@ -2325,7 +2324,7 @@ Add vacuumdb to disable waiting for locks or skipping all-visible pages (Nathan 
 </para>
 
 <para>
-The options are --skip-locked and --disable-page-skipping.
+The options are <option>--skip-locked</option> and <option>--disable-page-skipping</option>.
 </para>
 </listitem>
 
@@ -2336,11 +2335,11 @@ Author: Alexander Korotkov <akorotkov@postgresql.org>
 -->
 
 <para>
-Allow control of log file rotation via pg_ctl (Kyotaro Horiguchi, Alexander Kuzmenkov, Alexander Korotkov)
+Allow control of log file rotation via <xref linkend="app-pg-ctl"/> (Kyotaro Horiguchi, Alexander Kuzmenkov, Alexander Korotkov)
 </para>
 
 <para>
-Previously this was only possible via an SQL function or a process signal.
+Previously, this was only possible via an <acronym>SQL</acronym> function or a process signal.
 </para>
 </listitem>
 
@@ -2351,7 +2350,7 @@ Author: Heikki Linnakangas <heikki.linnakangas@iki.fi>
 -->
 
 <para>
-Properly detach the server on pg_ctl start (Paul Guo)
+Properly detach the server on <application>pg_ctl</application> start (Paul Guo)
 </para>
 
 <para>
@@ -2366,11 +2365,11 @@ Author: Peter Eisentraut <peter_e@gmx.net>
 -->
 
 <para>
-Allow pg_upgrade to use the file system cloning feature (Peter Eisentraut)
+Allow <xref linkend="pgupgrade"/> to use the file system cloning feature (Peter Eisentraut)
 </para>
 
 <para>
-The --clone option has the advantages of --link, while preventing the old cluster from being changed after the new cluster has started.
+The <option>--clone</option> option has the advantages of <option>--link</option>, while preventing the old cluster from being changed after the new cluster has started.
 </para>
 </listitem>
 
@@ -2381,11 +2380,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Allow specification of the pg_upgrade socket directory (Daniel Gustafsson)
+Allow specification of the <application>pg_upgrade</application> socket directory (Daniel Gustafsson)
 </para>
 
 <para>
-This is controlled by --socketdir;  the default is the current directory.
+This is controlled by <option>--socketdir</option>;  the default is the current directory.
 </para>
 </listitem>
 
@@ -2396,7 +2395,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Have initdb determine the local timezone from the /etc/localtime symbolic link, if it exists (Tom Lane)
+Have <xref linkend="app-initdb"/> determine the local timezone from the <filename>/etc/localtime</filename> symbolic link, if it exists (Tom Lane)
 </para>
 
 <para>
@@ -2411,11 +2410,11 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Allow pg_checksums to disable fsync operations (Michael Paquier)
+Allow <xref linkend="app-pgchecksums"/> to disable fsync operations (Michaël Paquier)
 </para>
 
 <para>
-This is controlled by the --no-sync option.
+This is controlled by the <option>--no-sync</option> option.
 </para>
 </listitem>
 
@@ -2426,7 +2425,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Allow pg_rewind to disable fsync operations (Michael Paquier)
+Allow <xref linkend="app-pgrewind"/> to disable fsync operations (Michaël Paquier)
 </para>
 </listitem>
 
@@ -2446,11 +2445,11 @@ Author: Alvaro Herrera <alvherre@alvh.no-ip.org>
 -->
 
 <para>
-Allow control over the number of rows each pg_dump INSERT statement uses (Surafel Temesgen, David Rowley)
+Allow control over the number of rows each <application>pg_dump</application> <command>INSERT</command> statement uses (Surafel Temesgen, David Rowley)
 </para>
 
 <para>
-The option is --rows-per-insert.
+The option is <option>--rows-per-insert</option>.
 </para>
 </listitem>
 
@@ -2461,7 +2460,22 @@ Author: Andrew Dunstan <andrew@dunslane.net>
 -->
 
 <para>
-Add --exclude-database option to pg_dumpall (Andrew Dunstan)
+Add <option>--exclude-database</option> option to <application>pg_dumpall</application> (Andrew Dunstan)
+</para>
+</listitem>
+
+<listitem>
+<!--
+Author: Thomas Munro <tmunro@postgresql.org>
+2018-07-13 [387a5cfb9] Add pg_dump - -on-conflict-do-nothing option.
+-->
+
+<para>
+Allow restoration of an <command>INSERT</command>-statement dump to skip rows which would cause conflicts (Surafel Temesgen)
+</para>
+
+<para>
+The <application>pg_dump</application> option is <option>--on-conflict-do-nothing</option>.
 </para>
 </listitem>
 
@@ -2472,11 +2486,11 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Decouple the order of parallel pg_dump from the order used by pg_restore (Tom Lane)
+Decouple the order of parallel <application>pg_dump</application> from the order used by <application>pg_restore</application> (Tom Lane)
 </para>
 
 <para>
-This allows pg_restore to perform more efficient parallel restores.
+This allows <application>pg_restore</application> to perform more efficient parallel restores.
 </para>
 </listitem>
 
@@ -2487,7 +2501,7 @@ Author: Andrew Dunstan <andrew@dunslane.net>
 -->
 
 <para>
-Allow the number of float digits to be specified for pg_dump and pg_dumpall (Andrew Dunstan)
+Allow the number of float digits to be specified for <application>pg_dump</application> and <application>pg_dumpall</application> (Andrew Dunstan)
 </para>
 
 <para>
@@ -2527,7 +2541,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Add CREATE ACCESS METHOD command to create new table types (Haribabu Kommi, Andres Freund, Alvaro Herrera, Dimitri Golgov)
+Add <xref linkend="sql-create-access-method"/> command to create new table types (Haribabu Kommi, Andres Freund, Álvaro Herrera, Dimitri Dolgov)
 </para>
 </listitem>
 
@@ -2538,7 +2552,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Specify a range of oids (9000-9999) to be used for external extensions (Andres Freund)
+Reserve a range of oids (9000-9999) to be used for external extensions (Andres Freund)
 </para>
 </listitem>
 
@@ -2549,7 +2563,7 @@ Author: Andrew Dunstan <andrew@dunslane.net>
 -->
 
 <para>
-Build Cygwin binaries using dynamic instead of static libraries (Marco Atzeri)
+Build <productname>Cygwin</productname> binaries using dynamic instead of static libraries (Marco Atzeri)
 </para>
 </listitem>
 
@@ -2560,7 +2574,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Remove configure switch --disable-strong-random (Michael Paquier)
+Remove <application>configure</application> switch <option>--disable-strong-random</option> (Michaël Paquier)
 </para>
 
 <para>
@@ -2575,7 +2589,7 @@ Author: Tom Lane <tgl@sss.pgh.pa.us>
 -->
 
 <para>
-Properly report Winsock errors on Windows (Tom Lane)
+Properly report Winsock errors on <productname>Windows</productname> (Tom Lane)
 </para>
 
 <para>
@@ -2589,7 +2603,7 @@ Author: Andres Freund <andres@anarazel.de>
 -->
 
 <para>
-Require a C99-supported compiler, and MSCV 2013 or later on Windows (Andres Freund)
+Require a C99-supported compiler, and <acronym>MSVC</acronym> 2013 or later on <productname>Windows</productname> (Andres Freund)
 </para>
 </listitem>
 
@@ -2598,7 +2612,7 @@ Require a C99-supported compiler, and MSCV 2013 or later on Windows (Andres Freu
    </sect3>
 
    <sect3>
-    <title>Source Code</title>
+    <title>Documentation</title>
 
      <itemizedlist>
 
@@ -2609,7 +2623,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Add images to the Postgres documentation (Jürgen Purtz)
+Add images to the <productname>PostgreSQL</productname> documentation (Jürgen Purtz)
 </para>
 </listitem>
 
@@ -2620,7 +2634,7 @@ Author: Robert Haas <rhaas@postgresql.org>
 -->
 
 <para>
-More clearly document the problems of server failure during exclusive base backups (David Steele, Robert Haas)
+More clearly document the problems of server failure during <link linkend="backup-lowlevel-base-backup-exclusive">exclusive base backups</link> (David Steele, Robert Haas)
 </para>
 </listitem>
 
@@ -2631,7 +2645,7 @@ Author: Greg Stark <stark@mit.edu>
 -->
 
 <para>
-Document that the "B"/bytes units can be specified for server variables (Greg Stark)
+Document that the <literal>B</literal>/bytes units can be specified for <link linkend="config-setting">server variables</link> (Greg Stark)
 </para>
 </listitem>
 
@@ -2642,7 +2656,7 @@ Author: Joe Conway <mail@joeconway.com>
 -->
 
 <para>
-Add documentation for aclitem functions and operators (Fabien Coelho, John Naylor)
+Add <link linkend="functions-aclitem-op-table">documentation</link> for <type>aclitem</type> functions and operators (Fabien Coelho, John Naylor)
 </para>
 </listitem>
 <listitem>
@@ -2652,7 +2666,7 @@ Author: Peter Eisentraut <peter@eisentraut.org>
 -->
 
 <para>
-Update documentation on the use of NFS (Peter Eisentraut)
+Update documentation on the use of <link linkend="creating-cluster-nfs"><acronym>NFS</acronym></link> (Peter Eisentraut)
 </para>
 </listitem>
 
@@ -2675,7 +2689,7 @@ Author: Etsuro Fujita <efujita@postgresql.org>
 -->
 
 <para>
-Allow more ORDER BY sorts and LIMIT clauses to be pushed to postgres_fdw foreign tables (Etsuro Fujita)
+Allow more <literal>ORDER BY</literal> sorts and <literal>LIMIT</literal> clauses to be pushed to <application>postgres_fdw</application> foreign tables (Etsuro Fujita)
 </para>
 </listitem>
 
@@ -2685,14 +2699,16 @@ Author: Etsuro Fujita <efujita@postgresql.org>
 2018-12-04 [f8f6e4467] postgres_fdw: Improve cost and size estimation for aggre
 Author: Etsuro Fujita <efujita@postgresql.org>
 2019-01-24 [fd1afdbaf] postgres_fdw: Account for tlist eval costs in estimate_p
+Author: Etsuro Fujita <efujita@postgresql.org>
+2019-05-09 [edbcbe277] postgres_fdw: Fix cost estimation for aggregate pushdown
 -->
 
 <para>
-Improve optimizer cost accounting for pushdown of aggregates to postgres_fdw tables (Etsuro Fujita)
+Improve optimizer cost accounting for pushdown of aggregates to <xref linkend="postgres-fdw"/> tables (Etsuro Fujita)
 </para>
 
 <para>
-This release also improves costing of postgres_fdw target list generation.
+This release also improves costing of <application>postgres_fdw</application> target list generation.
 </para>
 </listitem>
 
@@ -2703,12 +2719,12 @@ Author: Jeff Davis <jdavis@postgresql.org>
 -->
 
 <para>
-Properly honor WITH CHECK OPTION on views that reference postgres_fdw tables (Etsuro Fujita)
+Properly honor <literal>WITH CHECK OPTION</literal> on views that reference <application>postgres_fdw</application> tables (Etsuro Fujita)
 </para>
 
 <para>
-While CHECK OPTIONs on postgres_fdw tables are ignored (because the reference is foreign), views on such tables are considered local, so this release enforces CHECK
-OPTIONs on them.  Previously only INSERTs and UPDATEs with RETURNING clauses that returned CHECK OPTION values were validated.
+While <literal>CHECK OPTION</literal>s on <application>postgres_fdw</application> tables are ignored (because the reference is foreign), views on such tables are considered local, so this release enforces <literal>CHECK
+OPTION</literal>s on them.  Previously, only <command>INSERT</command>s and <command>UPDATE</command>s with <literal>RETURNING</literal> clauses that returned <literal>CHECK OPTION</literal> values were validated.
 </para>
 </listitem>
 
@@ -2719,7 +2735,7 @@ Author: Amit Kapila <akapila@postgresql.org>
 -->
 
 <para>
-Allow pg_stat_statements_reset() to be more granular (Haribabu Kommi, Amit Kapila)
+Allow <link linkend="pgstatstatements"><function>pg_stat_statements_reset()</function></link> to be more granular (Haribabu Kommi, Amit Kapila)
 </para>
 
 <para>
@@ -2734,11 +2750,11 @@ Author: Andrew Dunstan <andrew@dunslane.net>
 -->
 
 <para>
-Allow control of the auto_explain log level (Tom Dunstan, Andrew Dunstan)
+Allow control of the <xref linkend="auto-explain"/> log level (Tom Dunstan, Andrew Dunstan)
 </para>
 
 <para>
-The default is LOG.
+The default is <literal>LOG</literal>.
 </para>
 </listitem>
 
@@ -2749,7 +2765,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Update unaccent rules with new new punctuation and symbols (Hugh Ranalli, Michael Paquier)
+Update <application>unaccent</application> rules with new punctuation and symbols (Hugh Ranalli, Michaël Paquier)
 </para>
 </listitem>
 
@@ -2760,7 +2776,7 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Allow unaccent to handle some accents encoded as combining characters (Hugh Ranalli)
+Allow <xref linkend="unaccent"/> to handle some accents encoded as combining characters (Hugh Ranalli)
 </para>
 </listitem>
 
@@ -2771,37 +2787,37 @@ Author: Thomas Munro <tmunro@postgresql.org>
 -->
 
 <para>
-Allow unaccent to remove accents from Greek characters (Tasos Maschalidis)
+Allow <application>unaccent</application> to remove accents from Greek characters (Tasos Maschalidis)
 </para>
 </listitem>
 
 <listitem>
 <!--
 Author: Tom Lane <tgl@sss.pgh.pa.us>
-2018-11-23 [48c41fa97] Add a 64-bit hash function for type citext.
+2018-11-23 [48c41fa97] Add a 64-bit hash function for type <type>citext</type>.
 -->
 
 <para>
-Add 64-bit hash function to citext (Amul Sul)
+Add 64-bit hash function to <xref linkend="citext"/> (Amul Sul)
 </para>
 
 <para>
-The function citext_hash_extended() also requires a seed value.  NO DOCS?
+The function <function>citext_hash_extended()</function> also requires a seed value.  NO DOCS?
 </para>
 </listitem>
 
 <listitem>
 <!--
 Author: Tom Lane <tgl@sss.pgh.pa.us>
-2018-11-23 [eb6f29141] Add a 64-bit hash function for type hstore.
+2018-11-23 [eb6f29141] Add a 64-bit hash function for type <application>hstore</application>.
 -->
 
 <para>
-Add 64-bit hash function to hstore (Amul Sul)
+Add 64-bit hash function to <xref linkend="hstore"/> (Amul Sul)
 </para>
 
 <para>
-The function hstore_hash_extended() also requires a seed value.  NO DOCS?
+The function <function>hstore_hash_extended()</function> also requires a seed value.  NO DOCS?
 </para>
 </listitem>
 
@@ -2814,7 +2830,7 @@ Author: Michael Paquier <michael@paquier.xyz>
 -->
 
 <para>
-Improve oid2name vacuumlo option handling to match other commands (Tatsuro Yamada)
+Improve <xref linkend="oid2name"/> and <xref linkend="vacuumlo"/> option handling to match other commands (Tatsuro Yamada)
 </para>
 </listitem>
 
