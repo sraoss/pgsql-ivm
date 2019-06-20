@@ -65,9 +65,9 @@
 #include "catalog/pg_collation_d.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
+#include "common/logging.h"
 #include "common/restricted_token.h"
 #include "common/username.h"
-#include "fe_utils/logging.h"
 #include "fe_utils/string_utils.h"
 #include "getaddrinfo.h"
 #include "getopt_long.h"
@@ -185,7 +185,7 @@ static const char *default_timezone = NULL;
 "# allows any local user to connect as any PostgreSQL user, including\n" \
 "# the database superuser.  If you do not trust all your local users,\n" \
 "# use another authentication method.\n"
-static bool	authwarning = false;
+static bool authwarning = false;
 
 /*
  * Centralized knowledge of switches to pass to backend
@@ -231,7 +231,7 @@ static char bin_path[MAXPGPATH];
 static char backend_exec[MAXPGPATH];
 
 static char **replace_token(char **lines,
-			  const char *token, const char *replacement);
+							const char *token, const char *replacement);
 
 #ifndef HAVE_UNIX_SOCKETS
 static char **filter_lines_with_token(char **lines, const char *token);
@@ -268,7 +268,7 @@ static char *escape_quotes(const char *src);
 static char *escape_quotes_bki(const char *src);
 static int	locale_date_order(const char *locale);
 static void check_locale_name(int category, const char *locale,
-				  char **canonname);
+							  char **canonname);
 static bool check_locale_encoding(const char *locale, int encoding);
 static void setlocales(void);
 static void usage(const char *progname);
@@ -2431,11 +2431,11 @@ check_need_password(const char *authmethodlocal, const char *authmethodhost)
 		!(pwprompt || pwfilename))
 	{
 		pg_log_error("must specify a password for the superuser to enable %s authentication",
-				(strcmp(authmethodlocal, "md5") == 0 ||
-				 strcmp(authmethodlocal, "password") == 0 ||
-				 strcmp(authmethodlocal, "scram-sha-256") == 0)
-				? authmethodlocal
-				: authmethodhost);
+					 (strcmp(authmethodlocal, "md5") == 0 ||
+					  strcmp(authmethodlocal, "password") == 0 ||
+					  strcmp(authmethodlocal, "scram-sha-256") == 0)
+					 ? authmethodlocal
+					 : authmethodhost);
 		exit(1);
 	}
 }
@@ -3067,8 +3067,8 @@ main(int argc, char *argv[])
 	char		pg_ctl_path[MAXPGPATH];
 
 	/*
-	 * Ensure that buffering behavior of stdout matches what it is
-	 * in interactive usage (at least on most platforms).  This prevents
+	 * Ensure that buffering behavior of stdout matches what it is in
+	 * interactive usage (at least on most platforms).  This prevents
 	 * unexpected output ordering when, eg, output is redirected to a file.
 	 * POSIX says we must do this before any other usage of these files.
 	 */

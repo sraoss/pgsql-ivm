@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #include "common/file_utils.h"
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 
 
 /* Define PG_FLUSH_DATA_WORKS if we have an implementation for pg_flush_data */
@@ -36,11 +36,11 @@
 #define MINIMUM_VERSION_FOR_PG_WAL	100000
 
 #ifdef PG_FLUSH_DATA_WORKS
-static int pre_sync_fname(const char *fname, bool isdir);
+static int	pre_sync_fname(const char *fname, bool isdir);
 #endif
 static void walkdir(const char *path,
-		int (*action) (const char *fname, bool isdir),
-		bool process_symlinks);
+					int (*action) (const char *fname, bool isdir),
+					bool process_symlinks);
 
 /*
  * Issue fsync recursively on PGDATA and all its contents.

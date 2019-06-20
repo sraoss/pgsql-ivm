@@ -141,23 +141,23 @@ char	   *GUC_check_errhint_string;
 static void do_serialize(char **destptr, Size *maxbytes, const char *fmt,...) pg_attribute_printf(3, 4);
 
 static void set_config_sourcefile(const char *name, char *sourcefile,
-					  int sourceline);
+								  int sourceline);
 static bool call_bool_check_hook(struct config_bool *conf, bool *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 static bool call_int_check_hook(struct config_int *conf, int *newval,
-					void **extra, GucSource source, int elevel);
+								void **extra, GucSource source, int elevel);
 static bool call_real_check_hook(struct config_real *conf, double *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 static bool call_string_check_hook(struct config_string *conf, char **newval,
-					   void **extra, GucSource source, int elevel);
+								   void **extra, GucSource source, int elevel);
 static bool call_enum_check_hook(struct config_enum *conf, int *newval,
-					 void **extra, GucSource source, int elevel);
+								 void **extra, GucSource source, int elevel);
 
 static bool check_log_destination(char **newval, void **extra, GucSource source);
 static void assign_log_destination(const char *newval, void *extra);
 
 static bool check_wal_consistency_checking(char **newval, void **extra,
-							   GucSource source);
+										   GucSource source);
 static void assign_wal_consistency_checking(const char *newval, void *extra);
 
 #ifdef HAVE_SYSLOG
@@ -218,7 +218,7 @@ static bool check_default_with_oids(bool *newval, void **extra, GucSource source
 
 /* Private functions in guc-file.l that need to be called from guc.c */
 static ConfigVariable *ProcessConfigFileInternal(GucContext context,
-						  bool applySettings, int elevel);
+												 bool applySettings, int elevel);
 
 
 /*
@@ -459,13 +459,13 @@ const struct config_enum_entry ssl_protocol_versions_info[] = {
 
 static struct config_enum_entry shared_memory_options[] = {
 #ifndef WIN32
-	{ "sysv", SHMEM_TYPE_SYSV, false},
+	{"sysv", SHMEM_TYPE_SYSV, false},
 #endif
 #ifndef EXEC_BACKEND
-	{ "mmap", SHMEM_TYPE_MMAP, false},
+	{"mmap", SHMEM_TYPE_MMAP, false},
 #endif
 #ifdef WIN32
-	{ "windows", SHMEM_TYPE_WINDOWS, false},
+	{"windows", SHMEM_TYPE_WINDOWS, false},
 #endif
 	{NULL, 0, false}
 };
@@ -1599,6 +1599,7 @@ static struct config_bool ConfigureNamesBool[] =
 		true,
 		NULL, NULL, NULL
 	},
+
 	/*
 	 * WITH OIDS support, and consequently default_with_oids, was removed in
 	 * PostgreSQL 12, but we tolerate the parameter being set to false to
@@ -4601,18 +4602,18 @@ static void InitializeOneGUCOption(struct config_generic *gconf);
 static void push_old_value(struct config_generic *gconf, GucAction action);
 static void ReportGUCOption(struct config_generic *record);
 static void reapply_stacked_values(struct config_generic *variable,
-					   struct config_string *pHolder,
-					   GucStack *stack,
-					   const char *curvalue,
-					   GucContext curscontext, GucSource cursource);
+								   struct config_string *pHolder,
+								   GucStack *stack,
+								   const char *curvalue,
+								   GucContext curscontext, GucSource cursource);
 static void ShowGUCConfigOption(const char *name, DestReceiver *dest);
 static void ShowAllGUCConfig(DestReceiver *dest);
 static char *_ShowOption(struct config_generic *record, bool use_units);
 static bool validate_option_array_item(const char *name, const char *value,
-						   bool skipIfNoPermissions);
+									   bool skipIfNoPermissions);
 static void write_auto_conf_file(int fd, const char *filename, ConfigVariable *head_p);
 static void replace_auto_config_value(ConfigVariable **head_p, ConfigVariable **tail_p,
-						  const char *name, const char *value);
+									  const char *name, const char *value);
 
 
 /*
@@ -8894,21 +8895,21 @@ ShowAllGUCConfig(DestReceiver *dest)
 struct config_generic **
 get_explain_guc_options(int *num)
 {
-	int		i;
+	int			i;
 	struct config_generic **result;
 
 	*num = 0;
 
 	/*
-	 * Allocate enough space to fit all GUC_EXPLAIN options. We may not
-	 * need all the space, but there are fairly few such options so we
-	 * don't waste a lot of memory.
+	 * Allocate enough space to fit all GUC_EXPLAIN options. We may not need
+	 * all the space, but there are fairly few such options so we don't waste
+	 * a lot of memory.
 	 */
 	result = palloc(sizeof(struct config_generic *) * num_guc_explain_variables);
 
 	for (i = 0; i < num_guc_variables; i++)
 	{
-		bool modified;
+		bool		modified;
 		struct config_generic *conf = guc_variables[i];
 
 		/* return only options visible to the user */
@@ -8927,15 +8928,17 @@ get_explain_guc_options(int *num)
 		switch (conf->vartype)
 		{
 			case PGC_BOOL:
-			{
-				struct config_bool *lconf = (struct config_bool *) conf;
-				modified = (lconf->boot_val != *(lconf->variable));
-			}
-			break;
+				{
+					struct config_bool *lconf = (struct config_bool *) conf;
+
+					modified = (lconf->boot_val != *(lconf->variable));
+				}
+				break;
 
 			case PGC_INT:
 				{
 					struct config_int *lconf = (struct config_int *) conf;
+
 					modified = (lconf->boot_val != *(lconf->variable));
 				}
 				break;
@@ -8943,6 +8946,7 @@ get_explain_guc_options(int *num)
 			case PGC_REAL:
 				{
 					struct config_real *lconf = (struct config_real *) conf;
+
 					modified = (lconf->boot_val != *(lconf->variable));
 				}
 				break;
@@ -8950,6 +8954,7 @@ get_explain_guc_options(int *num)
 			case PGC_STRING:
 				{
 					struct config_string *lconf = (struct config_string *) conf;
+
 					modified = (strcmp(lconf->boot_val, *(lconf->variable)) != 0);
 				}
 				break;
@@ -8957,12 +8962,13 @@ get_explain_guc_options(int *num)
 			case PGC_ENUM:
 				{
 					struct config_enum *lconf = (struct config_enum *) conf;
+
 					modified = (lconf->boot_val != *(lconf->variable));
 				}
 				break;
 
 			default:
-				elog(ERROR, "unexcpected GUC type: %d", conf->vartype);
+				elog(ERROR, "unexpected GUC type: %d", conf->vartype);
 		}
 
 		/* skip GUC variables that match the built-in default */

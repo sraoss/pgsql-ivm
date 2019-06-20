@@ -3,7 +3,7 @@
  * be-gssapi-common.c
  *     Common code for GSSAPI authentication and encryption
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,7 +14,7 @@
 
 #include "postgres.h"
 
-#include "be-gssapi-common.h"
+#include "libpq/be-gssapi-common.h"
 
 /*
  * Helper function for getting all strings of a GSSAPI error (of specified

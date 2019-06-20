@@ -38,7 +38,7 @@ typedef struct TupleConstr
 {
 	AttrDefault *defval;		/* array */
 	ConstrCheck *check;			/* array */
-	struct AttrMissing *missing;		/* missing attributes values, NULL if none */
+	struct AttrMissing *missing;	/* missing attributes values, NULL if none */
 	uint16		num_defval;
 	uint16		num_check;
 	bool		has_not_null;
@@ -85,7 +85,7 @@ typedef struct TupleDescData
 	TupleConstr *constr;		/* constraints, or NULL if none */
 	/* attrs[N] is the description of Attribute Number N+1 */
 	FormData_pg_attribute attrs[FLEXIBLE_ARRAY_MEMBER];
-} TupleDescData;
+}			TupleDescData;
 typedef struct TupleDescData *TupleDesc;
 
 /* Accessor for the i'th attribute of tupdesc. */
@@ -106,7 +106,7 @@ extern TupleDesc CreateTupleDescCopyConstr(TupleDesc tupdesc);
 extern void TupleDescCopy(TupleDesc dst, TupleDesc src);
 
 extern void TupleDescCopyEntry(TupleDesc dst, AttrNumber dstAttno,
-				   TupleDesc src, AttrNumber srcAttno);
+							   TupleDesc src, AttrNumber srcAttno);
 
 extern void FreeTupleDesc(TupleDesc tupdesc);
 
@@ -130,22 +130,22 @@ extern bool equalTupleDescs(TupleDesc tupdesc1, TupleDesc tupdesc2);
 extern uint32 hashTupleDesc(TupleDesc tupdesc);
 
 extern void TupleDescInitEntry(TupleDesc desc,
-				   AttrNumber attributeNumber,
-				   const char *attributeName,
-				   Oid oidtypeid,
-				   int32 typmod,
-				   int attdim);
+							   AttrNumber attributeNumber,
+							   const char *attributeName,
+							   Oid oidtypeid,
+							   int32 typmod,
+							   int attdim);
 
 extern void TupleDescInitBuiltinEntry(TupleDesc desc,
-						  AttrNumber attributeNumber,
-						  const char *attributeName,
-						  Oid oidtypeid,
-						  int32 typmod,
-						  int attdim);
+									  AttrNumber attributeNumber,
+									  const char *attributeName,
+									  Oid oidtypeid,
+									  int32 typmod,
+									  int attdim);
 
 extern void TupleDescInitEntryCollation(TupleDesc desc,
-							AttrNumber attributeNumber,
-							Oid collationid);
+										AttrNumber attributeNumber,
+										Oid collationid);
 
 extern TupleDesc BuildDescForRelation(List *schema);
 

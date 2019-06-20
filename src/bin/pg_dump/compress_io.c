@@ -75,23 +75,23 @@ struct CompressorState
 };
 
 static void ParseCompressionOption(int compression, CompressionAlgorithm *alg,
-					   int *level);
+								   int *level);
 
 /* Routines that support zlib compressed data I/O */
 #ifdef HAVE_LIBZ
 static void InitCompressorZlib(CompressorState *cs, int level);
 static void DeflateCompressorZlib(ArchiveHandle *AH, CompressorState *cs,
-					  bool flush);
+								  bool flush);
 static void ReadDataFromArchiveZlib(ArchiveHandle *AH, ReadFunc readF);
 static void WriteDataToArchiveZlib(ArchiveHandle *AH, CompressorState *cs,
-					   const char *data, size_t dLen);
+								   const char *data, size_t dLen);
 static void EndCompressorZlib(ArchiveHandle *AH, CompressorState *cs);
 #endif
 
 /* Routines that support uncompressed data I/O */
 static void ReadDataFromArchiveNone(ArchiveHandle *AH, ReadFunc readF);
 static void WriteDataToArchiveNone(ArchiveHandle *AH, CompressorState *cs,
-					   const char *data, size_t dLen);
+								   const char *data, size_t dLen);
 
 /*
  * Interprets a numeric 'compression' value. The algorithm implied by the
@@ -235,7 +235,7 @@ InitCompressorZlib(CompressorState *cs, int level)
 
 	if (deflateInit(zp, level) != Z_OK)
 		fatal("could not initialize compression library: %s",
-					  zp->msg);
+			  zp->msg);
 
 	/* Just be paranoid - maybe End is called after Start, with no Write */
 	zp->next_out = (void *) cs->zlibOut;
@@ -334,7 +334,7 @@ ReadDataFromArchiveZlib(ArchiveHandle *AH, ReadFunc readF)
 
 	if (inflateInit(zp) != Z_OK)
 		fatal("could not initialize compression library: %s",
-					  zp->msg);
+			  zp->msg);
 
 	/* no minimal chunk size for zlib */
 	while ((cnt = readF(AH, &buf, &buflen)))
@@ -586,7 +586,7 @@ cfread(void *ptr, int size, cfp *fp)
 			const char *errmsg = gzerror(fp->compressedfp, &errnum);
 
 			fatal("could not read from input file: %s",
-						  errnum == Z_ERRNO ? strerror(errno) : errmsg);
+				  errnum == Z_ERRNO ? strerror(errno) : errmsg);
 		}
 	}
 	else

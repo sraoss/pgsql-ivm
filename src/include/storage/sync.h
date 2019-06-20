@@ -44,7 +44,7 @@ typedef enum SyncRequestHandler
  */
 typedef struct FileTag
 {
-	int16		handler;		/* SyncRequstHandler value, saving space */
+	int16		handler;		/* SyncRequestHandler value, saving space */
 	int16		forknum;		/* ForkNumber, saving space */
 	RelFileNode rnode;
 	uint32		segno;
@@ -57,6 +57,6 @@ extern void ProcessSyncRequests(void);
 extern void RememberSyncRequest(const FileTag *ftag, SyncRequestType type);
 extern void EnableSyncRequestForwarding(void);
 extern bool RegisterSyncRequest(const FileTag *ftag, SyncRequestType type,
-					bool retryOnError);
+								bool retryOnError);
 
 #endif							/* SYNC_H */

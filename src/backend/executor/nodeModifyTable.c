@@ -53,27 +53,28 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "utils/builtins.h"
+#include "utils/datum.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
 
 static bool ExecOnConflictUpdate(ModifyTableState *mtstate,
-					 ResultRelInfo *resultRelInfo,
-					 ItemPointer conflictTid,
-					 TupleTableSlot *planSlot,
-					 TupleTableSlot *excludedSlot,
-					 EState *estate,
-					 bool canSetTag,
-					 TupleTableSlot **returning);
+								 ResultRelInfo *resultRelInfo,
+								 ItemPointer conflictTid,
+								 TupleTableSlot *planSlot,
+								 TupleTableSlot *excludedSlot,
+								 EState *estate,
+								 bool canSetTag,
+								 TupleTableSlot **returning);
 static TupleTableSlot *ExecPrepareTupleRouting(ModifyTableState *mtstate,
-						EState *estate,
-						PartitionTupleRouting *proute,
-						ResultRelInfo *targetRelInfo,
-						TupleTableSlot *slot);
+											   EState *estate,
+											   PartitionTupleRouting *proute,
+											   ResultRelInfo *targetRelInfo,
+											   TupleTableSlot *slot);
 static ResultRelInfo *getTargetResultRelInfo(ModifyTableState *node);
 static void ExecSetupChildParentMapForSubplan(ModifyTableState *mtstate);
 static TupleConversionMap *tupconv_map_for_subplan(ModifyTableState *node,
-						int whichplan);
+												   int whichplan);
 
 /*
  * Verify that the tuples to be produced by INSERT or UPDATE match the
@@ -235,7 +236,7 @@ ExecCheckTIDVisible(EState *estate,
 	if (!IsolationUsesXactSnapshot())
 		return;
 
-	if (!table_fetch_row_version(rel, tid, SnapshotAny, tempSlot))
+	if (!table_tuple_fetch_row_version(rel, tid, SnapshotAny, tempSlot))
 		elog(ERROR, "failed to fetch conflicting tuple for ON CONFLICT");
 	ExecCheckTupleVisible(estate, rel, tempSlot);
 	ExecClearTuple(tempSlot);
@@ -254,9 +255,6 @@ ExecComputeStoredGenerated(EState *estate, TupleTableSlot *slot)
 	MemoryContext oldContext;
 	Datum	   *values;
 	bool	   *nulls;
-	bool	   *replaces;
-	HeapTuple	oldtuple, newtuple;
-	bool		should_free;
 
 	Assert(tupdesc->constr && tupdesc->constr->has_generated_stored);
 
@@ -294,11 +292,15 @@ ExecComputeStoredGenerated(EState *estate, TupleTableSlot *slot)
 
 	values = palloc(sizeof(*values) * natts);
 	nulls = palloc(sizeof(*nulls) * natts);
-	replaces = palloc0(sizeof(*replaces) * natts);
+
+	slot_getallattrs(slot);
+	memcpy(nulls, slot->tts_isnull, sizeof(*nulls) * natts);
 
 	for (int i = 0; i < natts; i++)
 	{
-		if (TupleDescAttr(tupdesc, i)->attgenerated == ATTRIBUTE_GENERATED_STORED)
+		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
+
+		if (attr->attgenerated == ATTRIBUTE_GENERATED_STORED)
 		{
 			ExprContext *econtext;
 			Datum		val;
@@ -311,20 +313,19 @@ ExecComputeStoredGenerated(EState *estate, TupleTableSlot *slot)
 
 			values[i] = val;
 			nulls[i] = isnull;
-			replaces[i] = true;
+		}
+		else
+		{
+			if (!nulls[i])
+				values[i] = datumCopy(slot->tts_values[i], attr->attbyval, attr->attlen);
 		}
 	}
 
-	oldtuple = ExecFetchSlotHeapTuple(slot, true, &should_free);
-	newtuple = heap_modify_tuple(oldtuple, tupdesc, values, nulls, replaces);
-	/*
-	 * The tuple will be freed by way of the memory context - the slot might
-	 * only be cleared after the context is reset, and we'd thus potentially
-	 * double free.
-	 */
-	ExecForceStoreHeapTuple(newtuple, slot, false);
-	if (should_free)
-		heap_freetuple(oldtuple);
+	ExecClearTuple(slot);
+	memcpy(slot->tts_values, values, sizeof(*values) * natts);
+	memcpy(slot->tts_isnull, nulls, sizeof(*nulls) * natts);
+	ExecStoreVirtualTuple(slot);
+	ExecMaterializeSlot(slot);
 
 	MemoryContextSwitchTo(oldContext);
 }
@@ -543,11 +544,11 @@ ExecInsert(ModifyTableState *mtstate,
 			specToken = SpeculativeInsertionLockAcquire(GetCurrentTransactionId());
 
 			/* insert the tuple, with the speculative token */
-			table_insert_speculative(resultRelationDesc, slot,
-									 estate->es_output_cid,
-									 0,
-									 NULL,
-									 specToken);
+			table_tuple_insert_speculative(resultRelationDesc, slot,
+										   estate->es_output_cid,
+										   0,
+										   NULL,
+										   specToken);
 
 			/* insert index entries for tuple */
 			recheckIndexes = ExecInsertIndexTuples(slot, estate, true,
@@ -555,8 +556,8 @@ ExecInsert(ModifyTableState *mtstate,
 												   arbiterIndexes);
 
 			/* adjust the tuple's state accordingly */
-			table_complete_speculative(resultRelationDesc, slot,
-									   specToken, specConflict);
+			table_tuple_complete_speculative(resultRelationDesc, slot,
+											 specToken, !specConflict);
 
 			/*
 			 * Wake up anyone waiting for our decision.  They will re-check
@@ -583,9 +584,9 @@ ExecInsert(ModifyTableState *mtstate,
 		else
 		{
 			/* insert the tuple normally */
-			table_insert(resultRelationDesc, slot,
-						 estate->es_output_cid,
-						 0, NULL);
+			table_tuple_insert(resultRelationDesc, slot,
+							   estate->es_output_cid,
+							   0, NULL);
 
 			/* insert index entries for tuple */
 			if (resultRelInfo->ri_NumIndices > 0)
@@ -765,13 +766,13 @@ ExecDelete(ModifyTableState *mtstate,
 		 * mode transactions.
 		 */
 ldelete:;
-		result = table_delete(resultRelationDesc, tupleid,
-							  estate->es_output_cid,
-							  estate->es_snapshot,
-							  estate->es_crosscheck_snapshot,
-							  true /* wait for commit */ ,
-							  &tmfd,
-							  changingPart);
+		result = table_tuple_delete(resultRelationDesc, tupleid,
+									estate->es_output_cid,
+									estate->es_snapshot,
+									estate->es_crosscheck_snapshot,
+									true /* wait for commit */ ,
+									&tmfd,
+									changingPart);
 
 		switch (result)
 		{
@@ -831,7 +832,7 @@ ldelete:;
 					inputslot = EvalPlanQualSlot(epqstate, resultRelationDesc,
 												 resultRelInfo->ri_RangeTableIndex);
 
-					result = table_lock_tuple(resultRelationDesc, tupleid,
+					result = table_tuple_lock(resultRelationDesc, tupleid,
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  LockTupleExclusive, LockWaitBlock,
@@ -864,6 +865,7 @@ ldelete:;
 								goto ldelete;
 
 						case TM_SelfModified:
+
 							/*
 							 * This can be reached when following an update
 							 * chain from a tuple updated by another session,
@@ -873,7 +875,7 @@ ldelete:;
 							 * out.
 							 *
 							 * See also TM_SelfModified response to
-							 * table_delete() above.
+							 * table_tuple_delete() above.
 							 */
 							if (tmfd.cmax != estate->es_output_cid)
 								ereport(ERROR,
@@ -898,7 +900,7 @@ ldelete:;
 							 * locking the latest version via
 							 * TUPLE_LOCK_FLAG_FIND_LAST_VERSION.
 							 */
-							elog(ERROR, "unexpected table_lock_tuple status: %u",
+							elog(ERROR, "unexpected table_tuple_lock status: %u",
 								 result);
 							return NULL;
 					}
@@ -916,7 +918,8 @@ ldelete:;
 				return NULL;
 
 			default:
-				elog(ERROR, "unrecognized table_delete status: %u", result);
+				elog(ERROR, "unrecognized table_tuple_delete status: %u",
+					 result);
 				return NULL;
 		}
 
@@ -988,8 +991,8 @@ ldelete:;
 			}
 			else
 			{
-				if (!table_fetch_row_version(resultRelationDesc, tupleid,
-											 SnapshotAny, slot))
+				if (!table_tuple_fetch_row_version(resultRelationDesc, tupleid,
+												   SnapshotAny, slot))
 					elog(ERROR, "failed to fetch deleted tuple for DELETE RETURNING");
 			}
 		}
@@ -1069,7 +1072,7 @@ ExecUpdate(ModifyTableState *mtstate,
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
 								  tupleid, oldtuple, slot))
-			return NULL;        /* "do nothing" */
+			return NULL;		/* "do nothing" */
 	}
 
 	/* INSTEAD OF ROW UPDATE Triggers */
@@ -1078,7 +1081,7 @@ ExecUpdate(ModifyTableState *mtstate,
 	{
 		if (!ExecIRUpdateTriggers(estate, resultRelInfo,
 								  oldtuple, slot))
-			return NULL;        /* "do nothing" */
+			return NULL;		/* "do nothing" */
 	}
 	else if (resultRelInfo->ri_FdwRoutine)
 	{
@@ -1132,7 +1135,7 @@ ExecUpdate(ModifyTableState *mtstate,
 		 * If we generate a new candidate tuple after EvalPlanQual testing, we
 		 * must loop back here and recheck any RLS policies and constraints.
 		 * (We don't need to redo triggers, however.  If there are any BEFORE
-		 * triggers then trigger.c will have done table_lock_tuple to lock the
+		 * triggers then trigger.c will have done table_tuple_lock to lock the
 		 * correct tuple, so there's no need to do them again.)
 		 */
 lreplace:;
@@ -1307,12 +1310,12 @@ lreplace:;
 		 * needed for referential integrity updates in transaction-snapshot
 		 * mode transactions.
 		 */
-		result = table_update(resultRelationDesc, tupleid, slot,
-							  estate->es_output_cid,
-							  estate->es_snapshot,
-							  estate->es_crosscheck_snapshot,
-							  true /* wait for commit */ ,
-							  &tmfd, &lockmode, &update_indexes);
+		result = table_tuple_update(resultRelationDesc, tupleid, slot,
+									estate->es_output_cid,
+									estate->es_snapshot,
+									estate->es_crosscheck_snapshot,
+									true /* wait for commit */ ,
+									&tmfd, &lockmode, &update_indexes);
 
 		switch (result)
 		{
@@ -1371,7 +1374,7 @@ lreplace:;
 					inputslot = EvalPlanQualSlot(epqstate, resultRelationDesc,
 												 resultRelInfo->ri_RangeTableIndex);
 
-					result = table_lock_tuple(resultRelationDesc, tupleid,
+					result = table_tuple_lock(resultRelationDesc, tupleid,
 											  estate->es_snapshot,
 											  inputslot, estate->es_output_cid,
 											  lockmode, LockWaitBlock,
@@ -1400,6 +1403,7 @@ lreplace:;
 							return NULL;
 
 						case TM_SelfModified:
+
 							/*
 							 * This can be reached when following an update
 							 * chain from a tuple updated by another session,
@@ -1409,7 +1413,7 @@ lreplace:;
 							 * otherwise error out.
 							 *
 							 * See also TM_SelfModified response to
-							 * table_update() above.
+							 * table_tuple_update() above.
 							 */
 							if (tmfd.cmax != estate->es_output_cid)
 								ereport(ERROR,
@@ -1419,8 +1423,8 @@ lreplace:;
 							return NULL;
 
 						default:
-							/* see table_lock_tuple call in ExecDelete() */
-							elog(ERROR, "unexpected table_lock_tuple status: %u",
+							/* see table_tuple_lock call in ExecDelete() */
+							elog(ERROR, "unexpected table_tuple_lock status: %u",
 								 result);
 							return NULL;
 					}
@@ -1437,7 +1441,8 @@ lreplace:;
 				return NULL;
 
 			default:
-				elog(ERROR, "unrecognized table_update status: %u", result);
+				elog(ERROR, "unrecognized table_tuple_update status: %u",
+					 result);
 				return NULL;
 		}
 
@@ -1518,7 +1523,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 	 * previous conclusion that the tuple is conclusively committed is not
 	 * true anymore.
 	 */
-	test = table_lock_tuple(relation, conflictTid,
+	test = table_tuple_lock(relation, conflictTid,
 							estate->es_snapshot,
 							existing, estate->es_output_cid,
 							lockmode, LockWaitBlock, 0,
@@ -1609,7 +1614,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 			return false;
 
 		default:
-			elog(ERROR, "unrecognized table_lock_tuple status: %u", test);
+			elog(ERROR, "unrecognized table_tuple_lock status: %u", test);
 	}
 
 	/* Success, the tuple is locked. */
@@ -1674,7 +1679,7 @@ ExecOnConflictUpdate(ModifyTableState *mtstate,
 
 	/*
 	 * Note that it is possible that the target tuple has been modified in
-	 * this session, after the above table_lock_tuple. We choose to not error
+	 * this session, after the above table_tuple_lock. We choose to not error
 	 * out in that case, in line with ExecUpdate's treatment of similar cases.
 	 * This can happen if an UPDATE is triggered from within ExecQual(),
 	 * ExecWithCheckOptions() or ExecProject() above, e.g. by selecting from a
@@ -2311,7 +2316,9 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	 * verify that the proposed target relations are valid and open their
 	 * indexes for insertion of new index entries.  Note we *must* set
 	 * estate->es_result_relation_info correctly while we initialize each
-	 * sub-plan; ExecContextForcesOids depends on that!
+	 * sub-plan; external modules such as FDWs may depend on that (see
+	 * contrib/postgres_fdw/postgres_fdw.c: postgresBeginDirectModify()
+	 * as one example).
 	 */
 	saved_resultRelInfo = estate->es_result_relation_info;
 

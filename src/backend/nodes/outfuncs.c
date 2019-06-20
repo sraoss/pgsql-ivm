@@ -948,16 +948,13 @@ _outPartitionedRelPruneInfo(StringInfo str, const PartitionedRelPruneInfo *node)
 	WRITE_NODE_TYPE("PARTITIONEDRELPRUNEINFO");
 
 	WRITE_UINT_FIELD(rtindex);
-	WRITE_NODE_FIELD(pruning_steps);
 	WRITE_BITMAPSET_FIELD(present_parts);
 	WRITE_INT_FIELD(nparts);
-	WRITE_INT_FIELD(nexprs);
 	WRITE_INT_ARRAY(subplan_map, node->nparts);
 	WRITE_INT_ARRAY(subpart_map, node->nparts);
 	WRITE_OID_ARRAY(relid_map, node->nparts);
-	WRITE_BOOL_ARRAY(hasexecparam, node->nexprs);
-	WRITE_BOOL_FIELD(do_initial_prune);
-	WRITE_BOOL_FIELD(do_exec_prune);
+	WRITE_NODE_FIELD(initial_pruning_steps);
+	WRITE_NODE_FIELD(exec_pruning_steps);
 	WRITE_BITMAPSET_FIELD(execparamids);
 }
 
@@ -1051,7 +1048,7 @@ _outIntoClause(StringInfo str, const IntoClause *node)
 
 	WRITE_NODE_FIELD(rel);
 	WRITE_NODE_FIELD(colNames);
-	WRITE_NODE_FIELD(accessMethod);
+	WRITE_STRING_FIELD(accessMethod);
 	WRITE_NODE_FIELD(options);
 	WRITE_ENUM_FIELD(onCommit, OnCommitAction);
 	WRITE_STRING_FIELD(tableSpaceName);

@@ -29,8 +29,8 @@
 #include "access/xlog_internal.h"
 #include "common/file_perm.h"
 #include "common/file_utils.h"
+#include "common/logging.h"
 #include "common/string.h"
-#include "fe_utils/logging.h"
 #include "fe_utils/string_utils.h"
 #include "getopt_long.h"
 #include "libpq-fe.h"
@@ -152,7 +152,7 @@ static void WriteRecoveryConf(void);
 static void BaseBackup(void);
 
 static bool reached_end_position(XLogRecPtr segendpos, uint32 timeline,
-					 bool segment_finished);
+								 bool segment_finished);
 
 static const char *get_tablespace_mapping(const char *dir);
 static void tablespace_list_append(const char *arg);
@@ -1681,12 +1681,7 @@ GenerateRecoveryConf(PGconn *conn)
 	initPQExpBuffer(&conninfo_buf);
 	for (option = connOptions; option && option->keyword; option++)
 	{
-		/*
-		 * Do not emit this setting if: - the setting is "replication",
-		 * "dbname" or "fallback_application_name", since these would be
-		 * overridden by the libpqwalreceiver module anyway. - not set or
-		 * empty.
-		 */
+		/* Omit empty settings and those libpqwalreceiver overrides. */
 		if (strcmp(option->keyword, "replication") == 0 ||
 			strcmp(option->keyword, "dbname") == 0 ||
 			strcmp(option->keyword, "fallback_application_name") == 0 ||

@@ -55,8 +55,8 @@ static List *translate_sub_tlist(List *tlist, int relid);
 static int	append_total_cost_compare(const void *a, const void *b);
 static int	append_startup_cost_compare(const void *a, const void *b);
 static List *reparameterize_pathlist_by_child(PlannerInfo *root,
-								 List *pathlist,
-								 RelOptInfo *child_rel);
+											  List *pathlist,
+											  RelOptInfo *child_rel);
 
 
 /*****************************************************************************
@@ -3621,7 +3621,7 @@ create_limit_path(PlannerInfo *root, RelOptInfo *rel,
  */
 void
 adjust_limit_rows_costs(double *rows,	/* in/out parameter */
-						Cost *startup_cost,	/* in/out parameter */
+						Cost *startup_cost, /* in/out parameter */
 						Cost *total_cost,	/* in/out parameter */
 						int64 offset_est,
 						int64 count_est)

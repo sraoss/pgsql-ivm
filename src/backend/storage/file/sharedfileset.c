@@ -9,7 +9,7 @@
  * IDENTIFICATION
  *	  src/backend/storage/file/sharedfileset.c
  *
- * SharefFileSets provide a temporary namespace (think directory) so that
+ * SharedFileSets provide a temporary namespace (think directory) so that
  * files can be discovered by name, and a shared ownership semantics so that
  * shared files survive until the last user detaches.
  *
@@ -143,7 +143,7 @@ SharedFileSetOpen(SharedFileSet *fileset, const char *name)
 }
 
 /*
- * Delete a file that was created with PathNameCreateShared().
+ * Delete a file that was created with SharedFileSetCreate().
  * Return true if the file existed, false if didn't.
  */
 bool

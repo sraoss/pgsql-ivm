@@ -89,7 +89,7 @@ ALTER SUBSCRIPTION testsub SET (slot_name = 'newname');
 ALTER SUBSCRIPTION doesnotexist CONNECTION 'dbname=doesnotexist2';
 ERROR:  subscription "doesnotexist" does not exist
 ALTER SUBSCRIPTION testsub SET (create_slot = false);
-ERROR:  unrecognized subscription parameter: create_slot
+ERROR:  unrecognized subscription parameter: "create_slot"
 \dRs+
                                               List of subscriptions
   Name   |           Owner           | Enabled |     Publication     | Synchronous commit |       Conninfo       

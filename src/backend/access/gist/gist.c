@@ -30,16 +30,16 @@
 /* non-export function prototypes */
 static void gistfixsplit(GISTInsertState *state, GISTSTATE *giststate);
 static bool gistinserttuple(GISTInsertState *state, GISTInsertStack *stack,
-				GISTSTATE *giststate, IndexTuple tuple, OffsetNumber oldoffnum);
+							GISTSTATE *giststate, IndexTuple tuple, OffsetNumber oldoffnum);
 static bool gistinserttuples(GISTInsertState *state, GISTInsertStack *stack,
-				 GISTSTATE *giststate,
-				 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
-				 Buffer leftchild, Buffer rightchild,
-				 bool unlockbuf, bool unlockleftchild);
+							 GISTSTATE *giststate,
+							 IndexTuple *tuples, int ntup, OffsetNumber oldoffnum,
+							 Buffer leftchild, Buffer rightchild,
+							 bool unlockbuf, bool unlockleftchild);
 static void gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
-				GISTSTATE *giststate, List *splitinfo, bool releasebuf);
+							GISTSTATE *giststate, List *splitinfo, bool releasebuf);
 static void gistprunepage(Relation rel, Page page, Buffer buffer,
-			  Relation heapRel);
+						  Relation heapRel);
 
 
 #define ROTATEDIST(d) do { \
@@ -639,6 +639,7 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 	/* Start from the root */
 	firststack.blkno = GIST_ROOT_BLKNO;
 	firststack.lsn = 0;
+	firststack.retry_from_parent = false;
 	firststack.parent = NULL;
 	firststack.downlinkoffnum = InvalidOffsetNumber;
 	state.stack = stack = &firststack;
@@ -651,6 +652,21 @@ gistdoinsert(Relation r, IndexTuple itup, Size freespace,
 	 */
 	for (;;)
 	{
+		/*
+		 * If we split an internal page while descending the tree, we have to
+		 * retry at the parent. (Normally, the LSN-NSN interlock below would
+		 * also catch this and cause us to retry. But LSNs are not updated
+		 * during index build.)
+		 */
+		while (stack->retry_from_parent)
+		{
+			if (xlocked)
+				LockBuffer(stack->buffer, GIST_UNLOCK);
+			xlocked = false;
+			ReleaseBuffer(stack->buffer);
+			state.stack = stack = stack->parent;
+		}
+
 		if (XLogRecPtrIsInvalid(stack->lsn))
 			stack->buffer = ReadBuffer(state.r, stack->blkno);
 
@@ -1376,6 +1392,23 @@ gistfinishsplit(GISTInsertState *state, GISTInsertStack *stack,
 					 unlockbuf	/* Unlock stack->buffer if caller wants that */
 		);
 	Assert(left->buf == stack->buffer);
+
+	/*
+	 * If we split the page because we had to adjust the downlink on an
+	 * internal page, while descending the tree for inserting a new tuple,
+	 * then this might no longer be the correct page for the new tuple. The
+	 * downlink to this page might not cover the new tuple anymore, it might
+	 * need to go to the newly-created right sibling instead. Tell the caller
+	 * to walk back up the stack, to re-check at the parent which page to
+	 * insert to.
+	 *
+	 * Normally, the LSN-NSN interlock during the tree descend would also
+	 * detect that a concurrent split happened (by ourselves), and cause us to
+	 * retry at the parent. But that mechanism doesn't work during index
+	 * build, because we don't do WAL-logging, and don't update LSNs, during
+	 * index build.
+	 */
+	stack->retry_from_parent = true;
 }
 
 /*
@@ -1500,7 +1533,7 @@ initGISTstate(Relation index)
 	 * The truncated tupdesc for non-leaf index tuples, which doesn't contain
 	 * the INCLUDE attributes.
 	 *
-	 * It is used to form tuples during tuple adjustement and page split.
+	 * It is used to form tuples during tuple adjustment and page split.
 	 * B-tree creates shortened tuple descriptor for every truncated tuple,
 	 * because it is doing this less often: it does not have to form truncated
 	 * tuples during page split.  Also, B-tree is not adjusting tuples on

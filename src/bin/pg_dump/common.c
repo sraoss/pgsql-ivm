@@ -22,7 +22,6 @@
 #include <ctype.h>
 
 #include "catalog/pg_class_d.h"
-#include "fe_utils/logging.h"
 #include "fe_utils/string_utils.h"
 
 
@@ -68,18 +67,18 @@ static ExtensionMemberId *extmembers;
 static int	numextmembers;
 
 static void flagInhTables(Archive *fout, TableInfo *tbinfo, int numTables,
-			  InhInfo *inhinfo, int numInherits);
+						  InhInfo *inhinfo, int numInherits);
 static void flagInhIndexes(Archive *fout, TableInfo *tblinfo, int numTables);
 static void flagInhAttrs(DumpOptions *dopt, TableInfo *tblinfo, int numTables);
 static DumpableObject **buildIndexArray(void *objArray, int numObjs,
-				Size objSize);
+										Size objSize);
 static int	DOCatalogIdCompare(const void *p1, const void *p2);
 static int	ExtensionMemberIdCompare(const void *p1, const void *p2);
 static void findParentsByOid(TableInfo *self,
-				 InhInfo *inhinfo, int numInherits);
+							 InhInfo *inhinfo, int numInherits);
 static int	strInArray(const char *pattern, char **arr, int arr_size);
 static IndxInfo *findIndexByOid(Oid oid, DumpableObject **idxinfoindex,
-			   int numIndexes);
+								int numIndexes);
 
 
 /*
@@ -328,7 +327,7 @@ flagInhTables(Archive *fout, TableInfo *tblinfo, int numTables,
 
 /*
  * flagInhIndexes -
- *	 Create AttachIndexInfo objects for partitioned indexes, and add
+ *	 Create IndexAttachInfo objects for partitioned indexes, and add
  *	 appropriate dependency links.
  */
 static void
@@ -1022,9 +1021,9 @@ findParentsByOid(TableInfo *self,
 				if (parent == NULL)
 				{
 					pg_log_error("failed sanity check, parent OID %u of table \"%s\" (OID %u) not found",
-							  inhinfo[i].inhparent,
-							  self->dobj.name,
-							  oid);
+								 inhinfo[i].inhparent,
+								 self->dobj.name,
+								 oid);
 					exit_nicely(1);
 				}
 				self->parents[j++] = parent;

@@ -103,8 +103,8 @@ static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
 static void IpcMemoryDetach(int status, Datum shmaddr);
 static void IpcMemoryDelete(int status, Datum shmId);
 static IpcMemoryState PGSharedMemoryAttach(IpcMemoryId shmId,
-					 void *attachAt,
-					 PGShmemHeader **addr);
+										   void *attachAt,
+										   PGShmemHeader **addr);
 
 
 /*
@@ -390,9 +390,9 @@ PGSharedMemoryAttach(IpcMemoryId shmId,
 
 	/*
 	 * Try to attach to the segment and see if it matches our data directory.
-	 * This avoids shmid-conflict problems on machines that are running
-	 * several postmasters under the same userid and port number.  (That would
-	 * not ordinarily happen in production, but it can happen during parallel
+	 * This avoids key-conflict problems on machines that are running several
+	 * postmasters under the same userid and port number.  (That would not
+	 * ordinarily happen in production, but it can happen during parallel
 	 * testing.  Since our test setups don't open any TCP ports on Unix, such
 	 * cases don't conflict otherwise.)
 	 */

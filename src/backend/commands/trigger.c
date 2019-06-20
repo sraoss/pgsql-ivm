@@ -83,26 +83,26 @@ static int	MyTriggerDepth = 0;
 static void ConvertTriggerToFK(CreateTrigStmt *stmt, Oid funcoid);
 static void SetTriggerFlags(TriggerDesc *trigdesc, Trigger *trigger);
 static bool GetTupleForTrigger(EState *estate,
-				   EPQState *epqstate,
-				   ResultRelInfo *relinfo,
-				   ItemPointer tid,
-				   LockTupleMode lockmode,
-				   TupleTableSlot *oldslot,
-				   TupleTableSlot **newSlot);
+							   EPQState *epqstate,
+							   ResultRelInfo *relinfo,
+							   ItemPointer tid,
+							   LockTupleMode lockmode,
+							   TupleTableSlot *oldslot,
+							   TupleTableSlot **newSlot);
 static bool TriggerEnabled(EState *estate, ResultRelInfo *relinfo,
-			   Trigger *trigger, TriggerEvent event,
-			   Bitmapset *modifiedCols,
-			   TupleTableSlot *oldslot, TupleTableSlot *newslot);
+						   Trigger *trigger, TriggerEvent event,
+						   Bitmapset *modifiedCols,
+						   TupleTableSlot *oldslot, TupleTableSlot *newslot);
 static HeapTuple ExecCallTriggerFunc(TriggerData *trigdata,
-					int tgindx,
-					FmgrInfo *finfo,
-					Instrumentation *instr,
-					MemoryContext per_tuple_context);
+									 int tgindx,
+									 FmgrInfo *finfo,
+									 Instrumentation *instr,
+									 MemoryContext per_tuple_context);
 static void AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
-					  int event, bool row_trigger,
-					  TupleTableSlot *oldtup, TupleTableSlot *newtup,
-					  List *recheckIndexes, Bitmapset *modifiedCols,
-					  TransitionCaptureState *transition_capture);
+								  int event, bool row_trigger,
+								  TupleTableSlot *oldtup, TupleTableSlot *newtup,
+								  List *recheckIndexes, Bitmapset *modifiedCols,
+								  TransitionCaptureState *transition_capture);
 static void AfterTriggerEnlargeQueryState(void);
 static bool before_stmt_triggers_fired(Oid relid, CmdType cmdType);
 
@@ -3332,7 +3332,7 @@ GetTupleForTrigger(EState *estate,
 		 */
 		if (!IsolationUsesXactSnapshot())
 			lockflags |= TUPLE_LOCK_FLAG_FIND_LAST_VERSION;
-		test = table_lock_tuple(relation, tid, estate->es_snapshot, oldslot,
+		test = table_tuple_lock(relation, tid, estate->es_snapshot, oldslot,
 								estate->es_output_cid,
 								lockmode, LockWaitBlock,
 								lockflags,
@@ -3386,7 +3386,7 @@ GetTupleForTrigger(EState *estate,
 					ereport(ERROR,
 							(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
 							 errmsg("could not serialize access due to concurrent update")));
-				elog(ERROR, "unexpected table_lock_tuple status: %u", test);
+				elog(ERROR, "unexpected table_tuple_lock status: %u", test);
 				break;
 
 			case TM_Deleted:
@@ -3402,7 +3402,7 @@ GetTupleForTrigger(EState *estate,
 				break;
 
 			default:
-				elog(ERROR, "unrecognized table_lock_tuple status: %u", test);
+				elog(ERROR, "unrecognized table_tuple_lock status: %u", test);
 				return false;	/* keep compiler quiet */
 		}
 	}
@@ -3412,7 +3412,8 @@ GetTupleForTrigger(EState *estate,
 		 * We expect the tuple to be present, thus very simple error handling
 		 * suffices.
 		 */
-		if (!table_fetch_row_version(relation, tid, SnapshotAny, oldslot))
+		if (!table_tuple_fetch_row_version(relation, tid, SnapshotAny,
+										   oldslot))
 			elog(ERROR, "failed to fetch tuple for trigger");
 	}
 
@@ -3843,21 +3844,21 @@ struct AfterTriggersTableData
 static AfterTriggersData afterTriggers;
 
 static void AfterTriggerExecute(EState *estate,
-					AfterTriggerEvent event,
-					ResultRelInfo *relInfo,
-					TriggerDesc *trigdesc,
-					FmgrInfo *finfo,
-					Instrumentation *instr,
-					MemoryContext per_tuple_context,
-					TupleTableSlot *trig_tuple_slot1,
-					TupleTableSlot *trig_tuple_slot2);
+								AfterTriggerEvent event,
+								ResultRelInfo *relInfo,
+								TriggerDesc *trigdesc,
+								FmgrInfo *finfo,
+								Instrumentation *instr,
+								MemoryContext per_tuple_context,
+								TupleTableSlot *trig_tuple_slot1,
+								TupleTableSlot *trig_tuple_slot2);
 static AfterTriggersTableData *GetAfterTriggersTableData(Oid relid,
-						  CmdType cmdType);
+														 CmdType cmdType);
 static void AfterTriggerFreeQuery(AfterTriggersQueryData *qs);
 static SetConstraintState SetConstraintStateCreate(int numalloc);
 static SetConstraintState SetConstraintStateCopy(SetConstraintState state);
 static SetConstraintState SetConstraintStateAddItem(SetConstraintState state,
-						  Oid tgoid, bool tgisdeferred);
+													Oid tgoid, bool tgisdeferred);
 static void cancel_prior_stmt_triggers(Oid relid, CmdType cmdType, int tgevent);
 
 
@@ -4245,9 +4246,9 @@ AfterTriggerExecute(EState *estate,
 		case AFTER_TRIGGER_FDW_REUSE:
 
 			/*
-			 * Store tuple in the slot so that tg_trigtuple does not
-			 * reference tuplestore memory.  (It is formally possible for the
-			 * trigger function to queue trigger events that add to the same
+			 * Store tuple in the slot so that tg_trigtuple does not reference
+			 * tuplestore memory.  (It is formally possible for the trigger
+			 * function to queue trigger events that add to the same
 			 * tuplestore, which can push other tuples out of memory.)  The
 			 * distinction is academic, because we start with a minimal tuple
 			 * that is stored as a heap tuple, constructed in different memory
@@ -4270,7 +4271,9 @@ AfterTriggerExecute(EState *estate,
 			{
 				LocTriggerData.tg_trigslot = ExecGetTriggerOldSlot(estate, relInfo);
 
-				if (!table_fetch_row_version(rel, &(event->ate_ctid1), SnapshotAny, LocTriggerData.tg_trigslot))
+				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid1),
+												   SnapshotAny,
+												   LocTriggerData.tg_trigslot))
 					elog(ERROR, "failed to fetch tuple1 for AFTER trigger");
 				LocTriggerData.tg_trigtuple =
 					ExecFetchSlotHeapTuple(LocTriggerData.tg_trigslot, false, &should_free_trig);
@@ -4287,7 +4290,9 @@ AfterTriggerExecute(EState *estate,
 			{
 				LocTriggerData.tg_newslot = ExecGetTriggerNewSlot(estate, relInfo);
 
-				if (!table_fetch_row_version(rel, &(event->ate_ctid2), SnapshotAny, LocTriggerData.tg_newslot))
+				if (!table_tuple_fetch_row_version(rel, &(event->ate_ctid2),
+												   SnapshotAny,
+												   LocTriggerData.tg_newslot))
 					elog(ERROR, "failed to fetch tuple2 for AFTER trigger");
 				LocTriggerData.tg_newtuple =
 					ExecFetchSlotHeapTuple(LocTriggerData.tg_newslot, false, &should_free_new);

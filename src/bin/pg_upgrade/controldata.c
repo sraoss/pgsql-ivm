@@ -105,7 +105,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 #ifndef WIN32
 	pg_putenv("LANG", NULL);
 #else
-	/* On Windows the default locale cannot be English, so force it */
+	/* On Windows the default locale may not be English, so force it */
 	pg_putenv("LANG", "en");
 #endif
 	pg_putenv("LANGUAGE", NULL);
@@ -137,14 +137,15 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 				if (p == NULL || strlen(p) <= 1)
 					pg_fatal("%d: database cluster state problem\n", __LINE__);
 
-				p++;				/* remove ':' char */
+				p++;			/* remove ':' char */
 
 				/*
-				 * We checked earlier for a postmaster lock file, and if we found
-				 * one, we tried to start/stop the server to replay the WAL.  However,
-				 * pg_ctl -m immediate doesn't leave a lock file, but does require
-				 * WAL replay, so we check here that the server was shut down cleanly,
-				 * from the controldata perspective.
+				 * We checked earlier for a postmaster lock file, and if we
+				 * found one, we tried to start/stop the server to replay the
+				 * WAL.  However, pg_ctl -m immediate doesn't leave a lock
+				 * file, but does require WAL replay, so we check here that
+				 * the server was shut down cleanly, from the controldata
+				 * perspective.
 				 */
 				/* remove leading spaces */
 				while (*p == ' ')

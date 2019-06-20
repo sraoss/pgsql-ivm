@@ -27,7 +27,7 @@
 #include "libpq-fe.h"
 #include "access/xlog_internal.h"
 #include "common/file_utils.h"
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 
 
 /* fd and filename for currently open WAL file */
@@ -39,23 +39,23 @@ static XLogRecPtr lastFlushPosition = InvalidXLogRecPtr;
 static bool still_sending = true;	/* feedback still needs to be sent? */
 
 static PGresult *HandleCopyStream(PGconn *conn, StreamCtl *stream,
-				 XLogRecPtr *stoppos);
+								  XLogRecPtr *stoppos);
 static int	CopyStreamPoll(PGconn *conn, long timeout_ms, pgsocket stop_socket);
-static int CopyStreamReceive(PGconn *conn, long timeout, pgsocket stop_socket,
-				  char **buffer);
+static int	CopyStreamReceive(PGconn *conn, long timeout, pgsocket stop_socket,
+							  char **buffer);
 static bool ProcessKeepaliveMsg(PGconn *conn, StreamCtl *stream, char *copybuf,
-					int len, XLogRecPtr blockpos, TimestampTz *last_status);
+								int len, XLogRecPtr blockpos, TimestampTz *last_status);
 static bool ProcessXLogDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
-				   XLogRecPtr *blockpos);
+							   XLogRecPtr *blockpos);
 static PGresult *HandleEndOfCopyStream(PGconn *conn, StreamCtl *stream, char *copybuf,
-					  XLogRecPtr blockpos, XLogRecPtr *stoppos);
+									   XLogRecPtr blockpos, XLogRecPtr *stoppos);
 static bool CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos,
-					XLogRecPtr *stoppos);
+								XLogRecPtr *stoppos);
 static long CalculateCopyStreamSleeptime(TimestampTz now, int standby_message_timeout,
-							 TimestampTz last_status);
+										 TimestampTz last_status);
 
 static bool ReadEndOfStreamingResult(PGresult *res, XLogRecPtr *startpos,
-						 uint32 *timeline);
+									 uint32 *timeline);
 
 static bool
 mark_file_as_archived(StreamCtl *stream, const char *fname)
@@ -378,8 +378,8 @@ CheckServerVersionForStreaming(PGconn *conn)
 		const char *serverver = PQparameterStatus(conn, "server_version");
 
 		pg_log_error("incompatible server version %s; client does not support streaming from server versions older than %s",
-				serverver ? serverver : "'unknown'",
-				"9.3");
+					 serverver ? serverver : "'unknown'",
+					 "9.3");
 		return false;
 	}
 	else if (serverMajor > maxServerMajor)
@@ -387,8 +387,8 @@ CheckServerVersionForStreaming(PGconn *conn)
 		const char *serverver = PQparameterStatus(conn, "server_version");
 
 		pg_log_error("incompatible server version %s; client does not support streaming from server versions newer than %s",
-				serverver ? serverver : "'unknown'",
-				PG_VERSION);
+					 serverver ? serverver : "'unknown'",
+					 PG_VERSION);
 		return false;
 	}
 	return true;
@@ -620,8 +620,8 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 			if (stream->startpos > stoppos)
 			{
 				pg_log_error("server stopped streaming timeline %u at %X/%X, but reported next timeline %u to begin at %X/%X",
-						stream->timeline, (uint32) (stoppos >> 32), (uint32) stoppos,
-						newtimeline, (uint32) (stream->startpos >> 32), (uint32) stream->startpos);
+							 stream->timeline, (uint32) (stoppos >> 32), (uint32) stoppos,
+							 newtimeline, (uint32) (stream->startpos >> 32), (uint32) stream->startpos);
 				goto error;
 			}
 

@@ -383,7 +383,7 @@ GetNewOidWithIndex(Relation relation, Oid indexId, AttrNumber oidcolumn)
  * is also an unused OID within pg_class.  If the result is to be used only
  * as a relfilenode for an existing relation, pass NULL for pg_class.
  *
- * As with GetNewObjectIdWithIndex(), there is some theoretical risk of a race
+ * As with GetNewOidWithIndex(), there is some theoretical risk of a race
  * condition, but it doesn't seem worth worrying about.
  *
  * Note: we don't support using this in bootstrap mode.  All relations
@@ -476,15 +476,15 @@ GetNewRelFileNode(Oid reltablespace, Relation pg_class, char relpersistence)
 Datum
 pg_nextoid(PG_FUNCTION_ARGS)
 {
-	Oid		reloid = PG_GETARG_OID(0);
-	Name	attname = PG_GETARG_NAME(1);
-	Oid		idxoid = PG_GETARG_OID(2);
-	Relation rel;
-	Relation idx;
-	HeapTuple atttuple;
+	Oid			reloid = PG_GETARG_OID(0);
+	Name		attname = PG_GETARG_NAME(1);
+	Oid			idxoid = PG_GETARG_OID(2);
+	Relation	rel;
+	Relation	idx;
+	HeapTuple	atttuple;
 	Form_pg_attribute attform;
-	AttrNumber attno;
-	Oid		newoid;
+	AttrNumber	attno;
+	Oid			newoid;
 
 	/*
 	 * As this function is not intended to be used during normal running, and

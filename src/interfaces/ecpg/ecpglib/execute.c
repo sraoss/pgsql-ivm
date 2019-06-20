@@ -488,6 +488,24 @@ sprintf_float_value(char *ptr, float value, const char *delim)
 		sprintf(ptr, "%.15g%s", value, delim);
 }
 
+static char *
+convert_bytea_to_string(char *from_data, int from_len, int lineno)
+{
+	char	   *to_data;
+	int			to_len = ecpg_hex_enc_len(from_len) + 4 + 1;	/* backslash + 'x' +
+																 * quote + quote */
+
+	to_data = ecpg_alloc(to_len, lineno);
+	if (!to_data)
+		return NULL;
+
+	strcpy(to_data, "'\\x");
+	ecpg_hex_encode(from_data, from_len, to_data + 3);
+	strcpy(to_data + 3 + ecpg_hex_enc_len(from_len), "\'");
+
+	return to_data;
+}
+
 bool
 ecpg_store_input(const int lineno, const bool force_indicator, const struct variable *var,
 				 char **tobeinserted_p, bool quote)
@@ -1063,16 +1081,16 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 static void
 print_param_value(char *value, int len, int is_binary, int lineno, int nth)
 {
-	char *value_s;
-	bool malloced = false;
+	char	   *value_s;
+	bool		malloced = false;
 
 	if (value == NULL)
 		value_s = "null";
-	else if (! is_binary)
+	else if (!is_binary)
 		value_s = value;
 	else
 	{
-		value_s = ecpg_alloc(ecpg_hex_enc_len(len)+1, lineno);
+		value_s = ecpg_alloc(ecpg_hex_enc_len(len) + 1, lineno);
 		if (value_s != NULL)
 		{
 			ecpg_hex_encode(value, len, value_s);
@@ -1084,7 +1102,7 @@ print_param_value(char *value, int len, int is_binary, int lineno, int nth)
 	}
 
 	ecpg_log("ecpg_free_params on line %d: parameter %d = %s\n",
-				lineno, nth, value_s);
+			 lineno, nth, value_s);
 
 	if (malloced)
 		ecpg_free(value_s);
@@ -1099,7 +1117,7 @@ ecpg_free_params(struct statement *stmt, bool print)
 	{
 		if (print)
 			print_param_value(stmt->paramvalues[n], stmt->paramlengths[n],
-								stmt->paramformats[n], stmt->lineno, n + 1);
+							  stmt->paramformats[n], stmt->lineno, n + 1);
 		ecpg_free(stmt->paramvalues[n]);
 	}
 	ecpg_free(stmt->paramvalues);
@@ -1145,13 +1163,13 @@ insert_tobeinserted(int position, int ph_len, struct statement *stmt, char *tobe
 
 static bool
 store_input_from_desc(struct statement *stmt, struct descriptor_item *desc_item,
-						char **tobeinserted)
+					  char **tobeinserted)
 {
 	struct variable var;
 
 	/*
-	 * In case of binary data, only allocate memory and memcpy because
-	 * binary data have been already stored into desc_item->data with
+	 * In case of binary data, only allocate memory and memcpy because binary
+	 * data have been already stored into desc_item->data with
 	 * ecpg_store_input() at ECPGset_desc().
 	 */
 	if (desc_item->is_binary)
@@ -1433,6 +1451,48 @@ ecpg_build_params(struct statement *stmt)
 		 */
 		else if (stmt->command[position] == '0')
 		{
+			if (stmt->statement_type == ECPGst_prepare ||
+				stmt->statement_type == ECPGst_exec_with_exprlist)
+			{
+				/* Need to double-quote the inserted statement name. */
+				char	   *str = ecpg_alloc(strlen(tobeinserted) + 2 + 1,
+											 stmt->lineno);
+
+				if (!str)
+				{
+					ecpg_free(tobeinserted);
+					ecpg_free_params(stmt, false);
+					return false;
+				}
+				sprintf(str, "\"%s\"", tobeinserted);
+				ecpg_free(tobeinserted);
+				tobeinserted = str;
+			}
+
+			if (!insert_tobeinserted(position, 2, stmt, tobeinserted))
+			{
+				ecpg_free_params(stmt, false);
+				return false;
+			}
+			tobeinserted = NULL;
+		}
+		else if (stmt->statement_type == ECPGst_exec_with_exprlist)
+		{
+			if (binary_format)
+			{
+				char	   *p = convert_bytea_to_string(tobeinserted,
+														binary_length,
+														stmt->lineno);
+
+				ecpg_free(tobeinserted);
+				if (!p)
+				{
+					ecpg_free_params(stmt, false);
+					return false;
+				}
+				tobeinserted = p;
+			}
+
 			if (!insert_tobeinserted(position, 2, stmt, tobeinserted))
 			{
 				ecpg_free_params(stmt, false);
@@ -1493,8 +1553,12 @@ ecpg_build_params(struct statement *stmt)
 			var = var->next;
 	}
 
-	/* Check if there are unmatched things left. */
-	if (next_insert(stmt->command, position, stmt->questionmarks, std_strings) >= 0)
+	/*
+	 * Check if there are unmatched things left. PREPARE AS has no parameter.
+	 * Check other statement.
+	 */
+	if (stmt->statement_type != ECPGst_prepare &&
+		next_insert(stmt->command, position, stmt->questionmarks, std_strings) >= 0)
 	{
 		ecpg_raise(stmt->lineno, ECPG_TOO_FEW_ARGUMENTS,
 				   ECPG_SQLSTATE_USING_CLAUSE_DOES_NOT_MATCH_PARAMETERS, NULL);
@@ -1560,7 +1624,17 @@ ecpg_execute(struct statement *stmt)
 										 (const int *) stmt->paramlengths,
 										 (const int *) stmt->paramformats,
 										 0);
+
 			ecpg_log("ecpg_execute on line %d: using PQexecParams\n", stmt->lineno);
+		}
+
+		if (stmt->statement_type == ECPGst_prepare)
+		{
+			if (!ecpg_register_prepared_stmt(stmt))
+			{
+				ecpg_free_params(stmt, true);
+				return false;
+			}
 		}
 	}
 
@@ -1874,6 +1948,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 	enum ECPGttype type;
 	struct variable **list;
 	char	   *prepname;
+	bool		is_prepared_name_set;
 
 	*stmt_out = NULL;
 
@@ -1975,6 +2050,7 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 			return false;
 		}
 	}
+	/* name of PREPARE AS will be set in loop of inlist */
 
 	stmt->connection = con;
 	stmt->lineno = lineno;
@@ -2003,6 +2079,8 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 	 * ind_offset - indicator offset
 	 *------
 	 */
+
+	is_prepared_name_set = false;
 
 	list = &(stmt->inlist);
 
@@ -2092,6 +2170,12 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 				*list = var;
 			else
 				ptr->next = var;
+
+			if (!is_prepared_name_set && stmt->statement_type == ECPGst_prepare)
+			{
+				stmt->name = ecpg_strdup(var->value, lineno);
+				is_prepared_name_set = true;
+			}
 		}
 
 		type = va_arg(args, enum ECPGttype);
@@ -2101,6 +2185,13 @@ ecpg_do_prologue(int lineno, const int compat, const int force_indicator,
 	if (con == NULL || con->connection == NULL)
 	{
 		ecpg_raise(lineno, ECPG_NOT_CONN, ECPG_SQLSTATE_ECPG_INTERNAL_ERROR, (con) ? con->name : ecpg_gettext("<empty>"));
+		ecpg_do_epilogue(stmt);
+		return false;
+	}
+
+	if (!is_prepared_name_set && stmt->statement_type == ECPGst_prepare)
+	{
+		ecpg_raise(lineno, ECPG_TOO_FEW_ARGUMENTS, ECPG_SQLSTATE_ECPG_INTERNAL_ERROR, (con) ? con->name : ecpg_gettext("<empty>"));
 		ecpg_do_epilogue(stmt);
 		return false;
 	}
@@ -2188,7 +2279,7 @@ ECPGdo(const int lineno, const int compat, const int force_indicator, const char
 {
 	va_list		args;
 	bool		ret;
-	const char  *real_connection_name = NULL;
+	const char *real_connection_name = NULL;
 
 	real_connection_name = connection_name;
 
@@ -2205,11 +2296,11 @@ ECPGdo(const int lineno, const int compat, const int force_indicator, const char
 		if (real_connection_name == NULL)
 		{
 			/*
-			 * If can't get the connection name by declared name then using connection name
-			 * coming from the parameter connection_name
+			 * If can't get the connection name by declared name then using
+			 * connection name coming from the parameter connection_name
 			 */
 			real_connection_name = connection_name;
-		 }
+		}
 	}
 
 	va_start(args, query);

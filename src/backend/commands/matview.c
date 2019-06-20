@@ -59,7 +59,7 @@ typedef struct
 	/* These fields are filled by transientrel_startup: */
 	Relation	transientrel;	/* relation to write to */
 	CommandId	output_cid;		/* cmin to insert in output tuples */
-	int			ti_options;		/* table_insert performance options */
+	int			ti_options;		/* table_tuple_insert performance options */
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_transientrel;
 
@@ -74,7 +74,7 @@ static uint64 refresh_matview_datafill(DestReceiver *dest, Query *query,
 						 const char *queryString);
 static char *make_temptable_name_n(char *tempname, int n);
 static void refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
-					   int save_sec_context);
+								   int save_sec_context);
 static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersistence);
 static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
@@ -531,18 +531,18 @@ transientrel_receive(TupleTableSlot *slot, DestReceiver *self)
 
 	/*
 	 * Note that the input slot might not be of the type of the target
-	 * relation. That's supported by table_insert(), but slightly less
+	 * relation. That's supported by table_tuple_insert(), but slightly less
 	 * efficient than inserting with the right slot - but the alternative
 	 * would be to copy into a slot of the right type, which would not be
 	 * cheap either. This also doesn't allow accessing per-AM data (say a
 	 * tuple's xmin), but since we don't do that here...
 	 */
 
-	table_insert(myState->transientrel,
-				 slot,
-				 myState->output_cid,
-				 myState->ti_options,
-				 myState->bistate);
+	table_tuple_insert(myState->transientrel,
+					   slot,
+					   myState->output_cid,
+					   myState->ti_options,
+					   myState->bistate);
 
 	/* We know this is a newly created relation, so there are no indexes */
 

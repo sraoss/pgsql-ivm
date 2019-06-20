@@ -41,14 +41,14 @@
 
 
 static Datum ExecHashSubPlan(SubPlanState *node,
-				ExprContext *econtext,
-				bool *isNull);
+							 ExprContext *econtext,
+							 bool *isNull);
 static Datum ExecScanSubPlan(SubPlanState *node,
-				ExprContext *econtext,
-				bool *isNull);
+							 ExprContext *econtext,
+							 bool *isNull);
 static void buildSubPlanHash(SubPlanState *node, ExprContext *econtext);
 static bool findPartialMatch(TupleHashTable hashtable, TupleTableSlot *slot,
-				 FmgrInfo *eqfunctions);
+							 FmgrInfo *eqfunctions);
 static bool slotAllNulls(TupleTableSlot *slot);
 static bool slotNoNulls(TupleTableSlot *slot);
 
@@ -684,7 +684,7 @@ execTuplesUnequal(TupleTableSlot *slot1,
 		/* Apply the type-specific equality function */
 		if (!DatumGetBool(FunctionCall2Coll(&eqfunctions[i],
 											collations[i],
-										attr1, attr2)))
+											attr1, attr2)))
 		{
 			result = true;		/* they are unequal */
 			break;

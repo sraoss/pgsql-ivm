@@ -99,31 +99,31 @@ typedef struct
 /* non-export function prototypes */
 static bool relationHasPrimaryKey(Relation rel);
 static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
-						 IndexInfo *indexInfo,
-						 List *indexColNames,
-						 Oid accessMethodObjectId,
-						 Oid *collationObjectId,
-						 Oid *classObjectId);
+										  IndexInfo *indexInfo,
+										  List *indexColNames,
+										  Oid accessMethodObjectId,
+										  Oid *collationObjectId,
+										  Oid *classObjectId);
 static void InitializeAttributeOids(Relation indexRelation,
-						int numatts, Oid indexoid);
+									int numatts, Oid indexoid);
 static void AppendAttributeTuples(Relation indexRelation, int numatts);
 static void UpdateIndexRelation(Oid indexoid, Oid heapoid,
-					Oid parentIndexId,
-					IndexInfo *indexInfo,
-					Oid *collationOids,
-					Oid *classOids,
-					int16 *coloptions,
-					bool primary,
-					bool isexclusion,
-					bool immediate,
-					bool isvalid,
-					bool isready);
+								Oid parentIndexId,
+								IndexInfo *indexInfo,
+								Oid *collationOids,
+								Oid *classOids,
+								int16 *coloptions,
+								bool primary,
+								bool isexclusion,
+								bool immediate,
+								bool isvalid,
+								bool isready);
 static void index_update_stats(Relation rel,
-				   bool hasindex,
-				   double reltuples);
+							   bool hasindex,
+							   double reltuples);
 static void IndexCheckExclusion(Relation heapRelation,
-					Relation indexRelation,
-					IndexInfo *indexInfo);
+								Relation indexRelation,
+								IndexInfo *indexInfo);
 static bool validate_index_callback(ItemPointer itemptr, void *opaque);
 static bool ReindexIsCurrentlyProcessingIndex(Oid indexOid);
 static void SetReindexProcessing(Oid heapOid, Oid indexOid);
@@ -528,7 +528,7 @@ AppendAttributeTuples(Relation indexRelation, int numatts)
 static void
 UpdateIndexRelation(Oid indexoid,
 					Oid heapoid,
-					Oid parentIndexOid,
+					Oid parentIndexId,
 					IndexInfo *indexInfo,
 					Oid *collationOids,
 					Oid *classOids,
@@ -1237,8 +1237,7 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId, const char
 								  Anum_pg_class_reloptions, &isnull);
 
 	/*
-	 * Extract the list of column names to be used for the index
-	 * creation.
+	 * Extract the list of column names to be used for the index creation.
 	 */
 	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
 	{
@@ -1271,8 +1270,8 @@ index_concurrently_create_copy(Relation heapRelation, Oid oldIndexId, const char
 							  optionDatum,
 							  INDEX_CREATE_SKIP_BUILD | INDEX_CREATE_CONCURRENT,
 							  0,
-							  true,	/* allow table to be a system catalog? */
-							  false, /* is_internal? */
+							  true, /* allow table to be a system catalog? */
+							  false,	/* is_internal? */
 							  NULL);
 
 	/* Close the relations used and clean up */
@@ -1541,7 +1540,7 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 									  values, nulls, replaces);
 			CatalogTupleUpdate(description, &tuple->t_self, tuple);
 
-			break;					/* Assume there can be only one match */
+			break;				/* Assume there can be only one match */
 		}
 
 		systable_endscan(sd);
@@ -1553,8 +1552,8 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	 */
 	if (get_rel_relispartition(oldIndexId))
 	{
-		List   *ancestors = get_partition_ancestors(oldIndexId);
-		Oid		parentIndexRelid = linitial_oid(ancestors);
+		List	   *ancestors = get_partition_ancestors(oldIndexId);
+		Oid			parentIndexRelid = linitial_oid(ancestors);
 
 		DeleteInheritsTuple(oldIndexId, parentIndexRelid);
 		StoreSingleInheritance(newIndexId, parentIndexRelid, 1);
@@ -1584,7 +1583,11 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 				newClassRel->pgstat_info->t_counts.t_tuples_fetched = tabentry->tuples_fetched;
 				newClassRel->pgstat_info->t_counts.t_blocks_fetched = tabentry->blocks_fetched;
 				newClassRel->pgstat_info->t_counts.t_blocks_hit = tabentry->blocks_hit;
-				/* The data will be sent by the next pgstat_report_stat() call. */
+
+				/*
+				 * The data will be sent by the next pgstat_report_stat()
+				 * call.
+				 */
 			}
 		}
 	}
@@ -1615,27 +1618,26 @@ index_concurrently_set_dead(Oid heapId, Oid indexId)
 	Relation	userIndexRelation;
 
 	/*
-	 * No more predicate locks will be acquired on this index, and we're
-	 * about to stop doing inserts into the index which could show
-	 * conflicts with existing predicate locks, so now is the time to move
-	 * them to the heap relation.
+	 * No more predicate locks will be acquired on this index, and we're about
+	 * to stop doing inserts into the index which could show conflicts with
+	 * existing predicate locks, so now is the time to move them to the heap
+	 * relation.
 	 */
 	userHeapRelation = table_open(heapId, ShareUpdateExclusiveLock);
 	userIndexRelation = index_open(indexId, ShareUpdateExclusiveLock);
 	TransferPredicateLocksToHeapRelation(userIndexRelation);
 
 	/*
-	 * Now we are sure that nobody uses the index for queries; they just
-	 * might have it open for updating it.  So now we can unset indisready
-	 * and indislive, then wait till nobody could be using it at all
-	 * anymore.
+	 * Now we are sure that nobody uses the index for queries; they just might
+	 * have it open for updating it.  So now we can unset indisready and
+	 * indislive, then wait till nobody could be using it at all anymore.
 	 */
 	index_set_state_flags(indexId, INDEX_DROP_SET_DEAD);
 
 	/*
-	 * Invalidate the relcache for the table, so that after this commit
-	 * all sessions will refresh the table's index list.  Forgetting just
-	 * the index's relcache entry is not enough.
+	 * Invalidate the relcache for the table, so that after this commit all
+	 * sessions will refresh the table's index list.  Forgetting just the
+	 * index's relcache entry is not enough.
 	 */
 	CacheInvalidateRelcache(userHeapRelation);
 
@@ -1787,7 +1789,7 @@ index_constraint_create(Relation heapRelation,
 	 */
 	if (OidIsValid(parentConstraintId))
 	{
-		ObjectAddress	referenced;
+		ObjectAddress referenced;
 
 		ObjectAddressSet(referenced, ConstraintRelationId, parentConstraintId);
 		recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_PRI);
@@ -2710,7 +2712,7 @@ index_build(Relation heapRelation,
 			PROGRESS_SCAN_BLOCKS_DONE,
 			PROGRESS_SCAN_BLOCKS_TOTAL
 		};
-		const int64	val[] = {
+		const int64 val[] = {
 			PROGRESS_CREATEIDX_PHASE_BUILD,
 			PROGRESS_CREATEIDX_SUBPHASE_INITIALIZE,
 			0, 0, 0, 0
@@ -3015,10 +3017,11 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 			PROGRESS_SCAN_BLOCKS_DONE,
 			PROGRESS_SCAN_BLOCKS_TOTAL
 		};
-		const int64	val[] = {
+		const int64 val[] = {
 			PROGRESS_CREATEIDX_PHASE_VALIDATE_IDXSCAN,
 			0, 0, 0, 0
 		};
+
 		pgstat_progress_update_multi_param(5, index, val);
 	}
 
@@ -3081,7 +3084,7 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 			PROGRESS_SCAN_BLOCKS_DONE,
 			PROGRESS_SCAN_BLOCKS_TOTAL
 		};
-		const int64	val[] = {
+		const int64 val[] = {
 			PROGRESS_CREATEIDX_PHASE_VALIDATE_SORT,
 			0, 0
 		};
@@ -3276,6 +3279,8 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 
 	pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 								  heapId);
+	pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
+								 PROGRESS_CREATEIDX_COMMAND_REINDEX);
 	pgstat_progress_update_param(PROGRESS_CREATEIDX_INDEX_OID,
 								 indexId);
 

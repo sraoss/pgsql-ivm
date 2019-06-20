@@ -25,7 +25,7 @@
  *	as this notice is not removed.
  *
  *	The author is not responsible for loss or damages that may
- *	result from it's use.
+ *	result from its use.
  *
  * IDENTIFICATION
  *		src/bin/pg_dump/pg_backup_directory.c
@@ -92,7 +92,7 @@ static int	_WorkerJobRestoreDirectory(ArchiveHandle *AH, TocEntry *te);
 static int	_WorkerJobDumpDirectory(ArchiveHandle *AH, TocEntry *te);
 
 static void setFilePath(ArchiveHandle *AH, char *buf,
-			const char *relativeFilename);
+						const char *relativeFilename);
 
 /*
  *	Init routine required by ALL formats. This is a global routine
@@ -348,7 +348,7 @@ _WriteData(ArchiveHandle *AH, const void *data, size_t dLen)
 
 	if (dLen > 0 && cfwrite(data, dLen, ctx->dataFH) != dLen)
 		fatal("could not write to output file: %s",
-					  get_cfp_error(ctx->dataFH));
+			  get_cfp_error(ctx->dataFH));
 
 
 	return;
@@ -452,7 +452,7 @@ _LoadBlobs(ArchiveHandle *AH)
 		/* Can't overflow because line and fname are the same length. */
 		if (sscanf(line, "%u %s\n", &oid, fname) != 2)
 			fatal("invalid line in large object TOC file \"%s\": \"%s\"",
-						  fname, line);
+				  fname, line);
 
 		StartRestoreBlob(AH, oid, AH->public.ropt->dropSchema);
 		snprintf(path, MAXPGPATH, "%s/%s", ctx->directory, fname);
@@ -461,7 +461,7 @@ _LoadBlobs(ArchiveHandle *AH)
 	}
 	if (!cfeof(ctx->blobsTocFH))
 		fatal("error reading large object TOC file \"%s\"",
-					  fname);
+			  fname);
 
 	if (cfclose(ctx->blobsTocFH) != 0)
 		fatal("could not close large object TOC file \"%s\": %m",
@@ -486,7 +486,7 @@ _WriteByte(ArchiveHandle *AH, const int i)
 
 	if (cfwrite(&c, 1, ctx->dataFH) != 1)
 		fatal("could not write to output file: %s",
-					  get_cfp_error(ctx->dataFH));
+			  get_cfp_error(ctx->dataFH));
 
 	return 1;
 }
@@ -516,7 +516,7 @@ _WriteBuf(ArchiveHandle *AH, const void *buf, size_t len)
 
 	if (cfwrite(buf, len, ctx->dataFH) != len)
 		fatal("could not write to output file: %s",
-					  get_cfp_error(ctx->dataFH));
+			  get_cfp_error(ctx->dataFH));
 
 	return;
 }

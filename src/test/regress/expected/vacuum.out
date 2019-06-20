@@ -146,9 +146,9 @@ ERROR:  column "does_not_exist" of relation "vacparted" does not exist
 ANALYZE (VERBOSE) does_not_exist;
 ERROR:  relation "does_not_exist" does not exist
 ANALYZE (nonexistent-arg) does_not_exist;
-ERROR:  syntax error at or near "-"
+ERROR:  syntax error at or near "arg"
 LINE 1: ANALYZE (nonexistent-arg) does_not_exist;
-                            ^
+                             ^
 ANALYZE (nonexistentarg) does_not_exit;
 ERROR:  unrecognized ANALYZE option "nonexistentarg"
 LINE 1: ANALYZE (nonexistentarg) does_not_exit;
@@ -163,6 +163,14 @@ ERROR:  relation "does_not_exist" does not exist
 VACUUM (SKIP_LOCKED) vactst;
 VACUUM (SKIP_LOCKED, FULL) vactst;
 ANALYZE (SKIP_LOCKED) vactst;
+-- ensure VACUUM and ANALYZE don't have a problem with serializable
+SET default_transaction_isolation = serializable;
+VACUUM vactst;
+ANALYZE vactst;
+RESET default_transaction_isolation;
+BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+ANALYZE vactst;
+COMMIT;
 DROP TABLE vaccluster;
 DROP TABLE vactst;
 DROP TABLE vacparted;

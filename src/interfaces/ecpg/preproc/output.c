@@ -128,24 +128,30 @@ static char *ecpg_statement_type_name[] = {
 	"ECPGst_normal",
 	"ECPGst_execute",
 	"ECPGst_exec_immediate",
-	"ECPGst_prepnormal"
+	"ECPGst_prepnormal",
+	"ECPGst_prepare",
+	"ECPGst_exec_with_exprlist"
 };
 
 void
 output_statement(char *stmt, int whenever_mode, enum ECPG_statement_type st)
 {
 	fprintf(base_yyout, "{ ECPGdo(__LINE__, %d, %d, %s, %d, ", compat, force_indicator, connection ? connection : "NULL", questionmarks);
+
+	if (st == ECPGst_prepnormal && !auto_prepare)
+		st = ECPGst_normal;
+
+	/*
+	 * In following cases, stmt is CSTRING or char_variable. They must be
+	 * output directly. - prepared_name of EXECUTE without exprlist -
+	 * execstring of EXECUTE IMMEDIATE
+	 */
+	fprintf(base_yyout, "%s, ", ecpg_statement_type_name[st]);
 	if (st == ECPGst_execute || st == ECPGst_exec_immediate)
-	{
-		fprintf(base_yyout, "%s, %s, ", ecpg_statement_type_name[st], stmt);
-	}
+		fprintf(base_yyout, "%s, ", stmt);
 	else
 	{
-		if (st == ECPGst_prepnormal && auto_prepare)
-			fputs("ECPGst_prepnormal, \"", base_yyout);
-		else
-			fputs("ECPGst_normal, \"", base_yyout);
-
+		fputs("\"", base_yyout);
 		output_escaped_str(stmt, false);
 		fputs("\", ", base_yyout);
 	}
@@ -311,9 +317,9 @@ output_cursor_name(char *str)
 					j++;
 				} while (str[j] == ' ' || str[j] == '\t');
 
-				if ((str[j] != '\n') && (str[j] != '\r' || str[j + 1] != '\n'))		/* not followed by a
-																					 * newline */
-					fputs("\\\\",base_yyout);
+				if ((str[j] != '\n') && (str[j] != '\r' || str[j + 1] != '\n')) /* not followed by a
+																				 * newline */
+					fputs("\\\\", base_yyout);
 			}
 			else if (str[i] == '\r' && str[i + 1] == '\n')
 			{
@@ -356,7 +362,7 @@ output_declare_statement(char *name)
 void
 output_cursor_statement(int cursor_stmt, char *cursor_name, char *prepared_name, char *stmt, int whenever_mode, enum ECPG_statement_type st)
 {
-	switch(cursor_stmt)
+	switch (cursor_stmt)
 	{
 		case ECPGcst_open:
 			fprintf(base_yyout, "{ ECPGopen(");

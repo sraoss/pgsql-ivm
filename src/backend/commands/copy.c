@@ -90,7 +90,7 @@ typedef enum EolType
  */
 typedef enum CopyInsertMethod
 {
-	CIM_SINGLE,					/* use table_insert or fdw routine */
+	CIM_SINGLE,					/* use table_tuple_insert or fdw routine */
 	CIM_MULTI,					/* always use table_multi_insert */
 	CIM_MULTI_CONDITIONAL		/* use table_multi_insert only if valid */
 } CopyInsertMethod;
@@ -177,7 +177,6 @@ typedef struct CopyStateData
 	 */
 	AttrNumber	num_defaults;
 	FmgrInfo	oid_in_function;
-	Oid			oid_typioparam;
 	FmgrInfo   *in_functions;	/* array of input functions for each attrs */
 	Oid		   *typioparams;	/* array of element types for in_functions */
 	int		   *defmap;			/* array of default att numbers */
@@ -354,13 +353,13 @@ static const char BinarySignature[11] = "PGCOPY\n\377\r\n\0";
 
 /* non-export function prototypes */
 static CopyState BeginCopy(ParseState *pstate, bool is_from, Relation rel,
-		  RawStmt *raw_query, Oid queryRelId, List *attnamelist,
-		  List *options);
+						   RawStmt *raw_query, Oid queryRelId, List *attnamelist,
+						   List *options);
 static void EndCopy(CopyState cstate);
 static void ClosePipeToProgram(CopyState cstate);
 static CopyState BeginCopyTo(ParseState *pstate, Relation rel, RawStmt *query,
-			Oid queryRelId, const char *filename, bool is_program,
-			List *attnamelist, List *options);
+							 Oid queryRelId, const char *filename, bool is_program,
+							 List *attnamelist, List *options);
 static void EndCopyTo(CopyState cstate);
 static uint64 DoCopyTo(CopyState cstate);
 static uint64 CopyTo(CopyState cstate);
@@ -370,14 +369,14 @@ static bool CopyReadLineText(CopyState cstate);
 static int	CopyReadAttributesText(CopyState cstate);
 static int	CopyReadAttributesCSV(CopyState cstate);
 static Datum CopyReadBinaryAttribute(CopyState cstate,
-						int column_no, FmgrInfo *flinfo,
-						Oid typioparam, int32 typmod,
-						bool *isnull);
+									 int column_no, FmgrInfo *flinfo,
+									 Oid typioparam, int32 typmod,
+									 bool *isnull);
 static void CopyAttributeOutText(CopyState cstate, char *string);
 static void CopyAttributeOutCSV(CopyState cstate, char *string,
-					bool use_quote, bool single_attr);
+								bool use_quote, bool single_attr);
 static List *CopyGetAttnums(TupleDesc tupDesc, Relation rel,
-			   List *attnamelist);
+							List *attnamelist);
 static char *limit_printout_length(const char *str);
 
 /* Low-level communications functions */
@@ -388,8 +387,8 @@ static void CopySendData(CopyState cstate, const void *databuf, int datasize);
 static void CopySendString(CopyState cstate, const char *str);
 static void CopySendChar(CopyState cstate, char c);
 static void CopySendEndOfRow(CopyState cstate);
-static int CopyGetData(CopyState cstate, void *databuf,
-			int minread, int maxread);
+static int	CopyGetData(CopyState cstate, void *databuf,
+						int minread, int maxread);
 static void CopySendInt32(CopyState cstate, int32 val);
 static bool CopyGetInt32(CopyState cstate, int32 *val);
 static void CopySendInt16(CopyState cstate, int16 val);
@@ -830,8 +829,8 @@ CopyLoadRawBuf(CopyState cstate)
  * input/output stream. The latter could be either stdin/stdout or a
  * socket, depending on whether we're running under Postmaster control.
  *
- * Do not allow a Postgres user without the 'pg_access_server_files' role to
- * read from or write to a file.
+ * Do not allow a Postgres user without the 'pg_read_server_files' or
+ * 'pg_write_server_files' role to read from or write to a file.
  *
  * Do not allow the copy if user doesn't have proper permission to access
  * the table or the specifically requested columns.
@@ -2446,6 +2445,9 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	ResultRelInfo *resultRelInfo = buffer->resultRelInfo;
 	TupleTableSlot **slots = buffer->slots;
 
+	/* Set es_result_relation_info to the ResultRelInfo we're flushing. */
+	estate->es_result_relation_info = resultRelInfo;
+
 	/*
 	 * Print error context information correctly, if one of the operations
 	 * below fail.
@@ -2624,7 +2626,7 @@ CopyMultiInsertInfoNextFreeSlot(CopyMultiInsertInfo *miinfo,
 
 /*
  * Record the previously reserved TupleTableSlot that was reserved by
- * MultiInsertInfoNextFreeSlot as being consumed.
+ * CopyMultiInsertInfoNextFreeSlot as being consumed.
  */
 static inline void
 CopyMultiInsertInfoStore(CopyMultiInsertInfo *miinfo, ResultRelInfo *rri,
@@ -2664,7 +2666,7 @@ CopyFrom(CopyState cstate)
 	PartitionTupleRouting *proute = NULL;
 	ErrorContextCallback errcallback;
 	CommandId	mycid = GetCurrentCommandId(true);
-	int			ti_options = 0; /* start with default table_insert options */
+	int			ti_options = 0; /* start with default options for insert */
 	BulkInsertState bistate = NULL;
 	CopyInsertMethod insertMethod;
 	CopyMultiInsertInfo multiInsertInfo = {0};	/* pacify compiler */
@@ -2737,11 +2739,11 @@ CopyFrom(CopyState cstate)
 	 * FSM for free space is a waste of time, even if we must use WAL because
 	 * of archiving.  This could possibly be wrong, but it's unlikely.
 	 *
-	 * The comments for table_insert and RelationGetBufferForTuple specify that
-	 * skipping WAL logging is only safe if we ensure that our tuples do not
-	 * go into pages containing tuples from any other transactions --- but this
-	 * must be the case if we have a new table or new relfilenode, so we need
-	 * no additional work to enforce that.
+	 * The comments for table_tuple_insert and RelationGetBufferForTuple
+	 * specify that skipping WAL logging is only safe if we ensure that our
+	 * tuples do not go into pages containing tuples from any other
+	 * transactions --- but this must be the case if we have a new table or
+	 * new relfilenode, so we need no additional work to enforce that.
 	 *
 	 * We currently don't support this optimization if the COPY target is a
 	 * partitioned table as we currently only lazily initialize partition
@@ -2793,7 +2795,7 @@ CopyFrom(CopyState cstate)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("cannot perform FREEZE on a partitioned table")));
+					 errmsg("cannot perform COPY FREEZE on a partitioned table")));
 		}
 
 		/*
@@ -2808,13 +2810,13 @@ CopyFrom(CopyState cstate)
 		if (!ThereAreNoPriorRegisteredSnapshots() || !ThereAreNoReadyPortals())
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_TRANSACTION_STATE),
-					 errmsg("cannot perform FREEZE because of prior transaction activity")));
+					 errmsg("cannot perform COPY FREEZE because of prior transaction activity")));
 
 		if (cstate->rel->rd_createSubid != GetCurrentSubTransactionId() &&
 			cstate->rel->rd_newRelfilenodeSubid != GetCurrentSubTransactionId())
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("cannot perform FREEZE because the table was not created or truncated in the current subtransaction")));
+					 errmsg("cannot perform COPY FREEZE because the table was not created or truncated in the current subtransaction")));
 
 		ti_options |= TABLE_INSERT_FROZEN;
 	}
@@ -2888,9 +2890,9 @@ CopyFrom(CopyState cstate)
 	/*
 	 * It's generally more efficient to prepare a bunch of tuples for
 	 * insertion, and insert them in one table_multi_insert() call, than call
-	 * table_insert() separately for every tuple. However, there are a number
-	 * of reasons why we might not be able to do this.  These are explained
-	 * below.
+	 * table_tuple_insert() separately for every tuple. However, there are a
+	 * number of reasons why we might not be able to do this.  These are
+	 * explained below.
 	 */
 	if (resultRelInfo->ri_TrigDesc != NULL &&
 		(resultRelInfo->ri_TrigDesc->trig_insert_before_row ||
@@ -2934,7 +2936,7 @@ CopyFrom(CopyState cstate)
 	else if (contain_volatile_functions(cstate->whereClause))
 	{
 		/*
-		 * Can't support multi-inserts if there are any volatile funcation
+		 * Can't support multi-inserts if there are any volatile function
 		 * expressions in WHERE clause.  Similarly to the trigger case above,
 		 * such expressions may query the table we're inserting into.
 		 */
@@ -3216,12 +3218,7 @@ CopyFrom(CopyState cstate)
 			}
 			else
 			{
-				/*
-				 * Compute stored generated columns
-				 *
-				 * Switch memory context so that the new tuple is in the same
-				 * context as the old one.
-				 */
+				/* Compute stored generated columns */
 				if (resultRelInfo->ri_RelationDesc->rd_att->constr &&
 					resultRelInfo->ri_RelationDesc->rd_att->constr->has_generated_stored)
 					ExecComputeStoredGenerated(estate, myslot);
@@ -3291,8 +3288,8 @@ CopyFrom(CopyState cstate)
 					else
 					{
 						/* OK, store the tuple and create index entries for it */
-						table_insert(resultRelInfo->ri_RelationDesc, myslot,
-									 mycid, ti_options, bistate);
+						table_tuple_insert(resultRelInfo->ri_RelationDesc,
+										   myslot, mycid, ti_options, bistate);
 
 						if (resultRelInfo->ri_NumIndices > 0)
 							recheckIndexes = ExecInsertIndexTuples(myslot,

@@ -31,19 +31,19 @@
 #define LIKE_ABORT						(-1)
 
 
-static int SB_MatchText(const char *t, int tlen, const char *p, int plen,
-			 pg_locale_t locale, bool locale_is_c);
+static int	SB_MatchText(const char *t, int tlen, const char *p, int plen,
+						 pg_locale_t locale, bool locale_is_c);
 static text *SB_do_like_escape(text *, text *);
 
-static int MB_MatchText(const char *t, int tlen, const char *p, int plen,
-			 pg_locale_t locale, bool locale_is_c);
+static int	MB_MatchText(const char *t, int tlen, const char *p, int plen,
+						 pg_locale_t locale, bool locale_is_c);
 static text *MB_do_like_escape(text *, text *);
 
-static int UTF8_MatchText(const char *t, int tlen, const char *p, int plen,
-			   pg_locale_t locale, bool locale_is_c);
+static int	UTF8_MatchText(const char *t, int tlen, const char *p, int plen,
+						   pg_locale_t locale, bool locale_is_c);
 
-static int SB_IMatchText(const char *t, int tlen, const char *p, int plen,
-			  pg_locale_t locale, bool locale_is_c);
+static int	SB_IMatchText(const char *t, int tlen, const char *p, int plen,
+						  pg_locale_t locale, bool locale_is_c);
 
 static int	GenericMatchText(const char *s, int slen, const char *p, int plen, Oid collation);
 static int	Generic_Text_IC_like(text *str, text *pat, Oid collation);
@@ -152,7 +152,7 @@ GenericMatchText(const char *s, int slen, const char *p, int plen, Oid collation
 {
 	if (collation && !lc_ctype_is_c(collation) && collation != DEFAULT_COLLATION_OID)
 	{
-		pg_locale_t		locale = pg_newlocale_from_collation(collation);
+		pg_locale_t locale = pg_newlocale_from_collation(collation);
 
 		if (locale && !locale->deterministic)
 			ereport(ERROR,
@@ -211,7 +211,6 @@ Generic_Text_IC_like(text *str, text *pat, Oid collation)
 
 	if (pg_database_encoding_max_length() > 1 || (locale && locale->provider == COLLPROVIDER_ICU))
 	{
-		/* lower's result is never packed, so OK to use old macros here */
 		pat = DatumGetTextPP(DirectFunctionCall1Coll(lower, collation,
 													 PointerGetDatum(pat)));
 		p = VARDATA_ANY(pat);

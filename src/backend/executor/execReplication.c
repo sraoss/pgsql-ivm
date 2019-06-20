@@ -173,7 +173,7 @@ retry:
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
-		res = table_lock_tuple(rel, &(outslot->tts_tid), GetLatestSnapshot(),
+		res = table_tuple_lock(rel, &(outslot->tts_tid), GetLatestSnapshot(),
 							   outslot,
 							   GetCurrentCommandId(false),
 							   lockmode,
@@ -208,7 +208,7 @@ retry:
 				elog(ERROR, "attempted to lock invisible tuple");
 				break;
 			default:
-				elog(ERROR, "unexpected table_lock_tuple status: %u", res);
+				elog(ERROR, "unexpected table_tuple_lock status: %u", res);
 				break;
 		}
 	}
@@ -227,7 +227,7 @@ retry:
 static bool
 tuples_equal(TupleTableSlot *slot1, TupleTableSlot *slot2)
 {
-	int         attrnum;
+	int			attrnum;
 
 	Assert(slot1->tts_tupleDescriptor->natts ==
 		   slot2->tts_tupleDescriptor->natts);
@@ -265,8 +265,8 @@ tuples_equal(TupleTableSlot *slot1, TupleTableSlot *slot2)
 
 		if (!DatumGetBool(FunctionCall2Coll(&typentry->eq_opr_finfo,
 											att->attcollation,
-										slot1->tts_values[attrnum],
-										slot2->tts_values[attrnum])))
+											slot1->tts_values[attrnum],
+											slot2->tts_values[attrnum])))
 			return false;
 	}
 
@@ -337,7 +337,7 @@ retry:
 
 		PushActiveSnapshot(GetLatestSnapshot());
 
-		res = table_lock_tuple(rel, &(outslot->tts_tid), GetLatestSnapshot(),
+		res = table_tuple_lock(rel, &(outslot->tts_tid), GetLatestSnapshot(),
 							   outslot,
 							   GetCurrentCommandId(false),
 							   lockmode,
@@ -372,7 +372,7 @@ retry:
 				elog(ERROR, "attempted to lock invisible tuple");
 				break;
 			default:
-				elog(ERROR, "unexpected table_lock_tuple status: %u", res);
+				elog(ERROR, "unexpected table_tuple_lock status: %u", res);
 				break;
 		}
 	}
@@ -406,7 +406,7 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 		resultRelInfo->ri_TrigDesc->trig_insert_before_row)
 	{
 		if (!ExecBRInsertTriggers(estate, resultRelInfo, slot))
-			skip_tuple = true;		/* "do nothing" */
+			skip_tuple = true;	/* "do nothing" */
 	}
 
 	if (!skip_tuple)
@@ -425,7 +425,7 @@ ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		/* OK, store the tuple and create index entries for it */
-		simple_table_insert(resultRelInfo->ri_RelationDesc, slot);
+		simple_table_tuple_insert(resultRelInfo->ri_RelationDesc, slot);
 
 		if (resultRelInfo->ri_NumIndices > 0)
 			recheckIndexes = ExecInsertIndexTuples(slot, estate, false, NULL,
@@ -471,7 +471,7 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
 								  tid, NULL, slot))
-			skip_tuple = true;		/* "do nothing" */
+			skip_tuple = true;	/* "do nothing" */
 	}
 
 	if (!skip_tuple)
@@ -490,8 +490,8 @@ ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 		if (resultRelInfo->ri_PartitionCheck)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
-		simple_table_update(rel, tid, slot,estate->es_snapshot,
-							&update_indexes);
+		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
+								  &update_indexes);
 
 		if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
 			recheckIndexes = ExecInsertIndexTuples(slot, estate, false, NULL,
@@ -535,7 +535,7 @@ ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
 	if (!skip_tuple)
 	{
 		/* OK, delete the tuple */
-		simple_table_delete(rel, tid, estate->es_snapshot);
+		simple_table_tuple_delete(rel, tid, estate->es_snapshot);
 
 		/* AFTER ROW DELETE Triggers */
 		ExecARDeleteTriggers(estate, resultRelInfo,
@@ -591,8 +591,8 @@ CheckSubscriptionRelkind(char relkind, const char *nspname,
 						 const char *relname)
 {
 	/*
-	 * We currently only support writing to regular tables.  However, give
-	 * a more specific error for partitioned and foreign tables.
+	 * We currently only support writing to regular tables.  However, give a
+	 * more specific error for partitioned and foreign tables.
 	 */
 	if (relkind == RELKIND_PARTITIONED_TABLE)
 		ereport(ERROR,
@@ -600,14 +600,14 @@ CheckSubscriptionRelkind(char relkind, const char *nspname,
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
 				 errdetail("\"%s.%s\" is a partitioned table.",
-						nspname, relname)));
+						   nspname, relname)));
 	else if (relkind == RELKIND_FOREIGN_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
 				 errdetail("\"%s.%s\" is a foreign table.",
-						nspname, relname)));
+						   nspname, relname)));
 
 	if (relkind != RELKIND_RELATION)
 		ereport(ERROR,
@@ -615,5 +615,5 @@ CheckSubscriptionRelkind(char relkind, const char *nspname,
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
 				 errdetail("\"%s.%s\" is not a table.",
-						nspname, relname)));
+						   nspname, relname)));
 }

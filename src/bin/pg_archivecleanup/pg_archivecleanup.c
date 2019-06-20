@@ -17,7 +17,7 @@
 
 #include "pg_getopt.h"
 
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 
 #include "access/xlog_internal.h"
 
@@ -123,7 +123,8 @@ CleanupPriorWALFiles(void)
 			if ((IsXLogFileName(walfile) || IsPartialXLogFileName(walfile)) &&
 				strcmp(walfile + 8, exclusiveCleanupFileName + 8) < 0)
 			{
-				char		WALFilePath[MAXPGPATH * 2]; /* the file path including archive */
+				char		WALFilePath[MAXPGPATH * 2]; /* the file path
+														 * including archive */
 
 				/*
 				 * Use the original file name again now, including any

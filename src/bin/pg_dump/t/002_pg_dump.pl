@@ -733,7 +733,12 @@ my %tests = (
 			\QALTER TABLE ONLY dump_test.measurement ATTACH PARTITION dump_test_second_schema.measurement_y2006m2 \E
 			\QFOR VALUES FROM ('2006-02-01') TO ('2006-03-01');\E\n
 			/xm,
-		like => { binary_upgrade => 1, },
+		like => {
+			%full_runs,
+			role             => 1,
+			section_pre_data => 1,
+			binary_upgrade   => 1,
+		},
 	  },
 
 	'ALTER TABLE test_table CLUSTER ON test_table_pkey' => {
@@ -810,7 +815,8 @@ my %tests = (
 	},
 
 	'ALTER TABLE test_second_table OWNER TO' => {
-		regexp => qr/^\QALTER TABLE dump_test.test_second_table OWNER TO \E.+;/m,
+		regexp =>
+		  qr/^\QALTER TABLE dump_test.test_second_table OWNER TO \E.+;/m,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
 		unlike => {
@@ -2282,9 +2288,9 @@ my %tests = (
 	'CREATE TABLE measurement PARTITIONED BY' => {
 		create_order => 90,
 		create_sql   => 'CREATE TABLE dump_test.measurement (
-						city_id int not null,
+						city_id serial not null,
 						logdate date not null,
-						peaktemp int,
+						peaktemp int CHECK (peaktemp >= -460),
 						unitsales int
 					   ) PARTITION BY RANGE (logdate);',
 		regexp => qr/^
@@ -2294,7 +2300,8 @@ my %tests = (
 			\s+\Qcity_id integer NOT NULL,\E\n
 			\s+\Qlogdate date NOT NULL,\E\n
 			\s+\Qpeaktemp integer,\E\n
-			\s+\Qunitsales integer\E\n
+			\s+\Qunitsales integer,\E\n
+			\s+\QCONSTRAINT measurement_peaktemp_check CHECK ((peaktemp >= '-460'::integer))\E\n
 			\)\n
 			\QPARTITION BY RANGE (logdate);\E\n
 			/xm,
@@ -2306,7 +2313,7 @@ my %tests = (
 		},
 	},
 
-	'CREATE TABLE measurement_y2006m2 PARTITION OF' => {
+	'Partition measurement_y2006m2 creation' => {
 		create_order => 91,
 		create_sql =>
 		  'CREATE TABLE dump_test_second_schema.measurement_y2006m2
@@ -2315,19 +2322,21 @@ my %tests = (
 						)
 						FOR VALUES FROM (\'2006-02-01\') TO (\'2006-03-01\');',
 		regexp => qr/^
-			\Q-- Name: measurement_y2006m2;\E.*\n
-			\Q--\E\n\n
-			\QCREATE TABLE dump_test_second_schema.measurement_y2006m2 PARTITION OF dump_test.measurement (\E\n
+			\QCREATE TABLE dump_test_second_schema.measurement_y2006m2 (\E\n
+			\s+\Qcity_id integer DEFAULT nextval('dump_test.measurement_city_id_seq'::regclass) NOT NULL,\E\n
+			\s+\Qlogdate date NOT NULL,\E\n
+			\s+\Qpeaktemp integer,\E\n
+			\s+\Qunitsales integer DEFAULT 0,\E\n
+			\s+\QCONSTRAINT measurement_peaktemp_check CHECK ((peaktemp >= '-460'::integer)),\E\n
 			\s+\QCONSTRAINT measurement_y2006m2_unitsales_check CHECK ((unitsales >= 0))\E\n
-			\)\n
-			\QFOR VALUES FROM ('2006-02-01') TO ('2006-03-01');\E\n
+			\);\n
 			/xm,
 		like => {
 			%full_runs,
-			role             => 1,
 			section_pre_data => 1,
+			role             => 1,
+			binary_upgrade   => 1,
 		},
-		unlike => { binary_upgrade => 1, },
 	},
 
 	'CREATE TABLE test_fourth_table_zero_col' => {
@@ -2427,8 +2436,48 @@ my %tests = (
 			\QALTER INDEX dump_test.index_with_stats ALTER COLUMN 3 SET STATISTICS 500;\E\n
 			/xms,
 		like =>
-			{ %full_runs, %dump_test_schema_runs, section_post_data => 1, },
+		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_inheritance_parent' => {
+		create_order => 90,
+		create_sql   => 'CREATE TABLE dump_test.test_inheritance_parent (
+						   col1 int NOT NULL,
+						   col2 int CHECK (col2 >= 42)
+						 );',
+		regexp => qr/^
+		\QCREATE TABLE dump_test.test_inheritance_parent (\E\n
+		\s+\Qcol1 integer NOT NULL,\E\n
+		\s+\Qcol2 integer,\E\n
+		\s+\QCONSTRAINT test_inheritance_parent_col2_check CHECK ((col2 >= 42))\E\n
+		\Q);\E\n
+		/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_inheritance_child' => {
+		create_order => 91,
+		create_sql   => 'CREATE TABLE dump_test.test_inheritance_child (
+						    col1 int NOT NULL,
+						    CONSTRAINT test_inheritance_child CHECK (col2 >= 142857)
+						) INHERITS (dump_test.test_inheritance_parent);',
+		regexp => qr/^
+		\QCREATE TABLE dump_test.test_inheritance_child (\E\n
+		\s+\Qcol1 integer,\E\n
+		\s+\QCONSTRAINT test_inheritance_child CHECK ((col2 >= 142857))\E\n
+		\)\n
+		\QINHERITS (dump_test.test_inheritance_parent);\E\n
+		/xm,
+		like => {
+			%full_runs, %dump_test_schema_runs, section_pre_data => 1,
+		},
+		unlike => {
+			binary_upgrade           => 1,
+			exclude_dump_test_schema => 1,
+		},
 	},
 
 	'CREATE STATISTICS extended_stats_no_options' => {
@@ -2900,12 +2949,12 @@ my %tests = (
 			data_only              => 1,
 			section_pre_data       => 1,
 			test_schema_plus_blobs => 1,
-			binary_upgrade => 1,
+			binary_upgrade         => 1,
 		},
 		unlike => {
-			no_blobs       => 1,
-			no_privs       => 1,
-			schema_only    => 1,
+			no_blobs    => 1,
+			no_privs    => 1,
+			schema_only => 1,
 		},
 	},
 
@@ -3116,13 +3165,13 @@ my %tests = (
 
 	'CREATE ACCESS METHOD regress_test_table_am' => {
 		create_order => 11,
-		create_sql   => 'CREATE ACCESS METHOD regress_table_am TYPE TABLE HANDLER heap_tableam_handler;',
+		create_sql =>
+		  'CREATE ACCESS METHOD regress_table_am TYPE TABLE HANDLER heap_tableam_handler;',
 		regexp => qr/^
 			\QCREATE ACCESS METHOD regress_table_am TYPE TABLE HANDLER heap_tableam_handler;\E
 			\n/xm,
 		like => {
-			%full_runs,
-			section_pre_data	=> 1,
+			%full_runs, section_pre_data => 1,
 		},
 	},
 
@@ -3130,11 +3179,11 @@ my %tests = (
 	# AM occurs. To achieve that we create a table with the standard
 	# AM, test AM, standard AM. That guarantees that there needs to be
 	# a SET interspersed.  Then use a regex that prevents interspersed
-	# SET ...; statements, followed by the exptected CREATE TABLE. Not
+	# SET ...; statements, followed by the expected CREATE TABLE. Not
 	# pretty, but seems hard to do better in this framework.
 	'CREATE TABLE regress_pg_dump_table_am' => {
 		create_order => 12,
-		create_sql => '
+		create_sql   => '
 			CREATE TABLE dump_test.regress_pg_dump_table_am_0() USING heap;
 			CREATE TABLE dump_test.regress_pg_dump_table_am_1 (col1 int) USING regress_table_am;
 			CREATE TABLE dump_test.regress_pg_dump_table_am_2() USING heap;',
@@ -3145,16 +3194,14 @@ my %tests = (
 			\n\s+\Qcol1 integer\E
 			\n\);/xm,
 		like => {
-			%full_runs,
-			%dump_test_schema_runs,
-			section_pre_data => 1,
+			%full_runs, %dump_test_schema_runs, section_pre_data => 1,
 		},
-		unlike => { exclude_dump_test_schema => 1},
+		unlike => { exclude_dump_test_schema => 1 },
 	},
 
 	'CREATE MATERIALIZED VIEW regress_pg_dump_matview_am' => {
 		create_order => 13,
-		create_sql => '
+		create_sql   => '
 			CREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_0 USING heap AS SELECT 1;
 			CREATE MATERIALIZED VIEW dump_test.regress_pg_dump_matview_am_1
 				USING regress_table_am AS SELECT count(*) FROM pg_class;
@@ -3167,13 +3214,10 @@ my %tests = (
 			\n\s+\QFROM pg_class\E
 			\n\s+\QWITH NO DATA;\E\n/xm,
 		like => {
-			%full_runs,
-			%dump_test_schema_runs,
-			section_pre_data => 1,
+			%full_runs, %dump_test_schema_runs, section_pre_data => 1,
 		},
-		unlike => { exclude_dump_test_schema => 1},
-	}
-);
+		unlike => { exclude_dump_test_schema => 1 },
+	});
 
 #########################################
 # Create a PG instance to test actually dumping from
@@ -3330,8 +3374,7 @@ foreach my $db (sort keys %create_sql)
 command_fails_like(
 	[ 'pg_dump', '-p', "$port", 'qqq' ],
 	qr/\Qpg_dump: error: connection to database "qqq" failed: FATAL:  database "qqq" does not exist\E/,
-	'connecting to a non-existent database'
-);
+	'connecting to a non-existent database');
 
 #########################################
 # Test connecting with an unprivileged user
@@ -3345,22 +3388,22 @@ command_fails_like(
 # Test dumping a non-existent schema, table, and patterns with --strict-names
 
 command_fails_like(
-	[ 'pg_dump', '-p', "$port", '-n', 'nonexistant' ],
+	[ 'pg_dump', '-p', "$port", '-n', 'nonexistent' ],
 	qr/\Qpg_dump: error: no matching schemas were found\E/,
 	'dumping a non-existent schema');
 
 command_fails_like(
-	[ 'pg_dump', '-p', "$port", '-t', 'nonexistant' ],
+	[ 'pg_dump', '-p', "$port", '-t', 'nonexistent' ],
 	qr/\Qpg_dump: error: no matching tables were found\E/,
 	'dumping a non-existent table');
 
 command_fails_like(
-	[ 'pg_dump', '-p', "$port", '--strict-names', '-n', 'nonexistant*' ],
+	[ 'pg_dump', '-p', "$port", '--strict-names', '-n', 'nonexistent*' ],
 	qr/\Qpg_dump: error: no matching schemas were found for pattern\E/,
 	'no matching schemas');
 
 command_fails_like(
-	[ 'pg_dump', '-p', "$port", '--strict-names', '-t', 'nonexistant*' ],
+	[ 'pg_dump', '-p', "$port", '--strict-names', '-t', 'nonexistent*' ],
 	qr/\Qpg_dump: error: no matching tables were found for pattern\E/,
 	'no matching tables');
 

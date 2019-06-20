@@ -20,7 +20,7 @@
 #include <unistd.h>
 
 #include "common/file_perm.h"
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 #include "libpq-fe.h"
 #include "access/xlog_internal.h"
 #include "getopt_long.h"
@@ -54,7 +54,7 @@ static void close_destination_dir(DIR *dest_dir, char *dest_folder);
 static XLogRecPtr FindStreamingStart(uint32 *tli);
 static void StreamLog(void);
 static bool stop_streaming(XLogRecPtr segendpos, uint32 timeline,
-			   bool segment_finished);
+						   bool segment_finished);
 
 static void
 disconnect_atexit(void)
@@ -633,7 +633,7 @@ main(int argc, char **argv)
 	{
 		/* translator: second %s is an option name */
 		pg_log_error("%s needs a slot to be specified using --slot",
-				do_drop_slot ? "--drop-slot" : "--create-slot");
+					 do_drop_slot ? "--drop-slot" : "--create-slot");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit(1);
@@ -728,7 +728,7 @@ main(int argc, char **argv)
 	if (do_drop_slot)
 	{
 		if (verbose)
-			pg_log_info("dropping replication slot \"%s\"",	replication_slot);
+			pg_log_info("dropping replication slot \"%s\"", replication_slot);
 
 		if (!DropReplicationSlot(conn, replication_slot))
 			exit(1);

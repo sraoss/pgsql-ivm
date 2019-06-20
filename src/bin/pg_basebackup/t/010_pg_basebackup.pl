@@ -44,7 +44,7 @@ $node->command_fails(
 
 ok(!-d "$tempdir/backup", 'backup directory was cleaned up');
 
-# Create a backup directory that is not empty so the next commnd will fail
+# Create a backup directory that is not empty so the next command will fail
 # but leave the data directory behind
 mkdir("$tempdir/backup")
   or BAIL_OUT("unable to create $tempdir/backup");
@@ -359,7 +359,7 @@ SKIP:
 $node->command_ok([ 'pg_basebackup', '-D', "$tempdir/backupR", '-R' ],
 	'pg_basebackup -R runs');
 ok(-f "$tempdir/backupR/postgresql.auto.conf", 'postgresql.auto.conf exists');
-ok(-f "$tempdir/backupR/standby.signal", 'standby.signal was created');
+ok(-f "$tempdir/backupR/standby.signal",       'standby.signal was created');
 my $recovery_conf = slurp_file "$tempdir/backupR/postgresql.auto.conf";
 rmtree("$tempdir/backupR");
 

@@ -335,19 +335,19 @@ static int	s_uvcmp(mp_int a, mp_usmall uv);
 /* Unsigned magnitude addition; assumes dc is big enough.
    Carry out is returned (no memory allocated). */
 static mp_digit s_uadd(mp_digit *da, mp_digit *db, mp_digit *dc, mp_size size_a,
-	   mp_size size_b);
+					   mp_size size_b);
 
 /* Unsigned magnitude subtraction.  Assumes dc is big enough. */
 static void s_usub(mp_digit *da, mp_digit *db, mp_digit *dc, mp_size size_a,
-	   mp_size size_b);
+				   mp_size size_b);
 
 /* Unsigned recursive multiplication.  Assumes dc is big enough. */
-static int s_kmul(mp_digit *da, mp_digit *db, mp_digit *dc, mp_size size_a,
-	   mp_size size_b);
+static int	s_kmul(mp_digit *da, mp_digit *db, mp_digit *dc, mp_size size_a,
+				   mp_size size_b);
 
 /* Unsigned magnitude multiplication.  Assumes dc is big enough. */
 static void s_umul(mp_digit *da, mp_digit *db, mp_digit *dc, mp_size size_a,
-	   mp_size size_b);
+				   mp_size size_b);
 
 /* Unsigned recursive squaring.  Assumes dc is big enough. */
 static int	s_ksqr(mp_digit *da, mp_digit *dc, mp_size size_a);
@@ -1138,7 +1138,7 @@ mp_int_mod(mp_int a, mp_int m, mp_int c)
 }
 
 mp_result
-mp_int_div_value(mp_int a, mp_small value, mp_int q, mp_small * r)
+mp_int_div_value(mp_int a, mp_small value, mp_int q, mp_small *r)
 {
 	mpz_t		vtmp;
 	mp_digit	vbuf[MP_VALUE_DIGITS(value)];
@@ -1819,7 +1819,7 @@ mp_int_root(mp_int a, mp_small b, mp_int c)
 }
 
 mp_result
-mp_int_to_int(mp_int z, mp_small * out)
+mp_int_to_int(mp_int z, mp_small *out)
 {
 	assert(z != NULL);
 
@@ -1850,7 +1850,7 @@ mp_int_to_int(mp_int z, mp_small * out)
 }
 
 mp_result
-mp_int_to_uint(mp_int z, mp_usmall * out)
+mp_int_to_uint(mp_int z, mp_usmall *out)
 {
 	assert(z != NULL);
 

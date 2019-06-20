@@ -102,17 +102,17 @@ static void SyncRepCancelWait(void);
 static int	SyncRepWakeQueue(bool all, int mode);
 
 static bool SyncRepGetSyncRecPtr(XLogRecPtr *writePtr,
-					 XLogRecPtr *flushPtr,
-					 XLogRecPtr *applyPtr,
-					 bool *am_sync);
+								 XLogRecPtr *flushPtr,
+								 XLogRecPtr *applyPtr,
+								 bool *am_sync);
 static void SyncRepGetOldestSyncRecPtr(XLogRecPtr *writePtr,
-						   XLogRecPtr *flushPtr,
-						   XLogRecPtr *applyPtr,
-						   List *sync_standbys);
+									   XLogRecPtr *flushPtr,
+									   XLogRecPtr *applyPtr,
+									   List *sync_standbys);
 static void SyncRepGetNthLatestSyncRecPtr(XLogRecPtr *writePtr,
-							  XLogRecPtr *flushPtr,
-							  XLogRecPtr *applyPtr,
-							  List *sync_standbys, uint8 nth);
+										  XLogRecPtr *flushPtr,
+										  XLogRecPtr *applyPtr,
+										  List *sync_standbys, uint8 nth);
 static int	SyncRepGetStandbyPriority(void);
 static List *SyncRepGetSyncStandbysPriority(bool *am_sync);
 static List *SyncRepGetSyncStandbysQuorum(bool *am_sync);
@@ -276,9 +276,8 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 					   WAIT_EVENT_SYNC_REP);
 
 		/*
-		 * If the postmaster dies, we'll probably never get an
-		 * acknowledgment, because all the wal sender processes will exit. So
-		 * just bail out.
+		 * If the postmaster dies, we'll probably never get an acknowledgment,
+		 * because all the wal sender processes will exit. So just bail out.
 		 */
 		if (rc & WL_POSTMASTER_DEATH)
 		{

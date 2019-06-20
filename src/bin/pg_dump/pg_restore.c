@@ -51,8 +51,6 @@
 #include "parallel.h"
 #include "pg_backup_utils.h"
 
-#include "fe_utils/logging.h"
-
 
 static void usage(const char *progname);
 
@@ -412,7 +410,7 @@ main(int argc, char **argv)
 
 			default:
 				pg_log_error("unrecognized archive format \"%s\"; please specify \"c\", \"d\", or \"t\"",
-						  opts->formatName);
+							 opts->formatName);
 				exit_nicely(1);
 		}
 	}

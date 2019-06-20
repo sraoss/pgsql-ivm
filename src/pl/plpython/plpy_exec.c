@@ -45,9 +45,9 @@ static void plpython_srf_cleanup_callback(void *arg);
 static void plpython_return_error_callback(void *arg);
 
 static PyObject *PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc,
-					   HeapTuple *rv);
+										HeapTuple *rv);
 static HeapTuple PLy_modify_tuple(PLyProcedure *proc, PyObject *pltd,
-				 TriggerData *tdata, HeapTuple otup);
+								  TriggerData *tdata, HeapTuple otup);
 static void plpython_trigger_error_callback(void *arg);
 
 static PyObject *PLy_procedure_call(PLyProcedure *proc, const char *kargs, PyObject *vargs);
@@ -753,8 +753,8 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			Py_DECREF(pltlevel);
 
 			/*
-			 * Note: In BEFORE trigger, stored generated columns are not computed yet,
-			 * so don't make them accessible in NEW row.
+			 * Note: In BEFORE trigger, stored generated columns are not
+			 * computed yet, so don't make them accessible in NEW row.
 			 */
 
 			if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))

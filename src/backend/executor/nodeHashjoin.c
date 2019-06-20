@@ -134,15 +134,15 @@
 #define HJ_FILL_INNER(hjstate)	((hjstate)->hj_NullOuterTupleSlot != NULL)
 
 static TupleTableSlot *ExecHashJoinOuterGetTuple(PlanState *outerNode,
-						  HashJoinState *hjstate,
-						  uint32 *hashvalue);
+												 HashJoinState *hjstate,
+												 uint32 *hashvalue);
 static TupleTableSlot *ExecParallelHashJoinOuterGetTuple(PlanState *outerNode,
-								  HashJoinState *hjstate,
-								  uint32 *hashvalue);
+														 HashJoinState *hjstate,
+														 uint32 *hashvalue);
 static TupleTableSlot *ExecHashJoinGetSavedTuple(HashJoinState *hjstate,
-						  BufFile *file,
-						  uint32 *hashvalue,
-						  TupleTableSlot *tupleSlot);
+												 BufFile *file,
+												 uint32 *hashvalue,
+												 TupleTableSlot *tupleSlot);
 static bool ExecHashJoinNewBatch(HashJoinState *hjstate);
 static bool ExecParallelHashJoinNewBatch(HashJoinState *hjstate);
 static void ExecParallelHashJoinPartitionOuter(HashJoinState *node);
@@ -750,7 +750,7 @@ ExecInitHashJoin(HashJoin *node, EState *estate, int eflags)
 		rclauses = lappend(rclauses, ExecInitExpr(lsecond(hclause->args),
 												  (PlanState *) hjstate));
 		rhclauses = lappend(rhclauses, ExecInitExpr(lsecond(hclause->args),
-												   innerPlanState(hjstate)));
+													innerPlanState(hjstate)));
 		hoperators = lappend_oid(hoperators, hclause->opno);
 		hcollations = lappend_oid(hcollations, hclause->inputcollid);
 	}

@@ -761,38 +761,38 @@ const ObjectAddress InvalidObjectAddress =
 };
 
 static ObjectAddress get_object_address_unqualified(ObjectType objtype,
-							   Value *strval, bool missing_ok);
+													Value *strval, bool missing_ok);
 static ObjectAddress get_relation_by_qualified_name(ObjectType objtype,
-							   List *object, Relation *relp,
-							   LOCKMODE lockmode, bool missing_ok);
+													List *object, Relation *relp,
+													LOCKMODE lockmode, bool missing_ok);
 static ObjectAddress get_object_address_relobject(ObjectType objtype,
-							 List *object, Relation *relp, bool missing_ok);
+												  List *object, Relation *relp, bool missing_ok);
 static ObjectAddress get_object_address_attribute(ObjectType objtype,
-							 List *object, Relation *relp,
-							 LOCKMODE lockmode, bool missing_ok);
+												  List *object, Relation *relp,
+												  LOCKMODE lockmode, bool missing_ok);
 static ObjectAddress get_object_address_attrdef(ObjectType objtype,
-						   List *object, Relation *relp, LOCKMODE lockmode,
-						   bool missing_ok);
+												List *object, Relation *relp, LOCKMODE lockmode,
+												bool missing_ok);
 static ObjectAddress get_object_address_type(ObjectType objtype,
-						TypeName *typename, bool missing_ok);
+											 TypeName *typename, bool missing_ok);
 static ObjectAddress get_object_address_opcf(ObjectType objtype, List *object,
-						bool missing_ok);
+											 bool missing_ok);
 static ObjectAddress get_object_address_opf_member(ObjectType objtype,
-							  List *object, bool missing_ok);
+												   List *object, bool missing_ok);
 
 static ObjectAddress get_object_address_usermapping(List *object,
-							   bool missing_ok);
+													bool missing_ok);
 static ObjectAddress get_object_address_publication_rel(List *object,
-								   Relation *relp,
-								   bool missing_ok);
+														Relation *relp,
+														bool missing_ok);
 static ObjectAddress get_object_address_defacl(List *object,
-						  bool missing_ok);
+											   bool missing_ok);
 static const ObjectPropertyType *get_object_property_data(Oid class_id);
 
 static void getRelationDescription(StringInfo buffer, Oid relid);
 static void getOpFamilyDescription(StringInfo buffer, Oid opfid);
 static void getRelationTypeDescription(StringInfo buffer, Oid relid,
-						   int32 objectSubId);
+									   int32 objectSubId);
 static void getProcedureTypeDescription(StringInfo buffer, Oid procid);
 static void getConstraintTypeDescription(StringInfo buffer, Oid constroid);
 static void getOpFamilyIdentity(StringInfo buffer, Oid opfid, List **object);
@@ -2295,9 +2295,31 @@ check_object_ownership(Oid roleid, ObjectType objtype, ObjectAddress address,
 		case OBJECT_TYPE:
 		case OBJECT_DOMAIN:
 		case OBJECT_ATTRIBUTE:
-		case OBJECT_DOMCONSTRAINT:
 			if (!pg_type_ownercheck(address.objectId, roleid))
 				aclcheck_error_type(ACLCHECK_NOT_OWNER, address.objectId);
+			break;
+		case OBJECT_DOMCONSTRAINT:
+			{
+				HeapTuple	tuple;
+				Oid			contypid;
+
+				tuple = SearchSysCache1(CONSTROID,
+										ObjectIdGetDatum(address.objectId));
+				if (!HeapTupleIsValid(tuple))
+					elog(ERROR, "constraint with OID %u does not exist",
+						 address.objectId);
+
+				contypid = ((Form_pg_constraint) GETSTRUCT(tuple))->contypid;
+
+				ReleaseSysCache(tuple);
+
+				/*
+				 * Fallback to type ownership check in this case as this is
+				 * what domain constraints rely on.
+				 */
+				if (!pg_type_ownercheck(contypid, roleid))
+					aclcheck_error_type(ACLCHECK_NOT_OWNER, contypid);
+			}
 			break;
 		case OBJECT_AGGREGATE:
 		case OBJECT_FUNCTION:
@@ -3050,7 +3072,7 @@ getObjectDescription(const ObjectAddress *object)
 				StringInfoData opfam;
 
 				amprocDesc = table_open(AccessMethodProcedureRelationId,
-									   AccessShareLock);
+										AccessShareLock);
 
 				ScanKeyInit(&skey[0],
 							Anum_pg_amproc_oid,
