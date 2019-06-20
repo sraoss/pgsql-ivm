@@ -26,11 +26,7 @@ package RewindTest;
 # still running.
 #
 # The test script can use the helper functions master_psql and standby_psql
-# to run psql against the master and standby servers, respectively. The
-# test script can also use the $connstr_master and $connstr_standby global
-# variables, which contain libpq connection strings for connecting to the
-# master and standby servers. The data directories are also available
-# in paths $test_master_datadir and $test_standby_datadir
+# to run psql against the master and standby servers, respectively.
 
 use strict;
 use warnings;
@@ -133,8 +129,10 @@ sub setup_cluster
 	# Set up pg_hba.conf and pg_ident.conf for the role running
 	# pg_rewind.  This role is used for all the tests, and has
 	# minimal permissions enough to rewind from an online source.
-	$node_master->init(allows_streaming => 1, extra => $extra,
-	  auth_extra => ['--create-role', 'rewind_user']);
+	$node_master->init(
+		allows_streaming => 1,
+		extra            => $extra,
+		auth_extra       => [ '--create-role', 'rewind_user' ]);
 
 	# Set wal_keep_segments to prevent WAL segment recycling after enforced
 	# checkpoints in the tests.
@@ -151,7 +149,8 @@ sub start_master
 
 	# Create custom role which is used to run pg_rewind, and adjust its
 	# permissions to the minimum necessary.
-	$node_master->psql('postgres', "
+	$node_master->psql(
+		'postgres', "
 		CREATE ROLE rewind_user LOGIN;
 		GRANT EXECUTE ON function pg_catalog.pg_ls_dir(text, boolean, boolean)
 		  TO rewind_user;
@@ -265,10 +264,9 @@ sub run_pg_rewind
 		# Do rewind using a remote connection as source
 		command_ok(
 			[
-				'pg_rewind',       "--debug",
-				"--source-server", $standby_connstr,
-				"--target-pgdata=$master_pgdata",
-				"--no-sync"
+				'pg_rewind',                      "--debug",
+				"--source-server",                $standby_connstr,
+				"--target-pgdata=$master_pgdata", "--no-sync"
 			],
 			'pg_rewind remote');
 	}

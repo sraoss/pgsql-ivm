@@ -12,7 +12,7 @@ use File::Copy;
 use File::Find ();
 use File::Path qw(rmtree);
 use File::Spec;
-BEGIN  { use lib File::Spec->rel2abs(dirname(__FILE__)); }
+BEGIN { use lib File::Spec->rel2abs(dirname(__FILE__)); }
 
 use Install qw(Install);
 
@@ -99,9 +99,9 @@ exit 0;
 
 ########################################################################
 
-sub installcheck
+sub installcheck_internal
 {
-	my $schedule = shift || 'serial';
+	my ($schedule, @EXTRA_REGRESS_OPTS) = @_;
 	my @args = (
 		"../../../$Config/pg_regress/pg_regress",
 		"--dlpath=.",
@@ -111,9 +111,17 @@ sub installcheck
 		"--encoding=SQL_ASCII",
 		"--no-locale");
 	push(@args, $maxconn) if $maxconn;
+	push(@args, @EXTRA_REGRESS_OPTS);
 	system(@args);
 	my $status = $? >> 8;
 	exit $status if $status;
+	return;
+}
+
+sub installcheck
+{
+	my $schedule = shift || 'serial';
+	installcheck_internal($schedule);
 	return;
 }
 
@@ -203,8 +211,8 @@ sub tap_check
 
 	# adjust the environment for just this test
 	local %ENV = %ENV;
-	$ENV{PERL5LIB}   = "$topdir/src/test/perl;$ENV{PERL5LIB}";
-	$ENV{PG_REGRESS} = "$topdir/$Config/pg_regress/pg_regress";
+	$ENV{PERL5LIB}      = "$topdir/src/test/perl;$ENV{PERL5LIB}";
+	$ENV{PG_REGRESS}    = "$topdir/$Config/pg_regress/pg_regress";
 	$ENV{REGRESS_SHLIB} = "$topdir/src/test/regress/regress.dll";
 
 	$ENV{TESTDIR} = "$dir";
@@ -404,7 +412,7 @@ sub subdircheck
 		return;
 	}
 
-	my @opts  = fetchRegressOpts();
+	my @opts = fetchRegressOpts();
 
 	# Special processing for python transform modules, see their respective
 	# Makefiles for more details regarding Python-version specific
@@ -546,7 +554,8 @@ sub upgradecheck
 	$ENV{PGHOST} = 'localhost';
 	$ENV{PGPORT} ||= 50432;
 	my $tmp_root = "$topdir/src/bin/pg_upgrade/tmp_check";
-	(mkdir $tmp_root || die $!) unless -d $tmp_root;
+	rmtree($tmp_root);
+	mkdir $tmp_root || die $!;
 	my $upg_tmp_install = "$tmp_root/install";    # unshared temp install
 	print "Setting up temp install\n\n";
 	Install($upg_tmp_install, "all", $config);
@@ -558,8 +567,16 @@ sub upgradecheck
 	$ENV{PATH} = "$bindir;$ENV{PATH}";
 	my $data = "$tmp_root/data";
 	$ENV{PGDATA} = "$data.old";
+	my $outputdir          = "$tmp_root/regress";
+	my @EXTRA_REGRESS_OPTS = ("--outputdir=$outputdir");
+	mkdir "$outputdir"                || die $!;
+	mkdir "$outputdir/sql"            || die $!;
+	mkdir "$outputdir/expected"       || die $!;
+	mkdir "$outputdir/testtablespace" || die $!;
+
 	my $logdir = "$topdir/src/bin/pg_upgrade/log";
-	(mkdir $logdir || die $!) unless -d $logdir;
+	rmtree($logdir);
+	mkdir $logdir || die $!;
 	print "\nRunning initdb on old cluster\n\n";
 	standard_initdb() or exit 1;
 	print "\nStarting old cluster\n\n";
@@ -572,7 +589,7 @@ sub upgradecheck
 	generate_db('',       91, 127, '');
 
 	print "\nSetting up data for upgrading\n\n";
-	installcheck('parallel');
+	installcheck_internal('parallel', @EXTRA_REGRESS_OPTS);
 
 	# now we can chdir into the source dir
 	chdir "$topdir/src/bin/pg_upgrade";

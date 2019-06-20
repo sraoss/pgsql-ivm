@@ -97,7 +97,7 @@ struct SharedTuplestoreAccessor
 };
 
 static void sts_filename(char *name, SharedTuplestoreAccessor *accessor,
-			 int participant);
+						 int participant);
 
 /*
  * Return the amount of shared memory required to hold SharedTuplestore for a
@@ -173,7 +173,7 @@ sts_initialize(SharedTuplestore *sts, int participants,
 }
 
 /*
- * Attach to a SharedTupleStore that has been initialized by another backend,
+ * Attach to a SharedTuplestore that has been initialized by another backend,
  * so that this backend can read and write tuples.
  */
 SharedTuplestoreAccessor *

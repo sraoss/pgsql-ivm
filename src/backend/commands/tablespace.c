@@ -91,7 +91,7 @@ char	   *temp_tablespaces = NULL;
 
 
 static void create_tablespace_directories(const char *location,
-							  const Oid tablespaceoid);
+										  const Oid tablespaceoid);
 static bool destroy_tablespace_directories(Oid tablespaceoid, bool redo);
 
 
@@ -1069,10 +1069,11 @@ bool
 check_default_tablespace(char **newval, void **extra, GucSource source)
 {
 	/*
-	 * If we aren't inside a transaction, we cannot do database access so
-	 * cannot verify the name.  Must accept the value on faith.
+	 * If we aren't inside a transaction, or connected to a database, we
+	 * cannot do the catalog accesses necessary to verify the name.  Must
+	 * accept the value on faith.
 	 */
-	if (IsTransactionState())
+	if (IsTransactionState() && MyDatabaseId != InvalidOid)
 	{
 		if (**newval != '\0' &&
 			!OidIsValid(get_tablespace_oid(*newval, true)))
@@ -1143,9 +1144,9 @@ GetDefaultTablespace(char relpersistence, bool partitioned)
 
 	/*
 	 * Allow explicit specification of database's default tablespace in
-	 * default_tablespace without triggering permissions checks.  Don't
-	 * allow specifying that when creating a partitioned table, however,
-	 * since the result is confusing.
+	 * default_tablespace without triggering permissions checks.  Don't allow
+	 * specifying that when creating a partitioned table, however, since the
+	 * result is confusing.
 	 */
 	if (result == MyDatabaseTableSpace)
 	{
@@ -1190,11 +1191,12 @@ check_temp_tablespaces(char **newval, void **extra, GucSource source)
 	}
 
 	/*
-	 * If we aren't inside a transaction, we cannot do database access so
-	 * cannot verify the individual names.  Must accept the list on faith.
+	 * If we aren't inside a transaction, or connected to a database, we
+	 * cannot do the catalog accesses necessary to verify the name.  Must
+	 * accept the value on faith.
 	 * Fortunately, there's then also no need to pass the data to fd.c.
 	 */
-	if (IsTransactionState())
+	if (IsTransactionState() && MyDatabaseId != InvalidOid)
 	{
 		temp_tablespaces_extra *myextra;
 		Oid		   *tblSpcs;

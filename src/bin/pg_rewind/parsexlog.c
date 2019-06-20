@@ -15,7 +15,6 @@
 
 #include "pg_rewind.h"
 #include "filemap.h"
-#include "logging.h"
 
 #include "access/rmgr.h"
 #include "access/xlog_internal.h"
@@ -48,10 +47,10 @@ typedef struct XLogPageReadPrivate
 	int			tliIndex;
 } XLogPageReadPrivate;
 
-static int SimpleXLogPageRead(XLogReaderState *xlogreader,
-				   XLogRecPtr targetPagePtr,
-				   int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
-				   TimeLineID *pageTLI);
+static int	SimpleXLogPageRead(XLogReaderState *xlogreader,
+							   XLogRecPtr targetPagePtr,
+							   int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
+							   TimeLineID *pageTLI);
 
 /*
  * Read WAL from the datadir/pg_wal, starting from 'startpoint' on timeline
@@ -316,7 +315,7 @@ SimpleXLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 			pg_log_error("could not read file \"%s\": %m", xlogfpath);
 		else
 			pg_log_error("could not read file \"%s\": read %d of %zu",
-				   xlogfpath, r, (Size) XLOG_BLCKSZ);
+						 xlogfpath, r, (Size) XLOG_BLCKSZ);
 
 		return -1;
 	}

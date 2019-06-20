@@ -308,14 +308,14 @@ static int	FreeDesc(AllocateDesc *desc);
 static void AtProcExit_Files(int code, Datum arg);
 static void CleanupTempFiles(bool isCommit, bool isProcExit);
 static void RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok,
-					   bool unlink_all);
+								   bool unlink_all);
 static void RemovePgTempRelationFiles(const char *tsdirname);
 static void RemovePgTempRelationFilesInDbspace(const char *dbspacedirname);
 
 static void walkdir(const char *path,
-		void (*action) (const char *fname, bool isdir, int elevel),
-		bool process_symlinks,
-		int elevel);
+					void (*action) (const char *fname, bool isdir, int elevel),
+					bool process_symlinks,
+					int elevel);
 #ifdef PG_FLUSH_DATA_WORKS
 static void pre_sync_fname(const char *fname, bool isdir, int elevel);
 #endif
@@ -1592,7 +1592,7 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
  * If the file is inside the top-level temporary directory, its name should
  * begin with PG_TEMP_FILE_PREFIX so that it can be identified as temporary
  * and deleted at startup by RemovePgTempFiles().  Alternatively, it can be
- * inside a directory created with PathnameCreateTemporaryDir(), in which case
+ * inside a directory created with PathNameCreateTemporaryDir(), in which case
  * the prefix isn't needed.
  */
 File
@@ -1731,7 +1731,7 @@ FileClose(File file)
 			 * see LruDelete.
 			 */
 			elog(vfdP->fdstate & FD_TEMP_FILE_LIMIT ? LOG : data_sync_elevel(LOG),
-				"could not close file \"%s\": %m", vfdP->fileName);
+				 "could not close file \"%s\": %m", vfdP->fileName);
 		}
 
 		--nfile;

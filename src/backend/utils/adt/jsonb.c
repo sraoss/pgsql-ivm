@@ -71,21 +71,21 @@ static void jsonb_in_object_field_start(void *pstate, char *fname, bool isnull);
 static void jsonb_put_escaped_value(StringInfo out, JsonbValue *scalarVal);
 static void jsonb_in_scalar(void *pstate, char *token, JsonTokenType tokentype);
 static void jsonb_categorize_type(Oid typoid,
-					  JsonbTypeCategory *tcategory,
-					  Oid *outfuncoid);
+								  JsonbTypeCategory *tcategory,
+								  Oid *outfuncoid);
 static void composite_to_jsonb(Datum composite, JsonbInState *result);
 static void array_dim_to_jsonb(JsonbInState *result, int dim, int ndims, int *dims,
-				   Datum *vals, bool *nulls, int *valcount,
-				   JsonbTypeCategory tcategory, Oid outfuncoid);
+							   Datum *vals, bool *nulls, int *valcount,
+							   JsonbTypeCategory tcategory, Oid outfuncoid);
 static void array_to_jsonb_internal(Datum array, JsonbInState *result);
 static void jsonb_categorize_type(Oid typoid,
-					  JsonbTypeCategory *tcategory,
-					  Oid *outfuncoid);
+								  JsonbTypeCategory *tcategory,
+								  Oid *outfuncoid);
 static void datum_to_jsonb(Datum val, bool is_null, JsonbInState *result,
-			   JsonbTypeCategory tcategory, Oid outfuncoid,
-			   bool key_scalar);
+						   JsonbTypeCategory tcategory, Oid outfuncoid,
+						   bool key_scalar);
 static void add_jsonb(Datum val, bool is_null, JsonbInState *result,
-		  Oid val_type, bool key_scalar);
+					  Oid val_type, bool key_scalar);
 static JsonbParseState *clone_parse_state(JsonbParseState *state);
 static char *JsonbToCStringWorker(StringInfo out, JsonbContainer *in, int estimated_len, bool indent);
 static void add_indent(StringInfo out, bool indent, int level);
@@ -1155,7 +1155,7 @@ jsonb_build_object(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("argument list must have even number of elements"),
-				 /* translator: %s is a SQL function name */
+		/* translator: %s is a SQL function name */
 				 errhint("The arguments of %s must consist of alternating keys and values.",
 						 "jsonb_build_object()")));
 

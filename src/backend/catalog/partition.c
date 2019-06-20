@@ -35,7 +35,7 @@
 
 static Oid	get_partition_parent_worker(Relation inhRel, Oid relid);
 static void get_partition_ancestors_worker(Relation inhRel, Oid relid,
-							   List **ancestors);
+										   List **ancestors);
 
 /*
  * get_partition_parent
@@ -319,7 +319,7 @@ get_default_partition_oid(Oid parentId)
 /*
  * update_default_partition_oid
  *
- * Update pg_partition_table.partdefid with a new default partition OID.
+ * Update pg_partitioned_table.partdefid with a new default partition OID.
  */
 void
 update_default_partition_oid(Oid parentId, Oid defaultPartId)

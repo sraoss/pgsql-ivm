@@ -397,14 +397,14 @@ static void CleanupBackend(int pid, int exitstatus);
 static bool CleanupBackgroundWorker(int pid, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void LogChildExit(int lev, const char *procname,
-			 int pid, int exitstatus);
+						 int pid, int exitstatus);
 static void PostmasterStateMachine(void);
 static void BackendInitialize(Port *port);
 static void BackendRun(Port *port) pg_attribute_noreturn();
 static void ExitPostmaster(int status) pg_attribute_noreturn();
 static int	ServerLoop(void);
 static int	BackendStartup(Port *port);
-static int	ProcessStartupPacket(Port *port, bool SSLdone);
+static int	ProcessStartupPacket(Port *port, bool secure_done);
 static void SendNegotiateProtocolVersion(List *unrecognized_protocol_options);
 static void processCancelRequest(Port *port, void *pkt);
 static int	initMasks(fd_set *rmask);
@@ -531,7 +531,7 @@ static void restore_backend_variables(BackendParameters *param, Port *port);
 static bool save_backend_variables(BackendParameters *param, Port *port);
 #else
 static bool save_backend_variables(BackendParameters *param, Port *port,
-					   HANDLE childProcess, pid_t childPid);
+								   HANDLE childProcess, pid_t childPid);
 #endif
 
 static void ShmemBackendArrayAdd(Backend *bn);
@@ -993,66 +993,6 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	InitializeMaxBackends();
 
-	/*
-	 * Initialize pipe (or process handle on Windows) that allows children to
-	 * wake up from sleep on postmaster death.
-	 */
-	InitPostmasterDeathWatchHandle();
-
-	/*
-	 * Forcibly remove the files signaling a standby promotion request.
-	 * Otherwise, the existence of those files triggers a promotion too early,
-	 * whether a user wants that or not.
-	 *
-	 * This removal of files is usually unnecessary because they can exist
-	 * only during a few moments during a standby promotion. However there is
-	 * a race condition: if pg_ctl promote is executed and creates the files
-	 * during a promotion, the files can stay around even after the server is
-	 * brought up to new master. Then, if new standby starts by using the
-	 * backup taken from that master, the files can exist at the server
-	 * startup and should be removed in order to avoid an unexpected
-	 * promotion.
-	 *
-	 * Note that promotion signal files need to be removed before the startup
-	 * process is invoked. Because, after that, they can be used by
-	 * postmaster's SIGUSR1 signal handler.
-	 */
-	RemovePromoteSignalFiles();
-
-	/* Do the same for logrotate signal file */
-	RemoveLogrotateSignalFiles();
-
-	/* Remove any outdated file holding the current log filenames. */
-	if (unlink(LOG_METAINFO_DATAFILE) < 0 && errno != ENOENT)
-		ereport(LOG,
-				(errcode_for_file_access(),
-				 errmsg("could not remove file \"%s\": %m",
-						LOG_METAINFO_DATAFILE)));
-
-	/*
-	 * If enabled, start up syslogger collection subprocess
-	 */
-	SysLoggerPID = SysLogger_Start();
-
-	/*
-	 * Reset whereToSendOutput from DestDebug (its starting state) to
-	 * DestNone. This stops ereport from sending log messages to stderr unless
-	 * Log_destination permits.  We don't do this until the postmaster is
-	 * fully launched, since startup failures may as well be reported to
-	 * stderr.
-	 *
-	 * If we are in fact disabling logging to stderr, first emit a log message
-	 * saying so, to provide a breadcrumb trail for users who may not remember
-	 * that their logging is configured to go somewhere else.
-	 */
-	if (!(Log_destination & LOG_DESTINATION_STDERR))
-		ereport(LOG,
-				(errmsg("ending log output to stderr"),
-				 errhint("Future log output will go to log destination \"%s\".",
-						 Log_destination_string)));
-
-	whereToSendOutput = DestNone;
-
 	/* Report server startup in log */
 	ereport(LOG,
 			(errmsg("starting %s", PG_VERSION_STR)));
@@ -1248,6 +1188,12 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	set_stack_base();
 
+	/*
+	 * Initialize pipe (or process handle on Windows) that allows children to
+	 * wake up from sleep on postmaster death.
+	 */
+	InitPostmasterDeathWatchHandle();
+
 #ifdef WIN32
 
 	/*
@@ -1300,6 +1246,60 @@ PostmasterMain(int argc, char *argv[])
 	 * Postgres processes running in this directory, so this should be safe.
 	 */
 	RemovePgTempFiles();
+
+	/*
+	 * Forcibly remove the files signaling a standby promotion request.
+	 * Otherwise, the existence of those files triggers a promotion too early,
+	 * whether a user wants that or not.
+	 *
+	 * This removal of files is usually unnecessary because they can exist
+	 * only during a few moments during a standby promotion. However there is
+	 * a race condition: if pg_ctl promote is executed and creates the files
+	 * during a promotion, the files can stay around even after the server is
+	 * brought up to new master. Then, if new standby starts by using the
+	 * backup taken from that master, the files can exist at the server
+	 * startup and should be removed in order to avoid an unexpected
+	 * promotion.
+	 *
+	 * Note that promotion signal files need to be removed before the startup
+	 * process is invoked. Because, after that, they can be used by
+	 * postmaster's SIGUSR1 signal handler.
+	 */
+	RemovePromoteSignalFiles();
+
+	/* Do the same for logrotate signal file */
+	RemoveLogrotateSignalFiles();
+
+	/* Remove any outdated file holding the current log filenames. */
+	if (unlink(LOG_METAINFO_DATAFILE) < 0 && errno != ENOENT)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not remove file \"%s\": %m",
+						LOG_METAINFO_DATAFILE)));
+
+	/*
+	 * If enabled, start up syslogger collection subprocess
+	 */
+	SysLoggerPID = SysLogger_Start();
+
+	/*
+	 * Reset whereToSendOutput from DestDebug (its starting state) to
+	 * DestNone. This stops ereport from sending log messages to stderr unless
+	 * Log_destination permits.  We don't do this until the postmaster is
+	 * fully launched, since startup failures may as well be reported to
+	 * stderr.
+	 *
+	 * If we are in fact disabling logging to stderr, first emit a log message
+	 * saying so, to provide a breadcrumb trail for users who may not remember
+	 * that their logging is configured to go somewhere else.
+	 */
+	if (!(Log_destination & LOG_DESTINATION_STDERR))
+		ereport(LOG,
+				(errmsg("ending log output to stderr"),
+				 errhint("Future log output will go to log destination \"%s\".",
+						 Log_destination_string)));
+
+	whereToSendOutput = DestNone;
 
 	/*
 	 * Initialize stats collection subsystem (this does NOT start the
@@ -2028,7 +2028,7 @@ retry1:
 				continue;
 			ereport(COMMERROR,
 					(errcode_for_socket_access(),
-					 errmsg("failed to send GSSAPI negotiation response: %m)")));
+					 errmsg("failed to send GSSAPI negotiation response: %m")));
 			return STATUS_ERROR;	/* close the connection */
 		}
 
@@ -2651,11 +2651,12 @@ SIGHUP_handler(SIGNAL_ARGS)
 		/* Reload authentication config files too */
 		if (!load_hba())
 			ereport(LOG,
-					(errmsg("pg_hba.conf was not reloaded")));
+			/* translator: %s is a configuration file */
+					(errmsg("%s was not reloaded", "pg_hba.conf")));
 
 		if (!load_ident())
 			ereport(LOG,
-					(errmsg("pg_ident.conf was not reloaded")));
+					(errmsg("%s was not reloaded", "pg_ident.conf")));
 
 #ifdef USE_SSL
 		/* Reload SSL configuration as well */
@@ -4742,8 +4743,8 @@ retry:
 	}
 
 	/*
-	 * Queue a waiter for to signal when this child dies. The wait will be
-	 * handled automatically by an operating system thread pool.
+	 * Queue a waiter to signal when this child dies. The wait will be handled
+	 * automatically by an operating system thread pool.
 	 *
 	 * Note: use malloc instead of palloc, since it needs to be thread-safe.
 	 * Struct will be free():d from the callback function that runs on a
@@ -6035,7 +6036,7 @@ extern pg_time_t first_syslogger_file_time;
 #else
 static bool write_duplicated_handle(HANDLE *dest, HANDLE src, HANDLE child);
 static bool write_inheritable_socket(InheritableSocket *dest, SOCKET src,
-						 pid_t childPid);
+									 pid_t childPid);
 static void read_inheritable_socket(SOCKET *dest, InheritableSocket *src);
 #endif
 

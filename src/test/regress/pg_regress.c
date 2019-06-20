@@ -31,9 +31,9 @@
 
 #include "pg_regress.h"
 
+#include "common/logging.h"
 #include "common/restricted_token.h"
 #include "common/username.h"
-#include "fe_utils/logging.h"
 #include "getopt_long.h"
 #include "libpq/pqcomm.h"		/* needed for UNIXSOCK_PATH() */
 #include "pg_config_paths.h"
@@ -1802,7 +1802,7 @@ run_schedule(const char *schedule, test_function tfunc)
 			}
 			else
 			{
-				status(_("ok    ")); /* align with FAILED */
+				status(_("ok    "));	/* align with FAILED */
 				success_count++;
 			}
 
@@ -1882,7 +1882,7 @@ run_single_test(const char *test, test_function tfunc)
 	}
 	else
 	{
-		status(_("ok    ")); /* align with FAILED */
+		status(_("ok    "));	/* align with FAILED */
 		success_count++;
 	}
 

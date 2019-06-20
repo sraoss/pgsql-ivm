@@ -19,6 +19,7 @@
 #include "access/htup_details.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_statistic_ext_data.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "nodes/nodeFuncs.h"
@@ -75,10 +76,10 @@
 static MultiSortSupport build_mss(VacAttrStats **stats, int numattrs);
 
 static SortItem *build_distinct_groups(int numrows, SortItem *items,
-					  MultiSortSupport mss, int *ndistinct);
+									   MultiSortSupport mss, int *ndistinct);
 
-static int count_distinct_groups(int numrows, SortItem *items,
-					  MultiSortSupport mss);
+static int	count_distinct_groups(int numrows, SortItem *items,
+								  MultiSortSupport mss);
 
 /*
  * get_mincount_for_mcv_list
@@ -209,20 +210,20 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	 *
 	 * Using the same algorithm might exclude items that are close to the
 	 * "average" frequency of the sample. But that does not say whether the
-	 * observed frequency is close to the base frequency or not. We also
-	 * need to consider unexpectedly uncommon items (again, compared to the
-	 * base frequency), and the single-column algorithm does not have to.
+	 * observed frequency is close to the base frequency or not. We also need
+	 * to consider unexpectedly uncommon items (again, compared to the base
+	 * frequency), and the single-column algorithm does not have to.
 	 *
 	 * We simply decide how many items to keep by computing minimum count
-	 * using get_mincount_for_mcv_list() and then keep all items that seem
-	 * to be more common than that.
+	 * using get_mincount_for_mcv_list() and then keep all items that seem to
+	 * be more common than that.
 	 */
 	mincount = get_mincount_for_mcv_list(numrows, totalrows);
 
 	/*
-	 * Walk the groups until we find the first group with a count below
-	 * the mincount threshold (the index of that group is the number of
-	 * groups we want to keep).
+	 * Walk the groups until we find the first group with a count below the
+	 * mincount threshold (the index of that group is the number of groups we
+	 * want to keep).
 	 */
 	for (i = 0; i < nitems; i++)
 	{
@@ -240,7 +241,7 @@ statext_mcv_build(int numrows, HeapTuple *rows, Bitmapset *attrs,
 	 */
 	if (nitems > 0)
 	{
-		int	j;
+		int			j;
 
 		/*
 		 * Allocate the MCV list structure, set the global parameters.
@@ -429,13 +430,13 @@ statext_mcv_load(Oid mvoid)
 	MCVList    *result;
 	bool		isnull;
 	Datum		mcvlist;
-	HeapTuple	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+	HeapTuple	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(mvoid));
 
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
-	mcvlist = SysCacheGetAttr(STATEXTOID, htup,
-							  Anum_pg_statistic_ext_stxmcv, &isnull);
+	mcvlist = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+							  Anum_pg_statistic_ext_data_stxdmcv, &isnull);
 
 	if (isnull)
 		elog(ERROR,
@@ -485,7 +486,7 @@ statext_mcv_load(Oid mvoid)
  * (or a longer type) instead of using an array of bool items.
  */
 bytea *
-statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
+statext_mcv_serialize(MCVList *mcvlist, VacAttrStats **stats)
 {
 	int			i;
 	int			dim;
@@ -603,7 +604,7 @@ statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
 			info[dim].nbytes = 0;
 			for (i = 0; i < info[dim].nvalues; i++)
 			{
-				Size	len;
+				Size		len;
 
 				values[dim][i] = PointerGetDatum(PG_DETOAST_DATUM(values[dim][i]));
 
@@ -616,7 +617,7 @@ statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
 			info[dim].nbytes = 0;
 			for (i = 0; i < info[dim].nvalues; i++)
 			{
-				Size	len;
+				Size		len;
 
 				/* c-strings include terminator, so +1 byte */
 				values[dim][i] = PointerGetDatum(PG_DETOAST_DATUM(values[dim][i]));
@@ -636,11 +637,11 @@ statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
 	 * for each attribute, deduplicated values and items).
 	 *
 	 * The header fields are copied one by one, so that we don't need any
-	 * explicit alignment (we copy them while deserializing). All fields
-	 * after this need to be properly aligned, for direct access.
+	 * explicit alignment (we copy them while deserializing). All fields after
+	 * this need to be properly aligned, for direct access.
 	 */
 	total_length = MAXALIGN(VARHDRSZ + (3 * sizeof(uint32))
-			+ sizeof(AttrNumber) + (ndims * sizeof(Oid)));
+							+ sizeof(AttrNumber) + (ndims * sizeof(Oid)));
 
 	/* dimension info */
 	total_length += MAXALIGN(ndims * sizeof(DimensionInfo));
@@ -650,14 +651,14 @@ statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
 		total_length += MAXALIGN(info[i].nbytes);
 
 	/*
-	 * And finally the items (no additional alignment needed, we start
-	 * at proper alignment and the itemsize formula uses MAXALIGN)
+	 * And finally the items (no additional alignment needed, we start at
+	 * proper alignment and the itemsize formula uses MAXALIGN)
 	 */
 	total_length += mcvlist->nitems * itemsize;
 
 	/*
-	 * Allocate space for the whole serialized MCV list (we'll skip bytes,
-	 * so we set them to zero to make the result more compressible).
+	 * Allocate space for the whole serialized MCV list (we'll skip bytes, so
+	 * we set them to zero to make the result more compressible).
 	 */
 	raw = palloc0(total_length);
 	SET_VARSIZE(raw, total_length);
@@ -714,7 +715,7 @@ statext_mcv_serialize(MCVList * mcvlist, VacAttrStats **stats)
 				memcpy(ptr, &tmp, info[dim].typlen);
 				ptr += info[dim].typlen;
 			}
-			else if (info[dim].typlen > 0)	/* pased by reference */
+			else if (info[dim].typlen > 0)	/* passed by reference */
 			{
 				/* no special alignment needed, treated as char array */
 				memcpy(ptr, DatumGetPointer(value), info[dim].typlen);
@@ -1189,8 +1190,8 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		HeapTuple	tuple;
 		Datum		result;
 
-		StringInfoData	itemValues;
-		StringInfoData	itemNulls;
+		StringInfoData itemValues;
+		StringInfoData itemNulls;
 
 		int			i;
 
@@ -1213,9 +1214,9 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		 */
 		values = (char **) palloc0(5 * sizeof(char *));
 
-		values[0] = (char *) palloc(64 * sizeof(char));	/* item index */
-		values[3] = (char *) palloc(64 * sizeof(char));	/* frequency */
-		values[4] = (char *) palloc(64 * sizeof(char));	/* base frequency */
+		values[0] = (char *) palloc(64 * sizeof(char)); /* item index */
+		values[3] = (char *) palloc(64 * sizeof(char)); /* frequency */
+		values[4] = (char *) palloc(64 * sizeof(char)); /* base frequency */
 
 		outfuncs = (Oid *) palloc0(sizeof(Oid) * mcvlist->ndimensions);
 		fmgrinfo = (FmgrInfo *) palloc0(sizeof(FmgrInfo) * mcvlist->ndimensions);
@@ -1314,7 +1315,7 @@ pg_mcv_list_in(PG_FUNCTION_ARGS)
 
 
 /*
- * pg_mcv_list_out		- output routine for type PG_MCV_LIST.
+ * pg_mcv_list_out		- output routine for type pg_mcv_list.
  *
  * MCV lists are serialized into a bytea value, so we simply call byteaout()
  * to serialize the value into text. But it'd be nice to serialize that into
@@ -1376,7 +1377,7 @@ pg_mcv_list_send(PG_FUNCTION_ARGS)
  */
 static bool *
 mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
-					  Bitmapset *keys, MCVList * mcvlist, bool is_or)
+					 Bitmapset *keys, MCVList *mcvlist, bool is_or)
 {
 	int			i;
 	ListCell   *l;

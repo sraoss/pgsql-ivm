@@ -81,25 +81,25 @@ static void CheckValidRowMarkRel(Relation rel, RowMarkType markType);
 static void ExecPostprocessPlan(EState *estate);
 static void ExecEndPlan(PlanState *planstate, EState *estate);
 static void ExecutePlan(EState *estate, PlanState *planstate,
-			bool use_parallel_mode,
-			CmdType operation,
-			bool sendTuples,
-			uint64 numberTuples,
-			ScanDirection direction,
-			DestReceiver *dest,
-			bool execute_once);
+						bool use_parallel_mode,
+						CmdType operation,
+						bool sendTuples,
+						uint64 numberTuples,
+						ScanDirection direction,
+						DestReceiver *dest,
+						bool execute_once);
 static bool ExecCheckRTEPerms(RangeTblEntry *rte);
 static bool ExecCheckRTEPermsModified(Oid relOid, Oid userid,
-						  Bitmapset *modifiedCols,
-						  AclMode requiredPerms);
+									  Bitmapset *modifiedCols,
+									  AclMode requiredPerms);
 static void ExecCheckXactReadOnly(PlannedStmt *plannedstmt);
 static char *ExecBuildSlotValueDescription(Oid reloid,
-							  TupleTableSlot *slot,
-							  TupleDesc tupdesc,
-							  Bitmapset *modifiedCols,
-							  int maxfieldlen);
+										   TupleTableSlot *slot,
+										   TupleDesc tupdesc,
+										   Bitmapset *modifiedCols,
+										   int maxfieldlen);
 static void EvalPlanQualStart(EPQState *epqstate, EState *parentestate,
-				  Plan *planTree);
+							  Plan *planTree);
 
 /*
  * Note that GetAllUpdatedColumns() also exists in commands/trigger.c.  There does
@@ -2432,11 +2432,11 @@ ExecBuildAuxRowMark(ExecRowMark *erm, List *targetlist)
  *	inputslot - tuple for processing - this can be the slot from
  *		EvalPlanQualSlot(), for the increased efficiency.
  *
- * This tests whether the tuple in inputslot still matches the relvant
+ * This tests whether the tuple in inputslot still matches the relevant
  * quals. For that result to be useful, typically the input tuple has to be
  * last row version (otherwise the result isn't particularly useful) and
  * locked (otherwise the result might be out of date). That's typically
- * achieved by using table_lock_tuple() with the
+ * achieved by using table_tuple_lock() with the
  * TUPLE_LOCK_FLAG_FIND_LAST_VERSION flag.
  *
  * Returns a slot containing the new candidate update/delete tuple, or
@@ -2551,7 +2551,7 @@ EvalPlanQualSlot(EPQState *epqstate,
 
 		if (relation)
 			*slot = table_slot_create(relation,
-										 &epqstate->estate->es_tupleTable);
+									  &epqstate->estate->es_tupleTable);
 		else
 			*slot = ExecAllocTableSlot(&epqstate->estate->es_tupleTable,
 									   epqstate->origslot->tts_tupleDescriptor,
@@ -2654,9 +2654,9 @@ EvalPlanQualFetchRowMarks(EPQState *epqstate)
 			else
 			{
 				/* ordinary table, fetch the tuple */
-				if (!table_fetch_row_version(erm->relation,
-											 (ItemPointer) DatumGetPointer(datum),
-											 SnapshotAny, slot))
+				if (!table_tuple_fetch_row_version(erm->relation,
+												   (ItemPointer) DatumGetPointer(datum),
+												   SnapshotAny, slot))
 					elog(ERROR, "failed to fetch tuple for EvalPlanQual recheck");
 			}
 		}
@@ -2876,8 +2876,9 @@ EvalPlanQualStart(EPQState *epqstate, EState *parentestate, Plan *planTree)
 
 	/*
 	 * Each EState must have its own es_epqScanDone state, but if we have
-	 * nested EPQ checks they should share es_epqTuple arrays.  This allows
-	 * sub-rechecks to inherit the values being examined by an outer recheck.
+	 * nested EPQ checks they should share es_epqTupleSlot arrays.  This
+	 * allows sub-rechecks to inherit the values being examined by an outer
+	 * recheck.
 	 */
 	estate->es_epqScanDone = (bool *) palloc0(rtsize * sizeof(bool));
 	if (parentestate->es_epqTupleSlot != NULL)

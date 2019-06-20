@@ -18,31 +18,32 @@
 #include "catalog/pg_cast_d.h"
 #include "catalog/pg_class_d.h"
 #include "catalog/pg_default_acl_d.h"
-#include "fe_utils/logging.h"
+
+#include "common/logging.h"
+#include "fe_utils/mbprint.h"
+#include "fe_utils/print.h"
 #include "fe_utils/string_utils.h"
 
 #include "common.h"
 #include "describe.h"
-#include "fe_utils/mbprint.h"
-#include "fe_utils/print.h"
 #include "settings.h"
 #include "variables.h"
 
 
 static bool describeOneTableDetails(const char *schemaname,
-						const char *relationname,
-						const char *oid,
-						bool verbose);
+									const char *relationname,
+									const char *oid,
+									bool verbose);
 static void add_tablespace_footer(printTableContent *const cont, char relkind,
-					  Oid tablespace, const bool newline);
+								  Oid tablespace, const bool newline);
 static void add_role_attribute(PQExpBuffer buf, const char *const str);
 static bool listTSParsersVerbose(const char *pattern);
 static bool describeOneTSParser(const char *oid, const char *nspname,
-					const char *prsname);
+								const char *prsname);
 static bool listTSConfigsVerbose(const char *pattern);
 static bool describeOneTSConfig(const char *oid, const char *nspname,
-					const char *cfgname,
-					const char *pnspname, const char *prsname);
+								const char *cfgname,
+								const char *pnspname, const char *prsname);
 static void printACLColumn(PQExpBuffer buf, const char *colname);
 static bool listOneExtensionContents(const char *extname, const char *oid);
 
@@ -159,8 +160,8 @@ describeAccessMethods(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support access methods.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -228,8 +229,8 @@ describeTablespaces(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_info("The server (version %s) does not support tablespaces.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					formatPGVersionNumber(pset.sversion, false,
+										  sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -339,9 +340,9 @@ describeFunctions(const char *functypes, const char *pattern, bool verbose, bool
 		char		sverbuf[32];
 
 		pg_log_error("\\df does not take a \"%c\" option with server version %s",
-				   'p',
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 'p',
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -350,9 +351,9 @@ describeFunctions(const char *functypes, const char *pattern, bool verbose, bool
 		char		sverbuf[32];
 
 		pg_log_error("\\df does not take a \"%c\" option with server version %s",
-				   'w',
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 'w',
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -1099,8 +1100,8 @@ listDefaultACLs(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support altering default privileges.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -1400,7 +1401,7 @@ describeTableDetails(const char *pattern, bool verbose, bool showSystem)
 		{
 			if (pattern)
 				pg_log_error("Did not find any relation named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any relations.");
 		}
@@ -3547,8 +3548,8 @@ listDbRoleSettings(const char *pattern, const char *pattern2)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support per-database role settings.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -3583,10 +3584,10 @@ listDbRoleSettings(const char *pattern, const char *pattern2)
 	{
 		if (pattern && pattern2)
 			pg_log_error("Did not find any settings for role \"%s\" and database \"%s\".",
-					   pattern, pattern2);
+						 pattern, pattern2);
 		else if (pattern)
 			pg_log_error("Did not find any settings for role \"%s\".",
-					   pattern);
+						 pattern);
 		else
 			pg_log_error("Did not find any settings.");
 	}
@@ -3759,7 +3760,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	{
 		if (pattern)
 			pg_log_error("Did not find any relation named \"%s\".",
-					   pattern);
+						 pattern);
 		else
 			pg_log_error("Did not find any relations.");
 	}
@@ -3803,7 +3804,7 @@ listPartitionedTables(const char *reltypes, const char *pattern, bool verbose)
 	PQExpBufferData title;
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
-	bool translate_columns[] = {false, false, false, false, false, false, false, false, false};
+	bool		translate_columns[] = {false, false, false, false, false, false, false, false, false};
 	const char *tabletitle;
 	bool		mixed_output = false;
 
@@ -4431,8 +4432,8 @@ listCollations(const char *pattern, bool verbose, bool showSystem)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support collations.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4586,8 +4587,8 @@ listTSParsers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4666,7 +4667,7 @@ listTSParsersVerbose(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any text search parser named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any text search parsers.");
 		}
@@ -4833,8 +4834,8 @@ listTSDictionaries(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4904,8 +4905,8 @@ listTSTemplates(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -4975,8 +4976,8 @@ listTSConfigs(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support full text search.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5056,7 +5057,7 @@ listTSConfigsVerbose(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any text search configuration named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any text search configurations.");
 		}
@@ -5181,8 +5182,8 @@ listForeignDataWrappers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign-data wrappers.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5264,8 +5265,8 @@ listForeignServers(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign servers.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5346,8 +5347,8 @@ listUserMappings(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support user mappings.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5407,8 +5408,8 @@ listForeignTables(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support foreign tables.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5485,8 +5486,8 @@ listExtensions(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support extensions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5542,8 +5543,8 @@ listExtensionContents(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support extensions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5570,7 +5571,7 @@ listExtensionContents(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any extension named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any extensions.");
 		}
@@ -5656,8 +5657,8 @@ listPublications(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support publications.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5727,8 +5728,8 @@ describePublications(const char *pattern)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support publications.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 
@@ -5765,7 +5766,7 @@ describePublications(const char *pattern)
 		{
 			if (pattern)
 				pg_log_error("Did not find any publication named \"%s\".",
-						   pattern);
+							 pattern);
 			else
 				pg_log_error("Did not find any publications.");
 		}
@@ -5883,8 +5884,8 @@ describeSubscriptions(const char *pattern, bool verbose)
 		char		sverbuf[32];
 
 		pg_log_error("The server (version %s) does not support subscriptions.",
-				   formatPGVersionNumber(pset.sversion, false,
-										 sverbuf, sizeof(sverbuf)));
+					 formatPGVersionNumber(pset.sversion, false,
+										   sverbuf, sizeof(sverbuf)));
 		return true;
 	}
 

@@ -202,7 +202,7 @@
 /*
  * Uncomment (or use -DTRGM_REGEXP_DEBUG) to print debug info,
  * for exploring and debugging the algorithm implementation.
- * This produces three graph files in /tmp, in Graphviz .dot format.
+ * This produces three graph files in /tmp, in Graphviz .gv format.
  * Some progress information is also printed to postmaster stderr.
  */
 /* #define TRGM_REGEXP_DEBUG */
@@ -478,9 +478,9 @@ typedef struct
 
 /* prototypes for private functions */
 static TRGM *createTrgmNFAInternal(regex_t *regex, TrgmPackedGraph **graph,
-					  MemoryContext rcontext);
+								   MemoryContext rcontext);
 static void RE_compile(regex_t *regex, text *text_re,
-		   int cflags, Oid collation);
+					   int cflags, Oid collation);
 static void getColorInfo(regex_t *regex, TrgmNFA *trgmNFA);
 static bool convertPgWchar(pg_wchar c, trgm_mb_char *result);
 static void transformGraph(TrgmNFA *trgmNFA);
@@ -489,7 +489,7 @@ static void addKey(TrgmNFA *trgmNFA, TrgmState *state, TrgmStateKey *key);
 static void addKeyToQueue(TrgmNFA *trgmNFA, TrgmStateKey *key);
 static void addArcs(TrgmNFA *trgmNFA, TrgmState *state);
 static void addArc(TrgmNFA *trgmNFA, TrgmState *state, TrgmStateKey *key,
-	   TrgmColor co, TrgmStateKey *destKey);
+				   TrgmColor co, TrgmStateKey *destKey);
 static bool validArcLabel(TrgmStateKey *key, TrgmColor co);
 static TrgmState *getState(TrgmNFA *trgmNFA, TrgmStateKey *key);
 static bool prefixContains(TrgmPrefix *prefix1, TrgmPrefix *prefix2);
@@ -2187,8 +2187,8 @@ printSourceNFA(regex_t *regex, TrgmColorInfo *colors, int ncolors)
 	appendStringInfoString(&buf, "}\n");
 
 	{
-		/* dot -Tpng -o /tmp/source.png < /tmp/source.dot */
-		FILE	   *fp = fopen("/tmp/source.dot", "w");
+		/* dot -Tpng -o /tmp/source.png < /tmp/source.gv */
+		FILE	   *fp = fopen("/tmp/source.gv", "w");
 
 		fprintf(fp, "%s", buf.data);
 		fclose(fp);
@@ -2249,8 +2249,8 @@ printTrgmNFA(TrgmNFA *trgmNFA)
 	appendStringInfoString(&buf, "}\n");
 
 	{
-		/* dot -Tpng -o /tmp/transformed.png < /tmp/transformed.dot */
-		FILE	   *fp = fopen("/tmp/transformed.dot", "w");
+		/* dot -Tpng -o /tmp/transformed.png < /tmp/transformed.gv */
+		FILE	   *fp = fopen("/tmp/transformed.gv", "w");
 
 		fprintf(fp, "%s", buf.data);
 		fclose(fp);
@@ -2340,8 +2340,8 @@ printTrgmPackedGraph(TrgmPackedGraph *packedGraph, TRGM *trigrams)
 	appendStringInfoString(&buf, "}\n");
 
 	{
-		/* dot -Tpng -o /tmp/packed.png < /tmp/packed.dot */
-		FILE	   *fp = fopen("/tmp/packed.dot", "w");
+		/* dot -Tpng -o /tmp/packed.png < /tmp/packed.gv */
+		FILE	   *fp = fopen("/tmp/packed.gv", "w");
 
 		fprintf(fp, "%s", buf.data);
 		fclose(fp);

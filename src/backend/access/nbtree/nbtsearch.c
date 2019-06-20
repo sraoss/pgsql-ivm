@@ -27,13 +27,13 @@
 static void _bt_drop_lock_and_maybe_pin(IndexScanDesc scan, BTScanPos sp);
 static OffsetNumber _bt_binsrch(Relation rel, BTScanInsert key, Buffer buf);
 static bool _bt_readpage(IndexScanDesc scan, ScanDirection dir,
-			 OffsetNumber offnum);
+						 OffsetNumber offnum);
 static void _bt_saveitem(BTScanOpaque so, int itemIndex,
-			 OffsetNumber offnum, IndexTuple itup);
+						 OffsetNumber offnum, IndexTuple itup);
 static bool _bt_steppage(IndexScanDesc scan, ScanDirection dir);
 static bool _bt_readnextpage(IndexScanDesc scan, BlockNumber blkno, ScanDirection dir);
 static bool _bt_parallel_readpage(IndexScanDesc scan, BlockNumber blkno,
-					  ScanDirection dir);
+								  ScanDirection dir);
 static Buffer _bt_walk_left(Relation rel, Buffer buf, Snapshot snapshot);
 static bool _bt_endpoint(IndexScanDesc scan, ScanDirection dir);
 static inline void _bt_initialize_more_data(BTScanOpaque so, ScanDirection dir);
@@ -166,8 +166,8 @@ _bt_search(Relation rel, BTScanInsert key, Buffer *bufP, int access,
 		new_stack->bts_parent = stack_in;
 
 		/*
-		 * Page level 1 is lowest non-leaf page level prior to leaves.  So,
-		 * if we're on the level 1 and asked to lock leaf page in write mode,
+		 * Page level 1 is lowest non-leaf page level prior to leaves.  So, if
+		 * we're on the level 1 and asked to lock leaf page in write mode,
 		 * then lock next page in write mode, because it must be a leaf.
 		 */
 		if (opaque->btpo.level == 1 && access == BT_WRITE)
@@ -424,7 +424,7 @@ _bt_binsrch(Relation rel,
 
 /*
  *
- *	bt_binsrch_insert() -- Cacheable, incremental leaf page binary search.
+ *	_bt_binsrch_insert() -- Cacheable, incremental leaf page binary search.
  *
  * Like _bt_binsrch(), but with support for caching the binary search
  * bounds.  Only used during insertion, and only on the leaf page that it
@@ -1235,7 +1235,7 @@ _bt_first(IndexScanDesc scan, ScanDirection dir)
 
 	/* Initialize remaining insertion scan key fields */
 	inskey.heapkeyspace = _bt_heapkeyspace(rel);
-	inskey.anynullkeys = false;		/* unusued */
+	inskey.anynullkeys = false; /* unused */
 	inskey.nextkey = nextkey;
 	inskey.pivotsearch = false;
 	inskey.scantid = NULL;

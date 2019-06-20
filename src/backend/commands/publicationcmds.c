@@ -53,7 +53,7 @@
 static List *OpenTableList(List *tables);
 static void CloseTableList(List *rels);
 static void PublicationAddTables(Oid pubid, List *rels, bool if_not_exists,
-					 AlterPublicationStmt *stmt);
+								 AlterPublicationStmt *stmt);
 static void PublicationDropTables(Oid pubid, List *rels, bool missing_ok);
 
 static void
@@ -129,7 +129,7 @@ parse_publication_options(List *options,
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
-					 errmsg("unrecognized publication parameter: %s", defel->defname)));
+					 errmsg("unrecognized publication parameter: \"%s\"", defel->defname)));
 	}
 }
 

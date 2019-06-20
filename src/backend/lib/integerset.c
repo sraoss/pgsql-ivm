@@ -61,7 +61,7 @@
  *   (https://doi.org/10.1002/spe.948)
  *
  *
- * Portions Copyright (c) 1996-2018, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -236,7 +236,7 @@ struct IntegerSet
 	 *
 	 * 'iter_values' is an array of integers ready to be returned to the
 	 * caller; 'iter_num_values' is the length of that array, and
-	 * 'iter_valueno' is the next index.  'iter_node' and 'item_itemno' point
+	 * 'iter_valueno' is the next index.  'iter_node' and 'iter_itemno' point
 	 * to the leaf node, and item within the leaf node, to get the next batch
 	 * of values from.
 	 *
@@ -261,13 +261,13 @@ struct IntegerSet
  * Prototypes for internal functions.
  */
 static void intset_update_upper(IntegerSet *intset, int level,
-					intset_node *new_node, uint64 new_node_item);
+								intset_node *child, uint64 child_key);
 static void intset_flush_buffered_values(IntegerSet *intset);
 
-static int intset_binsrch_uint64(uint64 value, uint64 *arr, int arr_elems,
-					  bool nextkey);
-static int intset_binsrch_leaf(uint64 value, leaf_item *arr, int arr_elems,
-					bool nextkey);
+static int	intset_binsrch_uint64(uint64 value, uint64 *arr, int arr_elems,
+								  bool nextkey);
+static int	intset_binsrch_leaf(uint64 value, leaf_item *arr, int arr_elems,
+								bool nextkey);
 
 static uint64 simple8b_encode(const uint64 *ints, int *num_encoded, uint64 base);
 static int	simple8b_decode(uint64 codeword, uint64 *decoded, uint64 base);

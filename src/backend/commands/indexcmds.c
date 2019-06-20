@@ -70,23 +70,23 @@
 /* non-export function prototypes */
 static void CheckPredicate(Expr *predicate);
 static void ComputeIndexAttrs(IndexInfo *indexInfo,
-				  Oid *typeOidP,
-				  Oid *collationOidP,
-				  Oid *classOidP,
-				  int16 *colOptionP,
-				  List *attList,
-				  List *exclusionOpNames,
-				  Oid relId,
-				  const char *accessMethodName, Oid accessMethodId,
-				  bool amcanorder,
-				  bool isconstraint);
+							  Oid *typeOidP,
+							  Oid *collationOidP,
+							  Oid *classOidP,
+							  int16 *colOptionP,
+							  List *attList,
+							  List *exclusionOpNames,
+							  Oid relId,
+							  const char *accessMethodName, Oid accessMethodId,
+							  bool amcanorder,
+							  bool isconstraint);
 static char *ChooseIndexName(const char *tabname, Oid namespaceId,
-				List *colnames, List *exclusionOpNames,
-				bool primary, bool isconstraint);
+							 List *colnames, List *exclusionOpNames,
+							 bool primary, bool isconstraint);
 static char *ChooseIndexNameAddition(List *colnames);
 static List *ChooseIndexColumnNames(List *indexElems);
 static void RangeVarCallbackForReindexIndex(const RangeVar *relation,
-								Oid relId, Oid oldRelId, void *arg);
+											Oid relId, Oid oldRelId, void *arg);
 static bool ReindexRelationConcurrently(Oid relationOid, int options);
 static void ReindexPartitionedIndex(Relation parentIdx);
 static void update_relispartition(Oid relationId, bool newval);
@@ -96,8 +96,8 @@ static void update_relispartition(Oid relationId, bool newval);
  */
 struct ReindexIndexCallbackState
 {
-	bool        concurrent;			/* flag from statement */
-	Oid         locked_table_oid;	/* tracks previously locked table */
+	bool		concurrent;		/* flag from statement */
+	Oid			locked_table_oid;	/* tracks previously locked table */
 };
 
 /*
@@ -396,7 +396,7 @@ WaitForOlderSnapshots(TransactionId limitXmin, bool progress)
 		{
 			if (progress)
 			{
-				PGPROC *holder = BackendIdGetProc(old_snapshots[i].backendId);
+				PGPROC	   *holder = BackendIdGetProc(old_snapshots[i].backendId);
 
 				pgstat_progress_update_param(PROGRESS_WAITFOR_CURRENT_PID,
 											 holder->pid);
@@ -498,8 +498,14 @@ DefineIndex(Oid relationId,
 	 * done.
 	 */
 	if (!OidIsValid(parentIndexId))
+	{
 		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 									  relationId);
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
+									 stmt->concurrent ?
+									 PROGRESS_CREATEIDX_COMMAND_CREATE_CONCURRENTLY :
+									 PROGRESS_CREATEIDX_COMMAND_CREATE);
+	}
 
 	/*
 	 * No index OID to report yet
@@ -984,7 +990,7 @@ DefineIndex(Oid relationId,
 	 */
 	if (partitioned && stmt->relation && !stmt->relation->inh)
 	{
-		PartitionDesc	pd = RelationGetPartitionDesc(rel);
+		PartitionDesc pd = RelationGetPartitionDesc(rel);
 
 		if (pd->nparts != 0)
 			flags |= INDEX_CREATE_INVALID;
@@ -2438,17 +2444,25 @@ ReindexTable(RangeVar *relation, int options, bool concurrent)
 									   RangeVarCallbackOwnsTable, NULL);
 
 	if (concurrent)
+	{
 		result = ReindexRelationConcurrently(heapOid, options);
+
+		if (!result)
+			ereport(NOTICE,
+					(errmsg("table \"%s\" has no indexes that can be reindexed concurrently",
+							relation->relname)));
+	}
 	else
+	{
 		result = reindex_relation(heapOid,
 								  REINDEX_REL_PROCESS_TOAST |
 								  REINDEX_REL_CHECK_CONSTRAINTS,
 								  options);
-
-	if (!result)
-		ereport(NOTICE,
-				(errmsg("table \"%s\" has no indexes",
-						relation->relname)));
+		if (!result)
+			ereport(NOTICE,
+					(errmsg("table \"%s\" has no indexes to reindex",
+							relation->relname)));
+	}
 
 	return heapOid;
 }
@@ -2630,7 +2644,6 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 	foreach(l, relids)
 	{
 		Oid			relid = lfirst_oid(l);
-		bool		result;
 
 		StartTransactionCommand();
 		/* functions in indexes may want a snapshot set */
@@ -2638,11 +2651,13 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 
 		if (concurrent)
 		{
-			result = ReindexRelationConcurrently(relid, options);
+			(void) ReindexRelationConcurrently(relid, options);
 			/* ReindexRelationConcurrently() does the verbose output */
 		}
 		else
 		{
+			bool		result;
+
 			result = reindex_relation(relid,
 									  REINDEX_REL_PROCESS_TOAST |
 									  REINDEX_REL_CHECK_CONSTRAINTS,
@@ -2669,13 +2684,19 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
  * ReindexRelationConcurrently - process REINDEX CONCURRENTLY for given
  * relation OID
  *
- * The relation can be either an index or a table.  If it is a table, all its
- * valid indexes will be rebuilt, including its associated toast table
- * indexes.  If it is an index, this index itself will be rebuilt.
+ * 'relationOid' can either belong to an index, a table or a materialized
+ * view.  For tables and materialized views, all its indexes will be rebuilt,
+ * excluding invalid indexes and any indexes used in exclusion constraints,
+ * but including its associated toast table indexes.  For indexes, the index
+ * itself will be rebuilt.  If 'relationOid' belongs to a partitioned table
+ * then we issue a warning to mention these are not yet supported.
  *
  * The locks taken on parent tables and involved indexes are kept until the
  * transaction is committed, at which point a session lock is taken on each
  * relation.  Both of these protect against concurrent schema changes.
+ *
+ * Returns true if any indexes have been rebuilt (including toast table's
+ * indexes, when relevant), otherwise returns false.
  */
 static bool
 ReindexRelationConcurrently(Oid relationOid, int options)
@@ -2923,6 +2944,8 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 
 		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 									  RelationGetRelid(heapRel));
+		pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
+									 PROGRESS_CREATEIDX_COMMAND_REINDEX_CONCURRENTLY);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_INDEX_OID,
 									 indexId);
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_ACCESS_METHOD_OID,
@@ -3003,7 +3026,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 	/* Get a session-level lock on each table. */
 	foreach(lc, relationLocks)
 	{
-		LockRelId   *lockrelid = (LockRelId *) lfirst(lc);
+		LockRelId  *lockrelid = (LockRelId *) lfirst(lc);
 
 		LockRelationIdForSession(lockrelid, ShareUpdateExclusiveLock);
 	}
@@ -3112,8 +3135,8 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 
 		/*
 		 * The index is now valid in the sense that it contains all currently
-		 * interesting tuples.  But since it might not contain tuples deleted just
-		 * before the reference snap was taken, we have to wait out any
+		 * interesting tuples.  But since it might not contain tuples deleted
+		 * just before the reference snap was taken, we have to wait out any
 		 * transactions that might have older snapshots.
 		 */
 		pgstat_progress_update_param(PROGRESS_CREATEIDX_PHASE,
@@ -3250,7 +3273,7 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 	 */
 	foreach(lc, relationLocks)
 	{
-		LockRelId   *lockrelid = (LockRelId *) lfirst(lc);
+		LockRelId  *lockrelid = (LockRelId *) lfirst(lc);
 
 		UnlockRelationIdForSession(lockrelid, ShareUpdateExclusiveLock);
 	}

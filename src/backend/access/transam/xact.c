@@ -91,8 +91,8 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * need to return the same answers in the parallel worker as they would have
  * in the user backend, so we need some additional bookkeeping.
  *
- * XactTopTransactionId stores the XID of our toplevel transaction, which
- * will be the same as TopTransactionState.transactionId in an ordinary
+ * XactTopFullTransactionId stores the XID of our toplevel transaction, which
+ * will be the same as TopTransactionState.fullTransactionId in an ordinary
  * backend; but in a parallel backend, which does not have the entire
  * transaction state, it will instead be copied from the backend that started
  * the parallel operation.
@@ -312,11 +312,11 @@ static void AtStart_Memory(void);
 static void AtStart_ResourceOwner(void);
 static void CallXactCallbacks(XactEvent event);
 static void CallSubXactCallbacks(SubXactEvent event,
-					 SubTransactionId mySubid,
-					 SubTransactionId parentSubid);
+								 SubTransactionId mySubid,
+								 SubTransactionId parentSubid);
 static void CleanupTransaction(void);
 static void CheckTransactionBlock(bool isTopLevel, bool throwError,
-					  const char *stmtType);
+								  const char *stmtType);
 static void CommitTransaction(void);
 static TransactionId RecordTransactionAbort(bool isSubXact);
 static void StartTransaction(void);
@@ -570,9 +570,9 @@ AssignTransactionId(TransactionState s)
 
 	/*
 	 * Ensure parent(s) have XIDs, so that a child always has an XID later
-	 * than its parent.  Mustn't recurse here, or we might get a stack overflow
-	 * if we're at the bottom of a huge stack of subtransactions none of which
-	 * have XIDs yet.
+	 * than its parent.  Mustn't recurse here, or we might get a stack
+	 * overflow if we're at the bottom of a huge stack of subtransactions none
+	 * of which have XIDs yet.
 	 */
 	if (isSubXact && !FullTransactionIdIsValid(s->parent->fullTransactionId))
 	{
@@ -2868,8 +2868,8 @@ StartTransactionCommand(void)
  * just skipping the reset in StartTransaction() won't work.)
  */
 static int	save_XactIsoLevel;
-static bool	save_XactReadOnly;
-static bool	save_XactDeferrable;
+static bool save_XactReadOnly;
+static bool save_XactDeferrable;
 
 void
 SaveTransactionCharacteristics(void)
@@ -3364,7 +3364,7 @@ PreventInTransactionBlock(bool isTopLevel, const char *stmtType)
 }
 
 /*
- *	WarnNoTranactionBlock
+ *	WarnNoTransactionBlock
  *	RequireTransactionBlock
  *
  *	These two functions allow for warnings or errors if a command is executed
@@ -5193,7 +5193,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 		nxids = add_size(nxids, s->nChildXids);
 	}
 	Assert(SerializedTransactionStateHeaderSize + nxids * sizeof(TransactionId)
-		<= maxsize);
+		   <= maxsize);
 
 	/* Copy them to our scratch space. */
 	workspace = palloc(nxids * sizeof(TransactionId));

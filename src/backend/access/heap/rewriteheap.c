@@ -350,7 +350,7 @@ end_heap_rewrite(RewriteState state)
 	 *
 	 * It's obvious that we must do this when not WAL-logging. It's less
 	 * obvious that we have to do it even if we did WAL-log the pages. The
-	 * reason is the same as in tablecmds.c's copy_relation_data(): we're
+	 * reason is the same as in storage.c's RelationCopyStorage(): we're
 	 * writing data that's not in shared buffers, and so a CHECKPOINT
 	 * occurring during the rewriteheap operation won't have fsync'd data we
 	 * wrote before the checkpoint.
@@ -652,7 +652,7 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 	}
 	else if (HeapTupleHasExternal(tup) || tup->t_len > TOAST_TUPLE_THRESHOLD)
 	{
-		int options = HEAP_INSERT_SKIP_FSM;
+		int			options = HEAP_INSERT_SKIP_FSM;
 
 		if (!state->rs_use_wal)
 			options |= HEAP_INSERT_SKIP_WAL;

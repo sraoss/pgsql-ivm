@@ -71,39 +71,39 @@
 
 
 static HeapTuple heap_prepare_insert(Relation relation, HeapTuple tup,
-					TransactionId xid, CommandId cid, int options);
+									 TransactionId xid, CommandId cid, int options);
 static XLogRecPtr log_heap_update(Relation reln, Buffer oldbuf,
-				Buffer newbuf, HeapTuple oldtup,
-				HeapTuple newtup, HeapTuple old_key_tup,
-				bool all_visible_cleared, bool new_all_visible_cleared);
+								  Buffer newbuf, HeapTuple oldtup,
+								  HeapTuple newtup, HeapTuple old_key_tup,
+								  bool all_visible_cleared, bool new_all_visible_cleared);
 static Bitmapset *HeapDetermineModifiedColumns(Relation relation,
-							 Bitmapset *interesting_cols,
-							 HeapTuple oldtup, HeapTuple newtup);
+											   Bitmapset *interesting_cols,
+											   HeapTuple oldtup, HeapTuple newtup);
 static bool heap_acquire_tuplock(Relation relation, ItemPointer tid,
-					 LockTupleMode mode, LockWaitPolicy wait_policy,
-					 bool *have_tuple_lock);
+								 LockTupleMode mode, LockWaitPolicy wait_policy,
+								 bool *have_tuple_lock);
 static void compute_new_xmax_infomask(TransactionId xmax, uint16 old_infomask,
-						  uint16 old_infomask2, TransactionId add_to_xmax,
-						  LockTupleMode mode, bool is_update,
-						  TransactionId *result_xmax, uint16 *result_infomask,
-						  uint16 *result_infomask2);
+									  uint16 old_infomask2, TransactionId add_to_xmax,
+									  LockTupleMode mode, bool is_update,
+									  TransactionId *result_xmax, uint16 *result_infomask,
+									  uint16 *result_infomask2);
 static TM_Result heap_lock_updated_tuple(Relation rel, HeapTuple tuple,
-						ItemPointer ctid, TransactionId xid,
-						LockTupleMode mode);
+										 ItemPointer ctid, TransactionId xid,
+										 LockTupleMode mode);
 static void GetMultiXactIdHintBits(MultiXactId multi, uint16 *new_infomask,
-					   uint16 *new_infomask2);
+								   uint16 *new_infomask2);
 static TransactionId MultiXactIdGetUpdateXid(TransactionId xmax,
-						uint16 t_infomask);
+											 uint16 t_infomask);
 static bool DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
-						LockTupleMode lockmode);
+									LockTupleMode lockmode, bool *current_is_member);
 static void MultiXactIdWait(MultiXactId multi, MultiXactStatus status, uint16 infomask,
-				Relation rel, ItemPointer ctid, XLTW_Oper oper,
-				int *remaining);
+							Relation rel, ItemPointer ctid, XLTW_Oper oper,
+							int *remaining);
 static bool ConditionalMultiXactIdWait(MultiXactId multi, MultiXactStatus status,
-						   uint16 infomask, Relation rel, int *remaining);
+									   uint16 infomask, Relation rel, int *remaining);
 static XLogRecPtr log_heap_new_cid(Relation relation, HeapTuple tup);
 static HeapTuple ExtractReplicaIdentity(Relation rel, HeapTuple tup, bool key_modified,
-					   bool *copy);
+										bool *copy);
 
 
 /*
@@ -239,14 +239,14 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	 * behaviors, independently of the size of the table; also there is a GUC
 	 * variable that can disable synchronized scanning.)
 	 *
-	 * Note that heap_parallelscan_initialize has a very similar test; if you
-	 * change this, consider changing that one, too.
+	 * Note that table_block_parallelscan_initialize has a very similar test;
+	 * if you change this, consider changing that one, too.
 	 */
 	if (!RelationUsesLocalBuffers(scan->rs_base.rs_rd) &&
 		scan->rs_nblocks > NBuffers / 4)
 	{
-		allow_strat = scan->rs_base.rs_allow_strat;
-		allow_sync = scan->rs_base.rs_allow_sync;
+		allow_strat = (scan->rs_base.rs_flags & SO_ALLOW_STRAT) != 0;
+		allow_sync = (scan->rs_base.rs_flags & SO_ALLOW_SYNC) != 0;
 	}
 	else
 		allow_strat = allow_sync = false;
@@ -267,7 +267,10 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 	if (scan->rs_base.rs_parallel != NULL)
 	{
 		/* For parallel scan, believe whatever ParallelTableScanDesc says. */
-		scan->rs_base.rs_syncscan = scan->rs_base.rs_parallel->phs_syncscan;
+		if (scan->rs_base.rs_parallel->phs_syncscan)
+			scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
+		else
+			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 	}
 	else if (keep_startblock)
 	{
@@ -276,16 +279,19 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		 * so that rewinding a cursor doesn't generate surprising results.
 		 * Reset the active syncscan setting, though.
 		 */
-		scan->rs_base.rs_syncscan = (allow_sync && synchronize_seqscans);
+		if (allow_sync && synchronize_seqscans)
+			scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
+		else
+			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 	}
 	else if (allow_sync && synchronize_seqscans)
 	{
-		scan->rs_base.rs_syncscan = true;
+		scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
 		scan->rs_startblock = ss_get_location(scan->rs_base.rs_rd, scan->rs_nblocks);
 	}
 	else
 	{
-		scan->rs_base.rs_syncscan = false;
+		scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 		scan->rs_startblock = 0;
 	}
 
@@ -305,11 +311,11 @@ initscan(HeapScanDesc scan, ScanKey key, bool keep_startblock)
 		memcpy(scan->rs_base.rs_key, key, scan->rs_base.rs_nkeys * sizeof(ScanKeyData));
 
 	/*
-	 * Currently, we don't have a stats counter for bitmap heap scans (but the
-	 * underlying bitmap index scans will be counted) or sample scans (we only
-	 * update stats for tuple fetches there)
+	 * Currently, we only have a stats counter for sequential heap scans (but
+	 * e.g for bitmap scans the underlying bitmap index scans will be counted,
+	 * and for sample scans we update stats for tuple fetches).
 	 */
-	if (!scan->rs_base.rs_bitmapscan && !scan->rs_base.rs_samplescan)
+	if (scan->rs_base.rs_flags & SO_TYPE_SEQSCAN)
 		pgstat_count_heap_scan(scan->rs_base.rs_rd);
 }
 
@@ -325,7 +331,8 @@ heap_setscanlimits(TableScanDesc sscan, BlockNumber startBlk, BlockNumber numBlk
 	HeapScanDesc scan = (HeapScanDesc) sscan;
 
 	Assert(!scan->rs_inited);	/* else too late to change */
-	Assert(!scan->rs_base.rs_syncscan); /* else rs_startblock is significant */
+	/* else rs_startblock is significant */
+	Assert(!(scan->rs_base.rs_flags & SO_ALLOW_SYNC));
 
 	/* Check startBlk is valid (but allow case of zero blocks...) */
 	Assert(startBlk == 0 || startBlk < scan->rs_nblocks);
@@ -375,7 +382,7 @@ heapgetpage(TableScanDesc sscan, BlockNumber page)
 									   RBM_NORMAL, scan->rs_strategy);
 	scan->rs_cblock = page;
 
-	if (!scan->rs_base.rs_pageatatime)
+	if (!(scan->rs_base.rs_flags & SO_ALLOW_PAGEMODE))
 		return;
 
 	buffer = scan->rs_cbuf;
@@ -574,7 +581,7 @@ heapgettup(HeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_base.rs_syncscan = false;
+			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 			/* start from last page of the scan */
 			if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
@@ -738,7 +745,7 @@ heapgettup(HeapScanDesc scan,
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_base.rs_syncscan)
+			if (scan->rs_base.rs_flags & SO_ALLOW_SYNC)
 				ss_report_location(scan->rs_base.rs_rd, page);
 		}
 
@@ -885,7 +892,7 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 * time, and much more likely that we'll just bollix things for
 			 * forward scanners.
 			 */
-			scan->rs_base.rs_syncscan = false;
+			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
 			/* start from last page of the scan */
 			if (scan->rs_startblock > 0)
 				page = scan->rs_startblock - 1;
@@ -1037,7 +1044,7 @@ heapgettup_pagemode(HeapScanDesc scan,
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_base.rs_syncscan)
+			if (scan->rs_base.rs_flags & SO_ALLOW_SYNC)
 				ss_report_location(scan->rs_base.rs_rd, page);
 		}
 
@@ -1125,12 +1132,7 @@ TableScanDesc
 heap_beginscan(Relation relation, Snapshot snapshot,
 			   int nkeys, ScanKey key,
 			   ParallelTableScanDesc parallel_scan,
-			   bool allow_strat,
-			   bool allow_sync,
-			   bool allow_pagemode,
-			   bool is_bitmapscan,
-			   bool is_samplescan,
-			   bool temp_snap)
+			   uint32 flags)
 {
 	HeapScanDesc scan;
 
@@ -1151,33 +1153,39 @@ heap_beginscan(Relation relation, Snapshot snapshot,
 	scan->rs_base.rs_rd = relation;
 	scan->rs_base.rs_snapshot = snapshot;
 	scan->rs_base.rs_nkeys = nkeys;
-	scan->rs_base.rs_bitmapscan = is_bitmapscan;
-	scan->rs_base.rs_samplescan = is_samplescan;
-	scan->rs_strategy = NULL;	/* set in initscan */
-	scan->rs_base.rs_allow_strat = allow_strat;
-	scan->rs_base.rs_allow_sync = allow_sync;
-	scan->rs_base.rs_temp_snap = temp_snap;
+	scan->rs_base.rs_flags = flags;
 	scan->rs_base.rs_parallel = parallel_scan;
+	scan->rs_strategy = NULL;	/* set in initscan */
 
 	/*
-	 * we can use page-at-a-time mode if it's an MVCC-safe snapshot
+	 * Disable page-at-a-time mode if it's not a MVCC-safe snapshot.
 	 */
-	scan->rs_base.rs_pageatatime =
-		allow_pagemode && snapshot && IsMVCCSnapshot(snapshot);
+	if (!(snapshot && IsMVCCSnapshot(snapshot)))
+		scan->rs_base.rs_flags &= ~SO_ALLOW_PAGEMODE;
 
 	/*
-	 * For a seqscan in a serializable transaction, acquire a predicate lock
-	 * on the entire relation. This is required not only to lock all the
-	 * matching tuples, but also to conflict with new insertions into the
-	 * table. In an indexscan, we take page locks on the index pages covering
-	 * the range specified in the scan qual, but in a heap scan there is
-	 * nothing more fine-grained to lock. A bitmap scan is a different story,
-	 * there we have already scanned the index and locked the index pages
-	 * covering the predicate. But in that case we still have to lock any
-	 * matching heap tuples.
+	 * For seqscan and sample scans in a serializable transaction, acquire a
+	 * predicate lock on the entire relation. This is required not only to
+	 * lock all the matching tuples, but also to conflict with new insertions
+	 * into the table. In an indexscan, we take page locks on the index pages
+	 * covering the range specified in the scan qual, but in a heap scan there
+	 * is nothing more fine-grained to lock. A bitmap scan is a different
+	 * story, there we have already scanned the index and locked the index
+	 * pages covering the predicate. But in that case we still have to lock
+	 * any matching heap tuples. For sample scan we could optimize the locking
+	 * to be at least page-level granularity, but we'd need to add per-tuple
+	 * locking for that.
 	 */
-	if (!is_bitmapscan)
+	if (scan->rs_base.rs_flags & (SO_TYPE_SEQSCAN | SO_TYPE_SAMPLESCAN))
+	{
+		/*
+		 * Ensure a missing snapshot is noticed reliably, even if the
+		 * isolation mode means predicate locking isn't performed (and
+		 * therefore the snapshot isn't used here).
+		 */
+		Assert(snapshot);
 		PredicateLockRelation(relation, snapshot);
+	}
 
 	/* we only need to set this up once */
 	scan->rs_ctup.t_tableOid = RelationGetRelid(relation);
@@ -1204,10 +1212,21 @@ heap_rescan(TableScanDesc sscan, ScanKey key, bool set_params,
 
 	if (set_params)
 	{
-		scan->rs_base.rs_allow_strat = allow_strat;
-		scan->rs_base.rs_allow_sync = allow_sync;
-		scan->rs_base.rs_pageatatime =
-			allow_pagemode && IsMVCCSnapshot(scan->rs_base.rs_snapshot);
+		if (allow_strat)
+			scan->rs_base.rs_flags |= SO_ALLOW_STRAT;
+		else
+			scan->rs_base.rs_flags &= ~SO_ALLOW_STRAT;
+
+		if (allow_sync)
+			scan->rs_base.rs_flags |= SO_ALLOW_SYNC;
+		else
+			scan->rs_base.rs_flags &= ~SO_ALLOW_SYNC;
+
+		if (allow_pagemode && scan->rs_base.rs_snapshot &&
+			IsMVCCSnapshot(scan->rs_base.rs_snapshot))
+			scan->rs_base.rs_flags |= SO_ALLOW_PAGEMODE;
+		else
+			scan->rs_base.rs_flags &= ~SO_ALLOW_PAGEMODE;
 	}
 
 	/*
@@ -1246,7 +1265,7 @@ heap_endscan(TableScanDesc sscan)
 	if (scan->rs_strategy != NULL)
 		FreeAccessStrategy(scan->rs_strategy);
 
-	if (scan->rs_base.rs_temp_snap)
+	if (scan->rs_base.rs_flags & SO_TEMP_SNAPSHOT)
 		UnregisterSnapshot(scan->rs_base.rs_snapshot);
 
 	pfree(scan);
@@ -1282,13 +1301,13 @@ heap_getnext(TableScanDesc sscan, ScanDirection direction)
 	if (unlikely(sscan->rs_rd->rd_tableam != GetHeapamTableAmRoutine()))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("only heap AM is supported")));
+				 errmsg_internal("only heap AM is supported")));
 
 	/* Note: no locking manipulations needed */
 
 	HEAPDEBUG_1;				/* heap_getnext( info ) */
 
-	if (scan->rs_base.rs_pageatatime)
+	if (scan->rs_base.rs_flags & SO_ALLOW_PAGEMODE)
 		heapgettup_pagemode(scan, direction,
 							scan->rs_base.rs_nkeys, scan->rs_base.rs_key);
 	else
@@ -1335,11 +1354,10 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
 
 	HEAPAMSLOTDEBUG_1;			/* heap_getnextslot( info ) */
 
-	if (scan->rs_base.rs_pageatatime)
-		heapgettup_pagemode(scan, direction,
-							scan->rs_base.rs_nkeys, scan->rs_base.rs_key);
+	if (sscan->rs_flags & SO_ALLOW_PAGEMODE)
+		heapgettup_pagemode(scan, direction, sscan->rs_nkeys, sscan->rs_key);
 	else
-		heapgettup(scan, direction, scan->rs_base.rs_nkeys, scan->rs_base.rs_key);
+		heapgettup(scan, direction, sscan->rs_nkeys, sscan->rs_key);
 
 	if (scan->rs_ctup.t_data == NULL)
 	{
@@ -1377,15 +1395,6 @@ heap_getnextslot(TableScanDesc sscan, ScanDirection direction, TupleTableSlot *s
  *
  * If the tuple is found but fails the time qual check, then false is returned
  * but tuple->t_data is left pointing to the tuple.
- *
- * keep_buf determines what is done with the buffer in the false-result cases.
- * When the caller specifies keep_buf = true, we retain the pin on the buffer
- * and return it in *userbuf (so the caller must eventually unpin it); when
- * keep_buf = false, the pin is released and *userbuf is set to InvalidBuffer.
- *
- * stats_relation is the relation to charge the heap_fetch operation against
- * for statistical purposes.  (This could be the heap rel itself, an
- * associated index, or NULL to not count the fetch at all.)
  *
  * heap_fetch does not follow HOT chains: only the exact TID requested will
  * be fetched.
@@ -1654,8 +1663,8 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
 /*
  *	heap_get_latest_tid -  get the latest tid of a specified tuple
  *
- * Actually, this gets the latest version that is visible according to
- * the passed snapshot.  You can pass SnapshotDirty to get the very latest,
+ * Actually, this gets the latest version that is visible according to the
+ * scan's snapshot.  Create a scan using SnapshotDirty to get the very latest,
  * possibly uncommitted version.
  *
  * *tid is both an input and an output parameter: it is updated to
@@ -1663,28 +1672,20 @@ heap_hot_search_buffer(ItemPointer tid, Relation relation, Buffer buffer,
  * if no version of the row passes the snapshot test.
  */
 void
-heap_get_latest_tid(Relation relation,
-					Snapshot snapshot,
+heap_get_latest_tid(TableScanDesc sscan,
 					ItemPointer tid)
 {
-	BlockNumber blk;
+	Relation	relation = sscan->rs_rd;
+	Snapshot	snapshot = sscan->rs_snapshot;
 	ItemPointerData ctid;
 	TransactionId priorXmax;
 
-	/* this is to avoid Assert failures on bad input */
-	if (!ItemPointerIsValid(tid))
-		return;
-
 	/*
-	 * Since this can be called with user-supplied TID, don't trust the input
-	 * too much.  (RelationGetNumberOfBlocks is an expensive check, so we
-	 * don't check t_ctid links again this way.  Note that it would not do to
-	 * call it just once and save the result, either.)
+	 * table_get_latest_tid verified that the passed in tid is valid.  Assume
+	 * that t_ctid links are valid however - there shouldn't be invalid ones
+	 * in the table.
 	 */
-	blk = ItemPointerGetBlockNumber(tid);
-	if (blk >= RelationGetNumberOfBlocks(relation))
-		elog(ERROR, "block number %u is out of range for relation \"%s\"",
-			 blk, RelationGetRelationName(relation));
+	Assert(ItemPointerIsValid(tid));
 
 	/*
 	 * Loop to chase down t_ctid links.  At top of loop, ctid is the tuple we
@@ -1856,12 +1857,12 @@ ReleaseBulkInsertStatePin(BulkInsertState bistate)
  * The new tuple is stamped with current transaction ID and the specified
  * command ID.
  *
- * See table_insert for comments about most of the input flags, except that
- * this routine directly takes a tuple rather than a slot.
+ * See table_tuple_insert for comments about most of the input flags, except
+ * that this routine directly takes a tuple rather than a slot.
  *
  * There's corresponding HEAP_INSERT_ options to all the TABLE_INSERT_
  * options, and there additionally is HEAP_INSERT_SPECULATIVE which is used to
- * implement table_insert_speculative().
+ * implement table_tuple_insert_speculative().
  *
  * On return the header fields of *tup are updated to match the stored tuple;
  * in particular tup->t_self receives the actual TID where the tuple was
@@ -2434,8 +2435,8 @@ xmax_infomask_changed(uint16 new_infomask, uint16 old_infomask)
 /*
  *	heap_delete - delete a tuple
  *
- * See table_delete() for an explanation of the parameters, except that this
- * routine directly takes a tuple rather than a slot.
+ * See table_tuple_delete() for an explanation of the parameters, except that
+ * this routine directly takes a tuple rather than a slot.
  *
  * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
  * t_xmax (resolving a possible MultiXact, if necessary), and t_cmax (the last
@@ -2546,15 +2547,20 @@ l1:
 		 */
 		if (infomask & HEAP_XMAX_IS_MULTI)
 		{
-			/* wait for multixact */
+			bool		current_is_member = false;
+
 			if (DoesMultiXactIdConflict((MultiXactId) xwait, infomask,
-										LockTupleExclusive))
+										LockTupleExclusive, &current_is_member))
 			{
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
-				/* acquire tuple lock, if necessary */
-				heap_acquire_tuplock(relation, &(tp.t_self), LockTupleExclusive,
-									 LockWaitBlock, &have_tuple_lock);
+				/*
+				 * Acquire the lock, if necessary (but skip it when we're
+				 * requesting a lock and already have one; avoids deadlock).
+				 */
+				if (!current_is_member)
+					heap_acquire_tuplock(relation, &(tp.t_self), LockTupleExclusive,
+										 LockWaitBlock, &have_tuple_lock);
 
 				/* wait for multixact */
 				MultiXactIdWait((MultiXactId) xwait, MultiXactStatusUpdate, infomask,
@@ -2880,8 +2886,8 @@ simple_heap_delete(Relation relation, ItemPointer tid)
 /*
  *	heap_update - replace a tuple
  *
- * See table_update() for an explanation of the parameters, except that this
- * routine directly takes a tuple rather than a slot.
+ * See table_tuple_update() for an explanation of the parameters, except that
+ * this routine directly takes a tuple rather than a slot.
  *
  * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
  * t_xmax (resolving a possible MultiXact, if necessary), and t_cmax (the last
@@ -3125,15 +3131,20 @@ l2:
 		{
 			TransactionId update_xact;
 			int			remain;
+			bool		current_is_member = false;
 
 			if (DoesMultiXactIdConflict((MultiXactId) xwait, infomask,
-										*lockmode))
+										*lockmode, &current_is_member))
 			{
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 
-				/* acquire tuple lock, if necessary */
-				heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
-									 LockWaitBlock, &have_tuple_lock);
+				/*
+				 * Acquire the lock, if necessary (but skip it when we're
+				 * requesting a lock and already have one; avoids deadlock).
+				 */
+				if (!current_is_member)
+					heap_acquire_tuplock(relation, &(oldtup.t_self), *lockmode,
+										 LockWaitBlock, &have_tuple_lock);
 
 				/* wait for multixact */
 				MultiXactIdWait((MultiXactId) xwait, mxact_status, infomask,
@@ -3587,7 +3598,7 @@ l2:
 		 * Since the new tuple is going into the same page, we might be able
 		 * to do a HOT update.  Check if any of the index columns have been
 		 * changed. If the page was already full, we may have skipped checking
-		 * for index columns. If so, HOT update is possible.
+		 * for index columns, and also can't do a HOT update.
 		 */
 		if (hot_attrs_checked && !bms_overlap(modified_attrs, hot_attrs))
 			use_hot_update = true;
@@ -3951,7 +3962,7 @@ get_mxact_status_for_lock(LockTupleMode mode, bool is_update)
  *	*buffer: set to buffer holding tuple (pinned but not locked at exit)
  *	*tmfd: filled in failure cases (see below)
  *
- * Function results are the same as the ones for table_lock_tuple().
+ * Function results are the same as the ones for table_tuple_lock().
  *
  * In the failure cases other than TM_Invisible, the routine fills
  * *tmfd with the tuple's t_ctid, t_xmax (resolving a possible MultiXact,
@@ -3980,6 +3991,7 @@ heap_lock_tuple(Relation relation, HeapTuple tuple,
 				new_infomask,
 				new_infomask2;
 	bool		first_time = true;
+	bool		skip_tuple_lock = false;
 	bool		have_tuple_lock = false;
 	bool		cleared_all_frozen = false;
 
@@ -4079,6 +4091,21 @@ l3:
 						pfree(members);
 						result = TM_Ok;
 						goto out_unlocked;
+					}
+					else
+					{
+						/*
+						 * Disable acquisition of the heavyweight tuple lock.
+						 * Otherwise, when promoting a weaker lock, we might
+						 * deadlock with another locker that has acquired the
+						 * heavyweight tuple lock and is waiting for our
+						 * transaction to finish.
+						 *
+						 * Note that in this case we still need to wait for
+						 * the multixact if required, to avoid acquiring
+						 * conflicting locks.
+						 */
+						skip_tuple_lock = true;
 					}
 				}
 
@@ -4234,7 +4261,7 @@ l3:
 			if (infomask & HEAP_XMAX_IS_MULTI)
 			{
 				if (!DoesMultiXactIdConflict((MultiXactId) xwait, infomask,
-											 mode))
+											 mode, NULL))
 				{
 					/*
 					 * No conflict, but if the xmax changed under us in the
@@ -4311,13 +4338,15 @@ l3:
 			/*
 			 * Acquire tuple lock to establish our priority for the tuple, or
 			 * die trying.  LockTuple will release us when we are next-in-line
-			 * for the tuple.  We must do this even if we are share-locking.
+			 * for the tuple.  We must do this even if we are share-locking,
+			 * but not if we already have a weaker lock on the tuple.
 			 *
 			 * If we are forced to "start over" below, we keep the tuple lock;
 			 * this arranges that we stay at the head of the line while
 			 * rechecking tuple state.
 			 */
-			if (!heap_acquire_tuplock(relation, tid, mode, wait_policy,
+			if (!skip_tuple_lock &&
+				!heap_acquire_tuplock(relation, tid, mode, wait_policy,
 									  &have_tuple_lock))
 			{
 				/*
@@ -6515,10 +6544,13 @@ HeapTupleGetUpdateXid(HeapTupleHeader tuple)
  * tuple lock of the given strength?
  *
  * The passed infomask pairs up with the given multixact in the tuple header.
+ *
+ * If current_is_member is not NULL, it is set to 'true' if the current
+ * transaction is a member of the given multixact.
  */
 static bool
 DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
-						LockTupleMode lockmode)
+						LockTupleMode lockmode, bool *current_is_member)
 {
 	int			nmembers;
 	MultiXactMember *members;
@@ -6539,15 +6571,24 @@ DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
 			TransactionId memxid;
 			LOCKMODE	memlockmode;
 
+			if (result && (current_is_member == NULL || *current_is_member))
+				break;
+
 			memlockmode = LOCKMODE_from_mxstatus(members[i].status);
+
+			/* ignore members from current xact (but track their presence) */
+			memxid = members[i].xid;
+			if (TransactionIdIsCurrentTransactionId(memxid))
+			{
+				if (current_is_member != NULL)
+					*current_is_member = true;
+				continue;
+			}
+			else if (result)
+				continue;
 
 			/* ignore members that don't conflict with the lock we want */
 			if (!DoLockModesConflict(memlockmode, wanted))
-				continue;
-
-			/* ignore members from current xact */
-			memxid = members[i].xid;
-			if (TransactionIdIsCurrentTransactionId(memxid))
 				continue;
 
 			if (ISUPDATE_from_mxstatus(members[i].status))
@@ -6566,10 +6607,11 @@ DoesMultiXactIdConflict(MultiXactId multi, uint16 infomask,
 			/*
 			 * Whatever remains are either live lockers that conflict with our
 			 * wanted lock, and updaters that are not aborted.  Those conflict
-			 * with what we want, so return true.
+			 * with what we want.  Set up to return true, but keep going to
+			 * look for the current transaction among the multixact members,
+			 * if needed.
 			 */
 			result = true;
-			break;
 		}
 		pfree(members);
 	}
@@ -7075,7 +7117,7 @@ heap_compute_xid_horizon_for_tuples(Relation rel,
 			 * Conjecture: if hitemid is dead then it had xids before the xids
 			 * marked on LP_NORMAL items. So we just ignore this item and move
 			 * onto the next, for the purposes of calculating
-			 * latestRemovedxids.
+			 * latestRemovedXid.
 			 */
 		}
 		else

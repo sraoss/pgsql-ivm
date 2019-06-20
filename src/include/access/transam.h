@@ -218,7 +218,7 @@ extern bool TransactionIdPrecedesOrEquals(TransactionId id1, TransactionId id2);
 extern bool TransactionIdFollows(TransactionId id1, TransactionId id2);
 extern bool TransactionIdFollowsOrEquals(TransactionId id1, TransactionId id2);
 extern TransactionId TransactionIdLatest(TransactionId mainxid,
-					int nxids, const TransactionId *xids);
+										 int nxids, const TransactionId *xids);
 extern XLogRecPtr TransactionIdGetCommitLSN(TransactionId xid);
 
 /* in transam/varsup.c */
@@ -226,10 +226,17 @@ extern FullTransactionId GetNewTransactionId(bool isSubXact);
 extern void AdvanceNextFullTransactionIdPastXid(TransactionId xid);
 extern FullTransactionId ReadNextFullTransactionId(void);
 extern void SetTransactionIdLimit(TransactionId oldest_datfrozenxid,
-					  Oid oldest_datoid);
+								  Oid oldest_datoid);
 extern void AdvanceOldestClogXid(TransactionId oldest_datfrozenxid);
 extern bool ForceTransactionIdLimitUpdate(void);
 extern Oid	GetNewObjectId(void);
+
+/*
+ * Some frontend programs include this header.  For compilers that emit static
+ * inline functions even when they're unused, that leads to unsatisfied
+ * external references; hence hide them with #ifndef FRONTEND.
+ */
+#ifndef FRONTEND
 
 /*
  * For callers that just need the XID part of the next transaction ID.
@@ -240,4 +247,6 @@ ReadNewTransactionId(void)
 	return XidFromFullTransactionId(ReadNextFullTransactionId());
 }
 
-#endif							/* TRAMSAM_H */
+#endif							/* FRONTEND */
+
+#endif							/* TRANSAM_H */

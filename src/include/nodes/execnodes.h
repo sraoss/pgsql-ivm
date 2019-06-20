@@ -134,7 +134,7 @@ typedef struct ExprState
  *		ExclusionOps		Per-column exclusion operators, or NULL if none
  *		ExclusionProcs		Underlying function OIDs for ExclusionOps
  *		ExclusionStrats		Opclass strategy numbers for ExclusionOps
- *		UniqueOps			Theses are like Exclusion*, but for unique indexes
+ *		UniqueOps			These are like Exclusion*, but for unique indexes
  *		UniqueProcs
  *		UniqueStrats
  *		Unique				is it a unique index?
@@ -431,7 +431,7 @@ typedef struct ResultRelInfo
 	Instrumentation *ri_TrigInstrument;
 
 	/* On-demand created slots for triggers / returning processing */
-	TupleTableSlot *ri_ReturningSlot; /* for trigger output tuples */
+	TupleTableSlot *ri_ReturningSlot;	/* for trigger output tuples */
 	TupleTableSlot *ri_TrigOldSlot; /* for a trigger's old tuple */
 	TupleTableSlot *ri_TrigNewSlot; /* for a trigger's new tuple */
 
@@ -700,7 +700,7 @@ typedef struct TupleHashTableData
 	AttrNumber *keyColIdx;		/* attr numbers of key columns */
 	FmgrInfo   *tab_hash_funcs; /* hash functions for table datatype(s) */
 	ExprState  *tab_eq_func;	/* comparator for table datatype(s) */
-	Oid		   *tab_collations;	/* collations for hash and comparison */
+	Oid		   *tab_collations; /* collations for hash and comparison */
 	MemoryContext tablecxt;		/* memory context containing table */
 	MemoryContext tempcxt;		/* context for function evaluations */
 	Size		entrysize;		/* actual size to make each hash entry */
@@ -870,7 +870,7 @@ typedef struct SubPlanState
 	AttrNumber *keyColIdx;		/* control data for hash tables */
 	Oid		   *tab_eq_funcoids;	/* equality func oids for table
 									 * datatype(s) */
-	Oid		   *tab_collations;	/* collations for hash and comparison */
+	Oid		   *tab_collations; /* collations for hash and comparison */
 	FmgrInfo   *tab_hash_funcs; /* hash functions for table datatype(s) */
 	FmgrInfo   *tab_eq_funcs;	/* equality functions for table datatype(s) */
 	FmgrInfo   *lhs_hash_funcs; /* hash functions for lefthand datatype(s) */
@@ -979,7 +979,7 @@ typedef struct PlanState
 	/*
 	 * Other run-time state needed by most if not all node types.
 	 */
-	TupleDesc ps_ResultTupleDesc;	/* node's return type */
+	TupleDesc	ps_ResultTupleDesc; /* node's return type */
 	TupleTableSlot *ps_ResultTupleSlot; /* slot for my result tuples */
 	ExprContext *ps_ExprContext;	/* node's expression-evaluation context */
 	ProjectionInfo *ps_ProjInfo;	/* info for doing tuple projection */
@@ -1018,14 +1018,14 @@ typedef struct PlanState
 	const TupleTableSlotOps *outerops;
 	const TupleTableSlotOps *innerops;
 	const TupleTableSlotOps *resultops;
-	bool scanopsfixed;
-	bool outeropsfixed;
-	bool inneropsfixed;
-	bool resultopsfixed;
-	bool scanopsset;
-	bool outeropsset;
-	bool inneropsset;
-	bool resultopsset;
+	bool		scanopsfixed;
+	bool		outeropsfixed;
+	bool		inneropsfixed;
+	bool		resultopsfixed;
+	bool		scanopsset;
+	bool		outeropsset;
+	bool		inneropsset;
+	bool		resultopsset;
 } PlanState;
 
 /* ----------------
@@ -1113,8 +1113,8 @@ typedef struct ModifyTableState
 	PlanState **mt_plans;		/* subplans (one per target rel) */
 	int			mt_nplans;		/* number of plans in the array */
 	int			mt_whichplan;	/* which one is being executed (0..n-1) */
-	TupleTableSlot** mt_scans;	/* input tuple corresponding to underlying
-								   plans */
+	TupleTableSlot **mt_scans;	/* input tuple corresponding to underlying
+								 * plans */
 	ResultRelInfo *resultRelInfo;	/* per-subplan target relations */
 	ResultRelInfo *rootResultRelInfo;	/* root target relation (partitioned
 										 * table root) */
@@ -1321,14 +1321,14 @@ typedef struct SampleScanState
  */
 typedef struct
 {
-	struct ScanKeyData *scan_key;		/* scankey to put value into */
+	struct ScanKeyData *scan_key;	/* scankey to put value into */
 	ExprState  *key_expr;		/* expr to evaluate to get value */
 	bool		key_toastable;	/* is expr's result a toastable datatype? */
 } IndexRuntimeKeyInfo;
 
 typedef struct
 {
-	struct ScanKeyData *scan_key;		/* scankey to put value into */
+	struct ScanKeyData *scan_key;	/* scankey to put value into */
 	ExprState  *array_expr;		/* expr to evaluate to get array value */
 	int			next_elem;		/* next array element to use */
 	int			num_elems;		/* number of elems in current array value */
@@ -1359,7 +1359,7 @@ typedef struct
  *		SortSupport		   for reordering ORDER BY exprs
  *		OrderByTypByVals   is the datatype of order by expression pass-by-value?
  *		OrderByTypLens	   typlens of the datatypes of order by expressions
- *		pscan_len		   size of parallel index scan descriptor
+ *		PscanLen		   size of parallel index scan descriptor
  * ----------------
  */
 typedef struct IndexScanState
@@ -1403,8 +1403,9 @@ typedef struct IndexScanState
  *		RuntimeContext	   expr context for evaling runtime Skeys
  *		RelationDesc	   index relation descriptor
  *		ScanDesc		   index scan descriptor
+ *		TableSlot		   slot for holding tuples fetched from the table
  *		VMBuffer		   buffer in use for visibility map testing, if any
- *		ioss_PscanLen	   Size of parallel index-only scan descriptor
+ *		PscanLen		   size of parallel index-only scan descriptor
  * ----------------
  */
 typedef struct IndexOnlyScanState
@@ -1421,6 +1422,7 @@ typedef struct IndexOnlyScanState
 	ExprContext *ioss_RuntimeContext;
 	Relation	ioss_RelationDesc;
 	struct IndexScanDescData *ioss_ScanDesc;
+	TupleTableSlot *ioss_TableSlot;
 	Buffer		ioss_VMBuffer;
 	Size		ioss_PscanLen;
 } IndexOnlyScanState;

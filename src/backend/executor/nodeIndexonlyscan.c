@@ -47,7 +47,7 @@
 
 static TupleTableSlot *IndexOnlyNext(IndexOnlyScanState *node);
 static void StoreIndexTuple(TupleTableSlot *slot, IndexTuple itup,
-				TupleDesc itupdesc);
+							TupleDesc itupdesc);
 
 
 /* ----------------------------------------------------------------
@@ -166,10 +166,10 @@ IndexOnlyNext(IndexOnlyScanState *node)
 			 * Rats, we have to visit the heap to check visibility.
 			 */
 			InstrCountTuples2(node, 1);
-			if (!index_fetch_heap(scandesc, slot))
+			if (!index_fetch_heap(scandesc, node->ioss_TableSlot))
 				continue;		/* no visible tuple, try next index entry */
 
-			ExecClearTuple(slot);
+			ExecClearTuple(node->ioss_TableSlot);
 
 			/*
 			 * Only MVCC snapshots are supported here, so there should be no
@@ -192,9 +192,9 @@ IndexOnlyNext(IndexOnlyScanState *node)
 
 		/*
 		 * Fill the scan tuple slot with data from the index.  This might be
-		 * provided in either HeapTuple or IndexTuple format.  Conceivably
-		 * an index AM might fill both fields, in which case we prefer the
-		 * heap format, since it's probably a bit cheaper to fill a slot from.
+		 * provided in either HeapTuple or IndexTuple format.  Conceivably an
+		 * index AM might fill both fields, in which case we prefer the heap
+		 * format, since it's probably a bit cheaper to fill a slot from.
 		 */
 		if (scandesc->xs_hitup)
 		{
@@ -528,7 +528,17 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 	 */
 	tupDesc = ExecTypeFromTL(node->indextlist);
 	ExecInitScanTupleSlot(estate, &indexstate->ss, tupDesc,
-						  table_slot_callbacks(currentRelation));
+						  &TTSOpsVirtual);
+
+	/*
+	 * We need another slot, in a format that's suitable for the table AM,
+	 * for when we need to fetch a tuple from the table for rechecking
+	 * visibility.
+	 */
+	indexstate->ioss_TableSlot =
+		ExecAllocTableSlot(&estate->es_tupleTable,
+						   RelationGetDescr(currentRelation),
+						   table_slot_callbacks(currentRelation));
 
 	/*
 	 * Initialize result type and projection info.  The node's targetlist will

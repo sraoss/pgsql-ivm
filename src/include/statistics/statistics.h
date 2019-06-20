@@ -77,12 +77,12 @@ typedef struct MVDependencies
 typedef struct MCVItem
 {
 	double		frequency;		/* frequency of this combination */
-	double		base_frequency;	/* frequency if independent */
+	double		base_frequency; /* frequency if independent */
 	bool	   *isnull;			/* NULL flags */
 	Datum	   *values;			/* item values */
 } MCVItem;
 
-/* multivariate MCV list - essentally an array of MCV items */
+/* multivariate MCV list - essentially an array of MCV items */
 typedef struct MCVList
 {
 	uint32		magic;			/* magic constant marker */
@@ -98,25 +98,25 @@ extern MVDependencies *statext_dependencies_load(Oid mvoid);
 extern MCVList *statext_mcv_load(Oid mvoid);
 
 extern void BuildRelationExtStatistics(Relation onerel, double totalrows,
-						   int numrows, HeapTuple *rows,
-						   int natts, VacAttrStats **vacattrstats);
+									   int numrows, HeapTuple *rows,
+									   int natts, VacAttrStats **vacattrstats);
 extern bool statext_is_kind_built(HeapTuple htup, char kind);
 extern Selectivity dependencies_clauselist_selectivity(PlannerInfo *root,
-									List *clauses,
-									int varRelid,
-									JoinType jointype,
-									SpecialJoinInfo *sjinfo,
-									RelOptInfo *rel,
-									Bitmapset **estimatedclauses);
+													   List *clauses,
+													   int varRelid,
+													   JoinType jointype,
+													   SpecialJoinInfo *sjinfo,
+													   RelOptInfo *rel,
+													   Bitmapset **estimatedclauses);
 extern Selectivity statext_clauselist_selectivity(PlannerInfo *root,
-							   List *clauses,
-							   int varRelid,
-							   JoinType jointype,
-							   SpecialJoinInfo *sjinfo,
-							   RelOptInfo *rel,
-							   Bitmapset **estimatedclauses);
+												  List *clauses,
+												  int varRelid,
+												  JoinType jointype,
+												  SpecialJoinInfo *sjinfo,
+												  RelOptInfo *rel,
+												  Bitmapset **estimatedclauses);
 extern bool has_stats_of_kind(List *stats, char requiredkind);
 extern StatisticExtInfo *choose_best_statistics(List *stats,
-					   Bitmapset *attnums, char requiredkind);
+												Bitmapset *attnums, char requiredkind);
 
 #endif							/* STATISTICS_H */

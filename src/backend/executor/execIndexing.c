@@ -125,17 +125,17 @@ typedef enum
 } CEOUC_WAIT_MODE;
 
 static bool check_exclusion_or_unique_constraint(Relation heap, Relation index,
-									 IndexInfo *indexInfo,
-									 ItemPointer tupleid,
-									 Datum *values, bool *isnull,
-									 EState *estate, bool newIndex,
-									 CEOUC_WAIT_MODE waitMode,
-									 bool errorOK,
-									 ItemPointer conflictTid);
+												 IndexInfo *indexInfo,
+												 ItemPointer tupleid,
+												 Datum *values, bool *isnull,
+												 EState *estate, bool newIndex,
+												 CEOUC_WAIT_MODE waitMode,
+												 bool errorOK,
+												 ItemPointer conflictTid);
 
 static bool index_recheck_constraint(Relation index, Oid *constr_procs,
-						 Datum *existing_values, bool *existing_isnull,
-						 Datum *new_values);
+									 Datum *existing_values, bool *existing_isnull,
+									 Datum *new_values);
 
 /* ----------------------------------------------------------------
  *		ExecOpenIndices
@@ -298,6 +298,9 @@ ExecInsertIndexTuples(TupleTableSlot *slot,
 	relationDescs = resultRelInfo->ri_IndexRelationDescs;
 	indexInfoArray = resultRelInfo->ri_IndexRelationInfo;
 	heapRelation = resultRelInfo->ri_RelationDesc;
+
+	/* Sanity check: slot must belong to the same rel as the resultRelInfo. */
+	Assert(slot->tts_tableOid == RelationGetRelid(heapRelation));
 
 	/*
 	 * We will use the EState's per-tuple context for evaluating predicates

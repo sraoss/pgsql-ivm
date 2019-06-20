@@ -70,9 +70,9 @@ typedef enum ParseExprKind
 	EXPR_KIND_POLICY,			/* USING or WITH CHECK expr in policy */
 	EXPR_KIND_PARTITION_BOUND,	/* partition bound expression */
 	EXPR_KIND_PARTITION_EXPRESSION, /* PARTITION BY expression */
-	EXPR_KIND_CALL_ARGUMENT,		/* procedure argument in CALL */
+	EXPR_KIND_CALL_ARGUMENT,	/* procedure argument in CALL */
 	EXPR_KIND_COPY_WHERE,		/* WHERE condition in COPY FROM */
-	EXPR_KIND_GENERATED_COLUMN,	/* generation expression for a column */
+	EXPR_KIND_GENERATED_COLUMN, /* generation expression for a column */
 } ParseExprKind;
 
 
@@ -269,20 +269,20 @@ extern void free_parsestate(ParseState *pstate);
 extern int	parser_errposition(ParseState *pstate, int location);
 
 extern void setup_parser_errposition_callback(ParseCallbackState *pcbstate,
-								  ParseState *pstate, int location);
+											  ParseState *pstate, int location);
 extern void cancel_parser_errposition_callback(ParseCallbackState *pcbstate);
 
 extern Var *make_var(ParseState *pstate, RangeTblEntry *rte, int attrno,
-		 int location);
+					 int location);
 extern Oid	transformContainerType(Oid *containerType, int32 *containerTypmod);
 
 extern SubscriptingRef *transformContainerSubscripts(ParseState *pstate,
-							 Node *containerBase,
-							 Oid containerType,
-							 Oid elementType,
-							 int32 containerTypMod,
-							 List *indirection,
-							 Node *assignFrom);
+													 Node *containerBase,
+													 Oid containerType,
+													 Oid elementType,
+													 int32 containerTypMod,
+													 List *indirection,
+													 Node *assignFrom);
 extern Const *make_const(ParseState *pstate, Value *value, int location);
 
 #endif							/* PARSE_NODE_H */

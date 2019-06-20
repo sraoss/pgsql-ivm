@@ -96,7 +96,7 @@ typedef enum JsonPathItemType
  * Support functions to parse/construct binary value.
  * Unlike many other representation of expression the first/main
  * node is not an operation but left operand of expression. That
- * allows to implement cheep follow-path descending in jsonb
+ * allows to implement cheap follow-path descending in jsonb
  * structure and then execute operator with right operand
  */
 
@@ -171,7 +171,7 @@ extern Numeric jspGetNumeric(JsonPathItem *v);
 extern bool jspGetBool(JsonPathItem *v);
 extern char *jspGetString(JsonPathItem *v, int32 *len);
 extern bool jspGetArraySubscript(JsonPathItem *v, JsonPathItem *from,
-					 JsonPathItem *to, int i);
+								 JsonPathItem *to, int i);
 
 extern const char *jspOperationName(JsonPathItemType type);
 

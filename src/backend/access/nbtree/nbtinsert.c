@@ -32,29 +32,29 @@
 static Buffer _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf);
 
 static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
-				 Relation heapRel,
-				 IndexUniqueCheck checkUnique, bool *is_unique,
-				 uint32 *speculativeToken);
+									  Relation heapRel,
+									  IndexUniqueCheck checkUnique, bool *is_unique,
+									  uint32 *speculativeToken);
 static OffsetNumber _bt_findinsertloc(Relation rel,
-				  BTInsertState insertstate,
-				  bool checkingunique,
-				  BTStack stack,
-				  Relation heapRel);
+									  BTInsertState insertstate,
+									  bool checkingunique,
+									  BTStack stack,
+									  Relation heapRel);
 static void _bt_stepright(Relation rel, BTInsertState insertstate, BTStack stack);
 static void _bt_insertonpg(Relation rel, BTScanInsert itup_key,
-			   Buffer buf,
-			   Buffer cbuf,
-			   BTStack stack,
-			   IndexTuple itup,
-			   OffsetNumber newitemoff,
-			   bool split_only_page);
+						   Buffer buf,
+						   Buffer cbuf,
+						   BTStack stack,
+						   IndexTuple itup,
+						   OffsetNumber newitemoff,
+						   bool split_only_page);
 static Buffer _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf,
-		  Buffer cbuf, OffsetNumber newitemoff, Size newitemsz,
-		  IndexTuple newitem);
+						Buffer cbuf, OffsetNumber newitemoff, Size newitemsz,
+						IndexTuple newitem);
 static void _bt_insert_parent(Relation rel, Buffer buf, Buffer rbuf,
-				  BTStack stack, bool is_root, bool is_only);
+							  BTStack stack, bool is_root, bool is_only);
 static bool _bt_pgaddtup(Page page, Size itemsize, IndexTuple itup,
-			 OffsetNumber itup_off);
+						 OffsetNumber itup_off);
 static void _bt_vacuum_one_page(Relation rel, Buffer buffer, Relation heapRel);
 
 /*
@@ -663,7 +663,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
  *		(In a !heapkeyspace index, there can be multiple pages with the same
  *		high key, where the new tuple could legitimately be placed on.  In
  *		that case, the caller passes the first page containing duplicates,
- *		just like when checkinunique=true.  If that page doesn't have enough
+ *		just like when checkingunique=true.  If that page doesn't have enough
  *		room for the new tuple, this function moves right, trying to find a
  *		legal page that does.)
  *
@@ -926,9 +926,6 @@ _bt_stepright(Relation rel, BTInsertState insertstate, BTStack stack)
  *		inserting to a non-leaf page, 'cbuf' is the left-sibling of the page
  *		we're inserting the downlink for.  This function will clear the
  *		INCOMPLETE_SPLIT flag on it, and release the buffer.
- *
- *		The locking interactions in this code are critical.  You should
- *		grok Lehman and Yao's paper before making any changes.
  *----------
  */
 static void
@@ -1814,11 +1811,11 @@ _bt_insert_parent(Relation rel,
 		/*
 		 * Re-find and write lock the parent of buf.
 		 *
-		 * It's possible that the location of buf's downlink has changed
-		 * since our initial _bt_search() descent.  _bt_getstackbuf() will
-		 * detect and recover from this, updating the stack, which ensures
-		 * that the new downlink will be inserted at the correct offset.
-		 * Even buf's parent may have changed.
+		 * It's possible that the location of buf's downlink has changed since
+		 * our initial _bt_search() descent.  _bt_getstackbuf() will detect
+		 * and recover from this, updating the stack, which ensures that the
+		 * new downlink will be inserted at the correct offset. Even buf's
+		 * parent may have changed.
 		 */
 		stack->bts_btentry = bknum;
 		pbuf = _bt_getstackbuf(rel, stack);

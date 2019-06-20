@@ -810,19 +810,48 @@ SELECT jdoc-&gt;'guid', jdoc-&gt;'name' FROM api WHERE jdoc @&gt; '{"tags": ["qu
      <row>
       <entry>
        <para>
-        <literal>[<replaceable>subscript</replaceable>, ...]</literal>
+        <literal>.**{<replaceable>level</replaceable>}</literal>
        </para>
        <para>
-        <literal>[<replaceable>subscript</replaceable> to last]</literal>
+        <literal>.**{<replaceable>lower_level</replaceable> to
+        <replaceable>upper_level</replaceable>}</literal>
+       </para>
+       <para>
+        <literal>.**{<replaceable>lower_level</replaceable> to
+        last}</literal>
        </para>
       </entry>
       <entry>
        <para>
-        Array element accessor. The provided numeric subscripts return the
-        corresponding array elements. The first element in an array is
-        accessed with [0]. The <literal>last</literal> keyword denotes
-        the last subscript in an array and can be used to handle arrays
-        of unknown length.
+        Same as <literal>.**</literal>, but with filter over nesting
+        level of JSON hierarchy.  Levels are specified as integers.
+        Zero level corresponds to current object.  This is a
+        <productname>PostgreSQL</productname> extension of the SQL/JSON
+        standard.
+       </para>
+      </entry>
+     </row>
+     <row>
+      <entry>
+       <para>
+        <literal>[<replaceable>subscript</replaceable>, ...]</literal>
+       </para>
+      </entry>
+      <entry>
+       <para>
+        Array element accessor.  <literal><replaceable>subscript</replaceable></literal>
+        might be given in two forms: <literal><replaceable>expr</replaceable></literal>
+        or <literal><replaceable>lower_expr</replaceable> to <replaceable>upper_expr</replaceable></literal>.
+        The first form specifies single array element by its index.  The second
+        form specified array slice by the range of indexes.  Zero index
+        corresponds to the first array element.
+       </para>
+       <para>
+        Expression inside subscript may consititue an integer,
+        numeric expression or any other <literal>jsonpath</literal> expression
+        returning single numeric value.  The <literal>last</literal> keyword
+        can be used in the expression denoting the last subscript in an array.
+        That's helpful for handling arrays of unknown length.
        </para>
       </entry>
      </row>

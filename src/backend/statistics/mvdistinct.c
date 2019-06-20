@@ -27,6 +27,7 @@
 
 #include "access/htup_details.h"
 #include "catalog/pg_statistic_ext.h"
+#include "catalog/pg_statistic_ext_data.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "lib/stringinfo.h"
@@ -37,8 +38,8 @@
 
 
 static double ndistinct_for_combination(double totalrows, int numrows,
-						  HeapTuple *rows, VacAttrStats **stats,
-						  int k, int *combination);
+										HeapTuple *rows, VacAttrStats **stats,
+										int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
 static int	num_combinations(int n);
@@ -145,12 +146,12 @@ statext_ndistinct_load(Oid mvoid)
 	Datum		ndist;
 	HeapTuple	htup;
 
-	htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(mvoid));
+	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(mvoid));
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
-	ndist = SysCacheGetAttr(STATEXTOID, htup,
-							Anum_pg_statistic_ext_stxndistinct, &isnull);
+	ndist = SysCacheGetAttr(STATEXTDATASTXOID, htup,
+							Anum_pg_statistic_ext_data_stxdndistinct, &isnull);
 	if (isnull)
 		elog(ERROR,
 			 "requested statistic kind \"%c\" is not yet built for statistics object %u",
@@ -274,27 +275,19 @@ statext_ndistinct_deserialize(bytea *data)
 	tmp += sizeof(uint32);
 
 	if (ndist.magic != STATS_NDISTINCT_MAGIC)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid ndistinct magic %08x (expected %08x)",
-						ndist.magic, STATS_NDISTINCT_MAGIC)));
+		elog(ERROR, "invalid ndistinct magic %08x (expected %08x)",
+			 ndist.magic, STATS_NDISTINCT_MAGIC);
 	if (ndist.type != STATS_NDISTINCT_TYPE_BASIC)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid ndistinct type %d (expected %d)",
-						ndist.type, STATS_NDISTINCT_TYPE_BASIC)));
+		elog(ERROR, "invalid ndistinct type %d (expected %d)",
+			 ndist.type, STATS_NDISTINCT_TYPE_BASIC);
 	if (ndist.nitems == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid zero-length item array in MVNDistinct")));
+		elog(ERROR, "invalid zero-length item array in MVNDistinct");
 
 	/* what minimum bytea size do we expect for those parameters */
 	minimum_size = MinSizeOfItems(ndist.nitems);
 	if (VARSIZE_ANY_EXHDR(data) < minimum_size)
-		ereport(ERROR,
-				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("invalid MVNDistinct size %zd (expected at least %zd)",
-						VARSIZE_ANY_EXHDR(data), minimum_size)));
+		elog(ERROR, "invalid MVNDistinct size %zd (expected at least %zd)",
+			 VARSIZE_ANY_EXHDR(data), minimum_size);
 
 	/*
 	 * Allocate space for the ndistinct items (no space for each item's

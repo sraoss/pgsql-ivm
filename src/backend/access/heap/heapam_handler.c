@@ -29,6 +29,7 @@
 #include "access/rewriteheap.h"
 #include "access/tableam.h"
 #include "access/tsmapi.h"
+#include "access/tuptoaster.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
 #include "catalog/index.h"
@@ -50,12 +51,12 @@
 
 
 static void reform_and_rewrite_tuple(HeapTuple tuple,
-						 Relation OldHeap, Relation NewHeap,
-						 Datum *values, bool *isnull, RewriteState rwstate);
+									 Relation OldHeap, Relation NewHeap,
+									 Datum *values, bool *isnull, RewriteState rwstate);
 
 static bool SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
-					   HeapTuple tuple,
-					   OffsetNumber tupoffset);
+								   HeapTuple tuple,
+								   OffsetNumber tupoffset);
 
 static BlockNumber heapam_scan_get_blocks_done(HeapScanDesc hscan);
 
@@ -205,6 +206,15 @@ heapam_fetch_row_version(Relation relation,
 }
 
 static bool
+heapam_tuple_tid_valid(TableScanDesc scan, ItemPointer tid)
+{
+	HeapScanDesc hscan = (HeapScanDesc) scan;
+
+	return ItemPointerIsValid(tid) &&
+		ItemPointerGetBlockNumber(tid) < hscan->rs_nblocks;
+}
+
+static bool
 heapam_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
 								Snapshot snapshot)
 {
@@ -276,13 +286,13 @@ heapam_tuple_insert_speculative(Relation relation, TupleTableSlot *slot,
 
 static void
 heapam_tuple_complete_speculative(Relation relation, TupleTableSlot *slot,
-								  uint32 spekToken, bool succeeded)
+								  uint32 specToken, bool succeeded)
 {
 	bool		shouldFree = true;
 	HeapTuple	tuple = ExecFetchSlotHeapTuple(slot, true, &shouldFree);
 
 	/* adjust the tuple's state accordingly */
-	if (!succeeded)
+	if (succeeded)
 		heap_finish_speculative(relation, &slot->tts_tid);
 	else
 		heap_abort_speculative(relation, &slot->tts_tid);
@@ -464,6 +474,7 @@ tuple_lock_retry:
 						HeapTupleHeaderGetCmin(tuple->t_data) >= cid)
 					{
 						tmfd->xmax = priorXmax;
+
 						/*
 						 * Cmin is the problematic value, so store that. See
 						 * above.
@@ -1162,7 +1173,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	Snapshot	snapshot;
 	bool		need_unregister_snapshot = false;
 	TransactionId OldestXmin;
-	BlockNumber	previous_blkno = InvalidBlockNumber;
+	BlockNumber previous_blkno = InvalidBlockNumber;
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
 
@@ -1253,7 +1264,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	/* Publish number of blocks to scan */
 	if (progress)
 	{
-		BlockNumber		nblocks;
+		BlockNumber nblocks;
 
 		if (hscan->rs_base.rs_parallel != NULL)
 		{
@@ -1304,7 +1315,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 		/* Report scan progress, if asked to. */
 		if (progress)
 		{
-			BlockNumber     blocks_done = heapam_scan_get_blocks_done(hscan);
+			BlockNumber blocks_done = heapam_scan_get_blocks_done(hscan);
 
 			if (blocks_done != previous_blkno)
 			{
@@ -1658,7 +1669,7 @@ heapam_index_build_range_scan(Relation heapRelation,
 	/* Report scan progress one last time. */
 	if (progress)
 	{
-		BlockNumber		blks_done;
+		BlockNumber blks_done;
 
 		if (hscan->rs_base.rs_parallel != NULL)
 		{
@@ -1710,7 +1721,7 @@ heapam_index_validate_scan(Relation heapRelation,
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
 	bool		in_index[MaxHeapTuplesPerPage];
-	BlockNumber	previous_blkno = InvalidBlockNumber;
+	BlockNumber previous_blkno = InvalidBlockNumber;
 
 	/* state variables for the merge */
 	ItemPointer indexcursor = NULL;
@@ -1945,8 +1956,8 @@ static BlockNumber
 heapam_scan_get_blocks_done(HeapScanDesc hscan)
 {
 	ParallelBlockTableScanDesc bpscan = NULL;
-	BlockNumber		startblock;
-	BlockNumber		blocks_done;
+	BlockNumber startblock;
+	BlockNumber blocks_done;
 
 	if (hscan->rs_base.rs_parallel != NULL)
 	{
@@ -1964,7 +1975,7 @@ heapam_scan_get_blocks_done(HeapScanDesc hscan)
 		blocks_done = hscan->rs_cblock - startblock;
 	else
 	{
-		BlockNumber     nblocks;
+		BlockNumber nblocks;
 
 		nblocks = bpscan != NULL ? bpscan->phs_nblocks : hscan->rs_nblocks;
 		blocks_done = nblocks - startblock +
@@ -1974,6 +1985,82 @@ heapam_scan_get_blocks_done(HeapScanDesc hscan)
 	return blocks_done;
 }
 
+
+/* ------------------------------------------------------------------------
+ * Miscellaneous callbacks for the heap AM
+ * ------------------------------------------------------------------------
+ */
+
+static uint64
+heapam_relation_size(Relation rel, ForkNumber forkNumber)
+{
+	uint64		nblocks = 0;
+
+	/* Open it at the smgr level if not already done */
+	RelationOpenSmgr(rel);
+
+	/* InvalidForkNumber indicates returning the size for all forks */
+	if (forkNumber == InvalidForkNumber)
+	{
+		for (int i = 0; i < MAX_FORKNUM; i++)
+			nblocks += smgrnblocks(rel->rd_smgr, i);
+	}
+	else
+		nblocks = smgrnblocks(rel->rd_smgr, forkNumber);
+
+	return nblocks * BLCKSZ;
+}
+
+/*
+ * Check to see whether the table needs a TOAST table.  It does only if
+ * (1) there are any toastable attributes, and (2) the maximum length
+ * of a tuple could exceed TOAST_TUPLE_THRESHOLD.  (We don't want to
+ * create a toast table for something like "f1 varchar(20)".)
+ */
+static bool
+heapam_relation_needs_toast_table(Relation rel)
+{
+	int32		data_length = 0;
+	bool		maxlength_unknown = false;
+	bool		has_toastable_attrs = false;
+	TupleDesc	tupdesc = rel->rd_att;
+	int32		tuple_length;
+	int			i;
+
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+		if (att->attisdropped)
+			continue;
+		data_length = att_align_nominal(data_length, att->attalign);
+		if (att->attlen > 0)
+		{
+			/* Fixed-length types are never toastable */
+			data_length += att->attlen;
+		}
+		else
+		{
+			int32		maxlen = type_maximum_size(att->atttypid,
+												   att->atttypmod);
+
+			if (maxlen < 0)
+				maxlength_unknown = true;
+			else
+				data_length += maxlen;
+			if (att->attstorage != 'p')
+				has_toastable_attrs = true;
+		}
+	}
+	if (!has_toastable_attrs)
+		return false;			/* nothing to toast? */
+	if (maxlength_unknown)
+		return true;			/* any unlimited-length attrs? */
+	tuple_length = MAXALIGN(SizeofHeapTupleHeader +
+							BITMAPLEN(tupdesc->natts)) +
+		MAXALIGN(data_length);
+	return (tuple_length > TOAST_TUPLE_THRESHOLD);
+}
 
 
 /* ------------------------------------------------------------------------
@@ -2275,7 +2362,7 @@ heapam_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 
 			if (blockno >= hscan->rs_nblocks)
 			{
-				/* wrap to begining of rel, might not have started at 0 */
+				/* wrap to beginning of rel, might not have started at 0 */
 				blockno = 0;
 			}
 
@@ -2289,7 +2376,7 @@ heapam_scan_sample_next_block(TableScanDesc scan, SampleScanState *scanstate)
 			 * a little bit backwards on every invocation, which is confusing.
 			 * We don't guarantee any specific ordering in general, though.
 			 */
-			if (scan->rs_syncscan)
+			if (scan->rs_flags & SO_ALLOW_SYNC)
 				ss_report_location(scan->rs_rd, blockno);
 
 			if (blockno == hscan->rs_startblock)
@@ -2323,7 +2410,7 @@ heapam_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 	HeapScanDesc hscan = (HeapScanDesc) scan;
 	TsmRoutine *tsm = scanstate->tsmroutine;
 	BlockNumber blockno = hscan->rs_cblock;
-	bool		pagemode = scan->rs_pageatatime;
+	bool		pagemode = (scan->rs_flags & SO_ALLOW_PAGEMODE) != 0;
 
 	Page		page;
 	bool		all_visible;
@@ -2470,7 +2557,7 @@ SampleHeapTupleVisible(TableScanDesc scan, Buffer buffer,
 {
 	HeapScanDesc hscan = (HeapScanDesc) scan;
 
-	if (scan->rs_pageatatime)
+	if (scan->rs_flags & SO_ALLOW_PAGEMODE)
 	{
 		/*
 		 * In pageatatime mode, heapgetpage() already did visibility checks,
@@ -2543,6 +2630,7 @@ static const TableAmRoutine heapam_methods = {
 
 	.tuple_fetch_row_version = heapam_fetch_row_version,
 	.tuple_get_latest_tid = heap_get_latest_tid,
+	.tuple_tid_valid = heapam_tuple_tid_valid,
 	.tuple_satisfies_snapshot = heapam_tuple_satisfies_snapshot,
 	.compute_xid_horizon_for_tuples = heap_compute_xid_horizon_for_tuples,
 
@@ -2555,6 +2643,9 @@ static const TableAmRoutine heapam_methods = {
 	.scan_analyze_next_tuple = heapam_scan_analyze_next_tuple,
 	.index_build_range_scan = heapam_index_build_range_scan,
 	.index_validate_scan = heapam_index_validate_scan,
+
+	.relation_size = heapam_relation_size,
+	.relation_needs_toast_table = heapam_relation_needs_toast_table,
 
 	.relation_estimate_size = heapam_estimate_rel_size,
 

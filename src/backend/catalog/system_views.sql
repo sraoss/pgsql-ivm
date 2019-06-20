@@ -253,14 +253,55 @@ CREATE VIEW pg_stats WITH (security_barrier) AS
 
 REVOKE ALL on pg_statistic FROM public;
 
+CREATE VIEW pg_stats_ext WITH (security_barrier) AS
+    SELECT cn.nspname AS schemaname,
+           c.relname AS tablename,
+           sn.nspname AS statistics_schemaname,
+           s.stxname AS statistics_name,
+           pg_get_userbyid(s.stxowner) AS statistics_owner,
+           ( SELECT array_agg(a.attname ORDER BY a.attnum)
+             FROM unnest(s.stxkeys) k
+                  JOIN pg_attribute a
+                       ON (a.attrelid = s.stxrelid AND a.attnum = k)
+           ) AS attnames,
+           s.stxkind AS kinds,
+           sd.stxdndistinct AS n_distinct,
+           sd.stxddependencies AS dependencies,
+           m.most_common_vals,
+           m.most_common_val_nulls,
+           m.most_common_freqs,
+           m.most_common_base_freqs
+    FROM pg_statistic_ext s JOIN pg_class c ON (c.oid = s.stxrelid)
+         JOIN pg_statistic_ext_data sd ON (s.oid = sd.stxoid)
+         LEFT JOIN pg_namespace cn ON (cn.oid = c.relnamespace)
+         LEFT JOIN pg_namespace sn ON (sn.oid = s.stxnamespace)
+         LEFT JOIN LATERAL
+                   ( SELECT array_agg(values) AS most_common_vals,
+                            array_agg(nulls) AS most_common_val_nulls,
+                            array_agg(frequency) AS most_common_freqs,
+                            array_agg(base_frequency) AS most_common_base_freqs
+                     FROM pg_mcv_list_items(sd.stxdmcv)
+                   ) m ON sd.stxdmcv IS NOT NULL
+    WHERE NOT EXISTS
+              ( SELECT 1
+                FROM unnest(stxkeys) k
+                     JOIN pg_attribute a
+                          ON (a.attrelid = s.stxrelid AND a.attnum = k)
+                WHERE NOT has_column_privilege(c.oid, a.attnum, 'select') )
+    AND (c.relrowsecurity = false OR NOT row_security_active(c.oid));
+
+-- unprivileged users may read pg_statistic_ext but not pg_statistic_ext_data
+REVOKE ALL on pg_statistic_ext_data FROM public;
+
 CREATE VIEW pg_publication_tables AS
     SELECT
         P.pubname AS pubname,
         N.nspname AS schemaname,
         C.relname AS tablename
-    FROM pg_publication P, pg_class C
-         JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.oid IN (SELECT relid FROM pg_get_publication_tables(P.pubname));
+    FROM pg_publication P,
+         LATERAL pg_get_publication_tables(P.pubname) GPT,
+         pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)
+    WHERE C.oid = GPT.relid;
 
 CREATE VIEW pg_locks AS
     SELECT * FROM pg_lock_status() AS L;
@@ -955,6 +996,11 @@ CREATE VIEW pg_stat_progress_create_index AS
         S.pid AS pid, S.datid AS datid, D.datname AS datname,
         S.relid AS relid,
         CAST(S.param7 AS oid) AS index_relid,
+        CASE S.param1 WHEN 1 THEN 'CREATE INDEX'
+                      WHEN 2 THEN 'CREATE INDEX CONCURRENTLY'
+                      WHEN 3 THEN 'REINDEX'
+                      WHEN 4 THEN 'REINDEX CONCURRENTLY'
+                      END AS command,
         CASE S.param10 WHEN 0 THEN 'initializing'
                        WHEN 1 THEN 'waiting for writers before build'
                        WHEN 2 THEN 'building index' ||

@@ -39,7 +39,7 @@ static stmtCacheEntry *stmtCacheEntries = NULL;
 static struct declared_statement *g_declared_list;
 
 static bool deallocate_one(int lineno, enum COMPAT_MODE c, struct connection *con,
-			   struct prepared_statement *prev, struct prepared_statement *this);
+						   struct prepared_statement *prev, struct prepared_statement *this);
 static struct declared_statement *ecpg_find_declared_statement(const char *);
 static bool
 isvarchar(unsigned char c)
@@ -54,6 +54,60 @@ isvarchar(unsigned char c)
 		return true;
 
 	return false;
+}
+
+bool
+ecpg_register_prepared_stmt(struct statement *stmt)
+{
+	struct statement *prep_stmt;
+	struct prepared_statement *this;
+	struct connection *con = NULL;
+	struct prepared_statement *prev = NULL;
+	char	   *real_connection_name;
+	int			lineno = stmt->lineno;
+
+	real_connection_name = ecpg_get_con_name_by_declared_name(stmt->name);
+	if (real_connection_name == NULL)
+		real_connection_name = stmt->connection->name;
+
+	con = ecpg_get_connection(real_connection_name);
+	if (!ecpg_init(con, real_connection_name, stmt->lineno))
+		return false;
+
+	/* check if we already have prepared this statement */
+	this = ecpg_find_prepared_statement(stmt->name, con, &prev);
+	if (this && !deallocate_one(lineno, ECPG_COMPAT_PGSQL, con, prev, this))
+		return false;
+
+	/* allocate new statement */
+	this = (struct prepared_statement *) ecpg_alloc(sizeof(struct prepared_statement), lineno);
+	if (!this)
+		return false;
+
+	prep_stmt = (struct statement *) ecpg_alloc(sizeof(struct statement), lineno);
+	if (!prep_stmt)
+	{
+		ecpg_free(this);
+		return false;
+	}
+	memset(prep_stmt, 0, sizeof(struct statement));
+
+	/* create statement */
+	prep_stmt->lineno = lineno;
+	prep_stmt->connection = con;
+	prep_stmt->command = ecpg_strdup(stmt->command, lineno);
+	prep_stmt->inlist = prep_stmt->outlist = NULL;
+	this->name = ecpg_strdup(stmt->name, lineno);
+	this->stmt = prep_stmt;
+	this->prepared = true;
+
+	if (con->prep_stmts == NULL)
+		this->next = NULL;
+	else
+		this->next = con->prep_stmts;
+
+	con->prep_stmts = this;
+	return true;
 }
 
 static bool
@@ -185,8 +239,8 @@ ECPGprepare(int lineno, const char *connection_name, const bool questionmarks,
 	if (real_connection_name == NULL)
 	{
 		/*
-		 * If can't get the connection name by declared name then using connection name
-		 * coming from the parameter connection_name
+		 * If can't get the connection name by declared name then using
+		 * connection name coming from the parameter connection_name
 		 */
 		real_connection_name = connection_name;
 	}
@@ -291,8 +345,8 @@ ECPGdeallocate(int lineno, int c, const char *connection_name, const char *name)
 	if (real_connection_name == NULL)
 	{
 		/*
-		 * If can't get the connection name by declared name then using connection name
-		 * coming from the parameter connection_name
+		 * If can't get the connection name by declared name then using
+		 * connection name coming from the parameter connection_name
 		 */
 		real_connection_name = connection_name;
 	}
@@ -354,8 +408,8 @@ ECPGprepared_statement(const char *connection_name, const char *name, int lineno
 	if (real_connection_name == NULL)
 	{
 		/*
-		 * If can't get the connection name by declared name then using connection name
-		 * coming from the parameter connection_name
+		 * If can't get the connection name by declared name then using
+		 * connection name coming from the parameter connection_name
 		 */
 		real_connection_name = connection_name;
 	}
@@ -613,11 +667,11 @@ ECPGdeclare(int lineno, const char *connection_name, const char *name)
 	{
 		/*
 		 * Going to here means not using AT clause in the DECLARE STATEMENT
-		 * ECPG pre-processor allows this case.
-		 * However, we don't allocate a node to store the declared name
-		 * because the DECLARE STATEMENT without using AT clause will be ignored.
-		 * The following statement such as PREPARE, EXECUTE are executed
-		 * as usual on the current connection.
+		 * ECPG pre-processor allows this case. However, we don't allocate a
+		 * node to store the declared name because the DECLARE STATEMENT
+		 * without using AT clause will be ignored. The following statement
+		 * such as PREPARE, EXECUTE are executed as usual on the current
+		 * connection.
 		 */
 		return true;
 	}
@@ -628,7 +682,10 @@ ECPGdeclare(int lineno, const char *connection_name, const char *name)
 
 	if (ecpg_find_declared_statement(name))
 	{
-		/* Should not go to here because the pre-compiler has check the duplicate name */
+		/*
+		 * Should not go to here because the pre-compiler has check the
+		 * duplicate name
+		 */
 		return false;
 	}
 
@@ -697,7 +754,7 @@ ecpg_update_declare_statement(const char *declared_name, const char *cursor_name
 	/* Find the declared node by declared name */
 	p = ecpg_find_declared_statement(declared_name);
 	if (p)
-		p->cursor_name = ecpg_strdup(cursor_name,lineno);
+		p->cursor_name = ecpg_strdup(cursor_name, lineno);
 }
 
 /*
@@ -777,7 +834,10 @@ ecpg_release_declared_statement(const char *connection_name)
 			ecpg_free(cur->cursor_name);
 			ecpg_free(cur);
 
-			/* One connection can be used by multiple declared name, so no break here */
+			/*
+			 * One connection can be used by multiple declared name, so no
+			 * break here
+			 */
 		}
 		else
 			prev = cur;

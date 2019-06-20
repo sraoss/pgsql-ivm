@@ -25,7 +25,7 @@
 #include "access/xlog_internal.h"
 #include "common/file_perm.h"
 #include "common/fe_memutils.h"
-#include "fe_utils/logging.h"
+#include "common/logging.h"
 #include "getopt_long.h"
 #include "libpq-fe.h"
 #include "libpq/pqsignal.h"
@@ -68,7 +68,7 @@ static void usage(void);
 static void StreamLogicalLog(void);
 static bool flushAndSendFeedback(PGconn *conn, TimestampTz *now);
 static void prepareToTerminate(PGconn *conn, XLogRecPtr endpos,
-				   bool keepalive, XLogRecPtr lsn);
+							   bool keepalive, XLogRecPtr lsn);
 
 static void
 usage(void)
@@ -133,9 +133,9 @@ sendFeedback(PGconn *conn, TimestampTz now, bool force, bool replyRequested)
 
 	if (verbose)
 		pg_log_info("confirming write up to %X/%X, flush to %X/%X (slot %s)",
-				(uint32) (output_written_lsn >> 32), (uint32) output_written_lsn,
-				(uint32) (output_fsync_lsn >> 32), (uint32) output_fsync_lsn,
-				replication_slot);
+					(uint32) (output_written_lsn >> 32), (uint32) output_written_lsn,
+					(uint32) (output_fsync_lsn >> 32), (uint32) output_fsync_lsn,
+					replication_slot);
 
 	replybuf[len] = 'r';
 	len += 1;
@@ -1021,11 +1021,11 @@ prepareToTerminate(PGconn *conn, XLogRecPtr endpos, bool keepalive, XLogRecPtr l
 	{
 		if (keepalive)
 			pg_log_info("endpos %X/%X reached by keepalive",
-					(uint32) (endpos >> 32), (uint32) endpos);
+						(uint32) (endpos >> 32), (uint32) endpos);
 		else
 			pg_log_info("endpos %X/%X reached by record at %X/%X",
-					(uint32) (endpos >> 32), (uint32) (endpos),
-					(uint32) (lsn >> 32), (uint32) lsn);
+						(uint32) (endpos >> 32), (uint32) (endpos),
+						(uint32) (lsn >> 32), (uint32) lsn);
 
 	}
 }

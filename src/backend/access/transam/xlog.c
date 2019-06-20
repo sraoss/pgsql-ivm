@@ -314,8 +314,6 @@ static bool recoveryStopAfter;
  *
  * recoveryTargetTLI: the currently understood target timeline; changes
  *
- * recoveryTargetIsLatest: was the requested target timeline 'latest'?
- *
  * expectedTLEs: a list of TimeLineHistoryEntries for recoveryTargetTLI and the timelines of
  * its known parents, newest first (so recoveryTargetTLI is always the
  * first list member).  Only these TLIs are expected to be seen in the WAL
@@ -869,7 +867,7 @@ static void SetCurrentChunkStartTime(TimestampTz xtime);
 static void CheckRequiredParameterValues(void);
 static void XLogReportParameters(void);
 static void checkTimeLineSwitch(XLogRecPtr lsn, TimeLineID newTLI,
-					TimeLineID prevTLI);
+								TimeLineID prevTLI);
 static void LocalSetXLogInsertAllowed(void);
 static void CreateEndOfRecoveryRecord(void);
 static void CheckPointGuts(XLogRecPtr checkPointRedo, int flags);
@@ -880,16 +878,16 @@ static void AdvanceXLInsertBuffer(XLogRecPtr upto, bool opportunistic);
 static bool XLogCheckpointNeeded(XLogSegNo new_segno);
 static void XLogWrite(XLogwrtRqst WriteRqst, bool flexible);
 static bool InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
-					   bool find_free, XLogSegNo max_segno,
-					   bool use_lock);
-static int XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
-			 int source, bool notfoundOk);
+								   bool find_free, XLogSegNo max_segno,
+								   bool use_lock);
+static int	XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
+						 int source, bool notfoundOk);
 static int	XLogFileReadAnyTLI(XLogSegNo segno, int emode, int source);
-static int XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
-			 int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
-			 TimeLineID *readTLI);
+static int	XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
+						 int reqLen, XLogRecPtr targetRecPtr, char *readBuf,
+						 TimeLineID *readTLI);
 static bool WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
-							bool fetching_ckpt, XLogRecPtr tliRecPtr);
+										bool fetching_ckpt, XLogRecPtr tliRecPtr);
 static int	emode_for_corrupt_record(int emode, XLogRecPtr RecPtr);
 static void XLogFileClose(void);
 static void PreallocXlogFiles(XLogRecPtr endptr);
@@ -901,10 +899,10 @@ static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
 static void UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force);
 static XLogRecord *ReadRecord(XLogReaderState *xlogreader, XLogRecPtr RecPtr,
-		   int emode, bool fetching_ckpt);
+							  int emode, bool fetching_ckpt);
 static void CheckRecoveryConsistency(void);
 static XLogRecord *ReadCheckpointRecord(XLogReaderState *xlogreader,
-					 XLogRecPtr RecPtr, int whichChkpti, bool report);
+										XLogRecPtr RecPtr, int whichChkpti, bool report);
 static bool rescanLatestTimeLine(void);
 static void WriteControlFile(void);
 static void ReadControlFile(void);
@@ -918,19 +916,19 @@ static void xlog_outdesc(StringInfo buf, XLogReaderState *record);
 static void pg_start_backup_callback(int code, Datum arg);
 static void pg_stop_backup_callback(int code, Datum arg);
 static bool read_backup_label(XLogRecPtr *checkPointLoc,
-				  bool *backupEndRequired, bool *backupFromStandby);
+							  bool *backupEndRequired, bool *backupFromStandby);
 static bool read_tablespace_map(List **tablespaces);
 
 static void rm_redo_error_callback(void *arg);
 static int	get_sync_bit(int method);
 
 static void CopyXLogRecordToWAL(int write_len, bool isLogSwitch,
-					XLogRecData *rdata,
-					XLogRecPtr StartPos, XLogRecPtr EndPos);
+								XLogRecData *rdata,
+								XLogRecPtr StartPos, XLogRecPtr EndPos);
 static void ReserveXLogInsertLocation(int size, XLogRecPtr *StartPos,
-						  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
+									  XLogRecPtr *EndPos, XLogRecPtr *PrevPtr);
 static bool ReserveXLogSwitch(XLogRecPtr *StartPos, XLogRecPtr *EndPos,
-				  XLogRecPtr *PrevPtr);
+							  XLogRecPtr *PrevPtr);
 static XLogRecPtr WaitXLogInsertionsToFinish(XLogRecPtr upto);
 static char *GetXLogBuffer(XLogRecPtr ptr);
 static XLogRecPtr XLogBytePosToRecPtr(uint64 bytepos);
@@ -6397,9 +6395,9 @@ StartupXLOG(void)
 					ereport(FATAL,
 							(errmsg("could not find redo location referenced by checkpoint record"),
 							 errhint("If you are restoring from a backup, touch \"%s/recovery.signal\" and add required recovery options.\n"
-							 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
-							 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
-							 DataDir, DataDir, DataDir)));
+									 "If you are not restoring from a backup, try removing the file \"%s/backup_label\".\n"
+									 "Be careful: removing \"%s/backup_label\" will result in a corrupt cluster if restoring from a backup.",
+									 DataDir, DataDir, DataDir)));
 			}
 		}
 		else
@@ -10065,7 +10063,7 @@ assign_xlog_sync_method(int new_sync_method, void *extra)
  * Issue appropriate kind of fsync (if any) for an XLOG output file.
  *
  * 'fd' is a file descriptor for the XLOG file to be fsync'd.
- * 'log' and 'seg' are for error reporting purposes.
+ * 'segno' is for error reporting purposes.
  */
 void
 issue_xlog_fsync(int fd, XLogSegNo segno)
