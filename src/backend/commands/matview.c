@@ -1012,8 +1012,26 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	pstate->p_queryEnv = queryEnv;
 
 	names = stringToQualifiedNameList(matviewname);
-	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), AccessShareLock, true);
+
+	/*
+	 * Wait for concurrent transactions which update this materialized view at READ COMMITED.
+	 * This is needed to see changes commited in othre transactions. No wait and raise an error
+	 * at REPEATABLE READ or SERIALIZABLE to prevent anormal update of matviews.
+	 * XXX: dead-lock is possible here.
+	 */
+	if (!IsolationUsesXactSnapshot())
+		matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), ExclusiveLock, true);
+	else
+		matviewOid = RangeVarGetRelidExtended(makeRangeVarFromNameList(names), ExclusiveLock, RVR_MISSING_OK | RVR_NOWAIT, NULL, NULL);
+
 	matviewRel = table_open(matviewOid, NoLock);
+
+	/*
+	 * Get and push the latast snapshot to see any changes which is commited during waiting in
+	 * other transactions at READ COMMITTED level.
+	 * XXX: Is this safe?
+	 */
+	PushActiveSnapshot(GetTransactionSnapshot());
 
 	/* Make sure it is a materialized view. */
 	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
@@ -1193,6 +1211,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	/* Pop the original snapshot. */
+	PopActiveSnapshot();
 
 	table_close(matviewRel, NoLock);
 
