@@ -1271,8 +1271,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			appendStringInfo(&mvatts_buf, ", ");
 			appendStringInfo(&diffatts_buf, ", ");
 		}
-		appendStringInfo(&mvatts_buf, "mv.%s", NameStr(attr->attname));
-		appendStringInfo(&diffatts_buf, "diff.%s", NameStr(attr->attname));
+		appendStringInfo(&mvatts_buf, quote_qualified_identifier("mv", NameStr(attr->attname)));
+		appendStringInfo(&diffatts_buf, quote_qualified_identifier("diff", NameStr(attr->attname)));
 	}
 
 	/* Open SPI context. */
