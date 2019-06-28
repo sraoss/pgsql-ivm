@@ -66,6 +66,54 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
  4 | 40 | 104
 (4 rows)
 
+-- result of materliazied view have DISTINCT clause or the duplicate result.
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_distinct AS SELECT DISTINCT j FROM mv_base_a;
+INSERT INTO mv_base_a VALUES(6,20);
+SELECT * FROM mv_ivm_duplicate ORDER BY 1;
+ j  
+----
+ 10
+ 20
+ 20
+ 30
+ 40
+ 50
+(6 rows)
+
+SELECT * FROM mv_ivm_distinct ORDER BY 1;
+ j  
+----
+ 10
+ 20
+ 30
+ 40
+ 50
+(5 rows)
+
+DELETE FROM mv_base_a WHERE (i,j) = (2,20);
+SELECT * FROM mv_ivm_duplicate ORDER BY 1;
+ j  
+----
+ 10
+ 20
+ 30
+ 40
+ 50
+(5 rows)
+
+SELECT * FROM mv_ivm_distinct ORDER BY 1;
+ j  
+----
+ 10
+ 20
+ 30
+ 40
+ 50
+(5 rows)
+
+ROLLBACK;
 -- support SUM() and COUNT() aggregation function
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j), COUNT(i)  FROM mv_base_a GROUP BY i;
@@ -136,6 +184,23 @@ SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
  4 |  40 |     1
  5 |  50 |     1
 (5 rows)
+
+ROLLBACK;
+-- support having only aggregation function without GROUP clause
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j)FROM mv_base_a;
+SELECT * FROM mv_ivm_group ORDER BY 1;
+ sum 
+-----
+ 150
+(1 row)
+
+INSERT INTO mv_base_a VALUES(6,20);
+SELECT * FROM mv_ivm_group ORDER BY 1;
+ sum 
+-----
+ 170
+(1 row)
 
 ROLLBACK;
 -- unsupport aggregation function except for SUM(),COUNT()
