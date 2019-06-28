@@ -1108,18 +1108,22 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 				if (IsA(tle->expr, Aggref))
 				{
 					Aggref *aggref = (Aggref *) tle->expr;
+					const char *aggname = get_func_name(aggref->aggfnoid);
 
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+					if (strcmp(aggname, "count") != 0)
+					{
+						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 
-					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
+						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						((Aggref *)node)->args = aggref->args;
 
-					tle_count = makeTargetEntry((Expr *) node,
-						  					next_resno,
-						  					pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
-						  					false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno ++;
+						tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+												false);
+						agg_counts = lappend(agg_counts, tle_count);
+						next_resno++;
+					}
 				}
 
 			}
@@ -1189,18 +1193,22 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 				if (IsA(tle->expr, Aggref))
 				{
 					Aggref *aggref = (Aggref *) tle->expr;
+					const char *aggname = get_func_name(aggref->aggfnoid);
 
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+					if (strcmp(aggname, "count") != 0)
+					{
+						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 
-					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
+						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						((Aggref *)node)->args = aggref->args;
 
-					tle_count = makeTargetEntry((Expr *) node,
-						  					next_resno,
-						  					pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
-						  					false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno ++;
+						tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+												false);
+						agg_counts = lappend(agg_counts, tle_count);
+						next_resno++;
+					}
 				}
 
 			}
@@ -1359,9 +1367,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		if (tle->resjunk)
 			continue;
 
-		//if (!strcmp(tle->resname, "__ivm_count__"))
-			//continue;
-
 		appendStringInfo(&mvatts_buf, "%s", sep);
 		appendStringInfo(&diffatts_buf, "%s", sep);
 		sep = ", ";
@@ -1370,41 +1375,69 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", tle->resname));
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
+			Aggref *aggref = (Aggref *) tle->expr;
+			const char *aggname = get_func_name(aggref->aggfnoid);
+
 			appendStringInfo(&update_aggs_old, "%s", sep_agg);
 			appendStringInfo(&update_aggs_new, "%s", sep_agg);
 			appendStringInfo(&diff_aggs_buf, "%s", sep_agg);
 
 			sep_agg = ", ";
 
-			appendStringInfo(&update_aggs_old, 
-				"%s = CASE WHEN %s = %s THEN NULL ELSE COALESCE(%s,0) - COALESCE(%s, 0) END, "
-				"%s = %s - %s", 
-				quote_qualified_identifier(NULL, tle->resname),
-				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("mv", tle->resname),
-				quote_qualified_identifier("t", tle->resname),
-				quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+			if (!strcmp(aggname, "count"))
+			{
+				appendStringInfo(&update_aggs_old,
+					"%s = %s - %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("t", tle->resname)
+				);
+				appendStringInfo(&update_aggs_new,
+					"%s = %s + %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("diff", tle->resname)
+				);
 
-			);
-			appendStringInfo(&update_aggs_new, 
-				"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
-				"%s = %s + %s", 
-				quote_qualified_identifier(NULL, tle->resname),
-				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("mv", tle->resname),
-				quote_qualified_identifier("diff", tle->resname),
-				quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
-			);
-			appendStringInfo(&diff_aggs_buf, "%s, %s",
-				quote_qualified_identifier("diff", tle->resname),
-				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
-			);
+				appendStringInfo(&diff_aggs_buf, "%s",
+					quote_qualified_identifier("diff", tle->resname)
+				);
+			}
+			else if (!strcmp(aggname, "sum"))
+			{
+				appendStringInfo(&update_aggs_old,
+					"%s = CASE WHEN %s = %s THEN NULL ELSE COALESCE(%s,0) - COALESCE(%s, 0) END, "
+					"%s = %s - %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("t", tle->resname),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+				appendStringInfo(&update_aggs_new,
+					"%s = CASE WHEN %s = 0 AND NULL = 0 THEN %s ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
+					"%s = %s + %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+
+				appendStringInfo(&diff_aggs_buf, "%s, %s",
+					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+			}
+			else
+				elog(ERROR, "unsupported aggregate function: %s", aggname);
+
 		}
 	}
 

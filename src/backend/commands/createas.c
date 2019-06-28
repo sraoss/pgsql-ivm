@@ -383,22 +383,26 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						Aggref *aggref = (Aggref *) tle->expr;
 						const char *aggname = get_func_name(aggref->aggfnoid);
 
-						/* XXX */
-						if (strcmp(aggname, "sum") && strcmp(aggname, "count"))
+						/* XXX: need some generalization */
+						if (strcmp(aggname, "sum") !=0 && strcmp(aggname, "count") != 0)
 							elog(ERROR, "Aggrege function %s is not supported", aggname);
 
+						/* For aggregate functions except to count, add count func with the same arg parameters. */
+						if (strcmp(aggname, "count") != 0)
+						{
+							fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 
-						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+							node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+							((Aggref *)node)->args = aggref->args;
 
-						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-						((Aggref *)node)->args = aggref->args;
-
-						tle_count = makeTargetEntry((Expr *) node,
-								  				next_resno,
-								  				pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
-								  				false);
-						agg_counts = lappend(agg_counts, tle_count);
-						next_resno ++;
+							tle_count = makeTargetEntry((Expr *) node,
+														next_resno,
+														pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+														false);
+							agg_counts = lappend(agg_counts, tle_count);
+							next_resno++;
+						}
 
 					}
 				}
@@ -406,6 +410,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			}
 
+			/* Add count(*) for counting algorithm */
 			fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 			fn->agg_star = true;
 

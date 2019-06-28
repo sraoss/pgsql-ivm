@@ -40,12 +40,7 @@ DELETE FROM mv_base_a WHERE (i,j) = (2,200);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
 ROLLBACK;
 
--- unsupport aggregation function except for SUM(),COUNT()
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_avg AS SELECT i, AVG(j)  FROM mv_base_a GROUP BY i;
-
--- known issues: When use COUNT(*), the result of COUNT(*) may not be correct.
+-- support COUNT(*) aggregation function
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j),COUNT(*)  FROM mv_base_a GROUP BY i;
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
@@ -53,6 +48,10 @@ INSERT INTO mv_base_a VALUES(2,100);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
 ROLLBACK;
 
+-- unsupport aggregation function except for SUM(),COUNT()
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_avg AS SELECT i, AVG(j)  FROM mv_base_a GROUP BY i;
 
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;
