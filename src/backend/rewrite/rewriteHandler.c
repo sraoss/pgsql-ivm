@@ -1603,7 +1603,7 @@ ApplyRetrieveRule(Query *parsetree,
 	{
 		rule_action = copyObject(linitial(rule->actions));
 
-		if (!rule_action->distinctClause)
+		if (!rule_action->distinctClause && !rule_action->groupClause && !rule_action->hasAggs)
 		{
 			StringInfoData str;
 			RawStmt *raw;

@@ -50,6 +50,10 @@
 #include "nodes/makefuncs.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_func.h"
+#include "nodes/print.h"
+#include "catalog/pg_type_d.h"
+#include "optimizer/optimizer.h"
+#include "commands/defrem.h"
 
 
 typedef struct
@@ -81,7 +85,7 @@ static void OpenMatViewIncrementalMaintenance(void);
 static void CloseMatViewIncrementalMaintenance(void);
 
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
-			Oid relowner, int save_sec_context);
+			Query *query, Oid relowner, int save_sec_context);
 
 /*
  * SetMatViewPopulatedState
@@ -1007,6 +1011,14 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	ParseState *pstate;
 	QueryEnvironment *queryEnv = create_queryEnv();
 
+	Const	*dmy_arg = makeConst(INT4OID,
+								 -1,
+								 InvalidOid,
+								 sizeof(int32),
+								 Int32GetDatum(1),
+								 false,
+								 true); /* pass by value */
+
 	/* Create a dummy ParseState for addRangeTableEntryForENR */
 	pstate = make_parsestate(NULL);
 	pstate->p_queryEnv = queryEnv;
@@ -1055,7 +1067,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 		TargetEntry *tle;
 		Node *node;
-		FuncCall *fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+		FuncCall *fn;
 
 		EphemeralNamedRelation enr =
 			palloc(sizeof(EphemeralNamedRelationData));
@@ -1081,8 +1093,44 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			}
 		}
 
+		if (query->hasAggs)
+		{
+			ListCell *lc;
+			List *agg_counts = NIL;
+			AttrNumber next_resno = list_length(query->targetList) + 1;
+			Node *node;
+
+			foreach(lc, query->targetList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				TargetEntry *tle_count;
+
+				if (IsA(tle->expr, Aggref))
+				{
+					Aggref *aggref = (Aggref *) tle->expr;
+
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+						  					next_resno,
+						  					pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+						  					false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno ++;
+				}
+
+			}
+			new_delta_qry->targetList = list_concat(new_delta_qry->targetList, agg_counts);
+		}
+
+		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 		fn->agg_star = true;
-		new_delta_qry->groupClause = transformDistinctClause(NULL, &new_delta_qry->targetList, new_delta_qry->sortClause, false);
+		if (!new_delta_qry->groupClause && !new_delta_qry->hasAggs)
+			new_delta_qry->groupClause = transformDistinctClause(NULL, &new_delta_qry->targetList, new_delta_qry->sortClause, false);
+
 		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 
 		tle = makeTargetEntry((Expr *) node,
@@ -1126,10 +1174,46 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			}
 		}
 
-		fn->agg_star = true;
-		old_delta_qry->groupClause = transformDistinctClause(NULL, &old_delta_qry->targetList, old_delta_qry->sortClause, false);
-		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+		if (query->hasAggs)
+		{
+			ListCell *lc;
+			List *agg_counts = NIL;
+			AttrNumber next_resno = list_length(query->targetList) + 1;
+			Node *node;
 
+			foreach(lc, query->targetList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				TargetEntry *tle_count;
+
+				if (IsA(tle->expr, Aggref))
+				{
+					Aggref *aggref = (Aggref *) tle->expr;
+
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+						  					next_resno,
+						  					pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+						  					false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno ++;
+				}
+
+			}
+			old_delta_qry->targetList = list_concat(old_delta_qry->targetList, agg_counts);
+		}
+
+		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+		fn->agg_star = true;
+
+		if (!old_delta_qry->groupClause && !old_delta_qry->hasAggs)
+			old_delta_qry->groupClause = transformDistinctClause(NULL, &old_delta_qry->targetList, old_delta_qry->sortClause, false);
+
+		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 		tle = makeTargetEntry((Expr *) node,
 								  list_length(old_delta_qry->targetList) + 1,
 								  pstrdup("__ivm_count__"),
@@ -1202,8 +1286,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	PG_TRY();
 	{
-		apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, relowner,
-							   save_sec_context);
+		apply_delta(matviewOid, OIDDelta_new, OIDDelta_old,
+					query, relowner, save_sec_context);
 	}
 	PG_CATCH();
 	{
@@ -1228,15 +1312,18 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
-			Oid relowner, int save_sec_context)
+			Query *query, Oid relowner, int save_sec_context)
 {
 	StringInfoData querybuf;
 	StringInfoData mvatts_buf, diffatts_buf;
+	StringInfoData mv_gkeys_buf, diff_gkeys_buf, updt_gkeys_buf;
+	StringInfoData diff_aggs_buf, update_aggs_old, update_aggs_new;
 	Relation	matviewRel;
 	Relation	tempRel_new = NULL, tempRel_old = NULL;
 	char	   *matviewname;
 	char	   *tempname_new = NULL, *tempname_old = NULL;
-	int i;
+	ListCell	*lc;
+	char	   *sep, *sep_agg;
 
 
 	initStringInfo(&querybuf);
@@ -1259,20 +1346,91 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 	initStringInfo(&mvatts_buf);
 	initStringInfo(&diffatts_buf);
-	for (i = 0; i < matviewRel->rd_att->natts; i++)
-	{
-		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+	initStringInfo(&diff_aggs_buf);
+	initStringInfo(&update_aggs_old);
+	initStringInfo(&update_aggs_new);
 
-		if (!strcmp(NameStr(attr->attname), "__ivm_count__"))
+	sep = "";
+	sep_agg= "";
+	foreach (lc, query->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);;
+
+		if (tle->resjunk)
 			continue;
 
-		if (i > 0)
+		//if (!strcmp(tle->resname, "__ivm_count__"))
+			//continue;
+
+		appendStringInfo(&mvatts_buf, "%s", sep);
+		appendStringInfo(&diffatts_buf, "%s", sep);
+		sep = ", ";
+
+		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", tle->resname));
+		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", tle->resname));
+		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
-			appendStringInfo(&mvatts_buf, ", ");
-			appendStringInfo(&diffatts_buf, ", ");
+			appendStringInfo(&update_aggs_old, "%s", sep_agg);
+			appendStringInfo(&update_aggs_new, "%s", sep_agg);
+			appendStringInfo(&diff_aggs_buf, "%s", sep_agg);
+
+			sep_agg = ", ";
+
+			appendStringInfo(&update_aggs_old, 
+				"%s = CASE WHEN %s = %s THEN NULL ELSE COALESCE(%s,0) - COALESCE(%s, 0) END, "
+				"%s = %s - %s", 
+				quote_qualified_identifier(NULL, tle->resname),
+				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("mv", tle->resname),
+				quote_qualified_identifier("t", tle->resname),
+				quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+
+			);
+			appendStringInfo(&update_aggs_new, 
+				"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
+				"%s = %s + %s", 
+				quote_qualified_identifier(NULL, tle->resname),
+				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("mv", tle->resname),
+				quote_qualified_identifier("diff", tle->resname),
+				quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+			);
+			appendStringInfo(&diff_aggs_buf, "%s, %s",
+				quote_qualified_identifier("diff", tle->resname),
+				quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+			);
 		}
-		appendStringInfo(&mvatts_buf, quote_qualified_identifier("mv", NameStr(attr->attname)));
-		appendStringInfo(&diffatts_buf, quote_qualified_identifier("diff", NameStr(attr->attname)));
+	}
+
+	if (query->hasAggs)
+	{
+		initStringInfo(&mv_gkeys_buf);
+		initStringInfo(&diff_gkeys_buf);
+		initStringInfo(&updt_gkeys_buf);
+
+		sep_agg= "";
+		foreach (lc, query->groupClause)
+		{
+			SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
+
+			appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
+			appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);
+			appendStringInfo(&updt_gkeys_buf, "%s", sep_agg);
+
+			sep_agg = ", ";
+
+			appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", tle->resname));
+			appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", tle->resname));
+			appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", tle->resname));
+
+		}
 	}
 
 	/* Open SPI context. */
@@ -1299,35 +1457,74 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 	OpenMatViewIncrementalMaintenance();
 
-	if (tempname_old)
+	if (query->hasAggs)
 	{
-		resetStringInfo(&querybuf);
-		appendStringInfo(&querybuf,
-						"WITH t AS ("
-						"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
-						"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
-						"), updt AS ("
-						"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
-						"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
-						") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
-						matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data, matviewname, matviewname);
-		if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
-			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-
+		if (tempname_old)
+		{
+			resetStringInfo(&querybuf);
+			appendStringInfo(&querybuf,
+							"WITH t AS ("
+							"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
+							", %s"
+							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
+							"), updt AS ("
+							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
+							", %s "
+							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
+							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
+							diff_aggs_buf.data,
+							matviewname, tempname_old, mv_gkeys_buf.data, diff_gkeys_buf.data,
+							matviewname, update_aggs_old.data, matviewname);
+			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		}
+		if (tempname_new)
+		{
+			resetStringInfo(&querybuf);
+			appendStringInfo(&querybuf,
+							"WITH updt AS ("
+							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							", %s "
+							"  FROM %s AS diff WHERE (%s) = (%s)"
+							"  RETURNING %s"
+							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
+							matviewname, update_aggs_new.data, tempname_new,
+							mv_gkeys_buf.data, diff_gkeys_buf.data, diff_gkeys_buf.data,
+							matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
+			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		}
 	}
-	if (tempname_new)
+	else
 	{
-		resetStringInfo(&querybuf);
-		appendStringInfo(&querybuf,
-						"WITH updt AS ("
-						"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
-						"  FROM %s AS diff WHERE (%s) = (%s)"
-						"  RETURNING %s"
-						") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
-						matviewname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
-		if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
-			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-
+		if (tempname_old)
+		{
+			resetStringInfo(&querybuf);
+			appendStringInfo(&querybuf,
+							"WITH t AS ("
+							"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
+							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
+							"), updt AS ("
+							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
+							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
+							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
+							matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data, matviewname, matviewname);
+			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		}
+		if (tempname_new)
+		{
+			resetStringInfo(&querybuf);
+			appendStringInfo(&querybuf,
+							"WITH updt AS ("
+							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							"  FROM %s AS diff WHERE (%s) = (%s)"
+							"  RETURNING %s"
+							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
+							matviewname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
+			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		}
 	}
 
 	/* We're done maintaining the materialized view. */

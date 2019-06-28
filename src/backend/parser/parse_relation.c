@@ -57,9 +57,10 @@ static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 							int count, int offset,
 							int rtindex, int sublevels_up,
 							int location, bool include_dropped,
-							List **colnames, List **colvars);
+							List **colnames, List **colvars, bool is_ivm);
 static int	specialAttNum(const char *attname);
 static bool isQueryUsingTempRelation_walker(Node *node, void *context);
+static bool isIvmColumn(const char *s);
 
 
 /*
@@ -2318,7 +2319,7 @@ expandRTE(RangeTblEntry *rte, int rtindex, int sublevels_up,
 						expandTupleDesc(tupdesc, rte->eref,
 										rtfunc->funccolcount, atts_done,
 										rtindex, sublevels_up, location,
-										include_dropped, colnames, colvars);
+										include_dropped, colnames, colvars, false);
 					}
 					else if (functypclass == TYPEFUNC_SCALAR)
 					{
@@ -2570,8 +2571,17 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 	expandTupleDesc(rel->rd_att, eref, rel->rd_att->natts, 0,
 					rtindex, sublevels_up,
 					location, include_dropped,
-					colnames, colvars);
+					colnames, colvars, RelationIsIVM(rel));
 	relation_close(rel, AccessShareLock);
+}
+
+static bool
+isIvmColumn(const char *s)
+{
+	char pre[7];
+ 
+ 	strlcpy(pre, s, sizeof(pre));
+	return (strcmp(pre, "__ivm_") == 0); 
 }
 
 /*
@@ -2587,7 +2597,7 @@ static void
 expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 				int rtindex, int sublevels_up,
 				int location, bool include_dropped,
-				List **colnames, List **colvars)
+				List **colnames, List **colvars, bool is_ivm)
 {
 	ListCell   *aliascell = list_head(eref->colnames);
 	int			varattno;
@@ -2608,7 +2618,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, varattno);
 
-		if (!strcmp("__ivm_count__", NameStr(attr->attname)) && !MatViewIncrementalMaintenanceIsEnabled())
+		if (is_ivm && isIvmColumn(NameStr(attr->attname)) && !MatViewIncrementalMaintenanceIsEnabled())
 			continue;
 
 		if (attr->attisdropped)

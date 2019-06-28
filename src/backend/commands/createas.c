@@ -58,6 +58,8 @@
 #include "parser/parsetree.h"
 #include "parser/parse_func.h"
 #include "nodes/print.h"
+#include "optimizer/optimizer.h"
+#include "commands/defrem.h"
 
 
 typedef struct
@@ -339,17 +341,80 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			TargetEntry *tle;
 			Node *node;
 			ParseState *pstate = make_parsestate(NULL);
+			FuncCall *fn;
 
-			FuncCall *fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+			/* group keys must be in targetlist */
+			if (copied_query->groupClause)
+			{
+				ListCell *lc;
+				foreach(lc, copied_query->groupClause)
+				{
+					SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+					TargetEntry *tle = get_sortgroupclause_tle(scl, copied_query->targetList);
+
+					if (tle->resjunk)
+						elog(ERROR, "GROUP BY expressiosn must appear in select list for incremenatl materialized views");
+				}
+			}
+			else if (!copied_query->hasAggs)
+				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
+
+			if (copied_query->hasAggs)
+			{
+				ListCell *lc;
+				List *agg_counts = NIL;
+				AttrNumber next_resno = list_length(copied_query->targetList) + 1;
+				Const	*dmy_arg = makeConst(INT4OID,
+											 -1,
+											 InvalidOid,
+											 sizeof(int32),
+											 Int32GetDatum(1),
+											 false,
+											 true); /* pass by value */
+
+				foreach(lc, copied_query->targetList)
+				{
+					TargetEntry *tle = (TargetEntry *) lfirst(lc);
+					TargetEntry *tle_count;
+
+
+					if (IsA(tle->expr, Aggref))
+					{
+						Aggref *aggref = (Aggref *) tle->expr;
+						const char *aggname = get_func_name(aggref->aggfnoid);
+
+						/* XXX */
+						if (strcmp(aggname, "sum") && strcmp(aggname, "count"))
+							elog(ERROR, "Aggrege function %s is not supported", aggname);
+
+
+						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						((Aggref *)node)->args = aggref->args;
+
+						tle_count = makeTargetEntry((Expr *) node,
+								  				next_resno,
+								  				pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+								  				false);
+						agg_counts = lappend(agg_counts, tle_count);
+						next_resno ++;
+
+					}
+				}
+				copied_query->targetList = list_concat(copied_query->targetList, agg_counts);
+
+			}
+
+			fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 			fn->agg_star = true;
 
-			copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
 			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 
 			tle = makeTargetEntry((Expr *) node,
-									  list_length(copied_query->targetList) + 1,
-									  pstrdup("__ivm_count__"),
-									  false);
+								  	list_length(copied_query->targetList) + 1,
+								  	pstrdup("__ivm_count__"),
+								  	false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
 			copied_query->hasAggs = true;
 		}
