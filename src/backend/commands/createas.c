@@ -353,7 +353,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 					TargetEntry *tle = get_sortgroupclause_tle(scl, copied_query->targetList);
 
 					if (tle->resjunk)
-						elog(ERROR, "GROUP BY expressiosn must appear in select list for incremenatl materialized views");
+						elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
 				}
 			}
 			else if (!copied_query->hasAggs)
