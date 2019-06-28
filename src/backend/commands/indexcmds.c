@@ -1059,12 +1059,10 @@ DefineIndex(Oid relationId,
 
 			memcpy(part_oids, partdesc->oids, sizeof(Oid) * nparts);
 
-			parentDesc = CreateTupleDescCopy(RelationGetDescr(rel));
+			parentDesc = RelationGetDescr(rel);
 			opfamOids = palloc(sizeof(Oid) * numberOfKeyAttributes);
 			for (i = 0; i < numberOfKeyAttributes; i++)
 				opfamOids[i] = get_opclass_family(classObjectId[i]);
-
-			table_close(rel, NoLock);
 
 			/*
 			 * For each partition, scan all existing indexes; if one matches
@@ -1085,6 +1083,26 @@ DefineIndex(Oid relationId,
 				int			maplen;
 
 				childrel = table_open(childRelid, lockmode);
+
+				/*
+				 * Don't try to create indexes on foreign tables, though.
+				 * Skip those if a regular index, or fail if trying to create
+				 * a constraint index.
+				 */
+				if (childrel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+				{
+					if (stmt->unique || stmt->primary)
+						ereport(ERROR,
+								(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+								 errmsg("cannot create unique index on partitioned table \"%s\"",
+										RelationGetRelationName(rel)),
+								 errdetail("Table \"%s\" contains partitions that are foreign tables.",
+										RelationGetRelationName(rel))));
+
+					table_close(childrel, lockmode);
+					continue;
+				}
+
 				childidxs = RelationGetIndexList(childrel);
 				attmap =
 					convert_tuples_by_name_map(RelationGetDescr(childrel),
@@ -1245,13 +1263,12 @@ DefineIndex(Oid relationId,
 				heap_freetuple(newtup);
 			}
 		}
-		else
-			table_close(rel, NoLock);
 
 		/*
 		 * Indexes on partitioned tables are not themselves built, so we're
 		 * done here.
 		 */
+		table_close(rel, NoLock);
 		if (!OidIsValid(parentIndexId))
 			pgstat_progress_end_command();
 		return address;
@@ -2499,7 +2516,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 	if (objectKind == REINDEX_OBJECT_SYSTEM && concurrent)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("concurrent reindex of system catalogs is not supported")));
+				 errmsg("cannot reindex system catalogs concurrently")));
 
 	/*
 	 * Get OID of object to reindex, being the database currently being used
@@ -2613,7 +2630,7 @@ ReindexMultipleTables(const char *objectName, ReindexObjectType objectKind,
 			if (!concurrent_warning)
 				ereport(WARNING,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("concurrent reindex is not supported for catalog relations, skipping all")));
+						 errmsg("cannot reindex system catalogs concurrently, skipping all")));
 			concurrent_warning = true;
 			continue;
 		}
@@ -2764,11 +2781,10 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 
 				MemoryContextSwitchTo(oldcontext);
 
-				/* A system catalog cannot be reindexed concurrently */
 				if (IsCatalogRelationOid(relationOid))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("cannot reindex a system catalog concurrently")));
+							 errmsg("cannot reindex system catalogs concurrently")));
 
 				/* Open relation to get its indexes */
 				heapRelation = table_open(relationOid, ShareUpdateExclusiveLock);
@@ -2858,11 +2874,10 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 			{
 				Oid			heapId = IndexGetRelation(relationOid, false);
 
-				/* A system catalog cannot be reindexed concurrently */
 				if (IsCatalogRelationOid(heapId))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("cannot reindex a system catalog concurrently")));
+							 errmsg("cannot reindex system catalogs concurrently")));
 
 				/* Save the list of relation OIDs in private context */
 				oldcontext = MemoryContextSwitchTo(private_context);
