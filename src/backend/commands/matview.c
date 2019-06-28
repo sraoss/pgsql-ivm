@@ -1332,6 +1332,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	char	   *tempname_new = NULL, *tempname_old = NULL;
 	ListCell	*lc;
 	char	   *sep, *sep_agg;
+	bool		with_group = query->groupClause != NULL;
 
 
 	initStringInfo(&querybuf);
@@ -1447,22 +1448,30 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		initStringInfo(&diff_gkeys_buf);
 		initStringInfo(&updt_gkeys_buf);
 
-		sep_agg= "";
-		foreach (lc, query->groupClause)
+		if (with_group)
 		{
-			SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
-			TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
+			sep_agg= "";
+			foreach (lc, query->groupClause)
+			{
+				SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
+				TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
 
-			appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
-			appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);
-			appendStringInfo(&updt_gkeys_buf, "%s", sep_agg);
+				appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
+				appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);
+				appendStringInfo(&updt_gkeys_buf, "%s", sep_agg);
 
-			sep_agg = ", ";
+				sep_agg = ", ";
 
-			appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", tle->resname));
-			appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", tle->resname));
-			appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", tle->resname));
-
+				appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", tle->resname));
+				appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", tle->resname));
+				appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", tle->resname));
+			}
+		}
+		else
+		{
+			appendStringInfo(&mv_gkeys_buf, "1");
+			appendStringInfo(&diff_gkeys_buf, "1");
+			appendStringInfo(&updt_gkeys_buf, "1");
 		}
 	}
 
