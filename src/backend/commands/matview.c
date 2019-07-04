@@ -1419,13 +1419,55 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
 				);
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND NULL = 0 THEN %s ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
+					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
 					"%s = %s + %s",
 					quote_qualified_identifier(NULL, tle->resname),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", tle->resname),
 					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+
+				appendStringInfo(&diff_aggs_buf, "%s, %s",
+					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+			}
+			else if (!strcmp(aggname, "avg"))
+			{
+				appendStringInfo(&update_aggs_old,
+					"%s = CASE WHEN %s = %s THEN NULL ELSE"
+						"(COALESCE(%s,0) * %s - COALESCE(%s, 0) * %s) / (%s - %s) END, "
+					"%s = %s - %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", tle->resname),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+				);
+				appendStringInfo(&update_aggs_new,
+					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE"
+						" (COALESCE(%s,0) * %s + COALESCE(%s, 0) * %s) / (%s + %s) END, "
+					"%s = %s + %s",
+					quote_qualified_identifier(NULL, tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", tle->resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))

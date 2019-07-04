@@ -384,7 +384,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						const char *aggname = get_func_name(aggref->aggfnoid);
 
 						/* XXX: need some generalization */
-						if (strcmp(aggname, "sum") !=0 && strcmp(aggname, "count") != 0)
+						if (strcmp(aggname, "sum") !=0
+							&& strcmp(aggname, "count") != 0
+							&& strcmp(aggname, "avg") != 0
+						)
 							elog(ERROR, "Aggrege function %s is not supported", aggname);
 
 						/* For aggregate functions except to count, add count func with the same arg parameters. */
