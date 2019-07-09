@@ -138,14 +138,6 @@ date_in(PG_FUNCTION_ARGS)
 		case DTK_DATE:
 			break;
 
-		case DTK_CURRENT:
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("date/time value \"current\" is no longer supported")));
-
-			GetCurrentDateTime(tm);
-			break;
-
 		case DTK_EPOCH:
 			GetEpochTime(tm);
 			break;
@@ -1382,7 +1374,7 @@ time_scale(PG_FUNCTION_ARGS)
 
 /* AdjustTimeForTypmod()
  * Force the precision of the time value to a specified value.
- * Uses *exactly* the same code as in AdjustTimestampForTypemod()
+ * Uses *exactly* the same code as in AdjustTimestampForTypmod()
  * but we make a separate copy because those types do not
  * have a fundamental tie together but rather a coincidence of
  * implementation. - thomas

@@ -272,7 +272,8 @@ RecoveryTargetType recoveryTarget = RECOVERY_TARGET_UNSET;
 bool		recoveryTargetInclusive = true;
 int			recoveryTargetAction = RECOVERY_TARGET_ACTION_PAUSE;
 TransactionId recoveryTargetXid;
-TimestampTz recoveryTargetTime;
+char	   *recovery_target_time_string;
+static TimestampTz recoveryTargetTime;
 const char *recoveryTargetName;
 XLogRecPtr	recoveryTargetLSN;
 int			recovery_min_apply_delay = 0;
@@ -3320,7 +3321,7 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	}
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (close(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
@@ -3488,12 +3489,12 @@ XLogFileCopy(XLogSegNo destsegno, TimeLineID srcTLI, XLogSegNo srcsegno,
 				 errmsg("could not fsync file \"%s\": %m", tmppath)));
 	pgstat_report_wait_end();
 
-	if (CloseTransientFile(fd))
+	if (CloseTransientFile(fd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", tmppath)));
 
-	if (CloseTransientFile(srcfd))
+	if (CloseTransientFile(srcfd) != 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m", path)));
@@ -3790,7 +3791,7 @@ XLogFileClose(void)
 		(void) posix_fadvise(openLogFile, 0, 0, POSIX_FADV_DONTNEED);
 #endif
 
-	if (close(openLogFile))
+	if (close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -4565,7 +4566,7 @@ WriteControlFile(void)
 						XLOG_CONTROL_FILE)));
 	pgstat_report_wait_end();
 
-	if (close(fd))
+	if (close(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -5224,7 +5225,7 @@ BootStrapXLOG(void)
 				 errmsg("could not fsync bootstrap write-ahead log file: %m")));
 	pgstat_report_wait_end();
 
-	if (close(openLogFile))
+	if (close(openLogFile) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close bootstrap write-ahead log file: %m")));
@@ -5410,6 +5411,18 @@ validateRecoveryParameters(void)
 		recoveryTargetAction = RECOVERY_TARGET_ACTION_SHUTDOWN;
 
 	/*
+	 * Final parsing of recovery_target_time string; see also
+	 * check_recovery_target_time().
+	 */
+	if (recoveryTarget == RECOVERY_TARGET_TIME)
+	{
+		recoveryTargetTime = DatumGetTimestampTz(DirectFunctionCall3(timestamptz_in,
+																	 CStringGetDatum(recovery_target_time_string),
+																	 ObjectIdGetDatum(InvalidOid),
+																	 Int32GetDatum(-1)));
+	}
+
+	/*
 	 * If user specified recovery_target_timeline, validate it or compute the
 	 * "latest" value.  We can't do this until after we've gotten the restore
 	 * command and set InArchiveRecovery, because we need to fetch timeline
@@ -5514,7 +5527,7 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 
 		fd = XLogFileInit(startLogSegNo, &use_existent, true);
 
-		if (close(fd))
+		if (close(fd) != 0)
 			ereport(ERROR,
 					(errcode_for_file_access(),
 					 errmsg("could not close file \"%s\": %m",

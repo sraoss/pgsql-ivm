@@ -205,19 +205,22 @@ do { \
 	matches = completion_matches(text, complete_from_versioned_schema_query); \
 } while (0)
 
+/*
+ * Caution: COMPLETE_WITH_CONST is not for general-purpose use; you probably
+ * want COMPLETE_WITH() with one element, instead.
+ */
+#define COMPLETE_WITH_CONST(cs, con) \
+do { \
+	completion_case_sensitive = (cs); \
+	completion_charp = (con); \
+	matches = completion_matches(text, complete_from_const); \
+} while (0)
+
 #define COMPLETE_WITH_LIST_INT(cs, list) \
 do { \
 	completion_case_sensitive = (cs); \
-	if (!(list)[1]) \
-	{ \
-		completion_charp = (list)[0]; \
-		matches = completion_matches(text, complete_from_const); \
-	} \
-	else \
-	{ \
-		completion_charpp = (list); \
-		matches = completion_matches(text, complete_from_list); \
-	} \
+	completion_charpp = (list); \
+	matches = completion_matches(text, complete_from_list); \
 } while (0)
 
 #define COMPLETE_WITH_LIST(list) COMPLETE_WITH_LIST_INT(false, list)
@@ -1436,7 +1439,7 @@ psql_completion(const char *text, int start, int end)
 		"\\t", "\\T", "\\timing",
 		"\\unset",
 		"\\x",
-		"\\w", "\\watch",
+		"\\w", "\\warn", "\\watch",
 		"\\z",
 		"\\!", "\\?",
 		NULL
@@ -3366,8 +3369,13 @@ psql_completion(const char *text, int start, int end)
 	else if (HeadMatches("ALTER", "DATABASE|FUNCTION|PROCEDURE|ROLE|ROUTINE|USER") &&
 			 TailMatches("SET", MatchAny))
 		COMPLETE_WITH("FROM CURRENT", "TO");
-	/* Suggest possible variable values */
-	else if (TailMatches("SET", MatchAny, "TO|="))
+
+	/*
+	 * Suggest possible variable values in SET variable TO|=, along with the
+	 * preceding ALTER syntaxes.
+	 */
+	else if (TailMatches("SET", MatchAny, "TO|=") &&
+			 !TailMatches("UPDATE", MatchAny, "SET", MatchAny, "TO|="))
 	{
 		/* special cased code for individual GUCs */
 		if (TailMatches("DateStyle", "TO|="))
@@ -3385,21 +3393,29 @@ psql_completion(const char *text, int start, int end)
 			/* generic, type based, GUC support */
 			char	   *guctype = get_guctype(prev2_wd);
 
-			if (guctype && strcmp(guctype, "enum") == 0)
-			{
-				char		querybuf[1024];
-
-				snprintf(querybuf, sizeof(querybuf), Query_for_enum, prev2_wd);
-				COMPLETE_WITH_QUERY(querybuf);
-			}
-			else if (guctype && strcmp(guctype, "bool") == 0)
-				COMPLETE_WITH("on", "off", "true", "false", "yes", "no",
-							  "1", "0", "DEFAULT");
-			else
-				COMPLETE_WITH("DEFAULT");
-
+			/*
+			 * Note: if we don't recognize the GUC name, it's important to not
+			 * offer any completions, as most likely we've misinterpreted the
+			 * context and this isn't a GUC-setting command at all.
+			 */
 			if (guctype)
+			{
+				if (strcmp(guctype, "enum") == 0)
+				{
+					char		querybuf[1024];
+
+					snprintf(querybuf, sizeof(querybuf),
+							 Query_for_enum, prev2_wd);
+					COMPLETE_WITH_QUERY(querybuf);
+				}
+				else if (strcmp(guctype, "bool") == 0)
+					COMPLETE_WITH("on", "off", "true", "false", "yes", "no",
+								  "1", "0", "DEFAULT");
+				else
+					COMPLETE_WITH("DEFAULT");
+
 				free(guctype);
+			}
 		}
 	}
 
@@ -3749,7 +3765,7 @@ psql_completion(const char *text, int start, int end)
 	 */
 	if (matches == NULL)
 	{
-		COMPLETE_WITH("");
+		COMPLETE_WITH_CONST(true, "");
 #ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
 		rl_completion_append_character = '\0';
 #endif
@@ -4179,10 +4195,21 @@ complete_from_list(const char *text, int state)
 
 /*
  * This function returns one fixed string the first time even if it doesn't
- * match what's there, and nothing the second time. This should be used if
- * there is only one possibility that can appear at a certain spot, so
- * misspellings will be overwritten.  The string to be passed must be in
- * completion_charp.
+ * match what's there, and nothing the second time.  The string
+ * to be used must be in completion_charp.
+ *
+ * If the given string is "", this has the effect of preventing readline
+ * from doing any completion.  (Without this, readline tries to do filename
+ * completion which is seldom the right thing.)
+ *
+ * If the given string is not empty, readline will replace whatever the
+ * user typed with that string.  This behavior might be useful if it's
+ * completely certain that we know what must appear at a certain spot,
+ * so that it's okay to overwrite misspellings.  In practice, given the
+ * relatively lame parsing technology used in this file, the level of
+ * certainty is seldom that high, so that you probably don't want to
+ * use this.  Use complete_from_list with a one-element list instead;
+ * that won't try to auto-correct "misspellings".
  */
 static char *
 complete_from_const(const char *text, int state)

@@ -78,6 +78,7 @@
 #include "access/table.h"
 #include "access/xact.h"
 
+#include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "nodes/execnodes.h"
 
@@ -649,7 +650,7 @@ CheckPointReplicationOrigin(void)
 						tmppath)));
 	}
 
-	if (CloseTransientFile(tmpfd))
+	if (CloseTransientFile(tmpfd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -788,7 +789,7 @@ StartupReplicationOrigin(void)
 				 errmsg("replication slot checkpoint has wrong checksum %u, expected %u",
 						crc, file_crc)));
 
-	if (CloseTransientFile(fd))
+	if (CloseTransientFile(fd) != 0)
 		ereport(PANIC,
 				(errcode_for_file_access(),
 				 errmsg("could not close file \"%s\": %m",
@@ -1228,6 +1229,24 @@ pg_replication_origin_create(PG_FUNCTION_ARGS)
 	replorigin_check_prerequisites(false, false);
 
 	name = text_to_cstring((text *) DatumGetPointer(PG_GETARG_DATUM(0)));
+
+	/* Replication origins "pg_xxx" are reserved for internal use */
+	if (IsReservedName(name))
+		ereport(ERROR,
+				(errcode(ERRCODE_RESERVED_NAME),
+				 errmsg("replication origin name \"%s\" is reserved",
+						name),
+				 errdetail("Origin names starting with \"pg_\" are reserved.")));
+
+	/*
+	 * If built with appropriate switch, whine when regression-testing
+	 * conventions for replication origin names are violated.
+	 */
+#ifdef ENFORCE_REGRESSION_TEST_NAME_RESTRICTIONS
+	if (strncmp(name, "regress_", 8) != 0)
+		elog(WARNING, "replication origins created by regression test cases should have names starting with \"regress_\"");
+#endif
+
 	roident = replorigin_create(name);
 
 	pfree(name);

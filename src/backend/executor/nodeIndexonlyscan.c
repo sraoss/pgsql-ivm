@@ -242,11 +242,8 @@ IndexOnlyNext(IndexOnlyScanState *node)
 					 errmsg("lossy distance functions are not supported in index-only scans")));
 
 		/*
-		 * Predicate locks for index-only scans must be acquired at the page
-		 * level when the heap is not accessed, since tuple-level predicate
-		 * locks need the tuple's xmin value.  If we had to visit the tuple
-		 * anyway, then we already have the tuple-level lock and can skip the
-		 * page lock.
+		 * If we didn't access the heap, then we'll need to take a predicate
+		 * lock explicitly, as if we had.  For now we do that at page level.
 		 */
 		if (!tuple_from_heap)
 			PredicateLockPage(scandesc->heapRelation,
@@ -531,9 +528,8 @@ ExecInitIndexOnlyScan(IndexOnlyScan *node, EState *estate, int eflags)
 						  &TTSOpsVirtual);
 
 	/*
-	 * We need another slot, in a format that's suitable for the table AM,
-	 * for when we need to fetch a tuple from the table for rechecking
-	 * visibility.
+	 * We need another slot, in a format that's suitable for the table AM, for
+	 * when we need to fetch a tuple from the table for rechecking visibility.
 	 */
 	indexstate->ioss_TableSlot =
 		ExecAllocTableSlot(&estate->es_tupleTable,

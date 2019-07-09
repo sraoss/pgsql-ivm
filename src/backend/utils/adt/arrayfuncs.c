@@ -1322,7 +1322,7 @@ array_recv(PG_FUNCTION_ARGS)
 		lBound[i] = pq_getmsgint(buf, 4);
 
 		/*
-		 * Check overflow of upper bound. (ArrayNItems() below checks that
+		 * Check overflow of upper bound. (ArrayGetNItems() below checks that
 		 * dim[i] >= 0)
 		 */
 		if (dim[i] != 0)
@@ -4159,7 +4159,7 @@ array_contain_compare(AnyArrayType *array1, AnyArrayType *array2, Oid collation,
 		nelems2 = array2->xpn.nelems;
 	}
 	else
-		deconstruct_array(&(array2->flt),
+		deconstruct_array((ArrayType *) array2,
 						  element_type, typlen, typbyval, typalign,
 						  &values2, &nulls2, &nelems2);
 

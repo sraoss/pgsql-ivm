@@ -808,6 +808,31 @@ coerce_function_result_tuple(PLpgSQL_execstate *estate, TupleDesc tupdesc)
 			estate->retval = PointerGetDatum(SPI_returntuple(rettup, tupdesc));
 			/* no need to free map, we're about to return anyway */
 		}
+		else if (!(tupdesc->tdtypeid == erh->er_decltypeid ||
+				   (tupdesc->tdtypeid == RECORDOID &&
+					!ExpandedRecordIsDomain(erh))))
+		{
+			/*
+			 * The expanded record has the right physical tupdesc, but the
+			 * wrong type ID.  (Typically, the expanded record is RECORDOID
+			 * but the function is declared to return a named composite type.
+			 * As in exec_move_row_from_datum, we don't allow returning a
+			 * composite-domain record from a function declared to return
+			 * RECORD.)  So we must flatten the record to a tuple datum and
+			 * overwrite its type fields with the right thing.  spi.c doesn't
+			 * provide any easy way to deal with this case, so we end up
+			 * duplicating the guts of datumCopy() :-(
+			 */
+			Size		resultsize;
+			HeapTupleHeader tuphdr;
+
+			resultsize = EOH_get_flat_size(&erh->hdr);
+			tuphdr = (HeapTupleHeader) SPI_palloc(resultsize);
+			EOH_flatten_into(&erh->hdr, (void *) tuphdr, resultsize);
+			HeapTupleHeaderSetTypeId(tuphdr, tupdesc->tdtypeid);
+			HeapTupleHeaderSetTypMod(tuphdr, tupdesc->tdtypmod);
+			estate->retval = PointerGetDatum(tuphdr);
+		}
 		else
 		{
 			/*
@@ -3269,10 +3294,10 @@ exec_stmt_return_next(PLpgSQL_execstate *estate,
 	 * reference; in particular, this path is always taken in functions with
 	 * one or more OUT parameters.
 	 *
-	 * Unlike exec_statement_return, there's no special win here for R/W
-	 * expanded values, since they'll have to get flattened to go into the
-	 * tuplestore.  Indeed, we'd better make them R/O to avoid any risk of the
-	 * casting step changing them in-place.
+	 * Unlike exec_stmt_return, there's no special win here for R/W expanded
+	 * values, since they'll have to get flattened to go into the tuplestore.
+	 * Indeed, we'd better make them R/O to avoid any risk of the casting step
+	 * changing them in-place.
 	 */
 	if (stmt->retvarno >= 0)
 	{

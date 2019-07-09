@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [12beta2], [pgsql-bugs@lists.postgresql.org])
+AC_INIT([PostgreSQL], [13devel], [pgsql-bugs@lists.postgresql.org])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -963,30 +963,6 @@ AC_SUBST(with_system_tzdata)
 PGAC_ARG_BOOL(with, zlib, yes,
               [do not use Zlib])
 AC_SUBST(with_zlib)
-
-#
-# Elf
-#
-
-# Assume system is ELF if it predefines __ELF__ as 1,
-# otherwise believe host_os based default.
-case $host_os in
-    freebsd1*|freebsd2*) elf=no;;
-    freebsd3*|freebsd4*) elf=yes;;
-esac
-
-AC_EGREP_CPP(yes,
-[#if __ELF__
-  yes
-#endif
-],
-[ELF_SYS=true],
-[if test "X$elf" = "Xyes" ; then
-  ELF_SYS=true
-else
-  ELF_SYS=
-fi])
-AC_SUBST(ELF_SYS)
 
 #
 # Assignments

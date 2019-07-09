@@ -354,7 +354,7 @@ main(int argc, char *argv[])
 	if (database_exclude_patterns.head != NULL &&
 		(globals_only || roles_only || tablespaces_only))
 	{
-		pg_log_error("option --exclude-database cannot be used together with -g/--globals-only, -r/--roles-only or -t/--tablespaces-only");
+		pg_log_error("option --exclude-database cannot be used together with -g/--globals-only, -r/--roles-only, or -t/--tablespaces-only");
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
 		exit_nicely(1);
@@ -1432,8 +1432,8 @@ expand_dbname_patterns(PGconn *conn,
 
 	for (SimpleStringListCell *cell = patterns->head; cell; cell = cell->next)
 	{
-		appendPQExpBuffer(query,
-						  "SELECT datname FROM pg_catalog.pg_database n\n");
+		appendPQExpBufferStr(query,
+							 "SELECT datname FROM pg_catalog.pg_database n\n");
 		processSQLNamePattern(conn, query, cell->val, false,
 							  false, NULL, "datname", NULL, NULL);
 

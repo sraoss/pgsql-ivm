@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <math.h>
 
+#include "common/string.h"
 #include "pgtypeslib_extern.h"
 #include "dt.h"
 #include "pgtypes_timestamp.h"
@@ -111,7 +112,6 @@ static const datetkn datetktbl[] = {
 #endif
 	{"cot", TZ, -18000},		/* Columbia Time */
 	{"cst", TZ, -21600},		/* Central Standard Time */
-	{DCURRENT, RESERV, DTK_CURRENT},	/* "current" is always now */
 #if 0
 	cvst
 #endif
@@ -201,7 +201,6 @@ static const datetkn datetktbl[] = {
 	idt							/* Israeli, Iran, Indian Daylight Time */
 #endif
 	{LATE, RESERV, DTK_LATE},	/* "infinity" reserved for "late time" */
-	{INVALID, RESERV, DTK_INVALID}, /* "invalid" reserved for bad time */
 	{"iot", TZ, 18000},			/* Indian Chagos Time */
 	{"irkst", DTZ, 32400},		/* Irkutsk Summer Time */
 	{"irkt", TZ, 28800},		/* Irkutsk Time */
@@ -372,7 +371,6 @@ static const datetkn datetktbl[] = {
 #endif
 	{"ulast", DTZ, 32400},		/* Ulan Bator Summer Time */
 	{"ulat", TZ, 28800},		/* Ulan Bator Time */
-	{"undefined", RESERV, DTK_INVALID}, /* pre-v6.1 invalid time */
 	{"ut", TZ, 0},
 	{"utc", TZ, 0},
 	{"uyst", DTZ, -7200},		/* Uruguay Summer Time */
@@ -440,7 +438,6 @@ static const datetkn deltatktbl[] = {
 	{"hours", UNITS, DTK_HOUR}, /* "hours" relative */
 	{"hr", UNITS, DTK_HOUR},	/* "hour" relative */
 	{"hrs", UNITS, DTK_HOUR},	/* "hours" relative */
-	{INVALID, RESERV, DTK_INVALID}, /* reserved for invalid time */
 	{"m", UNITS, DTK_MINUTE},	/* "minute" relative */
 	{"microsecon", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
 	{"mil", UNITS, DTK_MILLENNIUM}, /* "millennium" relative */
@@ -471,7 +468,6 @@ static const datetkn deltatktbl[] = {
 	{DTIMEZONE, UNITS, DTK_TZ}, /* "timezone" time offset */
 	{"timezone_h", UNITS, DTK_TZ_HOUR}, /* timezone hour units */
 	{"timezone_m", UNITS, DTK_TZ_MINUTE},	/* timezone minutes units */
-	{"undefined", RESERV, DTK_INVALID}, /* pre-v6.1 invalid time */
 	{"us", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
 	{"usec", UNITS, DTK_MICROSEC},	/* "microsecond" relative */
 	{DMICROSEC, UNITS, DTK_MICROSEC},	/* "microsecond" relative */
@@ -1115,7 +1111,7 @@ DecodeNumberField(int len, char *str, int fmask,
 		for (i = 0; i < 6; i++)
 			fstr[i] = *cp != '\0' ? *cp++ : '0';
 		fstr[i] = '\0';
-		*fsec = strtol(fstr, NULL, 10);
+		*fsec = strtoint(fstr, NULL, 10);
 		*cp = '\0';
 		len = strlen(str);
 	}
@@ -1206,7 +1202,7 @@ DecodeNumber(int flen, char *str, int fmask,
 
 	*tmask = 0;
 
-	val = strtol(str, &cp, 10);
+	val = strtoint(str, &cp, 10);
 	if (cp == str)
 		return -1;
 
@@ -1442,11 +1438,11 @@ DecodeTime(char *str, int *tmask, struct tm *tm, fsec_t *fsec)
 
 	*tmask = DTK_TIME_M;
 
-	tm->tm_hour = strtol(str, &cp, 10);
+	tm->tm_hour = strtoint(str, &cp, 10);
 	if (*cp != ':')
 		return -1;
 	str = cp + 1;
-	tm->tm_min = strtol(str, &cp, 10);
+	tm->tm_min = strtoint(str, &cp, 10);
 	if (*cp == '\0')
 	{
 		tm->tm_sec = 0;
@@ -1457,7 +1453,7 @@ DecodeTime(char *str, int *tmask, struct tm *tm, fsec_t *fsec)
 	else
 	{
 		str = cp + 1;
-		tm->tm_sec = strtol(str, &cp, 10);
+		tm->tm_sec = strtoint(str, &cp, 10);
 		if (*cp == '\0')
 			*fsec = 0;
 		else if (*cp == '.')
@@ -1478,7 +1474,7 @@ DecodeTime(char *str, int *tmask, struct tm *tm, fsec_t *fsec)
 			for (i = 0; i < 6; i++)
 				fstr[i] = *cp != '\0' ? *cp++ : '0';
 			fstr[i] = '\0';
-			*fsec = strtol(fstr, &cp, 10);
+			*fsec = strtoint(fstr, &cp, 10);
 			if (*cp != '\0')
 				return -1;
 		}
@@ -1510,20 +1506,20 @@ DecodeTimezone(char *str, int *tzp)
 	int			len;
 
 	/* assume leading character is "+" or "-" */
-	hr = strtol(str + 1, &cp, 10);
+	hr = strtoint(str + 1, &cp, 10);
 
 	/* explicit delimiter? */
 	if (*cp == ':')
-		min = strtol(cp + 1, &cp, 10);
+		min = strtoint(cp + 1, &cp, 10);
 	/* otherwise, might have run things together... */
 	else if (*cp == '\0' && (len = strlen(str)) > 3)
 	{
-		min = strtol(str + len - 2, &cp, 10);
+		min = strtoint(str + len - 2, &cp, 10);
 		if (min < 0 || min >= 60)
 			return -1;
 
 		*(str + len - 2) = '\0';
-		hr = strtol(str + 1, &cp, 10);
+		hr = strtoint(str + 1, &cp, 10);
 		if (hr < 0 || hr > 13)
 			return -1;
 	}
@@ -1830,7 +1826,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 					if (tzp == NULL)
 						return -1;
 
-					val = strtol(field[i], &cp, 10);
+					val = strtoint(field[i], &cp, 10);
 					if (*cp != '-')
 						return -1;
 
@@ -1965,7 +1961,7 @@ DecodeDateTime(char **field, int *ftype, int nf,
 					char	   *cp;
 					int			val;
 
-					val = strtol(field[i], &cp, 10);
+					val = strtoint(field[i], &cp, 10);
 
 					/*
 					 * only a few kinds are allowed to have an embedded

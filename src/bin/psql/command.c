@@ -319,7 +319,8 @@ exec_command(const char *cmd,
 		status = exec_command_ef_ev(scan_state, active_branch, query_buf, true);
 	else if (strcmp(cmd, "ev") == 0)
 		status = exec_command_ef_ev(scan_state, active_branch, query_buf, false);
-	else if (strcmp(cmd, "echo") == 0 || strcmp(cmd, "qecho") == 0)
+	else if (strcmp(cmd, "echo") == 0 || strcmp(cmd, "qecho") == 0 ||
+			 strcmp(cmd, "warn") == 0)
 		status = exec_command_echo(scan_state, active_branch, cmd);
 	else if (strcmp(cmd, "elif") == 0)
 		status = exec_command_elif(scan_state, cstack, query_buf);
@@ -1114,7 +1115,7 @@ exec_command_ef_ev(PsqlScanState scan_state, bool active_branch,
 }
 
 /*
- * \echo and \qecho -- echo arguments to stdout or query output
+ * \echo, \qecho, and \warn -- echo arguments to stdout, query output, or stderr
  */
 static backslashResult
 exec_command_echo(PsqlScanState scan_state, bool active_branch, const char *cmd)
@@ -1129,13 +1130,15 @@ exec_command_echo(PsqlScanState scan_state, bool active_branch, const char *cmd)
 
 		if (strcmp(cmd, "qecho") == 0)
 			fout = pset.queryFout;
+		else if (strcmp(cmd, "warn") == 0)
+			fout = stderr;
 		else
 			fout = stdout;
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-			if (!quoted && strcmp(value, "-n") == 0)
+			if (first && !no_newline && !quoted && strcmp(value, "-n") == 0)
 				no_newline = true;
 			else
 			{
@@ -2992,7 +2995,7 @@ do_connect(enum trivalue reuse_previous_specification,
 	if (!dbname && reuse_previous)
 	{
 		initPQExpBuffer(&connstr);
-		appendPQExpBuffer(&connstr, "dbname=");
+		appendPQExpBufferStr(&connstr, "dbname=");
 		appendConnStrVal(&connstr, PQdb(o_conn));
 		dbname = connstr.data;
 		/* has_connection_string=true would be a dead store */
@@ -4576,7 +4579,7 @@ lookup_object_oid(EditableObjectType obj_type, const char *desc,
 			 */
 			appendPQExpBufferStr(query, "SELECT ");
 			appendStringLiteralConn(query, desc, pset.db);
-			appendPQExpBuffer(query, "::pg_catalog.regclass::pg_catalog.oid");
+			appendPQExpBufferStr(query, "::pg_catalog.regclass::pg_catalog.oid");
 			break;
 	}
 

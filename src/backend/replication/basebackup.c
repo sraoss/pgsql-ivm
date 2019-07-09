@@ -106,7 +106,7 @@ static TimestampTz throttled_last;
 static XLogRecPtr startptr;
 
 /* Total number of checksum failures during base backup. */
-static int64 total_checksum_failures;
+static long long int total_checksum_failures;
 
 /* Do not verify checksums. */
 static bool noverify_checksums = false;
@@ -607,14 +607,9 @@ perform_base_backup(basebackup_options *opt)
 	if (total_checksum_failures)
 	{
 		if (total_checksum_failures > 1)
-		{
-			char		buf[64];
-
-			snprintf(buf, sizeof(buf), INT64_FORMAT, total_checksum_failures);
-
 			ereport(WARNING,
-					(errmsg("%s total checksum verification failures", buf)));
-		}
+					(errmsg("%lld total checksum verification failures", total_checksum_failures)));
+
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
 				 errmsg("checksum verification failure during base backup")));
@@ -1079,7 +1074,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 		 * error in that case. The error handler further up will call
 		 * do_pg_abort_backup() for us. Also check that if the backup was
 		 * started while still in recovery, the server wasn't promoted.
-		 * dp_pg_stop_backup() will check that too, but it's better to stop
+		 * do_pg_stop_backup() will check that too, but it's better to stop
 		 * the backup early than continue to the end and fail there.
 		 */
 		CHECK_FOR_INTERRUPTS();

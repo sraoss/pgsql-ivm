@@ -2120,8 +2120,8 @@ describeOneTableDetails(const char *schemaname,
 						  "  pg_catalog.pg_get_expr(c.relpartbound, inhrelid)");
 		/* If verbose, also request the partition constraint definition */
 		if (verbose)
-			appendPQExpBuffer(&buf,
-							  ",\n  pg_catalog.pg_get_partition_constraintdef(inhrelid)");
+			appendPQExpBufferStr(&buf,
+								 ",\n  pg_catalog.pg_get_partition_constraintdef(inhrelid)");
 		appendPQExpBuffer(&buf,
 						  "\nFROM pg_catalog.pg_class c"
 						  " JOIN pg_catalog.pg_inherits i"
@@ -2208,9 +2208,9 @@ describeOneTableDetails(const char *schemaname,
 								 "  false AS condeferrable, false AS condeferred,\n");
 
 		if (pset.sversion >= 90400)
-			appendPQExpBuffer(&buf, "i.indisreplident,\n");
+			appendPQExpBufferStr(&buf, "i.indisreplident,\n");
 		else
-			appendPQExpBuffer(&buf, "false AS indisreplident,\n");
+			appendPQExpBufferStr(&buf, "false AS indisreplident,\n");
 
 		appendPQExpBuffer(&buf, "  a.amname, c2.relname, "
 						  "pg_catalog.pg_get_expr(i.indpred, i.indrelid, true)\n"
@@ -2268,7 +2268,7 @@ describeOneTableDetails(const char *schemaname,
 				appendPQExpBufferStr(&tmpbuf, _(", initially deferred"));
 
 			if (strcmp(indisreplident, "t") == 0)
-				appendPQExpBuffer(&tmpbuf, _(", replica identity"));
+				appendPQExpBufferStr(&tmpbuf, _(", replica identity"));
 
 			printTableAddFooter(&cont, tmpbuf.data);
 			add_tablespace_footer(&cont, tableinfo.relkind,
@@ -2317,7 +2317,7 @@ describeOneTableDetails(const char *schemaname,
 									 "  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))\n");
 			appendPQExpBuffer(&buf,
 							  "WHERE c.oid = '%s' AND c.oid = i.indrelid AND i.indexrelid = c2.oid\n"
-							  "ORDER BY i.indisprimary DESC, i.indisunique DESC, c2.relname;",
+							  "ORDER BY i.indisprimary DESC, c2.relname;",
 							  oid);
 			result = PSQLexec(buf.data);
 			if (!result)
@@ -2379,7 +2379,7 @@ describeOneTableDetails(const char *schemaname,
 						appendPQExpBufferStr(&buf, " INVALID");
 
 					if (strcmp(PQgetvalue(result, i, 10), "t") == 0)
-						appendPQExpBuffer(&buf, " REPLICA IDENTITY");
+						appendPQExpBufferStr(&buf, " REPLICA IDENTITY");
 
 					printTableAddFooter(&cont, buf.data);
 
@@ -2462,8 +2462,8 @@ describeOneTableDetails(const char *schemaname,
 								  oid);
 
 				if (pset.sversion >= 120000)
-					appendPQExpBuffer(&buf, "     AND conparentid = 0\n");
-				appendPQExpBuffer(&buf, "ORDER BY conname");
+					appendPQExpBufferStr(&buf, "     AND conparentid = 0\n");
+				appendPQExpBufferStr(&buf, "ORDER BY conname");
 			}
 
 			result = PSQLexec(buf.data);
@@ -2561,11 +2561,11 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf, "SELECT pol.polname,");
 			if (pset.sversion >= 100000)
-				appendPQExpBuffer(&buf,
-								  " pol.polpermissive,\n");
+				appendPQExpBufferStr(&buf,
+									 " pol.polpermissive,\n");
 			else
-				appendPQExpBuffer(&buf,
-								  " 't' as polpermissive,\n");
+				appendPQExpBufferStr(&buf,
+									 " 't' as polpermissive,\n");
 			appendPQExpBuffer(&buf,
 							  "  CASE WHEN pol.polroles = '{0}' THEN NULL ELSE pg_catalog.array_to_string(array(select rolname from pg_catalog.pg_roles where oid = any (pol.polroles) order by 1),',') END,\n"
 							  "  pg_catalog.pg_get_expr(pol.polqual, pol.polrelid),\n"
@@ -2613,7 +2613,7 @@ describeOneTableDetails(const char *schemaname,
 								  PQgetvalue(result, i, 0));
 
 				if (*(PQgetvalue(result, i, 1)) == 'f')
-					appendPQExpBuffer(&buf, " AS RESTRICTIVE");
+					appendPQExpBufferStr(&buf, " AS RESTRICTIVE");
 
 				if (!PQgetisnull(result, i, 5))
 					appendPQExpBuffer(&buf, " FOR %s",
@@ -2918,12 +2918,12 @@ describeOneTableDetails(const char *schemaname,
 						   "t.tgconstraint <> 0 AS tgisinternal" :
 						   "false AS tgisinternal"), oid);
 		if (pset.sversion >= 110000)
-			appendPQExpBuffer(&buf, "(NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D') \n"
-							  "    OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend WHERE objid = t.oid \n"
-							  "        AND refclassid = 'pg_catalog.pg_trigger'::pg_catalog.regclass))");
+			appendPQExpBufferStr(&buf, "(NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D') \n"
+								 "    OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend WHERE objid = t.oid \n"
+								 "        AND refclassid = 'pg_catalog.pg_trigger'::pg_catalog.regclass))");
 		else if (pset.sversion >= 90000)
 			/* display/warn about disabled internal triggers */
-			appendPQExpBuffer(&buf, "(NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D'))");
+			appendPQExpBufferStr(&buf, "(NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D'))");
 		else if (pset.sversion >= 80300)
 			appendPQExpBufferStr(&buf, "(t.tgconstraint = 0 OR (t.tgconstraint <> 0 AND t.tgenabled = 'D'))");
 		else
@@ -3643,7 +3643,8 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	PQExpBufferData buf;
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
-	static const bool translate_columns[] = {false, false, true, false, false, false, false};
+	int			cols_so_far;
+	bool		translate_columns[] = {false, false, true, false, false, false, false, false};
 
 	/* If tabtypes is empty, we default to \dtvmsE (but see also command.c) */
 	if (!(showTables || showIndexes || showViews || showMatViews || showSeq || showForeign))
@@ -3683,14 +3684,39 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 					  gettext_noop("partitioned index"),
 					  gettext_noop("Type"),
 					  gettext_noop("Owner"));
+	cols_so_far = 4;
 
 	if (showIndexes)
+	{
 		appendPQExpBuffer(&buf,
-						  ",\n c2.relname as \"%s\"",
+						  ",\n  c2.relname as \"%s\"",
 						  gettext_noop("Table"));
+		cols_so_far++;
+	}
 
 	if (verbose)
 	{
+		/*
+		 * Show whether a relation is permanent, temporary, or unlogged.  Like
+		 * describeOneTableDetails(), we consider that persistence emerged in
+		 * v9.1, even though related concepts existed before.
+		 */
+		if (pset.sversion >= 90100)
+		{
+			appendPQExpBuffer(&buf,
+							  ",\n  CASE c.relpersistence WHEN 'p' THEN '%s' WHEN 't' THEN '%s' WHEN 'u' THEN '%s' END as \"%s\"",
+							  gettext_noop("permanent"),
+							  gettext_noop("temporary"),
+							  gettext_noop("unlogged"),
+							  gettext_noop("Persistence"));
+			translate_columns[cols_so_far] = true;
+		}
+
+		/*
+		 * We don't bother to count cols_so_far below here, as there's no need
+		 * to; this might change with future additions to the output columns.
+		 */
+
 		/*
 		 * As of PostgreSQL 9.0, use pg_table_size() to show a more accurate
 		 * size of a table, including FSM, VM and TOAST tables.
@@ -3920,33 +3946,33 @@ listPartitionedTables(const char *reltypes, const char *pattern, bool verbose)
 	{
 		if (pset.sversion < 120000)
 		{
-			appendPQExpBuffer(&buf,
-							  ",\n     LATERAL (WITH RECURSIVE d\n"
-							  "                AS (SELECT inhrelid AS oid, 1 AS level\n"
-							  "                      FROM pg_catalog.pg_inherits\n"
-							  "                     WHERE inhparent = c.oid\n"
-							  "                    UNION ALL\n"
-							  "                    SELECT inhrelid, level + 1\n"
-							  "                      FROM pg_catalog.pg_inherits i\n"
-							  "                           JOIN d ON i.inhparent = d.oid)\n"
-							  "                SELECT pg_catalog.pg_size_pretty(sum(pg_catalog.pg_table_size("
-							  "d.oid))) AS tps,\n"
-							  "                       pg_catalog.pg_size_pretty(sum("
-							  "\n             CASE WHEN d.level = 1"
-							  " THEN pg_catalog.pg_table_size(d.oid) ELSE 0 END)) AS dps\n"
-							  "               FROM d) s");
+			appendPQExpBufferStr(&buf,
+								 ",\n     LATERAL (WITH RECURSIVE d\n"
+								 "                AS (SELECT inhrelid AS oid, 1 AS level\n"
+								 "                      FROM pg_catalog.pg_inherits\n"
+								 "                     WHERE inhparent = c.oid\n"
+								 "                    UNION ALL\n"
+								 "                    SELECT inhrelid, level + 1\n"
+								 "                      FROM pg_catalog.pg_inherits i\n"
+								 "                           JOIN d ON i.inhparent = d.oid)\n"
+								 "                SELECT pg_catalog.pg_size_pretty(sum(pg_catalog.pg_table_size("
+								 "d.oid))) AS tps,\n"
+								 "                       pg_catalog.pg_size_pretty(sum("
+								 "\n             CASE WHEN d.level = 1"
+								 " THEN pg_catalog.pg_table_size(d.oid) ELSE 0 END)) AS dps\n"
+								 "               FROM d) s");
 		}
 		else
 		{
 			/* PostgreSQL 12 has pg_partition_tree function */
-			appendPQExpBuffer(&buf,
-							  ",\n     LATERAL (SELECT pg_catalog.pg_size_pretty(sum("
-							  "\n                 CASE WHEN ppt.isleaf AND ppt.level = 1"
-							  "\n                      THEN pg_catalog.pg_table_size(ppt.relid)"
-							  " ELSE 0 END)) AS dps"
-							  ",\n                     pg_catalog.pg_size_pretty(sum("
-							  "pg_catalog.pg_table_size(ppt.relid))) AS tps"
-							  "\n              FROM pg_catalog.pg_partition_tree(c.oid) ppt) s");
+			appendPQExpBufferStr(&buf,
+								 ",\n     LATERAL (SELECT pg_catalog.pg_size_pretty(sum("
+								 "\n                 CASE WHEN ppt.isleaf AND ppt.level = 1"
+								 "\n                      THEN pg_catalog.pg_table_size(ppt.relid)"
+								 " ELSE 0 END)) AS dps"
+								 ",\n                     pg_catalog.pg_size_pretty(sum("
+								 "pg_catalog.pg_table_size(ppt.relid))) AS tps"
+								 "\n              FROM pg_catalog.pg_partition_tree(c.oid) ppt) s");
 		}
 	}
 
@@ -3988,7 +4014,7 @@ listPartitionedTables(const char *reltypes, const char *pattern, bool verbose)
 		return false;
 
 	initPQExpBuffer(&title);
-	appendPQExpBuffer(&title, "%s", tabletitle);
+	appendPQExpBufferStr(&title, tabletitle);
 
 	myopt.nullPrint = NULL;
 	myopt.title = title.data;
@@ -4552,8 +4578,8 @@ listSchemas(const char *pattern, bool verbose, bool showSystem)
 						  gettext_noop("Description"));
 	}
 
-	appendPQExpBuffer(&buf,
-					  "\nFROM pg_catalog.pg_namespace n\n");
+	appendPQExpBufferStr(&buf,
+						 "\nFROM pg_catalog.pg_namespace n\n");
 
 	if (!showSystem && !pattern)
 		appendPQExpBufferStr(&buf,
@@ -5753,10 +5779,10 @@ describePublications(const char *pattern)
 					  "  pg_catalog.pg_get_userbyid(pubowner) AS owner,\n"
 					  "  puballtables, pubinsert, pubupdate, pubdelete");
 	if (has_pubtruncate)
-		appendPQExpBuffer(&buf,
-						  ", pubtruncate");
-	appendPQExpBuffer(&buf,
-					  "\nFROM pg_catalog.pg_publication\n");
+		appendPQExpBufferStr(&buf,
+							 ", pubtruncate");
+	appendPQExpBufferStr(&buf,
+						 "\nFROM pg_catalog.pg_publication\n");
 
 	processSQLNamePattern(pset.db, &buf, pattern, false, false,
 						  NULL, "pubname", NULL,

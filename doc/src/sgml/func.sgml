@@ -2497,18 +2497,6 @@
 
      <tbody>
       <row>
-       <entry><literal>ascii_to_mic</literal></entry>
-       <entry><literal>SQL_ASCII</literal></entry>
-       <entry><literal>MULE_INTERNAL</literal></entry>
-      </row>
-
-      <row>
-       <entry><literal>ascii_to_utf8</literal></entry>
-       <entry><literal>SQL_ASCII</literal></entry>
-       <entry><literal>UTF8</literal></entry>
-      </row>
-
-      <row>
        <entry><literal>big5_to_euc_tw</literal></entry>
        <entry><literal>BIG5</literal></entry>
        <entry><literal>EUC_TW</literal></entry>
@@ -2779,12 +2767,6 @@
       </row>
 
       <row>
-       <entry><literal>mic_to_ascii</literal></entry>
-       <entry><literal>MULE_INTERNAL</literal></entry>
-       <entry><literal>SQL_ASCII</literal></entry>
-      </row>
-
-      <row>
        <entry><literal>mic_to_big5</literal></entry>
        <entry><literal>MULE_INTERNAL</literal></entry>
        <entry><literal>BIG5</literal></entry>
@@ -2902,12 +2884,6 @@
        <entry><literal>uhc_to_utf8</literal></entry>
        <entry><literal>UHC</literal></entry>
        <entry><literal>UTF8</literal></entry>
-      </row>
-
-      <row>
-       <entry><literal>utf8_to_ascii</literal></entry>
-       <entry><literal>UTF8</literal></entry>
-       <entry><literal>SQL_ASCII</literal></entry>
       </row>
 
       <row>
@@ -11624,7 +11600,7 @@ table2-mapping
    The result of each path evaluation step can be processed
    by one or more <type>jsonpath</type> operators and methods
    listed in <xref linkend="functions-sqljson-path-operators"/>.
-   Each method must be preceded by a dot, while arithmetic and boolean
+   Each method must be preceded by a dot, while arithmetic and Boolean
    operators are separated from the operands by spaces. For example,
    you can get an array size:
 <programlisting>
@@ -11719,7 +11695,7 @@ table2-mapping
 
    <listitem>
     <para>
-     A path expression can be a boolean predicate, although the SQL/JSON
+     A path expression can be a Boolean predicate, although the SQL/JSON
      standard allows predicates only in filters.  This is necessary for
      implementation of the <literal>@@</literal> operator. For example,
      the following<type>jsonpath</type> expression is valid in
@@ -12073,7 +12049,7 @@ table2-mapping
        </row>
        <row>
         <entry><literal>is unknown</literal></entry>
-        <entry>Tests whether a boolean condition is <literal>unknown</literal></entry>
+        <entry>Tests whether a Boolean condition is <literal>unknown</literal></entry>
         <entry><literal>[-1, 2, 7, "infinity"]</literal></entry>
         <entry><literal>$[*] ? ((@ > 0) is unknown)</literal></entry>
         <entry><literal>"infinity"</literal></entry>
@@ -12292,8 +12268,8 @@ table2-mapping
         <entry><literal>@@</literal></entry>
         <entry><type>jsonpath</type></entry>
         <entry>JSON path predicate check result for the specified JSON value.
-        Only first result item is taken into account.  If there is no results
-        or first result item is not bool, then <literal>NULL</literal>
+        Only first result item is taken into account.  If there are no results
+        or the first result item is not Boolean, then null
         is returned.</entry>
         <entry><literal>'{"a":[1,2,3,4,5]}'::jsonb @@ '$.a[*] > 2'</literal></entry>
        </row>
@@ -12958,8 +12934,8 @@ table2-mapping
         <entry><type>boolean</type></entry>
         <entry>
           Returns JSON path predicate result for the specified JSON value.
-          Only first result item is taken into account.  If there is no results
-          or first result item is not bool, then <literal>NULL</literal>
+          Only first result item is taken into account.  If there are no results
+          or the first result item is not Boolean, then null
           is returned.
         </entry>
         <entry>
@@ -14804,7 +14780,7 @@ NULL baz</literallayout>(3 rows)</entry>
        </indexterm>
        <function>max(<replaceable class="parameter">expression</replaceable>)</function>
       </entry>
-      <entry>any numeric, string, date/time, network, or enum type,
+      <entry>any numeric, string, date/time, network, pg_lsn, or enum type,
              or arrays of these types</entry>
       <entry>same as argument type</entry>
       <entry>Yes</entry>
@@ -14822,7 +14798,7 @@ NULL baz</literallayout>(3 rows)</entry>
        </indexterm>
        <function>min(<replaceable class="parameter">expression</replaceable>)</function>
       </entry>
-      <entry>any numeric, string, date/time, network, or enum type,
+      <entry>any numeric, string, date/time, network, pg_lsn, or enum type,
              or arrays of these types</entry>
       <entry>same as argument type</entry>
       <entry>Yes</entry>
