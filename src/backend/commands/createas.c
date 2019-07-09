@@ -388,7 +388,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 							&& strcmp(aggname, "count") != 0
 							&& strcmp(aggname, "avg") != 0
 						)
-							elog(ERROR, "Aggrege function %s is not supported", aggname);
+							elog(ERROR, "aggregate function %s is not supported", aggname);
 
 						/* For aggregate functions except to count, add count func with the same arg parameters. */
 						if (strcmp(aggname, "count") != 0)
