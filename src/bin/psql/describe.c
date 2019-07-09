@@ -1692,6 +1692,8 @@ describeOneTableDetails(const char *schemaname,
 	/* TODO: This will supported when sversion >= 130000 (or later). */
 	if (pset.sversion >= 120000)
 		tableinfo.isivm = strcmp(PQgetvalue(res, 0, 15), "t") == 0;
+	else
+		tableinfo.isivm = NULL;
 	PQclear(res);
 	res = NULL;
 
