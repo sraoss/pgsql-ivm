@@ -1689,8 +1689,7 @@ describeOneTableDetails(const char *schemaname,
 			(char *) NULL : pg_strdup(PQgetvalue(res, 0, 14));
 	else
 		tableinfo.relam = NULL;
-	/* TODO: This will supported when sversion >= 130000 (or later). */
-	if (pset.sversion >= 120000)
+	if (pset.sversion >= 130000)
 		tableinfo.isivm = strcmp(PQgetvalue(res, 0, 15), "t") == 0;
 	else
 		tableinfo.isivm = false;
