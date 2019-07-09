@@ -205,9 +205,9 @@ SELECT * FROM mv_ivm_group ORDER BY 1;
 ROLLBACK;
 -- unsupport aggregation function except for SUM(),COUNT(),AVG()
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
-ERROR:  aggrege function min is not supported
+ERROR:  aggregate function min is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
-ERROR:  aggrege function max is not supported
+ERROR:  aggregate function max is not supported
 -- known issues: When use AVG() function and values is indivisible, result of AVG() is incorrect.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_avg_bug AS SELECT i, SUM(j), COUNT(j), AVG(j) FROM mv_base_A GROUP BY i;
