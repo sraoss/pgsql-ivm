@@ -383,14 +383,24 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						Aggref *aggref = (Aggref *) tle->expr;
 						const char *aggname = get_func_name(aggref->aggfnoid);
 
-						/* XXX: need some generalization */
+						/* XXX: need some generalization
+						 *
+						 * Specifically, Using func names is not robust.  We can use oids instead
+						 * of names, but it would be nice to add some information to pg_aggregate.
+						 */
 						if (strcmp(aggname, "sum") !=0
 							&& strcmp(aggname, "count") != 0
 							&& strcmp(aggname, "avg") != 0
 						)
 							elog(ERROR, "aggregate function %s is not supported", aggname);
 
-						/* For aggregate functions except to count, add count func with the same arg parameters. */
+						/*
+						 * For aggregate functions except to count, add count func with the same arg parameters.
+						 * Also, add sum func for agv.
+						 *
+						 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+						 * of adding new duplicated one.
+						 */
 						if (strcmp(aggname, "count") != 0)
 						{
 							fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
@@ -402,6 +412,21 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 							tle_count = makeTargetEntry((Expr *) node,
 														next_resno,
 														pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+														false);
+							agg_counts = lappend(agg_counts, tle_count);
+							next_resno++;
+						}
+						if (strcmp(aggname, "avg") == 0)
+						{
+							fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+							node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+							((Aggref *)node)->args = aggref->args;
+
+							tle_count = makeTargetEntry((Expr *) node,
+														next_resno,
+														pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
 														false);
 							agg_counts = lappend(agg_counts, tle_count);
 							next_resno++;

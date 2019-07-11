@@ -1110,10 +1110,19 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					Aggref *aggref = (Aggref *) tle->expr;
 					const char *aggname = get_func_name(aggref->aggfnoid);
 
+					/*
+					 * For aggregate functions except to count, add count func with the same arg parameters.
+					 * Also, add sum func for agv.
+					 *
+					 * XXX: need some generalization
+					 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+					 * of adding new duplicated one.
+					 */
 					if (strcmp(aggname, "count") != 0)
 					{
 						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 
+						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
 						((Aggref *)node)->args = aggref->args;
 
@@ -1121,6 +1130,21 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 												next_resno,
 												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
 												false);
+						agg_counts = lappend(agg_counts, tle_count);
+						next_resno++;
+					}
+					if (strcmp(aggname, "avg") == 0)
+					{
+						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						((Aggref *)node)->args = aggref->args;
+
+						tle_count = makeTargetEntry((Expr *) node,
+													next_resno,
+													pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
+													false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
 					}
@@ -1195,10 +1219,20 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					Aggref *aggref = (Aggref *) tle->expr;
 					const char *aggname = get_func_name(aggref->aggfnoid);
 
+					/*
+					 * For aggregate functions except to count, add count func with the same arg parameters.
+					 * Also, add sum func for agv.
+					 *
+					 * XXX: need some generalization
+					 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+					 * of adding new duplicated one.
+					 */
+
 					if (strcmp(aggname, "count") != 0)
 					{
 						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 
+						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
 						((Aggref *)node)->args = aggref->args;
 
@@ -1206,6 +1240,21 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 												next_resno,
 												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
 												false);
+						agg_counts = lappend(agg_counts, tle_count);
+						next_resno++;
+					}
+					if (strcmp(aggname, "avg") == 0)
+					{
+						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						((Aggref *)node)->args = aggref->args;
+
+						tle_count = makeTargetEntry((Expr *) node,
+													next_resno,
+													pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
+													false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
 					}
@@ -1378,12 +1427,20 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
 			const char *aggname = get_func_name(aggref->aggfnoid);
+			const char *aggtype = format_type_be(aggref->aggtype);
 
 			appendStringInfo(&update_aggs_old, "%s", sep_agg);
 			appendStringInfo(&update_aggs_new, "%s", sep_agg);
 			appendStringInfo(&diff_aggs_buf, "%s", sep_agg);
 
 			sep_agg = ", ";
+
+			/* XXX: need some generalization
+			 *
+			 * Specifically, Using func names is not robust.  We can use oids instead
+			 * of names, but it would be nice to add some information to pg_aggregate
+			 * and handler functions.
+			 */
 
 			if (!strcmp(aggname, "count"))
 			{
@@ -1407,25 +1464,31 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			else if (!strcmp(aggname, "sum"))
 			{
 				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s = %s THEN NULL ELSE COALESCE(%s,0) - COALESCE(%s, 0) END, "
+					"%s = CASE WHEN %s = %s THEN NULL ELSE "
+						"COALESCE(%s,0) - COALESCE(%s, 0) END, "
 					"%s = %s - %s",
 					quote_qualified_identifier(NULL, tle->resname),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+
 					quote_qualified_identifier("mv", tle->resname),
 					quote_qualified_identifier("t", tle->resname),
+
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
 				);
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE COALESCE(%s,0) + COALESCE(%s, 0) END, "
+					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
+						"COALESCE(%s,0) + COALESCE(%s, 0) END, "
 					"%s = %s + %s",
 					quote_qualified_identifier(NULL, tle->resname),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+
 					quote_qualified_identifier("mv", tle->resname),
 					quote_qualified_identifier("diff", tle->resname),
+
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
@@ -1439,42 +1502,57 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			else if (!strcmp(aggname, "avg"))
 			{
 				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s = %s THEN NULL ELSE"
-						"(COALESCE(%s,0) * %s - COALESCE(%s, 0) * %s) / (%s - %s) END, "
+					"%s = CASE WHEN %s = %s THEN NULL ELSE "
+						"(COALESCE(%s,0) - COALESCE(%s, 0))::%s / (%s - %s) END, "
+					"%s = COALESCE(%s,0) - COALESCE(%s, 0), "
 					"%s = %s - %s",
+
 					quote_qualified_identifier(NULL, tle->resname),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", tle->resname),
+
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_sum",tle->resname,"_")),
+					aggtype,
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", tle->resname),
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_sum",tle->resname,"_")),
+
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
 				);
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE"
-						" (COALESCE(%s,0) * %s + COALESCE(%s, 0) * %s) / (%s + %s) END, "
+					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
+						"(COALESCE(%s,0)+ COALESCE(%s, 0))::%s / (%s + %s) END, "
+					"%s = COALESCE(%s,0) + COALESCE(%s, 0), "
 					"%s = %s + %s",
+
 					quote_qualified_identifier(NULL, tle->resname),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", tle->resname),
+
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
+					aggtype,
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", tle->resname),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
+
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
 				);
 
-				appendStringInfo(&diff_aggs_buf, "%s, %s",
+				appendStringInfo(&diff_aggs_buf, "%s, %s, %s",
 					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
 				);
 			}
