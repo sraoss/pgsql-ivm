@@ -68,11 +68,7 @@ INSERT INTO mv_base_a VALUES(6,20);
 SELECT * FROM mv_ivm_group ORDER BY 1;
 ROLLBACK;
 
--- unsupport aggregation function except for SUM(),COUNT(),AVG()
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
-
--- known issues: When use AVG() function and values is indivisible, result of AVG() is incorrect.
+-- resolved issue: When use AVG() function and values is indivisible, result of AVG() is incorrect.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_avg_bug AS SELECT i, SUM(j), COUNT(j), AVG(j) FROM mv_base_A GROUP BY i;
 SELECT * FROM mv_ivm_avg_bug ORDER BY 1,2,3;
@@ -86,6 +82,10 @@ DELETE FROM mv_base_a WHERE (i,j) = (1,0);
 DELETE FROM mv_base_a WHERE (i,j) = (2,30);
 SELECT * FROM mv_ivm_avg_bug ORDER BY 1,2,3;
 ROLLBACK;
+
+-- unsupport aggregation function except for SUM(),COUNT(),AVG()
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
 
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;
