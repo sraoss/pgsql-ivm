@@ -1,4 +1,3 @@
-
 -- create a table to use as a basis for views and materialized views in various combinations
 CREATE TABLE mv_base_a (i int, j int);
 INSERT INTO mv_base_a VALUES
@@ -86,6 +85,23 @@ ROLLBACK;
 -- unsupport aggregation function except for SUM(),COUNT(),AVG()
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
+
+-- restriction of incremental view maintenance
+
+-- contain system column
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
+-- contain subquery
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm04 AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
+-- contain CTE
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm06 AS WITH b AS (SELECT i,k FROM mv_base_b WHERE k < 103) SELECT a.i,a.j FROM mv_base_a a,b WHERE a.i = b.i;
+-- contain view or materialized view
+CREATE VIEW b_view AS SELECT i,k FROM mv_base_b;
+CREATE MATERIALIZED VIEW b_mview AS SELECT i,k FROM mv_base_b;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm07 AS SELECT a.i,a.j FROM mv_base_a a,b_view b WHERE a.i = b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm08 AS SELECT a.i,a.j FROM mv_base_a a,b_mview b WHERE a.i = b.i;
 
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;
