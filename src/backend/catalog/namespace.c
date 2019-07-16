@@ -2399,7 +2399,7 @@ TSParserIsVisible(Oid prsId)
 /*
  * get_ts_dict_oid - find a TS dictionary by possibly qualified name
  *
- * If not found, returns InvalidOid if failOK, else throws error
+ * If not found, returns InvalidOid if missing_ok, else throws error
  */
 Oid
 get_ts_dict_oid(List *names, bool missing_ok)
@@ -3402,7 +3402,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	if (path->addTemp)
 	{
 		if (lc && lfirst_oid(lc) == myTempNamespace)
-			lc = lnext(lc);
+			lc = lnext(activeSearchPath, lc);
 		else
 			return false;
 	}
@@ -3410,7 +3410,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	if (path->addCatalog)
 	{
 		if (lc && lfirst_oid(lc) == PG_CATALOG_NAMESPACE)
-			lc = lnext(lc);
+			lc = lnext(activeSearchPath, lc);
 		else
 			return false;
 	}
@@ -3421,7 +3421,7 @@ OverrideSearchPathMatchesCurrent(OverrideSearchPath *path)
 	foreach(lcp, path->schemas)
 	{
 		if (lc && lfirst_oid(lc) == lfirst_oid(lcp))
-			lc = lnext(lc);
+			lc = lnext(activeSearchPath, lc);
 		else
 			return false;
 	}

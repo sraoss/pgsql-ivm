@@ -174,6 +174,7 @@ static List *get_steps_using_prefix_recurse(GeneratePruningStepsContext *context
 											Oid step_lastcmpfn,
 											int step_lastkeyno,
 											Bitmapset *step_nullkeys,
+											List *prefix,
 											ListCell *start,
 											List *step_exprs,
 											List *step_cmpfns);
@@ -194,8 +195,10 @@ static PruneStepResult *perform_pruning_base_step(PartitionPruneContext *context
 static PruneStepResult *perform_pruning_combine_step(PartitionPruneContext *context,
 													 PartitionPruneStepCombine *cstep,
 													 PruneStepResult **step_results);
-static bool match_boolean_partition_clause(Oid partopfamily, Expr *clause,
-										   Expr *partkey, Expr **outconst);
+static PartClauseMatchStatus match_boolean_partition_clause(Oid partopfamily,
+															Expr *clause,
+															Expr *partkey,
+															Expr **outconst);
 static void partkey_datum_from_expr(PartitionPruneContext *context,
 									Expr *expr, int stateidx,
 									Datum *value, bool *isnull);
@@ -1519,7 +1522,7 @@ gen_prune_steps_from_opexps(GeneratePruningStepsContext *context,
 					 * of expressions of different keys, which
 					 * get_steps_using_prefix will take care of for us.
 					 */
-					for_each_cell(lc1, lc)
+					for_each_cell(lc1, eq_clauses, lc)
 					{
 						pc = lfirst(lc1);
 
@@ -1623,6 +1626,7 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 							  bool *clause_is_not_null, PartClauseInfo **pc,
 							  List **clause_steps)
 {
+	PartClauseMatchStatus boolmatchstatus;
 	PartitionScheme part_scheme = context->rel->part_scheme;
 	Oid			partopfamily = part_scheme->partopfamily[partkeyidx],
 				partcoll = part_scheme->partcollation[partkeyidx];
@@ -1631,7 +1635,10 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 	/*
 	 * Recognize specially shaped clauses that match a Boolean partition key.
 	 */
-	if (match_boolean_partition_clause(partopfamily, clause, partkey, &expr))
+	boolmatchstatus = match_boolean_partition_clause(partopfamily, clause,
+													 partkey, &expr);
+
+	if (boolmatchstatus == PARTCLAUSE_MATCH_CLAUSE)
 	{
 		PartClauseInfo *partclause;
 
@@ -2147,7 +2154,21 @@ match_clause_to_partition_key(GeneratePruningStepsContext *context,
 		return PARTCLAUSE_MATCH_NULLNESS;
 	}
 
-	return PARTCLAUSE_UNSUPPORTED;
+	/*
+	 * If we get here then the return value depends on the result of the
+	 * match_boolean_partition_clause call above.  If the call returned
+	 * PARTCLAUSE_UNSUPPORTED then we're either not dealing with a bool qual
+	 * or the bool qual is not suitable for pruning.  Since the qual didn't
+	 * match up to any of the other qual types supported here, then trying to
+	 * match it against any other partition key is a waste of time, so just
+	 * return PARTCLAUSE_UNSUPPORTED.  If the qual just couldn't be matched to
+	 * this partition key, then it may match another, so return
+	 * PARTCLAUSE_NOMATCH.  The only other value that
+	 * match_boolean_partition_clause can return is PARTCLAUSE_MATCH_CLAUSE,
+	 * and since that value was already dealt with above, then we can just
+	 * return boolmatchstatus.
+	 */
+	return boolmatchstatus;
 }
 
 /*
@@ -2193,6 +2214,7 @@ get_steps_using_prefix(GeneratePruningStepsContext *context,
 										  step_lastcmpfn,
 										  step_lastkeyno,
 										  step_nullkeys,
+										  prefix,
 										  list_head(prefix),
 										  NIL, NIL);
 }
@@ -2204,6 +2226,7 @@ get_steps_using_prefix(GeneratePruningStepsContext *context,
  *		column that is less than the one for which we're currently generating
  *		steps (that is, step_lastkeyno)
  *
+ * 'prefix' is the list of PartClauseInfos.
  * 'start' is where we should start iterating for the current invocation.
  * 'step_exprs' and 'step_cmpfns' each contains the expressions and cmpfns
  * we've generated so far from the clauses for the previous part keys.
@@ -2216,6 +2239,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 							   Oid step_lastcmpfn,
 							   int step_lastkeyno,
 							   Bitmapset *step_nullkeys,
+							   List *prefix,
 							   ListCell *start,
 							   List *step_exprs,
 							   List *step_cmpfns)
@@ -2241,7 +2265,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		 * next_start to the ListCell of the first clause for the next
 		 * partition key.
 		 */
-		for_each_cell(lc, start)
+		for_each_cell(lc, prefix, start)
 		{
 			pc = lfirst(lc);
 
@@ -2250,7 +2274,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		}
 		next_start = lc;
 
-		for_each_cell(lc, start)
+		for_each_cell(lc, prefix, start)
 		{
 			List	   *moresteps;
 
@@ -2284,6 +2308,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 													   step_lastcmpfn,
 													   step_lastkeyno,
 													   step_nullkeys,
+													   prefix,
 													   next_start,
 													   step_exprs,
 													   step_cmpfns);
@@ -2298,7 +2323,7 @@ get_steps_using_prefix_recurse(GeneratePruningStepsContext *context,
 		 * till the end of the list.
 		 */
 		Assert(list_length(step_exprs) == cur_keyno);
-		for_each_cell(lc, start)
+		for_each_cell(lc, prefix, start)
 		{
 			PartClauseInfo *pc = lfirst(lc);
 			PartitionPruneStep *step;
@@ -3243,8 +3268,8 @@ perform_pruning_base_step(PartitionPruneContext *context,
 			values[keyno] = datum;
 			nvalues++;
 
-			lc1 = lnext(lc1);
-			lc2 = lnext(lc2);
+			lc1 = lnext(opstep->exprs, lc1);
+			lc2 = lnext(opstep->cmpfns, lc2);
 		}
 	}
 
@@ -3395,11 +3420,15 @@ perform_pruning_combine_step(PartitionPruneContext *context,
 /*
  * match_boolean_partition_clause
  *
- * Sets *outconst to a Const containing true or false value and returns true if
- * we're able to match the clause to the partition key as specially-shaped
- * Boolean clause.  Returns false otherwise with *outconst set to NULL.
+ * If we're able to match the clause to the partition key as specially-shaped
+ * boolean clause, set *outconst to a Const containing a true or false value
+ * and return PARTCLAUSE_MATCH_CLAUSE.  Returns PARTCLAUSE_UNSUPPORTED if the
+ * clause is not a boolean clause or if the boolean clause is unsuitable for
+ * partition pruning.  Returns PARTCLAUSE_NOMATCH if it's a bool quals but
+ * just does not match this partition key.  *outconst is set to NULL in the
+ * latter two cases.
  */
-static bool
+static PartClauseMatchStatus
 match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 							   Expr **outconst)
 {
@@ -3408,7 +3437,7 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 	*outconst = NULL;
 
 	if (!IsBooleanOpfamily(partopfamily))
-		return false;
+		return PARTCLAUSE_UNSUPPORTED;
 
 	if (IsA(clause, BooleanTest))
 	{
@@ -3417,7 +3446,7 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 		/* Only IS [NOT] TRUE/FALSE are any good to us */
 		if (btest->booltesttype == IS_UNKNOWN ||
 			btest->booltesttype == IS_NOT_UNKNOWN)
-			return false;
+			return PARTCLAUSE_UNSUPPORTED;
 
 		leftop = btest->arg;
 		if (IsA(leftop, RelabelType))
@@ -3430,7 +3459,7 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 				: (Expr *) makeBoolConst(false, false);
 
 		if (*outconst)
-			return true;
+			return PARTCLAUSE_MATCH_CLAUSE;
 	}
 	else
 	{
@@ -3450,10 +3479,10 @@ match_boolean_partition_clause(Oid partopfamily, Expr *clause, Expr *partkey,
 			*outconst = (Expr *) makeBoolConst(false, false);
 
 		if (*outconst)
-			return true;
+			return PARTCLAUSE_MATCH_CLAUSE;
 	}
 
-	return false;
+	return PARTCLAUSE_NOMATCH;
 }
 
 /*
