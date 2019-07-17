@@ -10702,7 +10702,7 @@
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
 
 # IVM
-{ oid => '784', descr => 'ivm trigger',
+{ oid => '786', descr => 'ivm trigger',
   proname => 'IVM_immediate_maintenance', provolatile => 'v', prorettype => 'trigger',
   proargtypes => '', prosrc => 'IVM_immediate_maintenance' },
 
