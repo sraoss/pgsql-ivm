@@ -1382,6 +1382,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	ListCell	*lc;
 	char	   *sep, *sep_agg;
 	bool		with_group = query->groupClause != NULL;
+	int			i;
 
 
 	initStringInfo(&querybuf);
@@ -1410,9 +1411,15 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 	sep = "";
 	sep_agg= "";
+	i = 0;
 	foreach (lc, query->targetList)
 	{
-		TargetEntry *tle = (TargetEntry *) lfirst(lc);;
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+		char *resname = NameStr(attr->attname);
+
+		i++;
+
 
 		if (tle->resjunk)
 			continue;
@@ -1421,8 +1428,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		appendStringInfo(&diffatts_buf, "%s", sep);
 		sep = ", ";
 
-		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", tle->resname));
-		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", tle->resname));
+		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", resname));
+		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
@@ -1446,19 +1453,19 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			{
 				appendStringInfo(&update_aggs_old,
 					"%s = %s - %s",
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", tle->resname),
-					quote_qualified_identifier("t", tle->resname)
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", resname),
+					quote_qualified_identifier("t", resname)
 				);
 				appendStringInfo(&update_aggs_new,
 					"%s = %s + %s",
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", tle->resname),
-					quote_qualified_identifier("diff", tle->resname)
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", resname),
+					quote_qualified_identifier("diff", resname)
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s",
-					quote_qualified_identifier("diff", tle->resname)
+					quote_qualified_identifier("diff", resname)
 				);
 			}
 			else if (!strcmp(aggname, "sum"))
@@ -1467,36 +1474,36 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					"%s = CASE WHEN %s = %s THEN NULL ELSE "
 						"COALESCE(%s,0) - COALESCE(%s, 0) END, "
 					"%s = %s - %s",
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier("mv", tle->resname),
-					quote_qualified_identifier("t", tle->resname),
+					quote_qualified_identifier("mv", resname),
+					quote_qualified_identifier("t", resname),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
 				);
 				appendStringInfo(&update_aggs_new,
 					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
 						"COALESCE(%s,0) + COALESCE(%s, 0) END, "
 					"%s = %s + %s",
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier("mv", tle->resname),
-					quote_qualified_identifier("diff", tle->resname),
+					quote_qualified_identifier("mv", resname),
+					quote_qualified_identifier("diff", resname),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s, %s",
-					quote_qualified_identifier("diff", tle->resname),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier("diff", resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 			}
 			else if (!strcmp(aggname, "avg"))
@@ -1507,23 +1514,23 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					"%s = COALESCE(%s,0) - COALESCE(%s, 0), "
 					"%s = %s - %s",
 
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_sum",resname,"_")),
 					aggtype,
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_sum",resname,"_")),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
 				);
 				appendStringInfo(&update_aggs_new,
 					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
@@ -1531,29 +1538,29 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					"%s = COALESCE(%s,0) + COALESCE(%s, 0), "
 					"%s = %s + %s",
 
-					quote_qualified_identifier(NULL, tle->resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
 					aggtype,
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s, %s, %s",
-					quote_qualified_identifier("diff", tle->resname),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",tle->resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",tle->resname,"_"))
+					quote_qualified_identifier("diff", resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 			}
 			else
@@ -1571,10 +1578,16 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		if (with_group)
 		{
 			sep_agg= "";
+			i = 0;
 			foreach (lc, query->groupClause)
 			{
 				SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
 				TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
+
+				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+				char *resname = NameStr(attr->attname);
+
+				i++;
 
 				appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
 				appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);
@@ -1582,9 +1595,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 				sep_agg = ", ";
 
-				appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", tle->resname));
-				appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", tle->resname));
-				appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", tle->resname));
+				appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", resname));
+				appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", resname));
+				appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", resname));
 			}
 		}
 		else
