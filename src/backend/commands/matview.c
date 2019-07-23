@@ -1128,7 +1128,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 						tle_count = makeTargetEntry((Expr *) node,
 												next_resno,
-												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+												NULL,
 												false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
@@ -1143,7 +1143,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 						tle_count = makeTargetEntry((Expr *) node,
 													next_resno,
-													pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
+													NULL,
 													false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
@@ -1163,7 +1163,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 		tle = makeTargetEntry((Expr *) node,
 								  list_length(new_delta_qry->targetList) + 1,
-								  pstrdup("__ivm_count__"),
+								  NULL,
 								  false);
 		new_delta_qry->targetList = lappend(new_delta_qry->targetList, tle);
 		new_delta_qry->hasAggs = true;
@@ -1238,7 +1238,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 						tle_count = makeTargetEntry((Expr *) node,
 												next_resno,
-												pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+												NULL,
 												false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
@@ -1253,7 +1253,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 						tle_count = makeTargetEntry((Expr *) node,
 													next_resno,
-													pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
+													NULL,
 													false);
 						agg_counts = lappend(agg_counts, tle_count);
 						next_resno++;
@@ -1273,7 +1273,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 		tle = makeTargetEntry((Expr *) node,
 								  list_length(old_delta_qry->targetList) + 1,
-								  pstrdup("__ivm_count__"),
+								  NULL,
 								  false);
 		old_delta_qry->targetList = lappend(old_delta_qry->targetList, tle);
 		old_delta_qry->hasAggs = true;
@@ -1578,16 +1578,13 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		if (with_group)
 		{
 			sep_agg= "";
-			i = 0;
 			foreach (lc, query->groupClause)
 			{
 				SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
 				TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
 
-				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno-1);
 				char *resname = NameStr(attr->attname);
-
-				i++;
 
 				appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
 				appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);

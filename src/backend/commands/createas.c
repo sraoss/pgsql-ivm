@@ -376,6 +376,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
 					TargetEntry *tle_count;
+					char *resname = (into->colNames == NIL ? tle->resname : strVal(list_nth(into->colNames, tle->resno-1)));
 
 
 					if (IsA(tle->expr, Aggref))
@@ -411,7 +412,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 							tle_count = makeTargetEntry((Expr *) node,
 														next_resno,
-														pstrdup(makeObjectName("__ivm_count",tle->resname, "_")),
+														pstrdup(makeObjectName("__ivm_count",resname, "_")),
 														false);
 							agg_counts = lappend(agg_counts, tle_count);
 							next_resno++;
@@ -426,7 +427,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 							tle_count = makeTargetEntry((Expr *) node,
 														next_resno,
-														pstrdup(makeObjectName("__ivm_sum",tle->resname, "_")),
+														pstrdup(makeObjectName("__ivm_sum",resname, "_")),
 														false);
 							agg_counts = lappend(agg_counts, tle_count);
 							next_resno++;
