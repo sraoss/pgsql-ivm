@@ -58,6 +58,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_func.h"
 #include "nodes/print.h"
+#include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
 
@@ -86,6 +87,7 @@ static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type);
 static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname);
+static void check_ivm_restriction_walker(Node *node);
 
 /*
  * create_ctas_internal
@@ -270,6 +272,9 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			return InvalidObjectAddress;
 		}
 	}
+
+	if (is_matview && into->ivm)
+		check_ivm_restriction_walker((Node *) query);
 
 	/*
 	 * Create the tuple receiver object and insert info it will need
@@ -882,4 +887,159 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
 
 	/* Make changes-so-far visible */
 	CommandCounterIncrement();
+}
+
+/*
+ * check_ivm_restriction_walker --- look for specify nodes in the query tree
+ */
+static void
+check_ivm_restriction_walker(Node *node)
+{
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	if (node == NULL)
+		return;
+	/*
+	 * We currently don't support Sub-Query.
+	 */
+	if (IsA(node, SubPlan) || IsA(node, SubLink))
+		ereport(ERROR, (errmsg("subquery is not supported with IVM")));
+
+	switch (nodeTag(node))
+	{
+		case T_Query:
+			{
+				Query *qry = (Query *)node;
+				ListCell   *lc;
+				/* if contained CTE, return error */
+				if (qry->cteList != NIL)
+					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+
+				/* if contained VIEW or subquery into RTE, return error */
+				foreach(lc, qry->rtable)
+				{
+					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+					if (rte->relkind == RELKIND_VIEW ||
+							rte->relkind == RELKIND_MATVIEW)
+						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
+					if (rte->rtekind ==  RTE_SUBQUERY)
+						ereport(ERROR, (errmsg("subquery is not supported with IVM")));
+				}
+
+				/* search in jointree */
+				check_ivm_restriction_walker((Node *) qry->jointree);
+
+				/* search in target lists */
+				foreach(lc, qry->targetList)
+				{
+					TargetEntry *tle = (TargetEntry *) lfirst(lc);
+					check_ivm_restriction_walker((Node *) tle->expr);
+				}
+
+				break;
+			}
+		case T_JoinExpr:
+			{
+				JoinExpr *joinexpr = (JoinExpr *)node;
+				if (joinexpr->jointype > JOIN_INNER)
+					ereport(ERROR, (errmsg("OUTER JOIN is not supported with IVM")));
+				/* left side */
+				check_ivm_restriction_walker((Node *) joinexpr->larg);
+				/* right side */
+				check_ivm_restriction_walker((Node *) joinexpr->rarg);
+				check_ivm_restriction_walker((Node *) joinexpr->quals);
+			}
+			break;
+		case T_FromExpr:
+			{
+				ListCell *lc;
+				FromExpr *fromexpr = (FromExpr *)node;
+				foreach(lc, fromexpr->fromlist)
+				{
+					check_ivm_restriction_walker((Node *) lfirst(lc));
+				}
+				check_ivm_restriction_walker((Node *) fromexpr->quals);
+			}
+			break;
+		case T_Var:
+			{
+				/* if system column, return error */
+				Var	*variable = (Var *) node;
+				if (variable->varattno < 0)
+					ereport(ERROR, (errmsg("system column is not supported with IVM")));
+			}
+			break;
+		case T_BoolExpr:
+			{
+				BoolExpr   *boolexpr = (BoolExpr *) node;
+				ListCell   *lc;
+
+				foreach(lc, boolexpr->args)
+				{
+					Node	   *arg = (Node *) lfirst(lc);
+					check_ivm_restriction_walker(arg);
+				}
+				break;
+			}
+		case T_NullIfExpr: /* same as OpExpr */
+		case T_DistinctExpr: /* same as OpExpr */
+		case T_OpExpr:
+			{
+				OpExpr	   *op = (OpExpr *) node;
+				ListCell   *lc;
+				foreach(lc, op->args)
+				{
+					Node	   *arg = (Node *) lfirst(lc);
+					check_ivm_restriction_walker(arg);
+				}
+				break;
+			}
+		case T_CaseExpr:
+			{
+				CaseExpr *caseexpr = (CaseExpr *) node;
+				ListCell *lc;
+				/* result for ELSE clause */
+				check_ivm_restriction_walker((Node *) caseexpr->defresult);
+				/* expr for WHEN clauses */
+				foreach(lc, caseexpr->args)
+				{
+					CaseWhen *when = (CaseWhen *) lfirst(lc);
+					Node *w_expr = (Node *) when->expr;
+					/* result for WHEN clause */
+					check_ivm_restriction_walker((Node *) when->result);
+					/* expr clause*/
+					check_ivm_restriction_walker((Node *) w_expr);
+				}
+				break;
+			}
+		case T_SubLink:
+			{
+				/* Now, not supported */
+/*
+				SubLink	*sublink = (SubLink *) node;
+				Query	*qry =(Query *) sublink->subselect;
+				if (qry != NULL && qry->jointree != NULL)
+					check_ivm_restriction_walker((Node *) qry->jointree->quals);
+*/
+				break;
+			}
+		case T_SubPlan:
+			{
+				/* Now, not supported */
+				break;
+			}
+		case T_Aggref:
+		case T_GroupingFunc:
+		case T_WindowFunc:
+		case T_FuncExpr:
+		case T_SQLValueFunction:
+		case T_Const:
+		case T_Param:
+		default:
+			/* do nothing */
+			break;
+	}
+
+	return;
 }
