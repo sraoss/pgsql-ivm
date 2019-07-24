@@ -927,8 +927,7 @@ check_ivm_restriction_walker(Node *node)
 				}
 
 				/* search in jointree */
-				if (qry->jointree != NULL)
-					check_ivm_restriction_walker((Node *) qry->jointree->quals);
+				check_ivm_restriction_walker((Node *) qry->jointree);
 
 				/* search in target lists */
 				foreach(lc, qry->targetList)
@@ -939,6 +938,29 @@ check_ivm_restriction_walker(Node *node)
 
 				break;
 			}
+		case T_JoinExpr:
+			{
+				JoinExpr *joinexpr = (JoinExpr *)node;
+				if (joinexpr->jointype > JOIN_INNER)
+					ereport(ERROR, (errmsg("OUTER JOIN is not supported with IVM")));
+				/* left side */
+				check_ivm_restriction_walker((Node *) joinexpr->larg);
+				/* right side */
+				check_ivm_restriction_walker((Node *) joinexpr->rarg);
+				check_ivm_restriction_walker((Node *) joinexpr->quals);
+			}
+			break;
+		case T_FromExpr:
+			{
+				ListCell *lc;
+				FromExpr *fromexpr = (FromExpr *)node;
+				foreach(lc, fromexpr->fromlist)
+				{
+					check_ivm_restriction_walker((Node *) lfirst(lc));
+				}
+				check_ivm_restriction_walker((Node *) fromexpr->quals);
+			}
+			break;
 		case T_Var:
 			{
 				/* if system column, return error */
