@@ -996,6 +996,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	char*		matviewname = trigdata->tg_trigger->tgargs[0];
 	List	   *names;
 	Relation matviewRel;
+	RewriteRule *rule;
+	List * actions;
 	int old_depth = matview_maintenance_depth;
 
 	Oid			tableSpace;
@@ -1022,6 +1024,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/* Create a dummy ParseState for addRangeTableEntryForENR */
 	pstate = make_parsestate(NULL);
 	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
 	names = stringToQualifiedNameList(matviewname);
 
@@ -1055,7 +1058,24 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	rel = trigdata->tg_relation;
 	relid = rel->rd_id;
 
-	query = get_view_query(matviewRel);
+	/* get view query*/
+	rule = matviewRel->rd_rules->rules[0];
+	if (rule->event != CMD_SELECT || !(rule->isInstead))
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
+			 RelationGetRelationName(matviewRel));
+
+	actions = rule->actions;
+	if (list_length(actions) != 1)
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a single action",
+			 RelationGetRelationName(matviewRel));
+
+	/*
+	 * The stored query was rewritten at the time of the MV definition, but
+	 * has not been scribbled on by the planner.
+	 */
+	query = linitial_node(Query, actions);
 
 	new_delta_qry = copyObject(query);
 	old_delta_qry = copyObject(query);
