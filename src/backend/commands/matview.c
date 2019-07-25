@@ -193,8 +193,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 {
 	Oid			matviewOid;
 	Relation	matviewRel;
-	RewriteRule *rule;
-	List	   *actions;
 	Query	   *dataQuery;
 	Oid			tableSpace;
 	Oid			relowner;
@@ -240,71 +238,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("CONCURRENTLY and WITH NO DATA options cannot be used together")));
 
-	/*
-	 * Check that everything is correct for a refresh. Problems at this point
-	 * are internal errors, so elog is sufficient.
-	 */
-	if (matviewRel->rd_rel->relhasrules == false ||
-		matviewRel->rd_rules->numLocks < 1)
-		elog(ERROR,
-			 "materialized view \"%s\" is missing rewrite information",
-			 RelationGetRelationName(matviewRel));
 
-	if (matviewRel->rd_rules->numLocks > 1)
-		elog(ERROR,
-			 "materialized view \"%s\" has too many rules",
-			 RelationGetRelationName(matviewRel));
-
-	rule = matviewRel->rd_rules->rules[0];
-	if (rule->event != CMD_SELECT || !(rule->isInstead))
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
-			 RelationGetRelationName(matviewRel));
-
-	actions = rule->actions;
-	if (list_length(actions) != 1)
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a single action",
-			 RelationGetRelationName(matviewRel));
-
-	/*
-	 * Check that there is a unique index with no WHERE clause on one or more
-	 * columns of the materialized view if CONCURRENTLY is specified.
-	 */
-	if (concurrent)
-	{
-		List	   *indexoidlist = RelationGetIndexList(matviewRel);
-		ListCell   *indexoidscan;
-		bool		hasUniqueIndex = false;
-
-		foreach(indexoidscan, indexoidlist)
-		{
-			Oid			indexoid = lfirst_oid(indexoidscan);
-			Relation	indexRel;
-
-			indexRel = index_open(indexoid, AccessShareLock);
-			hasUniqueIndex = is_usable_unique_index(indexRel);
-			index_close(indexRel, AccessShareLock);
-			if (hasUniqueIndex)
-				break;
-		}
-
-		list_free(indexoidlist);
-
-		if (!hasUniqueIndex)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("cannot refresh materialized view \"%s\" concurrently",
-							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
-													   RelationGetRelationName(matviewRel))),
-					 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
-	}
-
-	/*
-	 * The stored query was rewritten at the time of the MV definition, but
-	 * has not been scribbled on by the planner.
-	 */
-	dataQuery = linitial_node(Query, actions);
+	dataQuery = get_materializedview_query(matviewRel, concurrent);
 
 	/*
 	 * Check for active uses of the relation in the current transaction, such
@@ -996,8 +931,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	char*		matviewname = trigdata->tg_trigger->tgargs[0];
 	List	   *names;
 	Relation matviewRel;
-	RewriteRule *rule;
-	List * actions;
 	int old_depth = matview_maintenance_depth;
 
 	Oid			tableSpace;
@@ -1059,23 +992,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	relid = rel->rd_id;
 
 	/* get view query*/
-	rule = matviewRel->rd_rules->rules[0];
-	if (rule->event != CMD_SELECT || !(rule->isInstead))
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
-			 RelationGetRelationName(matviewRel));
-
-	actions = rule->actions;
-	if (list_length(actions) != 1)
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a single action",
-			 RelationGetRelationName(matviewRel));
-
-	/*
-	 * The stored query was rewritten at the time of the MV definition, but
-	 * has not been scribbled on by the planner.
-	 */
-	query = linitial_node(Query, actions);
+	query = get_materializedview_query(matviewRel, false);
 
 	new_delta_qry = copyObject(query);
 	old_delta_qry = copyObject(query);
@@ -1748,4 +1665,80 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	/* Close SPI context. */
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
+}
+
+/*
+ * get_materializedview_query - get the Query from a matview's _RETURN rule.
+ */
+Query *
+get_materializedview_query(Relation matviewRel, bool concurrent)
+{
+	RewriteRule *rule;
+	List * actions;
+
+	/*
+	 * Check that everything is correct for a refresh. Problems at this point
+	 * are internal errors, so elog is sufficient.
+	 */
+	if (matviewRel->rd_rel->relhasrules == false ||
+		matviewRel->rd_rules->numLocks < 1)
+		elog(ERROR,
+			 "materialized view \"%s\" is missing rewrite information",
+			 RelationGetRelationName(matviewRel));
+
+	if (matviewRel->rd_rules->numLocks > 1)
+		elog(ERROR,
+			 "materialized view \"%s\" has too many rules",
+			 RelationGetRelationName(matviewRel));
+
+	rule = matviewRel->rd_rules->rules[0];
+	if (rule->event != CMD_SELECT || !(rule->isInstead))
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
+			 RelationGetRelationName(matviewRel));
+
+	actions = rule->actions;
+	if (list_length(actions) != 1)
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a single action",
+			 RelationGetRelationName(matviewRel));
+
+	/*
+	 * Check that there is a unique index with no WHERE clause on one or more
+	 * columns of the materialized view if CONCURRENTLY is specified.
+	 */
+	if (concurrent)
+	{
+		List	   *indexoidlist = RelationGetIndexList(matviewRel);
+		ListCell   *indexoidscan;
+		bool		hasUniqueIndex = false;
+
+		foreach(indexoidscan, indexoidlist)
+		{
+			Oid			indexoid = lfirst_oid(indexoidscan);
+			Relation	indexRel;
+
+			indexRel = index_open(indexoid, AccessShareLock);
+			hasUniqueIndex = is_usable_unique_index(indexRel);
+			index_close(indexRel, AccessShareLock);
+			if (hasUniqueIndex)
+				break;
+		}
+
+		list_free(indexoidlist);
+
+		if (!hasUniqueIndex)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot refresh materialized view \"%s\" concurrently",
+							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+													   RelationGetRelationName(matviewRel))),
+					 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
+	}
+
+	/*
+	 * The stored query was rewritten at the time of the MV definition, but
+	 * has not been scribbled on by the planner.
+	 */
+	return linitial_node(Query, actions);
 }
