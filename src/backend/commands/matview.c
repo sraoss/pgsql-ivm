@@ -87,6 +87,9 @@ static void CloseMatViewIncrementalMaintenance(void);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
 
+static Query *get_matview_query(Relation matviewRel);
+
+
 /*
  * SetMatViewPopulatedState
  *		Mark a materialized view as populated, or not.
@@ -193,8 +196,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 {
 	Oid			matviewOid;
 	Relation	matviewRel;
-	RewriteRule *rule;
-	List	   *actions;
 	Query	   *dataQuery;
 	Oid			tableSpace;
 	Oid			relowner;
@@ -240,32 +241,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 				(errcode(ERRCODE_SYNTAX_ERROR),
 				 errmsg("CONCURRENTLY and WITH NO DATA options cannot be used together")));
 
-	/*
-	 * Check that everything is correct for a refresh. Problems at this point
-	 * are internal errors, so elog is sufficient.
-	 */
-	if (matviewRel->rd_rel->relhasrules == false ||
-		matviewRel->rd_rules->numLocks < 1)
-		elog(ERROR,
-			 "materialized view \"%s\" is missing rewrite information",
-			 RelationGetRelationName(matviewRel));
 
-	if (matviewRel->rd_rules->numLocks > 1)
-		elog(ERROR,
-			 "materialized view \"%s\" has too many rules",
-			 RelationGetRelationName(matviewRel));
-
-	rule = matviewRel->rd_rules->rules[0];
-	if (rule->event != CMD_SELECT || !(rule->isInstead))
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
-			 RelationGetRelationName(matviewRel));
-
-	actions = rule->actions;
-	if (list_length(actions) != 1)
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a single action",
-			 RelationGetRelationName(matviewRel));
+	dataQuery = get_matview_query(matviewRel);
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more
@@ -299,12 +276,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 													   RelationGetRelationName(matviewRel))),
 					 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
 	}
-
-	/*
-	 * The stored query was rewritten at the time of the MV definition, but
-	 * has not been scribbled on by the planner.
-	 */
-	dataQuery = linitial_node(Query, actions);
 
 	/*
 	 * Check for active uses of the relation in the current transaction, such
@@ -1022,6 +993,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/* Create a dummy ParseState for addRangeTableEntryForENR */
 	pstate = make_parsestate(NULL);
 	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
 	names = stringToQualifiedNameList(matviewname);
 
@@ -1055,7 +1027,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	rel = trigdata->tg_relation;
 	relid = rel->rd_id;
 
-	query = get_view_query(matviewRel);
+	/* get view query*/
+	query = get_matview_query(matviewRel);
 
 	new_delta_qry = copyObject(query);
 	old_delta_qry = copyObject(query);
@@ -1728,4 +1701,47 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	/* Close SPI context. */
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
+}
+
+/*
+ * get_matview_query - get the Query from a matview's _RETURN rule.
+ */
+static Query *
+get_matview_query(Relation matviewRel)
+{
+	RewriteRule *rule;
+	List * actions;
+
+	/*
+	 * Check that everything is correct for a refresh. Problems at this point
+	 * are internal errors, so elog is sufficient.
+	 */
+	if (matviewRel->rd_rel->relhasrules == false ||
+		matviewRel->rd_rules->numLocks < 1)
+		elog(ERROR,
+			 "materialized view \"%s\" is missing rewrite information",
+			 RelationGetRelationName(matviewRel));
+
+	if (matviewRel->rd_rules->numLocks > 1)
+		elog(ERROR,
+			 "materialized view \"%s\" has too many rules",
+			 RelationGetRelationName(matviewRel));
+
+	rule = matviewRel->rd_rules->rules[0];
+	if (rule->event != CMD_SELECT || !(rule->isInstead))
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
+			 RelationGetRelationName(matviewRel));
+
+	actions = rule->actions;
+	if (list_length(actions) != 1)
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a single action",
+			 RelationGetRelationName(matviewRel));
+
+	/*
+	 * The stored query was rewritten at the time of the MV definition, but
+	 * has not been scribbled on by the planner.
+	 */
+	return linitial_node(Query, actions);
 }

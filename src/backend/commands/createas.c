@@ -348,6 +348,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			ParseState *pstate = make_parsestate(NULL);
 			FuncCall *fn;
 
+			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
 			/* group keys must be in targetlist */
 			if (copied_query->groupClause)
 			{
