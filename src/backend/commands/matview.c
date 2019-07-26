@@ -87,6 +87,9 @@ static void CloseMatViewIncrementalMaintenance(void);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
 
+static Query *get_matview_query(Relation matviewRel);
+
+
 /*
  * SetMatViewPopulatedState
  *		Mark a materialized view as populated, or not.
@@ -239,7 +242,40 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 				 errmsg("CONCURRENTLY and WITH NO DATA options cannot be used together")));
 
 
-	dataQuery = get_materializedview_query(matviewRel, concurrent);
+	dataQuery = get_matview_query(matviewRel);
+
+	/*
+	 * Check that there is a unique index with no WHERE clause on one or more
+	 * columns of the materialized view if CONCURRENTLY is specified.
+	 */
+	if (concurrent)
+	{
+		List	   *indexoidlist = RelationGetIndexList(matviewRel);
+		ListCell   *indexoidscan;
+		bool		hasUniqueIndex = false;
+
+		foreach(indexoidscan, indexoidlist)
+		{
+			Oid			indexoid = lfirst_oid(indexoidscan);
+			Relation	indexRel;
+
+			indexRel = index_open(indexoid, AccessShareLock);
+			hasUniqueIndex = is_usable_unique_index(indexRel);
+			index_close(indexRel, AccessShareLock);
+			if (hasUniqueIndex)
+				break;
+		}
+
+		list_free(indexoidlist);
+
+		if (!hasUniqueIndex)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("cannot refresh materialized view \"%s\" concurrently",
+							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+													   RelationGetRelationName(matviewRel))),
+					 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
+	}
 
 	/*
 	 * Check for active uses of the relation in the current transaction, such
@@ -992,7 +1028,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	relid = rel->rd_id;
 
 	/* get view query*/
-	query = get_materializedview_query(matviewRel, false);
+	query = get_matview_query(matviewRel);
 
 	new_delta_qry = copyObject(query);
 	old_delta_qry = copyObject(query);
@@ -1668,10 +1704,10 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 }
 
 /*
- * get_materializedview_query - get the Query from a matview's _RETURN rule.
+ * get_matview_query - get the Query from a matview's _RETURN rule.
  */
-Query *
-get_materializedview_query(Relation matviewRel, bool concurrent)
+static Query *
+get_matview_query(Relation matviewRel)
 {
 	RewriteRule *rule;
 	List * actions;
@@ -1702,39 +1738,6 @@ get_materializedview_query(Relation matviewRel, bool concurrent)
 		elog(ERROR,
 			 "the rule for materialized view \"%s\" is not a single action",
 			 RelationGetRelationName(matviewRel));
-
-	/*
-	 * Check that there is a unique index with no WHERE clause on one or more
-	 * columns of the materialized view if CONCURRENTLY is specified.
-	 */
-	if (concurrent)
-	{
-		List	   *indexoidlist = RelationGetIndexList(matviewRel);
-		ListCell   *indexoidscan;
-		bool		hasUniqueIndex = false;
-
-		foreach(indexoidscan, indexoidlist)
-		{
-			Oid			indexoid = lfirst_oid(indexoidscan);
-			Relation	indexRel;
-
-			indexRel = index_open(indexoid, AccessShareLock);
-			hasUniqueIndex = is_usable_unique_index(indexRel);
-			index_close(indexRel, AccessShareLock);
-			if (hasUniqueIndex)
-				break;
-		}
-
-		list_free(indexoidlist);
-
-		if (!hasUniqueIndex)
-			ereport(ERROR,
-					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 errmsg("cannot refresh materialized view \"%s\" concurrently",
-							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
-													   RelationGetRelationName(matviewRel))),
-					 errhint("Create a unique index with no WHERE clause on one or more columns of the materialized view.")));
-	}
 
 	/*
 	 * The stored query was rewritten at the time of the MV definition, but
