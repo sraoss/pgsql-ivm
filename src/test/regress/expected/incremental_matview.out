@@ -244,11 +244,37 @@ SELECT * FROM mv_ivm_avg_bug ORDER BY 1,2,3;
 (5 rows)
 
 ROLLBACK;
--- unsupport aggregation function except for SUM(),COUNT(),AVG()
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
-ERROR:  aggregate function min is not supported
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
-ERROR:  aggregate function max is not supported
+-- support MIN(), MAX() aggregation functions 
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT i, MIN(j), MAX(j)  FROM mv_base_a GROUP BY i;
+INSERT INTO mv_base_a VALUES
+  (1,11), (1,12),
+  (2,21), (2,22),
+  (3,31), (3,32),
+  (4,41), (4,42),
+  (5,51), (5,52); 
+SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
+ i | min | max 
+---+-----+-----
+ 1 |  10 |  12
+ 2 |  20 |  22
+ 3 |  30 |  32
+ 4 |  40 |  42
+ 5 |  50 |  52
+(5 rows)
+
+DELETE FROM mv_base_a WHERE (i,j) IN ((1,10), (2,21), (3,32));
+SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
+ i | min | max 
+---+-----+-----
+ 1 |  11 |  12
+ 2 |  20 |  22
+ 3 |  30 |  31
+ 4 |  40 |  42
+ 5 |  50 |  52
+(5 rows)
+
+ROLLBACK;
 -- restriction of incremental view maintenance
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;

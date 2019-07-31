@@ -399,6 +399,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						if (strcmp(aggname, "sum") !=0
 							&& strcmp(aggname, "count") != 0
 							&& strcmp(aggname, "avg") != 0
+							&& strcmp(aggname, "min") != 0
+							&& strcmp(aggname, "max") != 0
 						)
 							elog(ERROR, "aggregate function %s is not supported", aggname);
 
