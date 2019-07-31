@@ -417,7 +417,7 @@ extern bool gistplacetopage(Relation rel, Size freespace, GISTSTATE *giststate,
 							OffsetNumber oldoffnum, BlockNumber *newblkno,
 							Buffer leftchildbuf,
 							List **splitinfo,
-							bool markleftchild,
+							bool markfollowright,
 							Relation heapRel,
 							bool is_build);
 
@@ -426,11 +426,11 @@ extern SplitedPageLayout *gistSplit(Relation r, Page page, IndexTuple *itup,
 
 /* gistxlog.c */
 extern XLogRecPtr gistXLogPageDelete(Buffer buffer,
-									 TransactionId xid, Buffer parentBuffer,
+									 FullTransactionId xid, Buffer parentBuffer,
 									 OffsetNumber downlinkOffset);
 
 extern void gistXLogPageReuse(Relation rel, BlockNumber blkno,
-							  TransactionId latestRemovedXid);
+							  FullTransactionId latestRemovedXid);
 
 extern XLogRecPtr gistXLogUpdate(Buffer buffer,
 								 OffsetNumber *todelete, int ntodelete,

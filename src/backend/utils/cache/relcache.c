@@ -285,7 +285,6 @@ static TupleDesc GetPgIndexDescriptor(void);
 static void AttrDefaultFetch(Relation relation);
 static void CheckConstraintFetch(Relation relation);
 static int	CheckConstraintCmp(const void *a, const void *b);
-static List *insert_ordered_oid(List *list, Oid datum);
 static void InitIndexAmRoutine(Relation relation);
 static void IndexSupportInitialize(oidvector *indclass,
 								   RegProcedure *indexSupport,
@@ -2360,6 +2359,10 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		pfree(relation->rd_options);
 	if (relation->rd_indextuple)
 		pfree(relation->rd_indextuple);
+	if (relation->rd_amcache)
+		pfree(relation->rd_amcache);
+	if (relation->rd_fdwroutine)
+		pfree(relation->rd_fdwroutine);
 	if (relation->rd_indexcxt)
 		MemoryContextDelete(relation->rd_indexcxt);
 	if (relation->rd_rulescxt)
@@ -2372,8 +2375,6 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_pdcxt);
 	if (relation->rd_partcheckcxt)
 		MemoryContextDelete(relation->rd_partcheckcxt);
-	if (relation->rd_fdwroutine)
-		pfree(relation->rd_fdwroutine);
 	pfree(relation);
 }
 
@@ -2417,6 +2418,11 @@ RelationClearRelation(Relation relation, bool rebuild)
 	 * truncation.
 	 */
 	RelationCloseSmgr(relation);
+
+	/* Free AM cached data, if any */
+	if (relation->rd_amcache)
+		pfree(relation->rd_amcache);
+	relation->rd_amcache = NULL;
 
 	/*
 	 * Treat nailed-in system relations separately, they always need to be
@@ -4389,8 +4395,8 @@ RelationGetIndexList(Relation relation)
 		if (!index->indislive)
 			continue;
 
-		/* Add index's OID to result list in the proper order */
-		result = insert_ordered_oid(result, index->indexrelid);
+		/* add index's OID to result list */
+		result = lappend_oid(result, index->indexrelid);
 
 		/*
 		 * Invalid, non-unique, non-immediate or predicate indexes aren't
@@ -4414,6 +4420,9 @@ RelationGetIndexList(Relation relation)
 	systable_endscan(indscan);
 
 	table_close(indrel, AccessShareLock);
+
+	/* Sort the result list into OID order, per API spec. */
+	list_sort(result, list_oid_cmp);
 
 	/* Now save a copy of the completed list in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -4496,12 +4505,15 @@ RelationGetStatExtList(Relation relation)
 	{
 		Oid			oid = ((Form_pg_statistic_ext) GETSTRUCT(htup))->oid;
 
-		result = insert_ordered_oid(result, oid);
+		result = lappend_oid(result, oid);
 	}
 
 	systable_endscan(indscan);
 
 	table_close(indrel, AccessShareLock);
+
+	/* Sort the result list into OID order, per API spec. */
+	list_sort(result, list_oid_cmp);
 
 	/* Now save a copy of the completed list in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
@@ -4515,39 +4527,6 @@ RelationGetStatExtList(Relation relation)
 	list_free(oldlist);
 
 	return result;
-}
-
-/*
- * insert_ordered_oid
- *		Insert a new Oid into a sorted list of Oids, preserving ordering
- *
- * Building the ordered list this way is O(N^2), but with a pretty small
- * constant, so for the number of entries we expect it will probably be
- * faster than trying to apply qsort().  Most tables don't have very many
- * indexes...
- */
-static List *
-insert_ordered_oid(List *list, Oid datum)
-{
-	ListCell   *prev;
-
-	/* Does the datum belong at the front? */
-	if (list == NIL || datum < linitial_oid(list))
-		return lcons_oid(datum, list);
-	/* No, so find the entry it belongs after */
-	prev = list_head(list);
-	for (;;)
-	{
-		ListCell   *curr = lnext(list, prev);
-
-		if (curr == NULL || datum < lfirst_oid(curr))
-			break;				/* it belongs after 'prev', before 'curr' */
-
-		prev = curr;
-	}
-	/* Insert datum into list after 'prev' */
-	lappend_cell_oid(list, prev, datum);
-	return list;
 }
 
 /*

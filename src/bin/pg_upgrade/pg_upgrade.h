@@ -19,10 +19,7 @@
 #define USER_NAME_SIZE		128
 
 #define MAX_STRING			1024
-#define LINE_ALLOC			4096
 #define QUERY_ALLOC			8192
-
-#define MIGRATOR_API_VERSION	1
 
 #define MESSAGE_WIDTH		60
 
@@ -314,7 +311,6 @@ typedef struct
 typedef struct
 {
 	const char *progname;		/* complete pathname for this program */
-	char	   *exec_path;		/* full path to my executable */
 	char	   *user;			/* username for clusters */
 	bool		user_specified; /* user specified on command-line */
 	char	  **old_tablespaces;	/* tablespaces */

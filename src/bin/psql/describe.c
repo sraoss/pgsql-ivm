@@ -2108,37 +2108,32 @@ describeOneTableDetails(const char *schemaname,
 	}
 
 	/* Make footers */
-	if (pset.sversion >= 100000)
+
+	if (tableinfo.ispartition)
 	{
-		/* Get the partition information */
+		/* Footer information for a partition child table */
 		PGresult   *result;
-		char	   *parent_name;
-		char	   *partdef;
-		char	   *partconstraintdef = NULL;
 
 		printfPQExpBuffer(&buf,
 						  "SELECT inhparent::pg_catalog.regclass,\n"
-						  "  pg_catalog.pg_get_expr(c.relpartbound, inhrelid)");
+						  "  pg_catalog.pg_get_expr(c.relpartbound, c.oid)");
 		/* If verbose, also request the partition constraint definition */
 		if (verbose)
 			appendPQExpBufferStr(&buf,
-								 ",\n  pg_catalog.pg_get_partition_constraintdef(inhrelid)");
+								 ",\n  pg_catalog.pg_get_partition_constraintdef(c.oid)");
 		appendPQExpBuffer(&buf,
 						  "\nFROM pg_catalog.pg_class c"
 						  " JOIN pg_catalog.pg_inherits i"
 						  " ON c.oid = inhrelid"
-						  "\nWHERE c.oid = '%s' AND c.relispartition;", oid);
+						  "\nWHERE c.oid = '%s';", oid);
 		result = PSQLexec(buf.data);
 		if (!result)
 			goto error_return;
 
 		if (PQntuples(result) > 0)
 		{
-			parent_name = PQgetvalue(result, 0, 0);
-			partdef = PQgetvalue(result, 0, 1);
-
-			if (PQnfields(result) == 3 && !PQgetisnull(result, 0, 2))
-				partconstraintdef = PQgetvalue(result, 0, 2);
+			char	   *parent_name = PQgetvalue(result, 0, 0);
+			char	   *partdef = PQgetvalue(result, 0, 1);
 
 			printfPQExpBuffer(&tmpbuf, _("Partition of: %s %s"), parent_name,
 							  partdef);
@@ -2146,6 +2141,10 @@ describeOneTableDetails(const char *schemaname,
 
 			if (verbose)
 			{
+				char	   *partconstraintdef = NULL;
+
+				if (!PQgetisnull(result, 0, 2))
+					partconstraintdef = PQgetvalue(result, 0, 2);
 				/* If there isn't any constraint, show that explicitly */
 				if (partconstraintdef == NULL || partconstraintdef[0] == '\0')
 					printfPQExpBuffer(&tmpbuf, _("No partition constraint"));
@@ -2154,27 +2153,56 @@ describeOneTableDetails(const char *schemaname,
 									  partconstraintdef);
 				printTableAddFooter(&cont, tmpbuf.data);
 			}
-
-			PQclear(result);
 		}
+		PQclear(result);
 	}
 
 	if (tableinfo.relkind == RELKIND_PARTITIONED_TABLE)
 	{
-		/* Get the partition key information  */
+		/* Footer information for a partitioned table (partitioning parent) */
 		PGresult   *result;
-		char	   *partkeydef;
 
 		printfPQExpBuffer(&buf,
 						  "SELECT pg_catalog.pg_get_partkeydef('%s'::pg_catalog.oid);",
 						  oid);
 		result = PSQLexec(buf.data);
-		if (!result || PQntuples(result) != 1)
+		if (!result)
 			goto error_return;
 
-		partkeydef = PQgetvalue(result, 0, 0);
-		printfPQExpBuffer(&tmpbuf, _("Partition key: %s"), partkeydef);
-		printTableAddFooter(&cont, tmpbuf.data);
+		if (PQntuples(result) == 1)
+		{
+			char	   *partkeydef = PQgetvalue(result, 0, 0);
+
+			printfPQExpBuffer(&tmpbuf, _("Partition key: %s"), partkeydef);
+			printTableAddFooter(&cont, tmpbuf.data);
+		}
+		PQclear(result);
+	}
+
+	if (tableinfo.relkind == RELKIND_TOASTVALUE)
+	{
+		/* For a TOAST table, print name of owning table */
+		PGresult   *result;
+
+		printfPQExpBuffer(&buf,
+						  "SELECT n.nspname, c.relname\n"
+						  "FROM pg_catalog.pg_class c"
+						  " JOIN pg_catalog.pg_namespace n"
+						  " ON n.oid = c.relnamespace\n"
+						  "WHERE reltoastrelid = '%s';", oid);
+		result = PSQLexec(buf.data);
+		if (!result)
+			goto error_return;
+
+		if (PQntuples(result) == 1)
+		{
+			char	   *schemaname = PQgetvalue(result, 0, 0);
+			char	   *relname = PQgetvalue(result, 0, 1);
+
+			printfPQExpBuffer(&tmpbuf, _("Owning table: \"%s.%s\""),
+							  schemaname, relname);
+			printTableAddFooter(&cont, tmpbuf.data);
+		}
 		PQclear(result);
 	}
 
@@ -2272,16 +2300,24 @@ describeOneTableDetails(const char *schemaname,
 				appendPQExpBufferStr(&tmpbuf, _(", replica identity"));
 
 			printTableAddFooter(&cont, tmpbuf.data);
-			add_tablespace_footer(&cont, tableinfo.relkind,
-								  tableinfo.tablespace, true);
+
+			/*
+			 * If it's a partitioned index, we'll print the tablespace below
+			 */
+			if (tableinfo.relkind == RELKIND_INDEX)
+				add_tablespace_footer(&cont, tableinfo.relkind,
+									  tableinfo.tablespace, true);
 		}
 
 		PQclear(result);
 	}
+	/* If you add relkinds here, see also "Finish printing..." stanza below */
 	else if (tableinfo.relkind == RELKIND_RELATION ||
 			 tableinfo.relkind == RELKIND_MATVIEW ||
 			 tableinfo.relkind == RELKIND_FOREIGN_TABLE ||
-			 tableinfo.relkind == RELKIND_PARTITIONED_TABLE)
+			 tableinfo.relkind == RELKIND_PARTITIONED_TABLE ||
+			 tableinfo.relkind == RELKIND_PARTITIONED_INDEX ||
+			 tableinfo.relkind == RELKIND_TOASTVALUE)
 	{
 		/* Footer information about a table */
 		PGresult   *result = NULL;
@@ -3046,10 +3082,17 @@ describeOneTableDetails(const char *schemaname,
 	if (tableinfo.relkind == RELKIND_RELATION ||
 		tableinfo.relkind == RELKIND_MATVIEW ||
 		tableinfo.relkind == RELKIND_FOREIGN_TABLE ||
-		tableinfo.relkind == RELKIND_PARTITIONED_TABLE)
+		tableinfo.relkind == RELKIND_PARTITIONED_TABLE ||
+		tableinfo.relkind == RELKIND_PARTITIONED_INDEX ||
+		tableinfo.relkind == RELKIND_TOASTVALUE)
 	{
+		bool		is_partitioned;
 		PGresult   *result;
 		int			tuples;
+
+		/* simplify some repeated tests below */
+		is_partitioned = (tableinfo.relkind == RELKIND_PARTITIONED_TABLE ||
+						  tableinfo.relkind == RELKIND_PARTITIONED_INDEX);
 
 		/* print foreign server name */
 		if (tableinfo.relkind == RELKIND_FOREIGN_TABLE)
@@ -3091,13 +3134,15 @@ describeOneTableDetails(const char *schemaname,
 			PQclear(result);
 		}
 
-		/* print inherited tables (exclude, if parent is a partitioned table) */
+		/* print tables inherited from (exclude partitioned parents) */
 		printfPQExpBuffer(&buf,
-						  "SELECT c.oid::pg_catalog.regclass"
-						  " FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i"
-						  " WHERE c.oid=i.inhparent AND i.inhrelid = '%s'"
-						  " AND c.relkind != " CppAsString2(RELKIND_PARTITIONED_TABLE)
-						  " ORDER BY inhseqno;", oid);
+						  "SELECT c.oid::pg_catalog.regclass\n"
+						  "FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\n"
+						  "WHERE c.oid = i.inhparent AND i.inhrelid = '%s'\n"
+						  "  AND c.relkind != " CppAsString2(RELKIND_PARTITIONED_TABLE)
+						  " AND c.relkind != " CppAsString2(RELKIND_PARTITIONED_INDEX)
+						  "\nORDER BY inhseqno;",
+						  oid);
 
 		result = PSQLexec(buf.data);
 		if (!result)
@@ -3129,31 +3174,32 @@ describeOneTableDetails(const char *schemaname,
 		/* print child tables (with additional info if partitions) */
 		if (pset.sversion >= 100000)
 			printfPQExpBuffer(&buf,
-							  "SELECT c.oid::pg_catalog.regclass,"
-							  "       pg_catalog.pg_get_expr(c.relpartbound, c.oid),"
-							  "       c.relkind"
-							  " FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i"
-							  " WHERE c.oid=i.inhrelid AND i.inhparent = '%s'"
-							  " ORDER BY pg_catalog.pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT',"
-							  "          c.oid::pg_catalog.regclass::pg_catalog.text;", oid);
+							  "SELECT c.oid::pg_catalog.regclass, c.relkind,"
+							  " pg_catalog.pg_get_expr(c.relpartbound, c.oid)\n"
+							  "FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\n"
+							  "WHERE c.oid = i.inhrelid AND i.inhparent = '%s'\n"
+							  "ORDER BY pg_catalog.pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT',"
+							  " c.oid::pg_catalog.regclass::pg_catalog.text;",
+							  oid);
 		else if (pset.sversion >= 80300)
 			printfPQExpBuffer(&buf,
-							  "SELECT c.oid::pg_catalog.regclass"
-							  " FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i"
-							  " WHERE c.oid=i.inhrelid AND i.inhparent = '%s'"
-							  " ORDER BY c.oid::pg_catalog.regclass::pg_catalog.text;", oid);
+							  "SELECT c.oid::pg_catalog.regclass, c.relkind, NULL\n"
+							  "FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\n"
+							  "WHERE c.oid = i.inhrelid AND i.inhparent = '%s'\n"
+							  "ORDER BY c.oid::pg_catalog.regclass::pg_catalog.text;",
+							  oid);
 		else
 			printfPQExpBuffer(&buf,
-							  "SELECT c.oid::pg_catalog.regclass"
-							  " FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i"
-							  " WHERE c.oid=i.inhrelid AND i.inhparent = '%s'"
-							  " ORDER BY c.relname;", oid);
+							  "SELECT c.oid::pg_catalog.regclass, c.relkind, NULL\n"
+							  "FROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\n"
+							  "WHERE c.oid = i.inhrelid AND i.inhparent = '%s'\n"
+							  "ORDER BY c.relname;",
+							  oid);
 
 		result = PSQLexec(buf.data);
 		if (!result)
 			goto error_return;
-		else
-			tuples = PQntuples(result);
+		tuples = PQntuples(result);
 
 		/*
 		 * For a partitioned table with no partitions, always print the number
@@ -3161,7 +3207,7 @@ describeOneTableDetails(const char *schemaname,
 		 * Otherwise, we will not print "Partitions" section for a partitioned
 		 * table without any partitions.
 		 */
-		if (tableinfo.relkind == RELKIND_PARTITIONED_TABLE && tuples == 0)
+		if (is_partitioned && tuples == 0)
 		{
 			printfPQExpBuffer(&buf, _("Number of partitions: %d"), tuples);
 			printTableAddFooter(&cont, buf.data);
@@ -3171,49 +3217,34 @@ describeOneTableDetails(const char *schemaname,
 			/* print the number of child tables, if any */
 			if (tuples > 0)
 			{
-				if (tableinfo.relkind != RELKIND_PARTITIONED_TABLE)
-					printfPQExpBuffer(&buf, _("Number of child tables: %d (Use \\d+ to list them.)"), tuples);
-				else
+				if (is_partitioned)
 					printfPQExpBuffer(&buf, _("Number of partitions: %d (Use \\d+ to list them.)"), tuples);
+				else
+					printfPQExpBuffer(&buf, _("Number of child tables: %d (Use \\d+ to list them.)"), tuples);
 				printTableAddFooter(&cont, buf.data);
 			}
 		}
 		else
 		{
 			/* display the list of child tables */
-			const char *ct = (tableinfo.relkind != RELKIND_PARTITIONED_TABLE) ?
-			_("Child tables") : _("Partitions");
+			const char *ct = is_partitioned ? _("Partitions") : _("Child tables");
 			int			ctw = pg_wcswidth(ct, strlen(ct), pset.encoding);
 
 			for (i = 0; i < tuples; i++)
 			{
-				if (tableinfo.relkind != RELKIND_PARTITIONED_TABLE)
-				{
-					if (i == 0)
-						printfPQExpBuffer(&buf, "%s: %s",
-										  ct, PQgetvalue(result, i, 0));
-					else
-						printfPQExpBuffer(&buf, "%*s  %s",
-										  ctw, "", PQgetvalue(result, i, 0));
-				}
+				char		child_relkind = *PQgetvalue(result, i, 1);
+
+				if (i == 0)
+					printfPQExpBuffer(&buf, "%s: %s",
+									  ct, PQgetvalue(result, i, 0));
 				else
-				{
-					char	   *partitioned_note;
-
-					if (*PQgetvalue(result, i, 2) == RELKIND_PARTITIONED_TABLE)
-						partitioned_note = ", PARTITIONED";
-					else
-						partitioned_note = "";
-
-					if (i == 0)
-						printfPQExpBuffer(&buf, "%s: %s %s%s",
-										  ct, PQgetvalue(result, i, 0), PQgetvalue(result, i, 1),
-										  partitioned_note);
-					else
-						printfPQExpBuffer(&buf, "%*s  %s %s%s",
-										  ctw, "", PQgetvalue(result, i, 0), PQgetvalue(result, i, 1),
-										  partitioned_note);
-				}
+					printfPQExpBuffer(&buf, "%*s  %s",
+									  ctw, "", PQgetvalue(result, i, 0));
+				if (!PQgetisnull(result, i, 2))
+					appendPQExpBuffer(&buf, " %s", PQgetvalue(result, i, 2));
+				if (child_relkind == RELKIND_PARTITIONED_TABLE ||
+					child_relkind == RELKIND_PARTITIONED_INDEX)
+					appendPQExpBufferStr(&buf, ", PARTITIONED");
 				if (i < tuples - 1)
 					appendPQExpBufferChar(&buf, ',');
 
@@ -3320,7 +3351,8 @@ add_tablespace_footer(printTableContent *const cont, char relkind,
 		relkind == RELKIND_MATVIEW ||
 		relkind == RELKIND_INDEX ||
 		relkind == RELKIND_PARTITIONED_TABLE ||
-		relkind == RELKIND_PARTITIONED_INDEX)
+		relkind == RELKIND_PARTITIONED_INDEX ||
+		relkind == RELKIND_TOASTVALUE)
 	{
 		/*
 		 * We ignore the database default tablespace so that users not using

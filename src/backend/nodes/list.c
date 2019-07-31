@@ -439,53 +439,6 @@ list_insert_nth_oid(List *list, int pos, Oid datum)
 }
 
 /*
- * Add a new cell to the list, in the position after 'prev_cell'. The
- * data in the cell is left undefined, and must be filled in by the
- * caller. 'list' is assumed to be non-NIL, and 'prev_cell' is assumed
- * to be non-NULL and a member of 'list'. Returns address of new cell.
- *
- * Caution: prev_cell might no longer point into the list after this!
- */
-static ListCell *
-add_new_cell_after(List *list, ListCell *prev_cell)
-{
-	/* insert_new_cell will assert that this is in-range: */
-	int			pos = prev_cell - list->elements;
-
-	return insert_new_cell(list, pos + 1);
-}
-
-/*
- * Add a new cell to the specified list (which must be non-NIL);
- * it will be placed after the list cell 'prev' (which must be
- * non-NULL and a member of 'list'). The data placed in the new cell
- * is 'datum'.
- */
-void
-lappend_cell(List *list, ListCell *prev, void *datum)
-{
-	Assert(IsPointerList(list));
-	lfirst(add_new_cell_after(list, prev)) = datum;
-	check_list_invariants(list);
-}
-
-void
-lappend_cell_int(List *list, ListCell *prev, int datum)
-{
-	Assert(IsIntegerList(list));
-	lfirst_int(add_new_cell_after(list, prev)) = datum;
-	check_list_invariants(list);
-}
-
-void
-lappend_cell_oid(List *list, ListCell *prev, Oid datum)
-{
-	Assert(IsOidList(list));
-	lfirst_oid(add_new_cell_after(list, prev)) = datum;
-	check_list_invariants(list);
-}
-
-/*
  * Prepend a new element to the list. A pointer to the modified list
  * is returned. Note that this function may or may not destructively
  * modify the list; callers should always use this function's return
@@ -871,6 +824,30 @@ list_delete_first(List *list)
 		return NIL;				/* would an error be better? */
 
 	return list_delete_nth_cell(list, 0);
+}
+
+/*
+ * Delete the last element of the list.
+ *
+ * This is the opposite of list_delete_first(), but is noticeably cheaper
+ * with a long list, since no data need be moved.
+ */
+List *
+list_delete_last(List *list)
+{
+	check_list_invariants(list);
+
+	if (list == NIL)
+		return NIL;				/* would an error be better? */
+
+	/* list_truncate won't free list if it goes to empty, but this should */
+	if (list_length(list) <= 1)
+	{
+		list_free(list);
+		return NIL;
+	}
+
+	return list_truncate(list, list_length(list) - 1);
 }
 
 /*
@@ -1298,6 +1275,34 @@ list_concat_unique_oid(List *list1, const List *list2)
 }
 
 /*
+ * Remove adjacent duplicates in a list of OIDs.
+ *
+ * It is caller's responsibility to have sorted the list to bring duplicates
+ * together, perhaps via list_sort(list, list_oid_cmp).
+ */
+void
+list_deduplicate_oid(List *list)
+{
+	int			len;
+
+	Assert(IsOidList(list));
+	len = list_length(list);
+	if (len > 1)
+	{
+		ListCell   *elements = list->elements;
+		int			i = 0;
+
+		for (int j = 1; j < len; j++)
+		{
+			if (elements[i].oid_value != elements[j].oid_value)
+				elements[++i].oid_value = elements[j].oid_value;
+		}
+		list->length = i + 1;
+	}
+	check_list_invariants(list);
+}
+
+/*
  * Free all storage in a list, and optionally the pointed-to elements
  */
 static void
@@ -1419,45 +1424,44 @@ list_copy_deep(const List *oldlist)
 }
 
 /*
- * Sort a list as though by qsort.
+ * Sort a list according to the specified comparator function.
  *
- * A new list is built and returned.  Like list_copy, this doesn't make
- * fresh copies of any pointed-to data.
+ * The list is sorted in-place.
  *
- * The comparator function receives arguments of type ListCell **.
- * (XXX that's really inefficient now, but changing it seems like
- * material for a standalone patch.)
+ * The comparator function is declared to receive arguments of type
+ * const ListCell *; this allows it to use lfirst() and variants
+ * without casting its arguments.  Otherwise it behaves the same as
+ * the comparator function for standard qsort().
+ *
+ * Like qsort(), this provides no guarantees about sort stability
+ * for equal keys.
  */
-List *
-list_qsort(const List *list, list_qsort_comparator cmp)
+void
+list_sort(List *list, list_sort_comparator cmp)
 {
-	int			len = list_length(list);
-	ListCell  **list_arr;
-	List	   *newlist;
-	ListCell   *cell;
-	int			i;
+	typedef int (*qsort_comparator) (const void *a, const void *b);
+	int			len;
 
-	/* Empty list is easy */
-	if (len == 0)
-		return NIL;
+	check_list_invariants(list);
 
-	/* We have to make an array of pointers to satisfy the API */
-	list_arr = (ListCell **) palloc(sizeof(ListCell *) * len);
-	i = 0;
-	foreach(cell, list)
-		list_arr[i++] = cell;
+	/* Nothing to do if there's less than two elements */
+	len = list_length(list);
+	if (len > 1)
+		qsort(list->elements, len, sizeof(ListCell), (qsort_comparator) cmp);
+}
 
-	qsort(list_arr, len, sizeof(ListCell *), cmp);
+/*
+ * list_sort comparator for sorting a list into ascending OID order.
+ */
+int
+list_oid_cmp(const ListCell *p1, const ListCell *p2)
+{
+	Oid			v1 = lfirst_oid(p1);
+	Oid			v2 = lfirst_oid(p2);
 
-	/* Construct new list (this code is much like list_copy) */
-	newlist = new_list(list->type, len);
-
-	for (i = 0; i < len; i++)
-		newlist->elements[i] = *list_arr[i];
-
-	/* Might as well free the workspace array */
-	pfree(list_arr);
-
-	check_list_invariants(newlist);
-	return newlist;
+	if (v1 < v2)
+		return -1;
+	if (v1 > v2)
+		return 1;
+	return 0;
 }

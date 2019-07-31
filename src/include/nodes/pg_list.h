@@ -514,10 +514,6 @@ extern List *list_insert_nth(List *list, int pos, void *datum);
 extern List *list_insert_nth_int(List *list, int pos, int datum);
 extern List *list_insert_nth_oid(List *list, int pos, Oid datum);
 
-extern void lappend_cell(List *list, ListCell *prev, void *datum);
-extern void lappend_cell_int(List *list, ListCell *prev, int datum);
-extern void lappend_cell_oid(List *list, ListCell *prev, Oid datum);
-
 extern List *lcons(void *datum, List *list);
 extern List *lcons_int(int datum, List *list);
 extern List *lcons_oid(Oid datum, List *list);
@@ -535,6 +531,7 @@ extern List *list_delete_ptr(List *list, void *datum);
 extern List *list_delete_int(List *list, int datum);
 extern List *list_delete_oid(List *list, Oid datum);
 extern List *list_delete_first(List *list);
+extern List *list_delete_last(List *list);
 extern List *list_delete_nth_cell(List *list, int n);
 extern List *list_delete_cell(List *list, ListCell *cell);
 
@@ -563,6 +560,8 @@ extern List *list_concat_unique_ptr(List *list1, const List *list2);
 extern List *list_concat_unique_int(List *list1, const List *list2);
 extern List *list_concat_unique_oid(List *list1, const List *list2);
 
+extern void list_deduplicate_oid(List *list);
+
 extern void list_free(List *list);
 extern void list_free_deep(List *list);
 
@@ -570,7 +569,9 @@ extern List *list_copy(const List *list);
 extern List *list_copy_tail(const List *list, int nskip);
 extern List *list_copy_deep(const List *oldlist);
 
-typedef int (*list_qsort_comparator) (const void *a, const void *b);
-extern List *list_qsort(const List *list, list_qsort_comparator cmp);
+typedef int (*list_sort_comparator) (const ListCell *a, const ListCell *b);
+extern void list_sort(List *list, list_sort_comparator cmp);
+
+extern int	list_oid_cmp(const ListCell *p1, const ListCell *p2);
 
 #endif							/* PG_LIST_H */
