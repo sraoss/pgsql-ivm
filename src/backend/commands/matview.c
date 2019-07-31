@@ -69,6 +69,9 @@ typedef struct
 
 static int	matview_maintenance_depth = 0;
 
+static SPIPlanPtr	plan_for_recalc_min_max = NULL;
+static SPIPlanPtr	plan_for_set_min_max = NULL;
+
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void transientrel_shutdown(DestReceiver *self);
@@ -86,6 +89,10 @@ static void CloseMatViewIncrementalMaintenance(void);
 
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
+static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
+						  const char *group_keys, int nkeys, Oid *keyTypes);
+static SPIPlanPtr get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
+						  int num_min_max, Oid *valTypes);
 
 static Query *get_matview_query(Relation matviewRel);
 
@@ -1348,6 +1355,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	StringInfoData mvatts_buf, diffatts_buf;
 	StringInfoData mv_gkeys_buf, diff_gkeys_buf, updt_gkeys_buf;
 	StringInfoData diff_aggs_buf, update_aggs_old, update_aggs_new;
+	StringInfoData returning_buf, result_buf;
+	StringInfoData min_or_max_buf;
 	Relation	matviewRel;
 	Relation	tempRel_new = NULL, tempRel_old = NULL;
 	char	   *matviewname;
@@ -1356,6 +1365,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	char	   *sep, *sep_agg;
 	bool		with_group = query->groupClause != NULL;
 	int			i;
+	bool 		has_min_or_max = false;
+	int			num_group_keys = 0;
+	int			num_min_or_max = 0;
 
 
 	initStringInfo(&querybuf);
@@ -1381,6 +1393,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	initStringInfo(&diff_aggs_buf);
 	initStringInfo(&update_aggs_old);
 	initStringInfo(&update_aggs_new);
+	initStringInfo(&returning_buf);
+	initStringInfo(&result_buf);
+	initStringInfo(&min_or_max_buf);
 
 	sep = "";
 	sep_agg= "";
@@ -1407,7 +1422,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
 			const char *aggname = get_func_name(aggref->aggfnoid);
-			const char *aggtype = format_type_be(aggref->aggtype);
+			const char *aggtype = format_type_be(aggref->aggtype); /* XXX: should be add_cast_to ? */
 
 			appendStringInfo(&update_aggs_old, "%s", sep_agg);
 			appendStringInfo(&update_aggs_new, "%s", sep_agg);
@@ -1536,11 +1551,73 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 			}
+			else if (!strcmp(aggname, "min") || !strcmp(aggname, "max"))
+			{
+				bool is_min = !strcmp(aggname, "min");
+
+				if (!has_min_or_max)
+				{
+					has_min_or_max = true;
+					appendStringInfo(&returning_buf, "RETURNING mv.ctid, (");
+				}
+				else
+				{
+					appendStringInfo(&returning_buf, " OR ");
+					appendStringInfo(&min_or_max_buf, ",");
+				}
+
+				appendStringInfo(&returning_buf, "%s %s %s",
+					quote_qualified_identifier("mv", resname),
+					is_min ? ">=" : "<=",
+					quote_qualified_identifier("t", resname)
+				);
+				appendStringInfo(&min_or_max_buf, "%s", quote_qualified_identifier(NULL, resname));
+
+				appendStringInfo(&update_aggs_old,
+					"%s = CASE WHEN %s = %s THEN NULL ELSE "
+						"%s END, "
+					"%s = %s - %s",
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
+
+					quote_qualified_identifier("mv", resname),
+
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
+				);
+				appendStringInfo(&update_aggs_new,
+					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
+						"%s(%s,%s) END, "
+					"%s = %s + %s",
+					quote_qualified_identifier(NULL, resname),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
+
+					is_min ? "least" : "greatest",
+					quote_qualified_identifier("mv", resname),
+					quote_qualified_identifier("diff", resname),
+
+					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
+				);
+
+				appendStringInfo(&diff_aggs_buf, "%s, %s",
+					quote_qualified_identifier("diff", resname),
+					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
+				);
+
+				num_min_or_max++;
+			}
 			else
 				elog(ERROR, "unsupported aggregate function: %s", aggname);
 
 		}
 	}
+	if (has_min_or_max)
+		appendStringInfo(&returning_buf, ") AS recalc");
 
 	if (query->hasAggs)
 	{
@@ -1568,7 +1645,16 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", resname));
 				appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", resname));
 				appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", resname));
+
+				num_group_keys++;
 			}
+
+			if (has_min_or_max)
+			{
+				appendStringInfo(&returning_buf, ", %s", mv_gkeys_buf.data);
+				appendStringInfo(&result_buf, "SELECT ctid AS tid, %s FROM updt WHERE recalc", updt_gkeys_buf.data);
+			}
+
 		}
 		else
 		{
@@ -1577,6 +1663,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			appendStringInfo(&updt_gkeys_buf, "1");
 		}
 	}
+
 
 	/* Open SPI context. */
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -1609,19 +1696,107 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
-							", %s"
+							"  SELECT diff.__ivm_count__, "
+							"         %s,"
+							"         (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, "
+							"         mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
 							"), updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
-							", %s "
+							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__,"
+							"                      %s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
-							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
+							"   %s"
+							"), dlt AS ("
+							"  DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt "
+							") %s",
 							diff_aggs_buf.data,
 							matviewname, tempname_old, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							matviewname, update_aggs_old.data, matviewname);
-			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+							matviewname, update_aggs_old.data,
+							returning_buf.data,
+							matviewname,
+							has_min_or_max ? result_buf.data : "SELECT 1"
+							);
+			if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+			if (has_min_or_max && SPI_processed > 0)
+			{
+				SPITupleTable *tuptable_recalc = SPI_tuptable;
+				TupleDesc   tupdesc_recalc = tuptable_recalc->tupdesc;
+				int64		processed = SPI_processed;
+				uint64      i;
+				Oid			*keyTypes, *minmaxTypes;
+				char		*keyNulls, *minmaxNulls;
+				Datum		*keyVals, *minmaxVals;
+
+				keyTypes = palloc(sizeof(Oid) * num_group_keys);
+				keyNulls = palloc(sizeof(char) * num_group_keys);
+				keyVals = palloc(sizeof(Datum) * num_group_keys);
+
+				minmaxTypes = palloc(sizeof(Oid) * (num_min_or_max + 1));
+				minmaxNulls = palloc(sizeof(char) * (num_min_or_max + 1));
+				minmaxVals = palloc(sizeof(Datum) * (num_min_or_max + 1));
+
+				Assert(tupdesc_recalc->natts == num_group_keys + 1);
+
+				for (i = 0; i < num_group_keys; i++)
+					keyTypes[i] = TupleDescAttr(tupdesc_recalc, i+1)->atttypid;
+
+				for (i=0; i< processed; i++)
+				{
+					int j;
+					bool isnull;
+					SPIPlanPtr plan;
+					SPITupleTable *tuptable_minmax;
+					TupleDesc   tupdesc_minmax;
+
+
+					for (j = 0; j < num_group_keys; j++)
+					{
+						keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j+2, &isnull);
+						if (isnull)
+							keyNulls[j] = 'n';
+						else
+							keyNulls[j] = ' ';
+					}
+
+					plan = get_plan_for_recalc_min_max(matviewOid, min_or_max_buf.data,
+													   mv_gkeys_buf.data, num_group_keys, keyTypes);
+
+					if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
+						elog(ERROR, "SPI_execcute_plan");
+					if (SPI_processed != 1)
+						elog(ERROR, "SPI_execcute_plan returned zere or more than one rows");
+
+					tuptable_minmax = SPI_tuptable;
+					tupdesc_minmax = tuptable_minmax->tupdesc;
+
+					Assert(tupdesc_minmax->natts == num_min_or_max);
+
+					for (j = 0; j < tupdesc_minmax->natts; j++)
+					{
+						if (i == 0)
+							minmaxTypes[j] = TupleDescAttr(tupdesc_minmax, j)->atttypid;
+
+						minmaxVals[j] = SPI_getbinval(tuptable_minmax->vals[0], tupdesc_minmax, j+1, &isnull);
+						if (isnull)
+							minmaxNulls[j] = 'n';
+						else
+							minmaxNulls[j] = ' ';
+					}
+					minmaxTypes[j] = TIDOID;
+					minmaxVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, 1, &isnull);
+					minmaxNulls[j] = ' ';
+
+					plan = get_plan_for_set_min_max(matviewname, min_or_max_buf.data,
+													num_min_or_max, minmaxTypes);
+
+					if (SPI_execute_plan(plan, minmaxVals, minmaxNulls, false, 0) != SPI_OK_UPDATE)
+						elog(ERROR, "SPI_execcute_plan");
+
+				}
+			}
+
 		}
 		if (tempname_new)
 		{
@@ -1702,6 +1877,65 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
 }
+
+
+static SPIPlanPtr
+get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
+							const char *group_keys, int nkeys, Oid *keyTypes)
+{
+	StringInfoData	str;
+	char	*viewdef;
+	int 	i;
+
+	if (plan_for_recalc_min_max)
+		return plan_for_recalc_min_max;
+
+	/* get view definition of matview */
+	viewdef = text_to_cstring((text *) DatumGetPointer(
+				DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
+	/* get rid of tailling semi-collon */
+	viewdef[strlen(viewdef)-1] = '\0';
+
+	initStringInfo(&str);
+	appendStringInfo(&str, "SELECT %s FROM (%s) mv WHERE (%s) = (",
+					 min_max_list, viewdef, group_keys);
+
+	for (i = 1; i <= nkeys; i++)
+		appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
+
+	appendStringInfo(&str, ")");
+
+	plan_for_recalc_min_max = SPI_prepare(str.data, nkeys, keyTypes);
+	SPI_keepplan(plan_for_recalc_min_max);
+
+	return plan_for_recalc_min_max;
+}
+
+static SPIPlanPtr
+get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
+						  int num_min_max, Oid *valTypes)
+{
+	StringInfoData str;
+	int 	i;
+
+	if (plan_for_set_min_max)
+		return plan_for_set_min_max;
+
+	initStringInfo(&str);
+	appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
+		matviewname, min_max_list);
+
+	for (i = 1; i <= num_min_max; i++)
+		appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
+
+	appendStringInfo(&str, ") WHERE ctid = $%d", i);
+
+	plan_for_set_min_max = SPI_prepare(str.data, num_min_max + 1, valTypes);
+	SPI_keepplan(plan_for_set_min_max);
+
+	return plan_for_set_min_max;
+}
+
 
 /*
  * get_matview_query - get the Query from a matview's _RETURN rule.

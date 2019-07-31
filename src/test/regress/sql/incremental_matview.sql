@@ -82,9 +82,19 @@ DELETE FROM mv_base_a WHERE (i,j) = (2,30);
 SELECT * FROM mv_ivm_avg_bug ORDER BY 1,2,3;
 ROLLBACK;
 
--- unsupport aggregation function except for SUM(),COUNT(),AVG()
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min AS SELECT i, MIN(j)  FROM mv_base_a GROUP BY i;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_max AS SELECT i, MAX(j)  FROM mv_base_a GROUP BY i;
+-- support MIN(), MAX() aggregation functions
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT i, MIN(j), MAX(j)  FROM mv_base_a GROUP BY i;
+INSERT INTO mv_base_a VALUES
+  (1,11), (1,12),
+  (2,21), (2,22),
+  (3,31), (3,32),
+  (4,41), (4,42),
+  (5,51), (5,52);
+SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
+DELETE FROM mv_base_a WHERE (i,j) IN ((1,10), (2,21), (3,32));
+SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
+ROLLBACK;
 
 -- restriction of incremental view maintenance
 
