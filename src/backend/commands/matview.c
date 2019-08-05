@@ -71,6 +71,8 @@ static int	matview_maintenance_depth = 0;
 
 static SPIPlanPtr	plan_for_recalc_min_max = NULL;
 static SPIPlanPtr	plan_for_set_min_max = NULL;
+//static HTAB *query_cache_for_recalc_min_max = NULL;
+//static HTAB *query_cache_for_set_min_max = NULL;
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
@@ -90,9 +92,9 @@ static void CloseMatViewIncrementalMaintenance(void);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
 static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-						  const char *group_keys, int nkeys, Oid *keyTypes);
+						  const char *group_keys, int nkeys, Oid *keyTypes, bool with_group);
 static SPIPlanPtr get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes);
+						  int num_min_max, Oid *valTypes, bool with_group);
 
 static Query *get_matview_query(Relation matviewRel);
 
@@ -1714,7 +1716,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 							matviewname, update_aggs_old.data,
 							returning_buf.data,
 							matviewname,
-							has_min_or_max ? result_buf.data : "SELECT 1"
+							(has_min_or_max && with_group) ? result_buf.data : "SELECT 1"
 							);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
@@ -1725,22 +1727,24 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				TupleDesc   tupdesc_recalc = tuptable_recalc->tupdesc;
 				int64		processed = SPI_processed;
 				uint64      i;
-				Oid			*keyTypes, *minmaxTypes;
-				char		*keyNulls, *minmaxNulls;
-				Datum		*keyVals, *minmaxVals;
+				Oid			*keyTypes = NULL, *minmaxTypes = NULL;
+				char		*keyNulls = NULL, *minmaxNulls = NULL;
+				Datum		*keyVals = NULL, *minmaxVals = NULL;
 
-				keyTypes = palloc(sizeof(Oid) * num_group_keys);
-				keyNulls = palloc(sizeof(char) * num_group_keys);
-				keyVals = palloc(sizeof(Datum) * num_group_keys);
+				if (with_group)
+				{
+					keyTypes = palloc(sizeof(Oid) * num_group_keys);
+					keyNulls = palloc(sizeof(char) * num_group_keys);
+					keyVals = palloc(sizeof(Datum) * num_group_keys);
+					Assert(tupdesc_recalc->natts == num_group_keys + 1);
+
+					for (i = 0; i < num_group_keys; i++)
+						keyTypes[i] = TupleDescAttr(tupdesc_recalc, i+1)->atttypid;
+				}
 
 				minmaxTypes = palloc(sizeof(Oid) * (num_min_or_max + 1));
 				minmaxNulls = palloc(sizeof(char) * (num_min_or_max + 1));
 				minmaxVals = palloc(sizeof(Datum) * (num_min_or_max + 1));
-
-				Assert(tupdesc_recalc->natts == num_group_keys + 1);
-
-				for (i = 0; i < num_group_keys; i++)
-					keyTypes[i] = TupleDescAttr(tupdesc_recalc, i+1)->atttypid;
 
 				for (i=0; i< processed; i++)
 				{
@@ -1750,21 +1754,23 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					SPITupleTable *tuptable_minmax;
 					TupleDesc   tupdesc_minmax;
 
-
-					for (j = 0; j < num_group_keys; j++)
+					if (with_group)
 					{
-						keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j+2, &isnull);
-						if (isnull)
-							keyNulls[j] = 'n';
-						else
-							keyNulls[j] = ' ';
+						for (j = 0; j < num_group_keys; j++)
+						{
+							keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j+2, &isnull);
+							if (isnull)
+								keyNulls[j] = 'n';
+							else
+								keyNulls[j] = ' ';
+						}
 					}
 
 					plan = get_plan_for_recalc_min_max(matviewOid, min_or_max_buf.data,
-													   mv_gkeys_buf.data, num_group_keys, keyTypes);
+													   mv_gkeys_buf.data, num_group_keys, keyTypes, with_group);
 
 					if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
-						elog(ERROR, "SPI_execcute_plan");
+						elog(ERROR, "SPI_execcute_plan1");
 					if (SPI_processed != 1)
 						elog(ERROR, "SPI_execcute_plan returned zere or more than one rows");
 
@@ -1789,10 +1795,10 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					minmaxNulls[j] = ' ';
 
 					plan = get_plan_for_set_min_max(matviewname, min_or_max_buf.data,
-													num_min_or_max, minmaxTypes);
+													num_min_or_max, minmaxTypes, with_group);
 
 					if (SPI_execute_plan(plan, minmaxVals, minmaxNulls, false, 0) != SPI_OK_UPDATE)
-						elog(ERROR, "SPI_execcute_plan");
+						elog(ERROR, "SPI_execcute_plan2");
 
 				}
 			}
@@ -1881,14 +1887,17 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 static SPIPlanPtr
 get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-							const char *group_keys, int nkeys, Oid *keyTypes)
+							const char *group_keys, int nkeys, Oid *keyTypes, bool with_group)
 {
 	StringInfoData	str;
 	char	*viewdef;
 	int 	i;
 
+	/* XXX: This doesn't work well since all matviews share only one cache.
+	 *
 	if (plan_for_recalc_min_max)
 		return plan_for_recalc_min_max;
+	*/
 
 	/* get view definition of matview */
 	viewdef = text_to_cstring((text *) DatumGetPointer(
@@ -1897,15 +1906,19 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 	viewdef[strlen(viewdef)-1] = '\0';
 
 	initStringInfo(&str);
-	appendStringInfo(&str, "SELECT %s FROM (%s) mv WHERE (%s) = (",
-					 min_max_list, viewdef, group_keys);
+	appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
 
-	for (i = 1; i <= nkeys; i++)
-		appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
+	if (with_group)
+	{
+		appendStringInfo(&str, " WHERE (%s) = (", group_keys);
 
-	appendStringInfo(&str, ")");
+		for (i = 1; i <= nkeys; i++)
+			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
 
-	plan_for_recalc_min_max = SPI_prepare(str.data, nkeys, keyTypes);
+		appendStringInfo(&str, ")");
+	}
+
+	plan_for_recalc_min_max = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
 	SPI_keepplan(plan_for_recalc_min_max);
 
 	return plan_for_recalc_min_max;
@@ -1913,13 +1926,16 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 
 static SPIPlanPtr
 get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes)
+						  int num_min_max, Oid *valTypes, bool with_group)
 {
 	StringInfoData str;
 	int 	i;
 
+	/* XXX: This doesn't work well since all matviews share only one cache.
+	 *
 	if (plan_for_set_min_max)
 		return plan_for_set_min_max;
+	*/	
 
 	initStringInfo(&str);
 	appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
@@ -1928,9 +1944,12 @@ get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
 	for (i = 1; i <= num_min_max; i++)
 		appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
 
-	appendStringInfo(&str, ") WHERE ctid = $%d", i);
+	appendStringInfo(&str, ")");
 
-	plan_for_set_min_max = SPI_prepare(str.data, num_min_max + 1, valTypes);
+	if (with_group)
+		appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
+
+	plan_for_set_min_max = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
 	SPI_keepplan(plan_for_set_min_max);
 
 	return plan_for_set_min_max;

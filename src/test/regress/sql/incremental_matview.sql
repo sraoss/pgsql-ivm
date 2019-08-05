@@ -85,6 +85,7 @@ ROLLBACK;
 -- support MIN(), MAX() aggregation functions
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT i, MIN(j), MAX(j)  FROM mv_base_a GROUP BY i;
+SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
 INSERT INTO mv_base_a VALUES
   (1,11), (1,12),
   (2,21), (2,22),
@@ -96,7 +97,16 @@ DELETE FROM mv_base_a WHERE (i,j) IN ((1,10), (2,21), (3,32));
 SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
 ROLLBACK;
 
--- restriction of incremental view maintenance
+-- support MIN(), MAX() aggregation functions without GROUP clause
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT MIN(j), MAX(j)  FROM mv_base_a;
+SELECT * FROM mv_ivm_min_max;
+INSERT INTO mv_base_a VALUES
+  (0,0), (6,60), (7,70);
+SELECT * FROM mv_ivm_min_max;
+DELETE FROM mv_base_a WHERE (i,j) IN ((0,0), (7,70));
+SELECT * FROM mv_ivm_min_max;
+ROLLBACK;
 
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
