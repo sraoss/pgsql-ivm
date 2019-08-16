@@ -55,6 +55,37 @@
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
 
+/*
+ * Local definitions
+ */
+
+#define MV_INIT_QUERYHASHSIZE	16
+
+/* MV query type codes */
+#define MV_PLAN_RECALC_MINMAX	1
+#define MV_PLAN_SET_MINMAX		2
+
+/*
+ * MI_QueryKey
+ *
+ * The key identifying a prepared SPI plan in our query hashtable
+ */
+typedef struct MV_QueryKey
+{
+	Oid			matview_id;	/* OID of materialized view */
+	int32		query_type;	/* query type ID, see MV_PLAN_XXX above */
+} MV_QueryKey;
+
+/*
+ * MV_QueryHashEntry
+ */
+typedef struct MV_QueryHashEntry
+{
+	MV_QueryKey key;
+	SPIPlanPtr	plan;
+} MV_QueryHashEntry;
+
+static HTAB *mv_query_cache = NULL;
 
 typedef struct
 {
@@ -68,11 +99,6 @@ typedef struct
 } DR_transientrel;
 
 static int	matview_maintenance_depth = 0;
-
-static SPIPlanPtr	plan_for_recalc_min_max = NULL;
-static SPIPlanPtr	plan_for_set_min_max = NULL;
-//static HTAB *query_cache_for_recalc_min_max = NULL;
-//static HTAB *query_cache_for_set_min_max = NULL;
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);
@@ -91,9 +117,14 @@ static void CloseMatViewIncrementalMaintenance(void);
 
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
+
+static void mv_InitHashTables(void);
+static SPIPlanPtr mv_FetchPreparedPlan(MV_QueryKey *key);
+static void mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan);
+static void mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type);
 static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 						  const char *group_keys, int nkeys, Oid *keyTypes, bool with_group);
-static SPIPlanPtr get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
+static SPIPlanPtr get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
 						  int num_min_max, Oid *valTypes, bool with_group);
 
 static Query *get_matview_query(Relation matviewRel);
@@ -1367,7 +1398,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 	char	   *sep, *sep_agg;
 	bool		with_group = query->groupClause != NULL;
 	int			i;
-	bool 		has_min_or_max = false;
+	bool		has_min_or_max = false;
 	int			num_group_keys = 0;
 	int			num_min_or_max = 0;
 
@@ -1794,7 +1825,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					minmaxVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, 1, &isnull);
 					minmaxNulls[j] = ' ';
 
-					plan = get_plan_for_set_min_max(matviewname, min_or_max_buf.data,
+					plan = get_plan_for_set_min_max(matviewOid, matviewname, min_or_max_buf.data,
 													num_min_or_max, minmaxTypes, with_group);
 
 					if (SPI_execute_plan(plan, minmaxVals, minmaxNulls, false, 0) != SPI_OK_UPDATE)
@@ -1885,74 +1916,198 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 }
 
 
+static void
+mv_InitHashTables(void)
+{
+	HASHCTL		ctl;
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(MV_QueryKey);
+	ctl.entrysize = sizeof(MV_QueryHashEntry);
+	mv_query_cache = hash_create("MV query cache",
+								 MV_INIT_QUERYHASHSIZE,
+								 &ctl, HASH_ELEM | HASH_BLOBS);
+}
+
+static SPIPlanPtr
+mv_FetchPreparedPlan(MV_QueryKey *key)
+{
+	MV_QueryHashEntry *entry;
+	SPIPlanPtr	plan;
+
+	/*
+	 * On the first call initialize the hashtable
+	 */
+	if (!mv_query_cache)
+		mv_InitHashTables();
+
+	/*
+	 * Lookup for the key
+	 */
+	entry = (MV_QueryHashEntry *) hash_search(mv_query_cache,
+											  (void *) key,
+											  HASH_FIND, NULL);
+	if (entry == NULL)
+		return NULL;
+
+	/*
+	 * Check whether the plan is still valid.  If it isn't, we don't want to
+	 * simply rely on plancache.c to regenerate it; rather we should start
+	 * from scratch and rebuild the query text too.  This is to cover cases
+	 * such as table/column renames.  We depend on the plancache machinery to
+	 * detect possible invalidations, though.
+	 *
+	 * CAUTION: this check is only trustworthy if the caller has already
+	 * locked both materialized views and base tables.
+	 */
+	plan = entry->plan;
+	if (plan && SPI_plan_is_valid(plan))
+		return plan;
+
+	/*
+	 * Otherwise we might as well flush the cached plan now, to free a little
+	 * memory space before we make a new one.
+	 */
+	entry->plan = NULL;
+	if (plan)
+		SPI_freeplan(plan);
+
+	return NULL;
+}
+
+/*
+ * mv_HashPreparedPlan -
+ *
+ * Add another plan to our private SPI query plan hashtable.
+ */
+static void
+mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan)
+{
+	MV_QueryHashEntry *entry;
+	bool		found;
+
+	/*
+	 * On the first call initialize the hashtable
+	 */
+	if (!mv_query_cache)
+		mv_InitHashTables();
+
+	/*
+	 * Add the new plan.  We might be overwriting an entry previously found
+	 * invalid by mv_FetchPreparedPlan.
+	 */
+	entry = (MV_QueryHashEntry *) hash_search(mv_query_cache,
+											  (void *) key,
+											  HASH_ENTER, &found);
+	Assert(!found || entry->plan == NULL);
+	entry->plan = plan;
+}
+
+/* ----------
+ * mv_BuildQueryKey -
+ *
+ *	Construct a hashtable key for a prepared SPI plan for IVM.
+ *
+ *		key: output argument, *key is filled in based on the other arguments
+ *		matview_id: OID of materialized view
+ *		query_type: an internal number identifying the query type
+ *			(see MV_PLAN_XXX constants at head of file)
+ * ----------
+ */
+static void
+mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type)
+{
+	/*
+	 * We assume struct MV_QueryKey contains no padding bytes, else we'd need
+	 * to use memset to clear them.
+	 */
+	key->matview_id = matview_id;
+	key->query_type = query_type;
+}
+
 static SPIPlanPtr
 get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 							const char *group_keys, int nkeys, Oid *keyTypes, bool with_group)
 {
-	StringInfoData	str;
-	char	*viewdef;
-	int 	i;
+	MV_QueryKey key;
+	SPIPlanPtr	plan;
 
-	/* XXX: This doesn't work well since all matviews share only one cache.
-	 *
-	if (plan_for_recalc_min_max)
-		return plan_for_recalc_min_max;
-	*/
+	/* Fetch or prepare a saved plan for the real check */
+	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_RECALC_MINMAX);
 
-	/* get view definition of matview */
-	viewdef = text_to_cstring((text *) DatumGetPointer(
-				DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
-	/* get rid of tailling semi-collon */
-	viewdef[strlen(viewdef)-1] = '\0';
-
-	initStringInfo(&str);
-	appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
-
-	if (with_group)
+	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
 	{
-		appendStringInfo(&str, " WHERE (%s) = (", group_keys);
+		char	*viewdef;
+		StringInfoData	str;
+		int		i;
 
-		for (i = 1; i <= nkeys; i++)
-			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
 
-		appendStringInfo(&str, ")");
+		/* get view definition of matview */
+		viewdef = text_to_cstring((text *) DatumGetPointer(
+					DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
+		/* get rid of tailling semi-collon */
+		viewdef[strlen(viewdef)-1] = '\0';
+
+		initStringInfo(&str);
+		appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
+
+		if (with_group)
+		{
+			appendStringInfo(&str, " WHERE (%s) = (", group_keys);
+
+			for (i = 1; i <= nkeys; i++)
+				appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
+
+			appendStringInfo(&str, ")");
+		}
+
+		plan = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+
+		SPI_keepplan(plan);
+		mv_HashPreparedPlan(&key, plan);
 	}
 
-	plan_for_recalc_min_max = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
-	SPI_keepplan(plan_for_recalc_min_max);
-
-	return plan_for_recalc_min_max;
+	return plan;
 }
 
 static SPIPlanPtr
-get_plan_for_set_min_max(char *matviewname, const char *min_max_list,
+get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
 						  int num_min_max, Oid *valTypes, bool with_group)
 {
-	StringInfoData str;
-	int 	i;
+	MV_QueryKey key;
+	SPIPlanPtr plan;
 
-	/* XXX: This doesn't work well since all matviews share only one cache.
-	 *
-	if (plan_for_set_min_max)
-		return plan_for_set_min_max;
-	*/	
+	/* Fetch or prepare a saved plan for the real check */
+	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_MINMAX);
 
-	initStringInfo(&str);
-	appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
-		matviewname, min_max_list);
+	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	{
+		StringInfoData str;
+		int		i;
 
-	for (i = 1; i <= num_min_max; i++)
-		appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
+		initStringInfo(&str);
+		appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
+			matviewname, min_max_list);
 
-	appendStringInfo(&str, ")");
+		for (i = 1; i <= num_min_max; i++)
+			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
 
-	if (with_group)
-		appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
+		appendStringInfo(&str, ")");
 
-	plan_for_set_min_max = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
-	SPI_keepplan(plan_for_set_min_max);
+		if (with_group)
+			appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
 
-	return plan_for_set_min_max;
+		plan = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+
+		SPI_keepplan(plan);
+		mv_HashPreparedPlan(&key, plan);
+	}
+
+	return plan;
 }
 
 
