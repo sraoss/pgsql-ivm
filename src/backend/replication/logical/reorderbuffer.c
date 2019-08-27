@@ -1381,7 +1381,7 @@ ReorderBufferCopySnap(ReorderBuffer *rb, Snapshot orig_snap,
 	snap->subxip[i++] = txn->xid;
 
 	/*
-	 * nsubxcnt isn't decreased when subtransactions abort, so count manually.
+	 * subxcnt isn't decreased when subtransactions abort, so count manually.
 	 * Since it's an upper boundary it is safe to use it for the allocation
 	 * above.
 	 */
@@ -3368,7 +3368,7 @@ ApplyLogicalMappingFile(HTAB *tuplecid_data, Oid relid, const char *fname)
 
 
 /*
- * Check whether the TransactionOid 'xid' is in the pre-sorted array 'xip'.
+ * Check whether the TransactionId 'xid' is in the pre-sorted array 'xip'.
  */
 static bool
 TransactionIdInArray(TransactionId xid, TransactionId *xip, Size num)

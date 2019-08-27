@@ -31,9 +31,6 @@ static int *backend_pids = NULL;
 static const char **backend_pid_strs = NULL;
 static int	nconns = 0;
 
-/* In dry run only output permutations to be run by the tester. */
-static int	dry_run = false;
-
 static void run_testspec(TestSpec *testspec);
 static void run_all_permutations(TestSpec *testspec);
 static void run_all_permutations_recurse(TestSpec *testspec, int nsteps,
@@ -76,18 +73,15 @@ main(int argc, char **argv)
 	int			nallsteps;
 	Step	  **allsteps;
 
-	while ((opt = getopt(argc, argv, "nV")) != -1)
+	while ((opt = getopt(argc, argv, "V")) != -1)
 	{
 		switch (opt)
 		{
-			case 'n':
-				dry_run = true;
-				break;
 			case 'V':
 				puts("isolationtester (PostgreSQL) " PG_VERSION);
 				exit(0);
 			default:
-				fprintf(stderr, "Usage: isolationtester [-n] [CONNINFO]\n");
+				fprintf(stderr, "Usage: isolationtester [CONNINFO]\n");
 				return EXIT_FAILURE;
 		}
 	}
@@ -142,16 +136,6 @@ main(int argc, char **argv)
 					testspec->allsteps[i]->name);
 			exit(1);
 		}
-	}
-
-	/*
-	 * In dry-run mode, just print the permutations that would be run, and
-	 * exit.
-	 */
-	if (dry_run)
-	{
-		run_testspec(testspec);
-		return 0;
 	}
 
 	printf("Parsed test spec with %d sessions\n", testspec->nsessions);
@@ -251,10 +235,23 @@ static int *piles;
 static void
 run_testspec(TestSpec *testspec)
 {
+	int			i;
+
 	if (testspec->permutations)
 		run_named_permutations(testspec);
 	else
 		run_all_permutations(testspec);
+
+	/*
+	 * Verify that all steps have been used, complaining about anything
+	 * defined but not used.
+	 */
+	for (i = 0; i < testspec->nallsteps; i++)
+	{
+		if (!testspec->allsteps[i]->used)
+			fprintf(stderr, "unused step name: %s\n",
+					testspec->allsteps[i]->name);
+	}
 }
 
 /*
@@ -449,25 +446,16 @@ run_permutation(TestSpec *testspec, int nsteps, Step **steps)
 	Step	  **waiting;
 	Step	  **errorstep;
 
-	/*
-	 * In dry run mode, just display the permutation in the same format used
-	 * by spec files, and return.
-	 */
-	if (dry_run)
-	{
-		printf("permutation");
-		for (i = 0; i < nsteps; i++)
-			printf(" \"%s\"", steps[i]->name);
-		printf("\n");
-		return;
-	}
-
 	waiting = pg_malloc(sizeof(Step *) * testspec->nsessions);
 	errorstep = pg_malloc(sizeof(Step *) * testspec->nsessions);
 
 	printf("\nstarting permutation:");
 	for (i = 0; i < nsteps; i++)
+	{
+		/* Track the permutation as in-use */
+		steps[i]->used = true;
 		printf(" %s", steps[i]->name);
+	}
 	printf("\n");
 
 	/* Perform setup */

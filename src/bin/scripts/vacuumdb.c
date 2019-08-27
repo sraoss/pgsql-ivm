@@ -181,12 +181,6 @@ main(int argc, char *argv[])
 					pg_log_error("number of parallel jobs must be at least 1");
 					exit(1);
 				}
-				if (concurrentCons > FD_SETSIZE - 1)
-				{
-					pg_log_error("too many parallel jobs requested (maximum: %d)",
-								 FD_SETSIZE - 1);
-					exit(1);
-				}
 				break;
 			case 2:
 				maintenance_db = pg_strdup(optarg);

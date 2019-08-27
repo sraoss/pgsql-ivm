@@ -1189,11 +1189,12 @@ _bt_lock_branch_parent(Relation rel, BlockNumber child, BTStack stack,
 	 * non-unique high keys in leaf level pages.  Even heapkeyspace indexes
 	 * can have a stale stack due to insertions into the parent.
 	 */
-	stack->bts_btentry = child;
-	pbuf = _bt_getstackbuf(rel, stack);
+	pbuf = _bt_getstackbuf(rel, stack, child);
 	if (pbuf == InvalidBuffer)
-		elog(ERROR, "failed to re-find parent key in index \"%s\" for deletion target page %u",
-			 RelationGetRelationName(rel), child);
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("failed to re-find parent key in index \"%s\" for deletion target page %u",
+								 RelationGetRelationName(rel), child)));
 	parent = stack->bts_blkno;
 	poffset = stack->bts_offset;
 
@@ -1611,9 +1612,11 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 	itemid = PageGetItemId(page, nextoffset);
 	itup = (IndexTuple) PageGetItem(page, itemid);
 	if (BTreeInnerTupleGetDownLink(itup) != rightsib)
-		elog(ERROR, "right sibling %u of block %u is not next child %u of block %u in index \"%s\"",
-			 rightsib, target, BTreeInnerTupleGetDownLink(itup),
-			 BufferGetBlockNumber(topparent), RelationGetRelationName(rel));
+		ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("right sibling %u of block %u is not next child %u of block %u in index \"%s\"",
+									 rightsib, target, BTreeInnerTupleGetDownLink(itup),
+					 BufferGetBlockNumber(topparent), RelationGetRelationName(rel))));
 
 	/*
 	 * Any insert which would have gone on the leaf block will now go to its
@@ -1649,8 +1652,7 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	opaque->btpo_flags |= BTP_HALF_DEAD;
 
-	PageIndexTupleDelete(page, P_HIKEY);
-	Assert(PageGetMaxOffsetNumber(page) == 0);
+	Assert(PageGetMaxOffsetNumber(page) == P_HIKEY);
 	MemSet(&trunctuple, 0, sizeof(IndexTupleData));
 	trunctuple.t_info = sizeof(IndexTupleData);
 	if (target != leafblkno)
@@ -1658,9 +1660,9 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
 	else
 		BTreeTupleSetTopParent(&trunctuple, InvalidBlockNumber);
 
-	if (PageAddItem(page, (Item) &trunctuple, sizeof(IndexTupleData), P_HIKEY,
-					false, false) == InvalidOffsetNumber)
-		elog(ERROR, "could not add dummy high key to half-dead page");
+	if (!PageIndexTupleOverwrite(page, P_HIKEY, (Item) &trunctuple,
+								 IndexTupleSize(&trunctuple)))
+		elog(ERROR, "could not overwrite high key in half-dead page");
 
 	/* Must mark buffers dirty before XLogInsert */
 	MarkBufferDirty(topparent);
@@ -1878,8 +1880,10 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 			 target, RelationGetRelationName(rel));
 	}
 	if (opaque->btpo_prev != leftsib)
-		elog(ERROR, "left link changed unexpectedly in block %u of index \"%s\"",
-			 target, RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("left link changed unexpectedly in block %u of index \"%s\"",
+								 target, RelationGetRelationName(rel))));
 
 	if (target == leafblkno)
 	{
@@ -1911,10 +1915,12 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, bool *rightsib_empty)
 	page = BufferGetPage(rbuf);
 	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	if (opaque->btpo_prev != target)
-		elog(ERROR, "right sibling's left-link doesn't match: "
-			 "block %u links to %u instead of expected %u in index \"%s\"",
-			 rightsib, opaque->btpo_prev, target,
-			 RelationGetRelationName(rel));
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg_internal("right sibling's left-link doesn't match: "
+								 "block %u links to %u instead of expected %u in index \"%s\"",
+								 rightsib, opaque->btpo_prev, target,
+								 RelationGetRelationName(rel))));
 	rightsib_is_rightmost = P_RIGHTMOST(opaque);
 	*rightsib_empty = (P_FIRSTDATAKEY(opaque) > PageGetMaxOffsetNumber(page));
 

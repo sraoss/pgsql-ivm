@@ -42,6 +42,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
 #include "pgstat.h"
+#include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -1775,7 +1776,7 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				scratch.d.rowcompare_final.rctype = rcexpr->rctype;
 				ExprEvalPushStep(state, &scratch);
 
-				/* adjust jump targetss */
+				/* adjust jump targets */
 				foreach(lc, adjust_jumps)
 				{
 					ExprEvalStep *as = &state->steps[lfirst_int(lc)];

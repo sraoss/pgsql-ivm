@@ -1009,8 +1009,8 @@ max_parallel_hazard_walker(Node *node, max_parallel_hazard_context *context)
 			max_parallel_hazard_test(PROPARALLEL_RESTRICTED, context))
 			return true;
 		save_safe_param_ids = context->safe_param_ids;
-		context->safe_param_ids = list_concat(list_copy(subplan->paramIds),
-											  context->safe_param_ids);
+		context->safe_param_ids = list_concat_copy(context->safe_param_ids,
+												   subplan->paramIds);
 		if (max_parallel_hazard_walker(subplan->testexpr, context))
 			return true;		/* no need to restore safe_param_ids */
 		list_free(context->safe_param_ids);
@@ -3697,18 +3697,12 @@ simplify_or_arguments(List *args,
 		/* flatten nested ORs as per above comment */
 		if (is_orclause(arg))
 		{
-			List	   *subargs = list_copy(((BoolExpr *) arg)->args);
+			List	   *subargs = ((BoolExpr *) arg)->args;
+			List	   *oldlist = unprocessed_args;
 
-			/* overly tense code to avoid leaking unused list header */
-			if (!unprocessed_args)
-				unprocessed_args = subargs;
-			else
-			{
-				List	   *oldhdr = unprocessed_args;
-
-				unprocessed_args = list_concat(subargs, unprocessed_args);
-				pfree(oldhdr);
-			}
+			unprocessed_args = list_concat_copy(subargs, unprocessed_args);
+			/* perhaps-overly-tense code to avoid leaking old lists */
+			list_free(oldlist);
 			continue;
 		}
 
@@ -3718,14 +3712,14 @@ simplify_or_arguments(List *args,
 		/*
 		 * It is unlikely but not impossible for simplification of a non-OR
 		 * clause to produce an OR.  Recheck, but don't be too tense about it
-		 * since it's not a mainstream case. In particular we don't worry
-		 * about const-simplifying the input twice.
+		 * since it's not a mainstream case.  In particular we don't worry
+		 * about const-simplifying the input twice, nor about list leakage.
 		 */
 		if (is_orclause(arg))
 		{
-			List	   *subargs = list_copy(((BoolExpr *) arg)->args);
+			List	   *subargs = ((BoolExpr *) arg)->args;
 
-			unprocessed_args = list_concat(subargs, unprocessed_args);
+			unprocessed_args = list_concat_copy(subargs, unprocessed_args);
 			continue;
 		}
 
@@ -3799,18 +3793,12 @@ simplify_and_arguments(List *args,
 		/* flatten nested ANDs as per above comment */
 		if (is_andclause(arg))
 		{
-			List	   *subargs = list_copy(((BoolExpr *) arg)->args);
+			List	   *subargs = ((BoolExpr *) arg)->args;
+			List	   *oldlist = unprocessed_args;
 
-			/* overly tense code to avoid leaking unused list header */
-			if (!unprocessed_args)
-				unprocessed_args = subargs;
-			else
-			{
-				List	   *oldhdr = unprocessed_args;
-
-				unprocessed_args = list_concat(subargs, unprocessed_args);
-				pfree(oldhdr);
-			}
+			unprocessed_args = list_concat_copy(subargs, unprocessed_args);
+			/* perhaps-overly-tense code to avoid leaking old lists */
+			list_free(oldlist);
 			continue;
 		}
 
@@ -3820,14 +3808,14 @@ simplify_and_arguments(List *args,
 		/*
 		 * It is unlikely but not impossible for simplification of a non-AND
 		 * clause to produce an AND.  Recheck, but don't be too tense about it
-		 * since it's not a mainstream case. In particular we don't worry
-		 * about const-simplifying the input twice.
+		 * since it's not a mainstream case.  In particular we don't worry
+		 * about const-simplifying the input twice, nor about list leakage.
 		 */
 		if (is_andclause(arg))
 		{
-			List	   *subargs = list_copy(((BoolExpr *) arg)->args);
+			List	   *subargs = ((BoolExpr *) arg)->args;
 
-			unprocessed_args = list_concat(subargs, unprocessed_args);
+			unprocessed_args = list_concat_copy(subargs, unprocessed_args);
 			continue;
 		}
 
@@ -4188,7 +4176,7 @@ add_function_defaults(List *args, HeapTuple func_tuple)
 		defaults = list_copy_tail(defaults, ndelete);
 
 	/* And form the combined argument list, not modifying the input list */
-	return list_concat(list_copy(args), defaults);
+	return list_concat_copy(args, defaults);
 }
 
 /*
@@ -4870,6 +4858,10 @@ evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
  * set-returning SQL function that can safely be inlined, expand the function
  * and return the substitute Query structure.  Otherwise, return NULL.
  *
+ * We assume that the RTE's expression has already been put through
+ * eval_const_expressions(), which among other things will take care of
+ * default arguments and named-argument notation.
+ *
  * This has a good deal of similarity to inline_function(), but that's
  * for the non-set-returning case, and there are enough differences to
  * justify separate functions.
@@ -4888,7 +4880,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	bool		modifyTargetList;
 	MemoryContext oldcxt;
 	MemoryContext mycxt;
-	List	   *saveInvalItems;
 	inline_error_callback_arg callback_arg;
 	ErrorContextCallback sqlerrcontext;
 	SQLFunctionParseInfoPtr pinfo;
@@ -4966,7 +4957,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	 * sharing the snapshot of the calling query.  We also disallow returning
 	 * SETOF VOID, because inlining would result in exposing the actual result
 	 * of the function's last SELECT, which should not happen in that case.
-	 * (Rechecking prokind and proretset is just paranoia.)
+	 * (Rechecking prokind, proretset, and pronargs is just paranoia.)
 	 */
 	if (funcform->prolang != SQLlanguageId ||
 		funcform->prokind != PROKIND_FUNCTION ||
@@ -4975,6 +4966,7 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 		funcform->prorettype == VOIDOID ||
 		funcform->prosecdef ||
 		!funcform->proretset ||
+		list_length(fexpr->args) != funcform->pronargs ||
 		!heap_attisnull(func_tuple, Anum_pg_proc_proconfig, NULL))
 	{
 		ReleaseSysCache(func_tuple);
@@ -4989,16 +4981,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 								  "inline_set_returning_function",
 								  ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(mycxt);
-
-	/*
-	 * When we call eval_const_expressions below, it might try to add items to
-	 * root->glob->invalItems.  Since it is running in the temp context, those
-	 * items will be in that context, and will need to be copied out if we're
-	 * successful.  Temporarily reset the list so that we can keep those items
-	 * separate from the pre-existing list contents.
-	 */
-	saveInvalItems = root->glob->invalItems;
-	root->glob->invalItems = NIL;
 
 	/* Fetch the function body */
 	tmp = SysCacheGetAttr(PROCOID,
@@ -5020,24 +5002,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	sqlerrcontext.arg = (void *) &callback_arg;
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
-
-	/*
-	 * Run eval_const_expressions on the function call.  This is necessary to
-	 * ensure that named-argument notation is converted to positional notation
-	 * and any default arguments are inserted.  It's a bit of overkill for the
-	 * arguments, since they'll get processed again later, but no harm will be
-	 * done.
-	 */
-	fexpr = (FuncExpr *) eval_const_expressions(root, (Node *) fexpr);
-
-	/* It should still be a call of the same function, but let's check */
-	if (!IsA(fexpr, FuncExpr) ||
-		fexpr->funcid != func_oid)
-		goto fail;
-
-	/* Arg list length should now match the function */
-	if (list_length(fexpr->args) != funcform->pronargs)
-		goto fail;
 
 	/*
 	 * Set up to handle parameters while parsing the function body.  We can
@@ -5129,10 +5093,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 
 	querytree = copyObject(querytree);
 
-	/* copy up any new invalItems, too */
-	root->glob->invalItems = list_concat(saveInvalItems,
-										 copyObject(root->glob->invalItems));
-
 	MemoryContextDelete(mycxt);
 	error_context_stack = sqlerrcontext.previous;
 	ReleaseSysCache(func_tuple);
@@ -5153,7 +5113,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	/* Here if func is not inlinable: release temp memory and return NULL */
 fail:
 	MemoryContextSwitchTo(oldcxt);
-	root->glob->invalItems = saveInvalItems;
 	MemoryContextDelete(mycxt);
 	error_context_stack = sqlerrcontext.previous;
 	ReleaseSysCache(func_tuple);

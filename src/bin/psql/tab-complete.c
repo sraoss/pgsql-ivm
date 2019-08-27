@@ -1687,7 +1687,7 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER LANGUAGE <name> */
 	else if (Matches("ALTER", "LANGUAGE", MatchAny))
-		COMPLETE_WITH("OWNER_TO", "RENAME TO");
+		COMPLETE_WITH("OWNER TO", "RENAME TO");
 
 	/* ALTER LARGE OBJECT <oid> */
 	else if (Matches("ALTER", "LARGE", "OBJECT", MatchAny))
@@ -2706,7 +2706,7 @@ psql_completion(const char *text, int start, int end)
 		if (TailMatches("(|*,"))
 			COMPLETE_WITH("INPUT", "OUTPUT", "RECEIVE", "SEND",
 						  "TYPMOD_IN", "TYPMOD_OUT", "ANALYZE",
-						  "INTERNALLENGTH", "PASSBYVALUE", "ALIGNMENT",
+						  "INTERNALLENGTH", "PASSEDBYVALUE", "ALIGNMENT",
 						  "STORAGE", "LIKE", "CATEGORY", "PREFERRED",
 						  "DEFAULT", "ELEMENT", "DELIMITER",
 						  "COLLATABLE");

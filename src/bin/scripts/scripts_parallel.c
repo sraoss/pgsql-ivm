@@ -12,6 +12,10 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef WIN32
+#define FD_SETSIZE 1024			/* must set before winsock2.h is included */
+#endif
+
 #include "postgres_fe.h"
 
 #ifdef HAVE_SYS_SELECT_H
@@ -232,6 +236,18 @@ ParallelSlotsSetup(const char *dbname, const char *host, const char *port,
 		{
 			conn = connectDatabase(dbname, host, port, username, prompt_password,
 								   progname, echo, false, true);
+
+			/*
+			 * Fail and exit immediately if trying to use a socket in an
+			 * unsupported range.  POSIX requires open(2) to use the lowest
+			 * unused file descriptor and the hint given relies on that.
+			 */
+			if (PQsocket(conn) >= FD_SETSIZE)
+			{
+				pg_log_fatal("too many jobs for this platform -- try %d", i);
+				exit(1);
+			}
+
 			init_slot(slots + i, conn);
 		}
 	}

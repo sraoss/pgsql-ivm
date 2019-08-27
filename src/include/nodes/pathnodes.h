@@ -15,7 +15,6 @@
 #define PATHNODES_H
 
 #include "access/sdir.h"
-#include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
@@ -204,17 +203,16 @@ struct PlannerInfo
 
 	/*
 	 * simple_rte_array is the same length as simple_rel_array and holds
-	 * pointers to the associated rangetable entries.  This lets us avoid
-	 * rt_fetch(), which can be a bit slow once large inheritance sets have
-	 * been expanded.
+	 * pointers to the associated rangetable entries.  Using this is a shade
+	 * faster than using rt_fetch(), mostly due to fewer indirections.
 	 */
 	RangeTblEntry **simple_rte_array;	/* rangetable as an array */
 
 	/*
 	 * append_rel_array is the same length as the above arrays, and holds
 	 * pointers to the corresponding AppendRelInfo entry indexed by
-	 * child_relid, or NULL if none.  The array itself is not allocated if
-	 * append_rel_list is empty.
+	 * child_relid, or NULL if the rel is not an appendrel child.  The array
+	 * itself is not allocated if append_rel_list is empty.
 	 */
 	struct AppendRelInfo **append_rel_array;
 
@@ -401,7 +399,7 @@ typedef struct PartitionSchemeData
 	bool	   *parttypbyval;
 
 	/* Cached information about partition comparison functions. */
-	FmgrInfo   *partsupfunc;
+	struct FmgrInfo *partsupfunc;
 }			PartitionSchemeData;
 
 typedef struct PartitionSchemeData *PartitionScheme;
