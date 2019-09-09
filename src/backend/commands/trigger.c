@@ -3803,6 +3803,7 @@ typedef struct AfterTriggersData
 	AfterTriggersQueryData *query_stack;	/* array of structs shown below */
 	int			query_depth;	/* current index in above array */
 	int			maxquerydepth;	/* allocated len of above array */
+	List	   *prolonged_tuplestores;
 
 	/* per-subtransaction-level data: */
 	AfterTriggersTransData *trans_stack;	/* array of structs shown below */
@@ -3833,6 +3834,7 @@ struct AfterTriggersTableData
 	bool		closed;			/* true when no longer OK to add tuples */
 	bool		before_trig_done;	/* did we already queue BS triggers? */
 	bool		after_trig_done;	/* did we already queue AS triggers? */
+	bool		prolonged;
 	AfterTriggerEventList after_trig_events;	/* if so, saved list pointer */
 	Tuplestorestate *old_tuplestore;	/* "old" transition table, if any */
 	Tuplestorestate *new_tuplestore;	/* "new" transition table, if any */
@@ -4586,6 +4588,35 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 	return all_fired;
 }
 
+void
+SetTransitionTablePreserved(Oid relid, CmdType cmdType)
+{
+	AfterTriggersTableData *table;
+	AfterTriggersQueryData *qs;
+	bool		found = false;
+	ListCell   *lc;
+
+	/* Check state, like AfterTriggerSaveEvent. */
+	if (afterTriggers.query_depth < 0)
+		elog(ERROR, "SetTransitionTablePreserved() called outside of query");
+
+	qs = &afterTriggers.query_stack[afterTriggers.query_depth];
+
+	foreach(lc, qs->tables)
+	{
+		table = (AfterTriggersTableData *) lfirst(lc);
+		if (table->relid == relid && table->cmdType == cmdType &&
+			table->closed)
+		{
+			table->prolonged = true;
+			found = true;
+		}
+
+	}
+
+	if (!found)
+		elog(ERROR,"could not find table with OID %d and command type %d", relid, cmdType);
+}
 
 /*
  * GetAfterTriggersTableData
@@ -4755,6 +4786,7 @@ AfterTriggerBeginXact(void)
 	 */
 	afterTriggers.firing_counter = (CommandId) 1;	/* mustn't be 0 */
 	afterTriggers.query_depth = -1;
+	afterTriggers.prolonged_tuplestores = NIL;
 
 	/*
 	 * Verify that there is no leftover state remaining.  If these assertions
@@ -4915,11 +4947,21 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		ts = table->old_tuplestore;
 		table->old_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+		{
+			if (table->prolonged && afterTriggers.query_depth > 0)
+				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+			else
+				tuplestore_end(ts);
+		}
 		ts = table->new_tuplestore;
 		table->new_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+		{
+			if (table->prolonged && afterTriggers.query_depth > 0)
+				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+			else
+				tuplestore_end(ts);
+		}
 	}
 
 	/*
@@ -4929,6 +4971,16 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 	 */
 	qs->tables = NIL;
 	list_free_deep(tables);
+
+	if (afterTriggers.query_depth == 0)
+	{
+		foreach(lc, afterTriggers.prolonged_tuplestores)
+		{
+			ts = (Tuplestorestate *) lfirst(lc);
+			tuplestore_end(ts);
+		}
+		afterTriggers.prolonged_tuplestores = NIL;
+	}
 }
 
 
@@ -6023,6 +6075,9 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 			new_shared.ats_table = transition_capture->tcs_private;
 		else
 			new_shared.ats_table = NULL;
+
+		if (new_shared.ats_table != NULL && trigger->tgfoid == F_IVM_IMMEDIATE_MAINTENANCE)
+			new_shared.ats_table->prolonged = true;
 
 		afterTriggerAddEvent(&afterTriggers.query_stack[afterTriggers.query_depth].events,
 							 &new_event, &new_shared);

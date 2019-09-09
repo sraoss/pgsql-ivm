@@ -87,8 +87,8 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
-static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname);
+static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map);
 static void check_ivm_restriction_walker(Node *node);
 
 /*
@@ -545,24 +545,28 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		if (into->ivm)
 		{
-			char	   *matviewname;
+
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
-			matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+			char	*matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 													 RelationGetRelationName(matviewRel));
+			Bitmapset  *relid_map = NULL;
+
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname);
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map);
 
 			table_close(matviewRel, NoLock);
+
+			bms_free(relid_map);
 		}
 	}
 
 	return address;
 }
 
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname)
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map)
 {
 
 	if (jtnode == NULL)
@@ -574,9 +578,17 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 
 		if (rte->rtekind == RTE_RELATION)
 		{
-			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT);
-			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE);
-			CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE);
+			if (!bms_is_member(rte->relid, *relid_map))
+			{
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
+
+				*relid_map = bms_add_member(*relid_map, rte->relid);
+			}
 		}
 		else
 			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
@@ -587,14 +599,14 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname);
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map);
 	}
 	else if (IsA(jtnode, JoinExpr))
 	{
 		JoinExpr   *j = (JoinExpr *) jtnode;
 
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname);
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map);
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
@@ -842,58 +854,66 @@ intorel_destroy(DestReceiver *self)
 	pfree(self);
 }
 
+
 static void
-CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type)
+CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing)
 {
 	CreateTrigStmt *ivm_trigger;
 	List *transitionRels = NIL;
 	ObjectAddress address, refaddr;
 
+	Assert(timing == TRIGGER_TYPE_BEFORE || timing == TRIGGER_TYPE_AFTER);
+
 	refaddr.classId = RelationRelationId;
 	refaddr.objectId = viewOid;
 	refaddr.objectSubId = 0;
 
-
 	ivm_trigger = makeNode(CreateTrigStmt);
 	ivm_trigger->relation = NULL;
 	ivm_trigger->row = false;
-	ivm_trigger->timing = TRIGGER_TYPE_AFTER;
 
+	ivm_trigger->timing = timing;
 	ivm_trigger->events = type;
 
 	switch (type)
 	{
 		case TRIGGER_TYPE_INSERT:
-			ivm_trigger->trigname = "IVM_trigger_ins";
+			ivm_trigger->trigname = (timing == TRIGGER_TYPE_BEFORE ? "IVM_trigger_ins_before" : "IVM_trigger_ins_after");
 			break;
 		case TRIGGER_TYPE_DELETE:
-			ivm_trigger->trigname = "IVM_trigger_del";
+			ivm_trigger->trigname = (timing == TRIGGER_TYPE_BEFORE ? "IVM_trigger_del_before" : "IVM_trigger_del_after");
 			break;
 		case TRIGGER_TYPE_UPDATE:
-			ivm_trigger->trigname = "IVM_trigger_upd";
+			ivm_trigger->trigname = (timing == TRIGGER_TYPE_BEFORE ? "IVM_trigger_upd_before" : "IVM_trigger_upd_after");
 			break;
+		default:
+			elog(ERROR, "unsupported trigger type");
 	}
 
-	if (type == TRIGGER_TYPE_INSERT || type == TRIGGER_TYPE_UPDATE)
+	if (timing == TRIGGER_TYPE_AFTER)
 	{
-		TriggerTransition *n = makeNode(TriggerTransition);
-		n->name = "ivm_newtable";
-		n->isNew = true;
-		n->isTable = true;
+		if (type == TRIGGER_TYPE_INSERT || type == TRIGGER_TYPE_UPDATE)
+		{
+			TriggerTransition *n = makeNode(TriggerTransition);
+			n->name = "ivm_newtable";
+			n->isNew = true;
+			n->isTable = true;
 
-		transitionRels = lappend(transitionRels, n);
+			transitionRels = lappend(transitionRels, n);
+		}
+		if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
+		{
+			TriggerTransition *n = makeNode(TriggerTransition);
+			n->name = "ivm_oldtable";
+			n->isNew = false;
+			n->isTable = true;
+
+			transitionRels = lappend(transitionRels, n);
+		}
 	}
-	if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
-	{
-		TriggerTransition *n = makeNode(TriggerTransition);
-		n->name = "ivm_oldtable";
-		n->isNew = false;
-		n->isTable = true;
 
-		transitionRels = lappend(transitionRels, n);
-	}
-
-	ivm_trigger->funcname = SystemFuncName("IVM_immediate_maintenance");
+	ivm_trigger->funcname =
+		(timing == TRIGGER_TYPE_BEFORE ? SystemFuncName("IVM_immediate_before") : SystemFuncName("IVM_immediate_maintenance"));
 
 	ivm_trigger->columns = NIL;
 	ivm_trigger->transitionRels = transitionRels;
