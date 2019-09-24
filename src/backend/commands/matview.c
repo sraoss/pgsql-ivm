@@ -50,6 +50,7 @@
 #include "nodes/makefuncs.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_func.h"
+#include "parser/parse_type.h"
 #include "nodes/print.h"
 #include "catalog/pg_type_d.h"
 #include "optimizer/optimizer.h"
@@ -1148,10 +1149,28 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					}
 					if (strcmp(aggname, "avg") == 0)
 					{
+						List *dmy_args = NIL;
+						ListCell *lc;
+						foreach(lc, aggref->aggargtypes)
+						{
+							Oid		typeid = lfirst_oid(lc);
+							Type 	type = typeidType(typeid);
+
+							Const *con = makeConst(typeid,
+												   -1,
+												   typeTypeCollation(type),
+												   typeLen(type),
+												   (Datum) 0,
+												   true,
+												   typeByVal(type));
+							dmy_args = lappend(dmy_args, con);
+							ReleaseSysCache(type);
+
+						}
 						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
 
 						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
 						((Aggref *)node)->args = aggref->args;
 
 						tle_count = makeTargetEntry((Expr *) node,
@@ -1258,10 +1277,28 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					}
 					if (strcmp(aggname, "avg") == 0)
 					{
+						List *dmy_args = NIL;
+						ListCell *lc;
+						foreach(lc, aggref->aggargtypes)
+						{
+							Oid		typeid = lfirst_oid(lc);
+							Type 	type = typeidType(typeid);
+
+							Const *con = makeConst(typeid,
+												   -1,
+												   typeTypeCollation(type),
+												   typeLen(type),
+												   (Datum) 0,
+												   true,
+												   typeByVal(type));
+							dmy_args = lappend(dmy_args, con);
+							ReleaseSysCache(type);
+
+						}
 						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
 
 						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+						node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
 						((Aggref *)node)->args = aggref->args;
 
 						tle_count = makeTargetEntry((Expr *) node,
@@ -1532,7 +1569,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				appendStringInfo(&update_aggs_old,
 					"%s = CASE WHEN %s = %s THEN NULL ELSE "
 						"(COALESCE(%s,0) - COALESCE(%s, 0))::%s / (%s - %s) END, "
-					"%s = COALESCE(%s,0) - COALESCE(%s, 0), "
+					"%s = (COALESCE(%s,0) - COALESCE(%s, 0))::%s, "
 					"%s = %s - %s",
 
 					quote_qualified_identifier(NULL, resname),
@@ -1548,6 +1585,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
 					quote_qualified_identifier("t", makeObjectName("__ivm_sum",resname,"_")),
+					aggtype,
 
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
@@ -1556,7 +1594,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				appendStringInfo(&update_aggs_new,
 					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
 						"(COALESCE(%s,0)+ COALESCE(%s, 0))::%s / (%s + %s) END, "
-					"%s = COALESCE(%s,0) + COALESCE(%s, 0), "
+					"%s = (COALESCE(%s,0) + COALESCE(%s, 0))::%s, "
 					"%s = %s + %s",
 
 					quote_qualified_identifier(NULL, resname),
@@ -1572,6 +1610,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
 					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
+					aggtype,
 
 					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
 					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
