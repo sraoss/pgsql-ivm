@@ -57,6 +57,7 @@
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "parser/parse_func.h"
+#include "parser/parse_type.h"
 #include "nodes/print.h"
 #include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
@@ -428,10 +429,28 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						}
 						if (strcmp(aggname, "avg") == 0)
 						{
+							List *dmy_args = NIL;
+							ListCell *lc;
+							foreach(lc, aggref->aggargtypes)
+							{
+								Oid		typeid = lfirst_oid(lc);
+								Type 	type = typeidType(typeid);
+
+								Const *con = makeConst(typeid,
+													   -1,
+													   typeTypeCollation(type),
+													   typeLen(type),
+													   (Datum) 0,
+													   true,
+													   typeByVal(type));
+								dmy_args = lappend(dmy_args, con);
+								ReleaseSysCache(type);
+
+							}
 							fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
 
 							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-							node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+							node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
 							((Aggref *)node)->args = aggref->args;
 
 							tle_count = makeTargetEntry((Expr *) node,
