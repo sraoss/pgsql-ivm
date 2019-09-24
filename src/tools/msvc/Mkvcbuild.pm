@@ -47,8 +47,9 @@ my @contrib_excludes = (
 	'jsonb_plperl',     'jsonb_plpython',
 	'ltree_plpython',   'pgcrypto',
 	'sepgsql',          'brin',
-	'test_extensions',  'test_pg_dump',
-	'snapshot_too_old', 'unsafe_tests');
+	'test_extensions',  'test_misc',
+	'test_pg_dump',     'snapshot_too_old',
+	'unsafe_tests');
 
 # Set of variables for frontend modules
 my $frontend_defines = { 'initdb' => 'FRONTEND' };
@@ -93,7 +94,7 @@ sub mkvcbuild
 	$solution = CreateSolution($vsVersion, $config);
 
 	our @pgportfiles = qw(
-	  chklocale.c fls.c fseeko.c getrusage.c inet_aton.c random.c
+	  chklocale.c explicit_bzero.c fls.c fseeko.c getrusage.c inet_aton.c random.c
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c dlopen.c getopt.c getopt_long.c

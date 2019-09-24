@@ -17,7 +17,7 @@
 #include <ctype.h>
 #include <limits.h>
 
-#include "access/tuptoaster.h"
+#include "access/detoast.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
@@ -1463,6 +1463,12 @@ check_collation_set(Oid collid)
  *	to allow null-termination for inputs to strcoll().
  * Returns an integer less than, equal to, or greater than zero, indicating
  * whether arg1 is less than, equal to, or greater than arg2.
+ *
+ * Note: many functions that depend on this are marked leakproof; therefore,
+ * avoid reporting the actual contents of the input when throwing errors.
+ * All errors herein should be things that can't happen except on corrupt
+ * data, anyway; otherwise we will have trouble with indexing strings that
+ * would cause them.
  */
 int
 varstr_cmp(const char *arg1, int len1, const char *arg2, int len2, Oid collid)
@@ -2996,33 +3002,11 @@ textgename(PG_FUNCTION_ARGS)
  */
 
 static int
-internal_text_pattern_compare(text *arg1, text *arg2, Oid collid)
+internal_text_pattern_compare(text *arg1, text *arg2)
 {
 	int			result;
 	int			len1,
 				len2;
-
-	check_collation_set(collid);
-
-	/*
-	 * XXX We cannot use a text_pattern_ops index for nondeterministic
-	 * collations, because these operators intentionally ignore the collation.
-	 * However, the planner has no way to know that, so it might choose such
-	 * an index for an "=" clause, which would lead to wrong results.  This
-	 * check here doesn't prevent choosing the index, but it will at least
-	 * error out if the index is chosen.  A text_pattern_ops index on a column
-	 * with nondeterministic collation is pretty useless anyway, since LIKE
-	 * etc. won't work there either.  A future possibility would be to
-	 * annotate the operator class or its members in the catalog to avoid the
-	 * index.  Another alternative is to stay away from the *_pattern_ops
-	 * operator classes and prefer creating LIKE-supporting indexes with
-	 * COLLATE "C".
-	 */
-	if (!get_collation_isdeterministic(collid))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("nondeterministic collations are not supported for operator class \"%s\"",
-						"text_pattern_ops")));
 
 	len1 = VARSIZE_ANY_EXHDR(arg1);
 	len2 = VARSIZE_ANY_EXHDR(arg2);
@@ -3046,7 +3030,7 @@ text_pattern_lt(PG_FUNCTION_ARGS)
 	text	   *arg2 = PG_GETARG_TEXT_PP(1);
 	int			result;
 
-	result = internal_text_pattern_compare(arg1, arg2, PG_GET_COLLATION());
+	result = internal_text_pattern_compare(arg1, arg2);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -3062,7 +3046,7 @@ text_pattern_le(PG_FUNCTION_ARGS)
 	text	   *arg2 = PG_GETARG_TEXT_PP(1);
 	int			result;
 
-	result = internal_text_pattern_compare(arg1, arg2, PG_GET_COLLATION());
+	result = internal_text_pattern_compare(arg1, arg2);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -3078,7 +3062,7 @@ text_pattern_ge(PG_FUNCTION_ARGS)
 	text	   *arg2 = PG_GETARG_TEXT_PP(1);
 	int			result;
 
-	result = internal_text_pattern_compare(arg1, arg2, PG_GET_COLLATION());
+	result = internal_text_pattern_compare(arg1, arg2);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -3094,7 +3078,7 @@ text_pattern_gt(PG_FUNCTION_ARGS)
 	text	   *arg2 = PG_GETARG_TEXT_PP(1);
 	int			result;
 
-	result = internal_text_pattern_compare(arg1, arg2, PG_GET_COLLATION());
+	result = internal_text_pattern_compare(arg1, arg2);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -3110,7 +3094,7 @@ bttext_pattern_cmp(PG_FUNCTION_ARGS)
 	text	   *arg2 = PG_GETARG_TEXT_PP(1);
 	int			result;
 
-	result = internal_text_pattern_compare(arg1, arg2, PG_GET_COLLATION());
+	result = internal_text_pattern_compare(arg1, arg2);
 
 	PG_FREE_IF_COPY(arg1, 0);
 	PG_FREE_IF_COPY(arg2, 1);
@@ -3123,16 +3107,7 @@ Datum
 bttext_pattern_sortsupport(PG_FUNCTION_ARGS)
 {
 	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
-	Oid			collid = ssup->ssup_collation;
 	MemoryContext oldcontext;
-
-	check_collation_set(collid);
-
-	if (!get_collation_isdeterministic(collid))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("nondeterministic collations are not supported for operator class \"%s\"",
-						"text_pattern_ops")));
 
 	oldcontext = MemoryContextSwitchTo(ssup->ssup_cxt);
 

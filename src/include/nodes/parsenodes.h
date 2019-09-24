@@ -2792,6 +2792,18 @@ typedef struct CreateStatsStmt
 } CreateStatsStmt;
 
 /* ----------------------
+ *		Alter Statistics Statement
+ * ----------------------
+ */
+typedef struct AlterStatsStmt
+{
+	NodeTag		type;
+	List	   *defnames;		/* qualified name (list of Value strings) */
+	int			stxstattarget;	/* statistics target */
+	bool		missing_ok;		/* skip error if statistics object is missing */
+} AlterStatsStmt;
+
+/* ----------------------
  *		Create Function Statement
  * ----------------------
  */
@@ -3302,7 +3314,8 @@ typedef struct ConstraintsSetStmt
  */
 
 /* Reindex options */
-#define REINDEXOPT_VERBOSE 1 << 0	/* print progress info */
+#define REINDEXOPT_VERBOSE (1 << 0)	/* print progress info */
+#define REINDEXOPT_REPORT_PROGRESS (1 << 1)	/* report pgstat progress */
 
 typedef enum ReindexObjectType
 {

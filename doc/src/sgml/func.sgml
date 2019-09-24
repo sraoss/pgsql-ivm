@@ -4122,6 +4122,14 @@ cast(-44 as bit(12))           <lineannotation>111111010100</lineannotation>
    </para>
 
    <para>
+    According to the SQL standard, omitting <literal>ESCAPE</literal>
+    means there is no escape character (rather than defaulting to a
+    backslash), and a zero-length <literal>ESCAPE</literal> value is
+    disallowed.  <productname>PostgreSQL</productname>'s behavior in
+    this regard is therefore slightly nonstandard.
+   </para>
+
+   <para>
     The key word <token>ILIKE</token> can be used instead of
     <token>LIKE</token> to make the match case-insensitive according
     to the active locale.  This is not in the <acronym>SQL</acronym> standard but is a
@@ -4139,9 +4147,9 @@ cast(-44 as bit(12))           <lineannotation>111111010100</lineannotation>
    </para>
 
    <para>
-    There is also the prefix operator <literal>^@</literal> and corresponding
-    <function>starts_with</function> function which covers cases when only
-    searching by beginning of the string is needed.
+    Also see the prefix operator <literal>^@</literal> and corresponding
+    <function>starts_with</function> function, which are useful in cases
+    where simply matching the beginning of a string is needed.
    </para>
   </sect2>
 
@@ -4172,7 +4180,7 @@ cast(-44 as bit(12))           <lineannotation>111111010100</lineannotation>
     It is similar to <function>LIKE</function>, except that it
     interprets the pattern using the SQL standard's definition of a
     regular expression.  SQL regular expressions are a curious cross
-    between <function>LIKE</function> notation and common regular
+    between <function>LIKE</function> notation and common (POSIX) regular
     expression notation.
    </para>
 
@@ -4256,18 +4264,38 @@ cast(-44 as bit(12))           <lineannotation>111111010100</lineannotation>
    </para>
 
    <para>
-    As with <function>LIKE</function>, a backslash disables the special meaning
-    of any of these metacharacters; or a different escape character can
-    be specified with <literal>ESCAPE</literal>.
+    As with <function>LIKE</function>, a backslash disables the special
+    meaning of any of these metacharacters.  A different escape character
+    can be specified with <literal>ESCAPE</literal>, or the escape
+    capability can be disabled by writing <literal>ESCAPE ''</literal>.
+   </para>
+
+   <para>
+    According to the SQL standard, omitting <literal>ESCAPE</literal>
+    means there is no escape character (rather than defaulting to a
+    backslash), and a zero-length <literal>ESCAPE</literal> value is
+    disallowed.  <productname>PostgreSQL</productname>'s behavior in
+    this regard is therefore slightly nonstandard.
+   </para>
+
+   <para>
+    Another nonstandard extension is that following the escape character
+    with a letter or digit provides access to the escape sequences
+    defined for POSIX regular expressions; see
+    <xref linkend="posix-character-entry-escapes-table"/>,
+    <xref linkend="posix-class-shorthand-escapes-table"/>, and
+    <xref linkend="posix-constraint-escapes-table"/> below.
    </para>
 
    <para>
     Some examples:
 <programlisting>
-'abc' SIMILAR TO 'abc'      <lineannotation>true</lineannotation>
-'abc' SIMILAR TO 'a'        <lineannotation>false</lineannotation>
-'abc' SIMILAR TO '%(b|d)%'  <lineannotation>true</lineannotation>
-'abc' SIMILAR TO '(b|c)%'   <lineannotation>false</lineannotation>
+'abc' SIMILAR TO 'abc'          <lineannotation>true</lineannotation>
+'abc' SIMILAR TO 'a'            <lineannotation>false</lineannotation>
+'abc' SIMILAR TO '%(b|d)%'      <lineannotation>true</lineannotation>
+'abc' SIMILAR TO '(b|c)%'       <lineannotation>false</lineannotation>
+'-abc-' SIMILAR TO '%\mabc\M%'  <lineannotation>true</lineannotation>
+'xabcy' SIMILAR TO '%\mabc\M%'  <lineannotation>false</lineannotation>
 </programlisting>
    </para>
 
@@ -5178,7 +5206,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', '\s*') AS foo;
    </para>
 
    <table id="posix-character-entry-escapes-table">
-    <title>Regular Expression Character-entry Escapes</title>
+    <title>Regular Expression Character-Entry Escapes</title>
 
     <tgroup cols="2">
      <thead>
@@ -5319,7 +5347,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', '\s*') AS foo;
    </para>
 
    <table id="posix-class-shorthand-escapes-table">
-    <title>Regular Expression Class-shorthand Escapes</title>
+    <title>Regular Expression Class-Shorthand Escapes</title>
 
     <tgroup cols="2">
      <thead>
@@ -5513,7 +5541,7 @@ SELECT foo FROM regexp_split_to_table('the quick brown fox', '\s*') AS foo;
    </para>
 
    <table id="posix-embedded-options-table">
-    <title>ARE Embedded-option Letters</title>
+    <title>ARE Embedded-Option Letters</title>
 
     <tgroup cols="2">
      <thead>
@@ -5942,6 +5970,145 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
 
 <!-- end re_syntax.n man page -->
 
+   <sect3 id="posix-vs-xquery">
+   <title>Differences From XQuery (<literal>LIKE_REGEX</literal>)</title>
+
+   <indexterm zone="posix-vs-xquery">
+    <primary><literal>LIKE_REGEX</literal></primary>
+   </indexterm>
+
+   <indexterm zone="posix-vs-xquery">
+    <primary>XQuery regular expressions</primary>
+   </indexterm>
+
+    <para>
+     Since SQL:2008, the SQL standard includes
+     a <literal>LIKE_REGEX</literal> operator that performs pattern
+     matching according to the XQuery regular expression
+     standard.  <productname>PostgreSQL</productname> does not yet
+     implement this operator, but you can get very similar behavior using
+     the <function>regexp_match()</function> function, since XQuery
+     regular expressions are quite close to the ARE syntax described above.
+    </para>
+
+    <para>
+     Notable differences between the existing POSIX-based
+     regular-expression feature and XQuery regular expressions include:
+
+     <itemizedlist>
+      <listitem>
+       <para>
+        XQuery character class subtraction is not supported.  An example of
+        this feature is using the following to match only English
+        consonants: <literal>[a-z-[aeiou]]</literal>.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        XQuery character class shorthands <literal>\c</literal>,
+        <literal>\C</literal>, <literal>\i</literal>,
+        and <literal>\I</literal> are not supported.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        XQuery character class elements
+        using <literal>\p{UnicodeProperty}</literal> or the
+        inverse <literal>\P{UnicodeProperty}</literal> are not supported.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        POSIX interprets character classes such as <literal>\w</literal>
+        (see <xref linkend="posix-class-shorthand-escapes-table"/>)
+        according to the prevailing locale (which you can control by
+        attaching a <literal>COLLATE</literal> clause to the operator or
+        function).  XQuery specifies these classes by reference to Unicode
+        character properties, so equivalent behavior is obtained only with
+        a locale that follows the Unicode rules.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        The SQL standard (not XQuery itself) attempts to cater for more
+        variants of <quote>newline</quote> than POSIX does.  The
+        newline-sensitive matching options described above consider only
+        ASCII NL (<literal>\n</literal>) to be a newline, but SQL would have
+        us treat CR (<literal>\r</literal>), CRLF (<literal>\r\n</literal>)
+        (a Windows-style newline), and some Unicode-only characters like
+        LINE SEPARATOR (U+2028) as newlines as well.
+        Notably, <literal>.</literal> and <literal>\s</literal> should
+        count <literal>\r\n</literal> as one character not two according to
+        SQL.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        Of the character-entry escapes described in
+        <xref linkend="posix-character-entry-escapes-table"/>,
+        XQuery supports only <literal>\n</literal>, <literal>\r</literal>,
+        and <literal>\t</literal>.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        XQuery does not support
+        the <literal>[:<replaceable>name</replaceable>:]</literal> syntax
+        for character classes within bracket expressions.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        XQuery does not have lookahead or lookbehind constraints,
+        nor any of the constraint escapes described in
+        <xref linkend="posix-constraint-escapes-table"/>.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        The metasyntax forms described in <xref linkend="posix-metasyntax"/>
+        do not exist in XQuery.
+       </para>
+      </listitem>
+      <listitem>
+       <para>
+        The regular expression flag letters defined by XQuery are
+        related to but not the same as the option letters for POSIX
+        (<xref linkend="posix-embedded-options-table"/>).  While the
+        <literal>i</literal> and <literal>q</literal> options behave the
+        same, others do not:
+        <itemizedlist>
+         <listitem>
+          <para>
+           XQuery's <literal>s</literal> (allow dot to match newline)
+           and <literal>m</literal> (allow <literal>^</literal>
+           and <literal>$</literal> to match at newlines) flags provide
+           access to the same behaviors as
+           POSIX's <literal>n</literal>, <literal>p</literal>
+           and <literal>w</literal> flags, but they
+           do <emphasis>not</emphasis> match the behavior of
+           POSIX's <literal>s</literal> and <literal>m</literal> flags.
+           Note in particular that dot-matches-newline is the default
+           behavior in POSIX but not XQuery.
+          </para>
+         </listitem>
+         <listitem>
+          <para>
+           XQuery's <literal>x</literal> (ignore whitespace in pattern) flag
+           is noticeably different from POSIX's expanded-mode flag.
+           POSIX's <literal>x</literal> flag also
+           allows <literal>#</literal> to begin a comment in the pattern,
+           and POSIX will not ignore a whitespace character after a
+           backslash.
+          </para>
+         </listitem>
+        </itemizedlist>
+       </para>
+      </listitem>
+     </itemizedlist>
+    </para>
+
+   </sect3>
   </sect2>
  </sect1>
 
@@ -6123,7 +6290,31 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
         <entry>microsecond (000000-999999)</entry>
        </row>
        <row>
-        <entry><literal>SSSS</literal></entry>
+        <entry><literal>FF1</literal></entry>
+        <entry>tenth of second (0-9)</entry>
+       </row>
+       <row>
+        <entry><literal>FF2</literal></entry>
+        <entry>hundredth of second (00-99)</entry>
+       </row>
+       <row>
+        <entry><literal>FF3</literal></entry>
+        <entry>millisecond (000-999)</entry>
+       </row>
+       <row>
+        <entry><literal>FF4</literal></entry>
+        <entry>tenth of a millisecond (0000-9999)</entry>
+       </row>
+       <row>
+        <entry><literal>FF5</literal></entry>
+        <entry>hundredth of a millisecond (00000-99999)</entry>
+       </row>
+       <row>
+        <entry><literal>FF6</literal></entry>
+        <entry>microsecond (000000-999999)</entry>
+       </row>
+       <row>
+        <entry><literal>SSSS</literal>, <literal>SSSSS</literal></entry>
         <entry>seconds past midnight (0-86399)</entry>
        </row>
        <row>
@@ -11546,7 +11737,7 @@ table2-mapping
 
   <para>JSON query functions and operators
    pass the provided path expression to the <firstterm>path engine</firstterm>
-   for evaluation. If the expression matches the JSON data to be queried,
+   for evaluation. If the expression matches the queried JSON data,
    the corresponding SQL/JSON item is returned.
    Path expressions are written in the SQL/JSON path language
    and can also include arithmetic expressions and functions.
@@ -11606,7 +11797,7 @@ table2-mapping
 
   <para>
    If the item to retrieve is an element of an array, you have
-   to unnest this array using the [*] operator. For example,
+   to unnest this array using the <literal>[*]</literal> operator. For example,
    the following path will return location coordinates for all
    the available track segments:
 <programlisting>
@@ -11627,8 +11818,7 @@ table2-mapping
    The result of each path evaluation step can be processed
    by one or more <type>jsonpath</type> operators and methods
    listed in <xref linkend="functions-sqljson-path-operators"/>.
-   Each method must be preceded by a dot, while arithmetic and Boolean
-   operators are separated from the operands by spaces. For example,
+   Each method name must be preceded by a dot. For example,
    you can get an array size:
 <programlisting>
 '$.track.segments.size()'
@@ -11742,6 +11932,14 @@ table2-mapping
 </programlisting>
     </para>
    </listitem>
+
+   <listitem>
+    <para>
+     There are minor differences in the interpretation of regular
+     expression patterns used in <literal>like_regex</literal> filters, as
+     described in <xref linkend="jsonpath-regular-expressions"/>.
+    </para>
+   </listitem>
   </itemizedlist>
 
    <sect3 id="strict-and-lax-modes">
@@ -11818,6 +12016,63 @@ table2-mapping
 'strict $.track.segments[*].location'
 </programlisting>
    </para>
+
+   </sect3>
+
+   <sect3 id="jsonpath-regular-expressions">
+    <title>Regular Expressions</title>
+
+    <indexterm zone="jsonpath-regular-expressions">
+     <primary><literal>LIKE_REGEX</literal></primary>
+     <secondary>in SQL/JSON</secondary>
+    </indexterm>
+
+    <para>
+     SQL/JSON path expressions allow matching text to a regular expression
+     with the <literal>like_regex</literal> filter.  For example, the
+     following SQL/JSON path query would case-insensitively match all
+     strings in an array that start with an English vowel:
+<programlisting>
+'$[*] ? (@ like_regex "^[aeiou]" flag "i")'
+</programlisting>
+    </para>
+
+    <para>
+     The optional <literal>flag</literal> string may include one or more of
+     the characters
+     <literal>i</literal> for case-insensitive match,
+     <literal>m</literal> to allow <literal>^</literal>
+     and <literal>$</literal> to match at newlines,
+     <literal>s</literal> to allow <literal>.</literal> to match a newline,
+     and <literal>q</literal> to quote the whole pattern (reducing the
+     behavior to a simple substring match).
+    </para>
+
+    <para>
+     The SQL/JSON standard borrows its definition for regular expressions
+     from the <literal>LIKE_REGEX</literal> operator, which in turn uses the
+     XQuery standard.  PostgreSQL does not currently support the
+     <literal>LIKE_REGEX</literal> operator.  Therefore,
+     the <literal>like_regex</literal> filter is implemented using the
+     POSIX regular expression engine described in
+     <xref linkend="functions-posix-regexp"/>.  This leads to various minor
+     discrepancies from standard SQL/JSON behavior, which are cataloged in
+     <xref linkend="posix-vs-xquery"/>.
+     Note, however, that the flag-letter incompatibilities described there
+     do not apply to SQL/JSON, as it translates the XQuery flag letters to
+     match what the POSIX engine expects.
+    </para>
+
+    <para>
+     Keep in mind that the pattern argument of <literal>like_regex</literal>
+     is a JSON path string literal, written according to the rules given in
+     <xref linkend="datatype-jsonpath"/>.  This means in particular that any
+     backslashes you want to use in the regular expression must be doubled.
+     For example, to match strings that contain only digits:
+<programlisting>
+'$ ? (@ like_regex "^\\d+$")'
+</programlisting>
+    </para>
 
    </sect3>
 
@@ -11909,7 +12164,7 @@ table2-mapping
        </row>
        <row>
         <entry><literal>double()</literal></entry>
-        <entry>Approximate numeric value converted from a string</entry>
+        <entry>Approximate floating-point number converted from an SQL/JSON number or a string</entry>
         <entry><literal>{"len": "1.9"}</literal></entry>
         <entry><literal>$.len.double() * 2</literal></entry>
         <entry><literal>3.8</literal></entry>
@@ -11938,10 +12193,10 @@ table2-mapping
        <row>
         <entry><literal>keyvalue()</literal></entry>
         <entry>
-          Sequence of object's key-value pairs represented as array of objects
+          Sequence of object's key-value pairs represented as array of items
           containing three fields (<literal>"key"</literal>,
           <literal>"value"</literal>, and <literal>"id"</literal>).
-          <literal>"id"</literal> is an unique identifier of the object
+          <literal>"id"</literal> is a unique identifier of the object
           key-value pair belongs to.
         </entry>
         <entry><literal>{"x": "20", "y": 32}</literal></entry>
@@ -12062,10 +12317,11 @@ table2-mapping
        <row>
         <entry><literal>like_regex</literal></entry>
         <entry>
-          Tests pattern matching with POSIX regular expressions
-          (<xref linkend="functions-posix-regexp"/>).  Supported flags
-          are <literal>i</literal>, <literal>s</literal>, <literal>m</literal>,
-          <literal>x</literal> and <literal>q</literal>.</entry>
+          Tests whether the first operand matches the regular expression
+          given by the second operand, optionally with modifications
+          described by a string of <literal>flag</literal> characters (see
+          <xref linkend="jsonpath-regular-expressions"/>)
+        </entry>
         <entry><literal>["abc", "abd", "aBdC", "abdacb", "babc"]</literal></entry>
         <entry><literal>$[*] ? (@ like_regex "^ab.*c" flag "i")</literal></entry>
         <entry><literal>"abc", "aBdC", "abdacb"</literal></entry>
@@ -12079,7 +12335,7 @@ table2-mapping
        </row>
        <row>
         <entry><literal>exists</literal></entry>
-        <entry>Tests whether a path expression has at least one SQL/JSON item</entry>
+        <entry>Tests whether a path expression matches at least one SQL/JSON item</entry>
         <entry><literal>{"x": [1, 2], "y": [2, 4]}</literal></entry>
         <entry><literal>strict $.* ? (exists (@ ? (@[*] > 2)))</literal></entry>
         <entry><literal>2, 4</literal></entry>
@@ -12304,10 +12560,9 @@ table2-mapping
        <row>
         <entry><literal>@@</literal></entry>
         <entry><type>jsonpath</type></entry>
-        <entry>JSON path predicate check result for the specified JSON value.
-        Only first result item is taken into account.  If there are no results
-        or the first result item is not Boolean, then null
-        is returned.</entry>
+        <entry>Returns the result of JSON path predicate check for the specified JSON value.
+        Only the first item of the result is taken into account.  If the
+        result is not Boolean, then <literal>null</literal> is returned.</entry>
         <entry><literal>'{"a":[1,2,3,4,5]}'::jsonb @@ '$.a[*] > 2'</literal></entry>
        </row>
       </tbody>
@@ -12945,7 +13200,7 @@ table2-mapping
        <row>
         <entry>
          <para><literal>
-           jsonb_path_exists(target jsonb, path jsonpath [, vars jsonb, silent bool])
+           jsonb_path_exists(target jsonb, path jsonpath [, vars jsonb [, silent bool]])
          </literal></para>
         </entry>
         <entry><type>boolean</type></entry>
@@ -12970,10 +13225,9 @@ table2-mapping
         </entry>
         <entry><type>boolean</type></entry>
         <entry>
-          Returns JSON path predicate result for the specified JSON value.
-          Only first result item is taken into account.  If there are no results
-          or the first result item is not Boolean, then null
-          is returned.
+          Returns the result of JSON path predicate check for the specified JSON value.
+          Only the first item of the result is taken into account.  If the
+          result is not Boolean, then <literal>null</literal> is returned.
         </entry>
         <entry>
          <para><literal>
@@ -13180,18 +13434,18 @@ table2-mapping
   <note>
    <para>
     The <literal>jsonb_path_exists</literal>, <literal>jsonb_path_match</literal>,
-    <literal>jsonb_path_query</literal>, <literal>jsonb_path_query_array</literal> and
+    <literal>jsonb_path_query</literal>, <literal>jsonb_path_query_array</literal>, and
     <literal>jsonb_path_query_first</literal>
     functions have optional <literal>vars</literal> and <literal>silent</literal>
     arguments.
    </para>
    <para>
-    If the <literal>vars</literal> argument is specified, it provides an
+    If the <parameter>vars</parameter> argument is specified, it provides an
     object containing named variables to be substituted into a
     <literal>jsonpath</literal> expression.
    </para>
    <para>
-    If the <literal>silent</literal> argument is specified and has the
+    If the <parameter>silent</parameter> argument is specified and has the
     <literal>true</literal> value, these functions suppress the same errors
     as the <literal>@?</literal> and <literal>@@</literal> operators.
    </para>
@@ -14604,7 +14858,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>No</entry>
       <entry>input arrays concatenated into array of one higher dimension
        (inputs must all have same dimensionality,
-        and cannot be empty or NULL)</entry>
+        and cannot be empty or null)</entry>
      </row>
 
      <row>
@@ -14628,7 +14882,7 @@ NULL baz</literallayout>(3 rows)</entry>
        otherwise the same as the argument data type
       </entry>
       <entry>Yes</entry>
-      <entry>the average (arithmetic mean) of all input values</entry>
+      <entry>the average (arithmetic mean) of all non-null input values</entry>
      </row>
 
      <row>
@@ -14756,7 +15010,7 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>json</type>
       </entry>
       <entry>No</entry>
-      <entry>aggregates values as a JSON array</entry>
+      <entry>aggregates values, including nulls, as a JSON array</entry>
      </row>
 
      <row>
@@ -14773,7 +15027,7 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>jsonb</type>
       </entry>
       <entry>No</entry>
-      <entry>aggregates values as a JSON array</entry>
+      <entry>aggregates values, including nulls, as a JSON array</entry>
      </row>
 
      <row>
@@ -14790,7 +15044,8 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>json</type>
       </entry>
       <entry>No</entry>
-      <entry>aggregates name/value pairs as a JSON object</entry>
+      <entry>aggregates name/value pairs as a JSON object; values can be
+       null, but not names</entry>
      </row>
 
      <row>
@@ -14807,7 +15062,8 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>jsonb</type>
       </entry>
       <entry>No</entry>
-      <entry>aggregates name/value pairs as a JSON object</entry>
+      <entry>aggregates name/value pairs as a JSON object; values can be
+       null, but not names</entry>
      </row>
 
      <row>
@@ -14823,7 +15079,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>Yes</entry>
       <entry>
        maximum value of <replaceable
-       class="parameter">expression</replaceable> across all input
+       class="parameter">expression</replaceable> across all non-null input
        values
       </entry>
      </row>
@@ -14841,7 +15097,7 @@ NULL baz</literallayout>(3 rows)</entry>
       <entry>Yes</entry>
       <entry>
        minimum value of <replaceable
-       class="parameter">expression</replaceable> across all input
+       class="parameter">expression</replaceable> across all non-null input
        values
       </entry>
      </row>
@@ -14863,7 +15119,7 @@ NULL baz</literallayout>(3 rows)</entry>
        same as argument types
       </entry>
       <entry>No</entry>
-      <entry>input values concatenated into a string, separated by delimiter</entry>
+      <entry>non-null input values concatenated into a string, separated by delimiter</entry>
      </row>
 
      <row>
@@ -14886,7 +15142,8 @@ NULL baz</literallayout>(3 rows)</entry>
        argument data type
       </entry>
       <entry>Yes</entry>
-      <entry>sum of <replaceable class="parameter">expression</replaceable> across all input values</entry>
+      <entry>sum of <replaceable class="parameter">expression</replaceable>
+       across all non-null input values</entry>
      </row>
 
      <row>
@@ -14903,7 +15160,8 @@ NULL baz</literallayout>(3 rows)</entry>
        <type>xml</type>
       </entry>
       <entry>No</entry>
-      <entry>concatenation of XML values (see also <xref linkend="functions-xml-xmlagg"/>)</entry>
+      <entry>concatenation of non-null XML values
+       (see also <xref linkend="functions-xml-xmlagg"/>)</entry>
      </row>
     </tbody>
    </tgroup>
@@ -16393,7 +16651,7 @@ WHERE EXISTS (SELECT 1 FROM tab2 WHERE col2 = tab1.col2);
   </sect2>
 
   <sect2>
-   <title>Single-row Comparison</title>
+   <title>Single-Row Comparison</title>
 
    <indexterm zone="functions-subquery">
     <primary>comparison</primary>
@@ -19304,7 +19562,7 @@ SELECT collation for ('foo' COLLATE "de_DE");
    </para>
 
    <table id="functions-commit-timestamp">
-    <title>Committed transaction information</title>
+    <title>Committed Transaction Information</title>
     <tgroup cols="3">
      <thead>
       <row><entry>Name</entry> <entry>Return Type</entry> <entry>Description</entry></row>
@@ -20556,7 +20814,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         (<parameter>slot_name</parameter> <type>name</type>, <parameter>lsn</parameter> <type>pg_lsn</type>)
        </entry>
        <entry>
-        Copies an existing physical replication slot name <parameter>src_slot_name</parameter>
+        Copies an existing physical replication slot named <parameter>src_slot_name</parameter>
         to a physical replication slot named <parameter>dst_slot_name</parameter>.
         The copied physical slot starts to reserve WAL from the same <acronym>LSN</acronym> as the
         source slot.
@@ -21663,7 +21921,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
    <para>
     <function>pg_ls_archive_statusdir</function> returns the name, size, and
     last modified time (mtime) of each file in the WAL archive status
-    directory <literal>pg_wal/archive_status</literal>. By default only
+    directory <filename>pg_wal/archive_status</filename>. By default only
     superusers and members of the <literal>pg_monitor</literal> role can
     use this function. Access may be granted to others using
     <command>GRANT</command>.
@@ -22319,7 +22577,7 @@ CREATE EVENT TRIGGER test_event_trigger_for_drops
    </para>
 
    <table id="functions-event-trigger-table-rewrite">
-    <title>Table Rewrite information</title>
+    <title>Table Rewrite Information</title>
     <tgroup cols="3">
      <thead>
       <row><entry>Name</entry> <entry>Return Type</entry> <entry>Description</entry></row>
@@ -22387,7 +22645,7 @@ CREATE EVENT TRIGGER test_table_rewrite_oid
    </para>
 
   <sect2 id="functions-statistics-mcv">
-   <title>Inspecting MCV lists</title>
+   <title>Inspecting MCV Lists</title>
 
    <indexterm>
      <primary>pg_mcv_list_items</primary>

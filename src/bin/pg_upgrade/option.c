@@ -218,6 +218,9 @@ parseCommandLine(int argc, char *argv[])
 		}
 	}
 
+	if (optind < argc)
+		pg_fatal("too many command-line arguments (first is \"%s\")\n", argv[optind]);
+
 	if ((log_opts.internal = fopen_priv(INTERNAL_LOG_FILE, "a")) == NULL)
 		pg_fatal("could not open log file \"%s\": %m\n", INTERNAL_LOG_FILE);
 
@@ -296,7 +299,7 @@ usage(void)
 	printf(_("Options:\n"));
 	printf(_("  -b, --old-bindir=BINDIR       old cluster executable directory\n"));
 	printf(_("  -B, --new-bindir=BINDIR       new cluster executable directory (default\n"
-			 "                                same directory as pg_upgrade)"));
+			 "                                same directory as pg_upgrade)\n"));
 	printf(_("  -c, --check                   check clusters only, don't change any data\n"));
 	printf(_("  -d, --old-datadir=DATADIR     old cluster data directory\n"));
 	printf(_("  -D, --new-datadir=DATADIR     new cluster data directory\n"));

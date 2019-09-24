@@ -170,7 +170,7 @@ typedef struct _internalPQconninfoOption
 	char	   *keyword;		/* The keyword of the option			*/
 	char	   *envvar;			/* Fallback environment variable name	*/
 	char	   *compiled;		/* Fallback compiled in default value	*/
-	char	   *val;			/* Option's current value, or NULL		 */
+	char	   *val;			/* Option's current value, or NULL		*/
 	char	   *label;			/* Label for field in connect dialog	*/
 	char	   *dispchar;		/* Indicates how to display this field in a
 								 * connect dialog. Values are: "" Display
@@ -1264,9 +1264,9 @@ connectOptions2(PGconn *conn)
 		if (strcmp(conn->gssencmode, "require") == 0)
 		{
 			conn->status = CONNECTION_BAD;
-			printfPQExpBuffer(
-							  &conn->errorMessage,
-							  libpq_gettext("no GSSAPI support; cannot require GSSAPI\n"));
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("gssencmode value \"%s\" invalid when GSSAPI support is not compiled in\n"),
+							  conn->gssencmode);
 			return false;
 		}
 #endif
@@ -1675,7 +1675,7 @@ parse_int_param(const char *value, int *result, PGconn *conn,
 	}
 
 	appendPQExpBuffer(&conn->errorMessage,
-					  libpq_gettext("invalid integer value \"%s\" for keyword \"%s\"\n"),
+					  libpq_gettext("invalid integer value \"%s\" for connection option \"%s\"\n"),
 					  value, context);
 	return false;
 }
@@ -2748,13 +2748,13 @@ keep_going:						/* We will come back to here until there is
 #ifdef ENABLE_GSS
 
 				/*
-				 * If GSSAPI is enabled and we have a ccache, try to set it up
-				 * before sending startup messages.  If it's already
+				 * If GSSAPI is enabled and we have a credential cache, try to
+				 * set it up before sending startup messages.  If it's already
 				 * operating, don't try SSL and instead just build the startup
 				 * packet.
 				 */
 				if (conn->try_gss && !conn->gctx)
-					conn->try_gss = pg_GSS_have_ccache(&conn->gcred);
+					conn->try_gss = pg_GSS_have_cred_cache(&conn->gcred);
 				if (conn->try_gss && !conn->gctx)
 				{
 					ProtocolVersion pv = pg_hton32(NEGOTIATE_GSS_CODE);
@@ -2774,7 +2774,7 @@ keep_going:						/* We will come back to here until there is
 				else if (!conn->gctx && conn->gssencmode[0] == 'r')
 				{
 					appendPQExpBufferStr(&conn->errorMessage,
-										 libpq_gettext("GSSAPI encryption required, but was impossible (possibly no ccache, no server support, or using a local socket)\n"));
+										 libpq_gettext("GSSAPI encryption required but was impossible (possibly no credential cache, no server support, or using a local socket)\n"));
 					goto error_return;
 				}
 #endif
@@ -3434,6 +3434,13 @@ keep_going:						/* We will come back to here until there is
 					return PGRES_POLLING_WRITING;
 				}
 
+				/* Almost there now ... */
+				conn->status = CONNECTION_CHECK_TARGET;
+				goto keep_going;
+			}
+
+		case CONNECTION_CHECK_TARGET:
+			{
 				/*
 				 * If a read-write connection is required, see if we have one.
 				 *
@@ -3476,66 +3483,36 @@ keep_going:						/* We will come back to here until there is
 			}
 
 		case CONNECTION_SETENV:
-
-			/*
-			 * Do post-connection housekeeping (only needed in protocol 2.0).
-			 *
-			 * We pretend that the connection is OK for the duration of these
-			 * queries.
-			 */
-			conn->status = CONNECTION_OK;
-
-			switch (pqSetenvPoll(conn))
 			{
-				case PGRES_POLLING_OK:	/* Success */
-					break;
-
-				case PGRES_POLLING_READING: /* Still going */
-					conn->status = CONNECTION_SETENV;
-					return PGRES_POLLING_READING;
-
-				case PGRES_POLLING_WRITING: /* Still going */
-					conn->status = CONNECTION_SETENV;
-					return PGRES_POLLING_WRITING;
-
-				default:
-					goto error_return;
-			}
-
-			/*
-			 * If a read-write connection is required, see if we have one.
-			 * (This should match the stanza in the CONNECTION_AUTH_OK case
-			 * above.)
-			 *
-			 * Servers before 7.4 lack the transaction_read_only GUC, but by
-			 * the same token they don't have any read-only mode, so we may
-			 * just skip the test in that case.
-			 */
-			if (conn->sversion >= 70400 &&
-				conn->target_session_attrs != NULL &&
-				strcmp(conn->target_session_attrs, "read-write") == 0)
-			{
-				if (!saveErrorMessage(conn, &savedMessage))
-					goto error_return;
-
+				/*
+				 * Do post-connection housekeeping (only needed in protocol 2.0).
+				 *
+				 * We pretend that the connection is OK for the duration of these
+				 * queries.
+				 */
 				conn->status = CONNECTION_OK;
-				if (!PQsendQuery(conn,
-								 "SHOW transaction_read_only"))
+
+				switch (pqSetenvPoll(conn))
 				{
-					restoreErrorMessage(conn, &savedMessage);
-					goto error_return;
+					case PGRES_POLLING_OK:	/* Success */
+						break;
+
+					case PGRES_POLLING_READING: /* Still going */
+						conn->status = CONNECTION_SETENV;
+						return PGRES_POLLING_READING;
+
+					case PGRES_POLLING_WRITING: /* Still going */
+						conn->status = CONNECTION_SETENV;
+						return PGRES_POLLING_WRITING;
+
+					default:
+						goto error_return;
 				}
-				conn->status = CONNECTION_CHECK_WRITABLE;
-				restoreErrorMessage(conn, &savedMessage);
-				return PGRES_POLLING_READING;
+
+				/* Almost there now ... */
+				conn->status = CONNECTION_CHECK_TARGET;
+				goto keep_going;
 			}
-
-			/* We can release the address list now. */
-			release_conn_addrinfo(conn);
-
-			/* We are open for business! */
-			conn->status = CONNECTION_OK;
-			return PGRES_POLLING_OK;
 
 		case CONNECTION_CONSUME:
 			{
@@ -3885,7 +3862,10 @@ freePGconn(PGconn *conn)
 			if (conn->connhost[i].port != NULL)
 				free(conn->connhost[i].port);
 			if (conn->connhost[i].password != NULL)
+			{
+				explicit_bzero(conn->connhost[i].password, strlen(conn->connhost[i].password));
 				free(conn->connhost[i].password);
+			}
 		}
 		free(conn->connhost);
 	}
@@ -3919,7 +3899,10 @@ freePGconn(PGconn *conn)
 	if (conn->pguser)
 		free(conn->pguser);
 	if (conn->pgpass)
+	{
+		explicit_bzero(conn->pgpass, strlen(conn->pgpass));
 		free(conn->pgpass);
+	}
 	if (conn->pgpassfile)
 		free(conn->pgpassfile);
 	if (conn->keepalives)
@@ -6931,6 +6914,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 		if (!ret)
 		{
 			/* Out of memory. XXX: an error message would be nice. */
+			explicit_bzero(buf, sizeof(buf));
 			return NULL;
 		}
 
@@ -6947,6 +6931,7 @@ passwordFromFile(const char *hostname, const char *port, const char *dbname,
 	}
 
 	fclose(fp);
+	explicit_bzero(buf, sizeof(buf));
 	return NULL;
 
 #undef LINELEN

@@ -24,12 +24,12 @@
 
 #include "access/clog.h"
 #include "access/commit_ts.h"
+#include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
 #include "access/subtrans.h"
 #include "access/timeline.h"
 #include "access/transam.h"
-#include "access/tuptoaster.h"
 #include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -769,7 +769,7 @@ typedef enum
 } XLogSource;
 
 /* human-readable names for XLogSources, for debugging output */
-static const char *xlogSourceNames[] = {"any", "archive", "pg_wal", "stream"};
+static const char *const xlogSourceNames[] = {"any", "archive", "pg_wal", "stream"};
 
 /*
  * openLogFile is -1 or a kernel FD for an open log file segment.

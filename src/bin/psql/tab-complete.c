@@ -1008,6 +1008,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"MATERIALIZED VIEW", NULL, NULL, &Query_for_list_of_matviews},
 	{"OPERATOR", NULL, NULL, NULL}, /* Querying for this is probably not such
 									 * a good idea. */
+	{"OR REPLACE", NULL, NULL, NULL, THING_NO_DROP | THING_NO_ALTER},
 	{"OWNED", NULL, NULL, NULL, THING_NO_CREATE | THING_NO_ALTER},	/* for DROP OWNED BY ... */
 	{"PARSER", Query_for_list_of_ts_parsers, NULL, NULL, THING_NO_SHOW},
 	{"POLICY", NULL, NULL, NULL},
@@ -1490,6 +1491,11 @@ psql_completion(const char *text, int start, int end)
 	else if (TailMatches("CREATE"))
 		matches = completion_matches(text, create_command_generator);
 
+	/* complete with somthing you can create or replace */
+	else if (TailMatches("CREATE", "OR", "REPLACE"))
+		COMPLETE_WITH("FUNCTION", "PROCEDURE", "LANGUAGE", "RULE", "VIEW",
+					  "AGGREGATE", "TRANSFORM");
+
 /* DROP, but not DROP embedded in other commands */
 	/* complete with something you can drop */
 	else if (Matches("DROP"))
@@ -1841,7 +1847,7 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER STATISTICS <name> */
 	else if (Matches("ALTER", "STATISTICS", MatchAny))
-		COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA");
+		COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA", "SET STATISTICS");
 
 	/* ALTER TRIGGER <name>, add ON */
 	else if (Matches("ALTER", "TRIGGER", MatchAny))
@@ -2346,6 +2352,10 @@ psql_completion(const char *text, int start, int end)
 			 !TailMatches("FOR", MatchAny, MatchAny, MatchAny))
 		COMPLETE_WITH("(");
 
+	/* CREATE OR REPLACE */
+	else if (Matches("CREATE", "OR"))
+		COMPLETE_WITH("REPLACE");
+
 	/* CREATE POLICY */
 	/* Complete "CREATE POLICY <name> ON" */
 	else if (Matches("CREATE", "POLICY", MatchAny))
@@ -2441,14 +2451,17 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("publish");
 
 /* CREATE RULE */
-	/* Complete "CREATE RULE <sth>" with "AS ON" */
-	else if (Matches("CREATE", "RULE", MatchAny))
+	/* Complete "CREATE [ OR REPLACE ] RULE <sth>" with "AS ON" */
+	else if (Matches("CREATE", "RULE", MatchAny) ||
+			 Matches("CREATE", "OR", "REPLACE", "RULE", MatchAny))
 		COMPLETE_WITH("AS ON");
-	/* Complete "CREATE RULE <sth> AS" with "ON" */
-	else if (Matches("CREATE", "RULE", MatchAny, "AS"))
+	/* Complete "CREATE [ OR REPLACE ] RULE <sth> AS" with "ON" */
+	else if (Matches("CREATE", "RULE", MatchAny, "AS") ||
+			 Matches("CREATE", "OR", "REPLACE", "RULE", MatchAny, "AS"))
 		COMPLETE_WITH("ON");
-	/* Complete "CREATE RULE <sth> AS ON" with SELECT|UPDATE|INSERT|DELETE */
-	else if (Matches("CREATE", "RULE", MatchAny, "AS", "ON"))
+	/* Complete "CREATE [ OR REPLACE ] RULE <sth> AS ON" with SELECT|UPDATE|INSERT|DELETE */
+	else if (Matches("CREATE", "RULE", MatchAny, "AS", "ON") ||
+			 Matches("CREATE", "OR", "REPLACE", "RULE", MatchAny, "AS", "ON"))
 		COMPLETE_WITH("SELECT", "UPDATE", "INSERT", "DELETE");
 	/* Complete "AS ON SELECT|UPDATE|INSERT|DELETE" with a "TO" */
 	else if (TailMatches("AS", "ON", "SELECT|UPDATE|INSERT|DELETE"))
@@ -2727,11 +2740,13 @@ psql_completion(const char *text, int start, int end)
 	}
 
 /* CREATE VIEW --- is allowed inside CREATE SCHEMA, so use TailMatches */
-	/* Complete CREATE VIEW <name> with AS */
-	else if (TailMatches("CREATE", "VIEW", MatchAny))
+	/* Complete CREATE [ OR REPLACE ] VIEW <name> with AS */
+	else if (TailMatches("CREATE", "VIEW", MatchAny) ||
+			 TailMatches("CREATE", "OR", "REPLACE", "VIEW", MatchAny))
 		COMPLETE_WITH("AS");
-	/* Complete "CREATE VIEW <sth> AS with "SELECT" */
-	else if (TailMatches("CREATE", "VIEW", MatchAny, "AS"))
+	/* Complete "CREATE [ OR REPLACE ] VIEW <sth> AS with "SELECT" */
+	else if (TailMatches("CREATE", "VIEW", MatchAny, "AS") ||
+			 TailMatches("CREATE", "OR", "REPLACE", "VIEW", MatchAny, "AS"))
 		COMPLETE_WITH("SELECT");
 
 /* CREATE MATERIALIZED VIEW */
