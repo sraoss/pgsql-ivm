@@ -99,6 +99,12 @@ typedef struct
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_transientrel;
 
+typedef enum
+{
+	IVM_ADD,
+	IVM_SUB
+} IvmOp;
+
 static int	matview_maintenance_depth = 0;
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
@@ -116,6 +122,9 @@ static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
 static void CloseMatViewIncrementalMaintenance(void);
 
+static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
+static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
+								  char* count_col, const char *castType);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context);
 
@@ -1417,6 +1426,79 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	return PointerGetDatum(NULL);
 }
 
+#define IVM_colname(type, col) makeObjectName("__ivm_" type, col, "_")
+
+static char *
+get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
+{
+	StringInfoData null_cond;
+	initStringInfo(&null_cond);
+
+	switch (op)
+	{
+		case IVM_ADD:
+			appendStringInfo(&null_cond,
+				"%s = 0 AND %s = 0",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		case IVM_SUB:
+			appendStringInfo(&null_cond,
+				"%s = %s",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		default:
+			elog(ERROR,"unkwon opration");
+	}
+
+	return null_cond.data;
+}
+
+static char *
+get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_col, const char *castType)
+{
+	StringInfoData buf, castString;
+	char	*col1 = quote_qualified_identifier(arg1, col);
+	char	*col2 = quote_qualified_identifier(arg2, col);
+
+	char op_char = (op == IVM_SUB ? '-' : '+');
+	char *sign = (op == IVM_SUB ? "-" : "");
+
+	initStringInfo(&buf);
+	initStringInfo(&castString);
+
+	if (castType)
+		appendStringInfo(&castString, "::%s", castType);
+
+
+	if (!count_col)
+	{
+		appendStringInfo(&buf, "(%s %c %s)%s",
+			col1, op_char, col2, castString.data);
+	}
+	else
+	{
+		char *null_cond = get_null_condition_string(op, arg1, arg2, count_col);
+
+		appendStringInfo(&buf,
+			"(CASE WHEN %s THEN NULL "
+				" WHEN %s IS NULL THEN %s%s "
+				" WHEN %s IS NULL THEN (%s) "
+				" ELSE (%s %c %s)%s END)",
+			null_cond,
+			col1, sign, col2,
+			col2, col1,
+			col1, op_char, col2, castString.data
+		);
+	}
+
+	return buf.data;
+}
+
+
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			Query *query, Oid relowner, int save_sec_context)
@@ -1478,7 +1560,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 		i++;
 
-
 		if (tle->resjunk)
 			continue;
 
@@ -1488,6 +1569,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", resname));
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
+
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
@@ -1509,18 +1591,17 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 			if (!strcmp(aggname, "count"))
 			{
+				/* resname = mv.resname - t.resname */
 				appendStringInfo(&update_aggs_old,
-					"%s = %s - %s",
+					"%s = %s",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("t", resname)
-				);
+					get_operation_string(IVM_SUB,resname, "mv", "t", NULL, NULL));
+
+				/* resname = mv.resname + diff.resname */
 				appendStringInfo(&update_aggs_new,
-					"%s = %s + %s",
+					"%s = %s",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("diff", resname)
-				);
+					get_operation_string(IVM_ADD, resname, "mv", "diff", NULL, NULL));
 
 				appendStringInfo(&diff_aggs_buf, "%s",
 					quote_qualified_identifier("diff", resname)
@@ -1528,35 +1609,32 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			}
 			else if (!strcmp(aggname, "sum"))
 			{
+				char *count_col = IVM_colname("count", resname);
+
+				/* sum = mv.sum - t.sum */
 				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s = %s THEN NULL ELSE "
-						"COALESCE(%s,0) - COALESCE(%s, 0) END, "
-					"%s = %s - %s",
+					"%s = %s, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("t", resname),
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
+					get_operation_string(IVM_SUB, resname, "mv", "t", count_col, NULL)
 				);
+				/* count = mv.count - t.count */
+				appendStringInfo(&update_aggs_old,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+				);
+
+				/* sum = mv.sum + diff.sum */
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
-						"COALESCE(%s,0) + COALESCE(%s, 0) END, "
-					"%s = %s + %s",
+					"%s = %s, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("diff", resname),
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
+					get_operation_string(IVM_ADD, resname, "mv", "diff", count_col, NULL)
+				);
+				/* count = mv.count + diff.count */
+				appendStringInfo(&update_aggs_new,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s, %s",
@@ -1566,55 +1644,47 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			}
 			else if (!strcmp(aggname, "avg"))
 			{
+				char *sum_col = IVM_colname("sum", resname);
+				char *count_col = IVM_colname("count", resname);
+
+				/* avg = (mv.sum - t.sum)::aggtype / (mv.count - t.count) */
 				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s = %s THEN NULL ELSE "
-						"(COALESCE(%s,0) - COALESCE(%s, 0))::%s / (%s - %s) END, "
-					"%s = (COALESCE(%s,0) - COALESCE(%s, 0))::%s, "
-					"%s = %s - %s",
-
+					"%s = %s / %s, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_sum",resname,"_")),
-					aggtype,
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_sum",resname,"_")),
-					aggtype,
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
+					get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, aggtype),
+					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
 				);
+				/* sum = mv.sum - t.sum */
+				appendStringInfo(&update_aggs_old,
+					"%s = %s, ",
+					quote_qualified_identifier(NULL, sum_col),
+					get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, NULL)
+				);
+				/* count = mv.count - t.count */
+				appendStringInfo(&update_aggs_old,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+				);
+
+				/* avg = (mv.sum + diff.sum)::aggtype / (mv.count + diff.count) */
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
-						"(COALESCE(%s,0)+ COALESCE(%s, 0))::%s / (%s + %s) END, "
-					"%s = (COALESCE(%s,0) + COALESCE(%s, 0))::%s, "
-					"%s = %s + %s",
-
+					"%s = %s / %s, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
-					aggtype,
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
-					aggtype,
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
+					get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, aggtype),
+					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
+				);
+				/* sum = mv.sum + diff.sum */
+				appendStringInfo(&update_aggs_new,
+					"%s = %s, ",
+					quote_qualified_identifier(NULL, sum_col),
+					get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, NULL)
+				);
+				/* count = mv.count + diff.count */
+				appendStringInfo(&update_aggs_new,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s, %s, %s",
@@ -1626,6 +1696,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			else if (!strcmp(aggname, "min") || !strcmp(aggname, "max"))
 			{
 				bool is_min = !strcmp(aggname, "min");
+				char *count_col = IVM_colname("count", resname);
 
 				if (!has_min_or_max)
 				{
@@ -1645,35 +1716,39 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				);
 				appendStringInfo(&min_or_max_buf, "%s", quote_qualified_identifier(NULL, resname));
 
+				/* Even if the new values is not NULL, this might be recomputated afterwords. */
 				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s = %s THEN NULL ELSE "
-						"%s END, "
-					"%s = %s - %s",
+					"%s = CASE WHEN %s THEN NULL ELSE %s END, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_")),
-
-					quote_qualified_identifier("mv", resname),
-
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("t", makeObjectName("__ivm_count",resname,"_"))
+					get_null_condition_string(IVM_SUB, "mv", "t", count_col),
+					quote_qualified_identifier("mv", resname)
 				);
+				/* count = mv.count - t.count */
+				appendStringInfo(&update_aggs_old,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+				);
+
+				/*
+				 * min = least(mv.min, diff.min)
+				 * max = greatest(mv.max, diff.max)
+				 */
 				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s = 0 AND %s = 0 THEN NULL ELSE "
-						"%s(%s,%s) END, "
-					"%s = %s + %s",
+					"%s = CASE WHEN %s THEN NULL ELSE %s(%s,%s) END, ",
 					quote_qualified_identifier(NULL, resname),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_")),
+					get_null_condition_string(IVM_ADD, "mv", "diff", count_col),
 
 					is_min ? "least" : "greatest",
 					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("diff", resname),
+					quote_qualified_identifier("diff", resname)
+				);
 
-					quote_qualified_identifier(NULL, makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("mv", makeObjectName("__ivm_count",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
+				/* count = mv.count + diff.count */
+				appendStringInfo(&update_aggs_new,
+					"%s = %s",
+					quote_qualified_identifier(NULL, count_col),
+					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
 				);
 
 				appendStringInfo(&diff_aggs_buf, "%s, %s",
@@ -1726,7 +1801,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 				appendStringInfo(&returning_buf, ", %s", mv_gkeys_buf.data);
 				appendStringInfo(&result_buf, "SELECT ctid AS tid, %s FROM updt WHERE recalc", updt_gkeys_buf.data);
 			}
-
 		}
 		else
 		{
