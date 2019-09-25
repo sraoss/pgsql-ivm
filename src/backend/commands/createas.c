@@ -62,6 +62,7 @@
 #include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
+#include "utils/syscache.h"
 
 
 typedef struct
