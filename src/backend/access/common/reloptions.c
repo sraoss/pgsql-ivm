@@ -433,7 +433,25 @@ static relopt_real realRelOpts[] =
 	{{NULL}}
 };
 
-static relopt_string stringRelOpts[] =
+/* values from GistOptBufferingMode */
+relopt_enum_elt_def gistBufferingOptValues[] =
+{
+	{"auto", GIST_OPTION_BUFFERING_AUTO},
+	{"on", GIST_OPTION_BUFFERING_ON},
+	{"off", GIST_OPTION_BUFFERING_OFF},
+	{(const char *) NULL}		/* list terminator */
+};
+
+/* values from ViewOptCheckOption */
+relopt_enum_elt_def viewCheckOptValues[] =
+{
+	/* no value for NOT_SET */
+	{"local", VIEW_OPTION_CHECK_OPTION_LOCAL},
+	{"cascaded", VIEW_OPTION_CHECK_OPTION_CASCADED},
+	{(const char *) NULL}		/* list terminator */
+};
+
+static relopt_enum enumRelOpts[] =
 {
 	{
 		{
@@ -442,10 +460,9 @@ static relopt_string stringRelOpts[] =
 			RELOPT_KIND_GIST,
 			AccessExclusiveLock
 		},
-		4,
-		false,
-		gistValidateBufferingOption,
-		"auto"
+		gistBufferingOptValues,
+		GIST_OPTION_BUFFERING_AUTO,
+		gettext_noop("Valid values are \"on\", \"off\", and \"auto\".")
 	},
 	{
 		{
@@ -454,11 +471,16 @@ static relopt_string stringRelOpts[] =
 			RELOPT_KIND_VIEW,
 			AccessExclusiveLock
 		},
-		0,
-		true,
-		validateWithCheckOption,
-		NULL
+		viewCheckOptValues,
+		VIEW_OPTION_CHECK_OPTION_NOT_SET,
+		gettext_noop("Valid values are \"local\" and \"cascaded\".")
 	},
+	/* list terminator */
+	{{NULL}}
+};
+
+static relopt_string stringRelOpts[] =
+{
 	/* list terminator */
 	{{NULL}}
 };
@@ -505,6 +527,12 @@ initialize_reloptions(void)
 								   realRelOpts[i].gen.lockmode));
 		j++;
 	}
+	for (i = 0; enumRelOpts[i].gen.name; i++)
+	{
+		Assert(DoLockModesConflict(enumRelOpts[i].gen.lockmode,
+								   enumRelOpts[i].gen.lockmode));
+		j++;
+	}
 	for (i = 0; stringRelOpts[i].gen.name; i++)
 	{
 		Assert(DoLockModesConflict(stringRelOpts[i].gen.lockmode,
@@ -539,6 +567,14 @@ initialize_reloptions(void)
 	{
 		relOpts[j] = &realRelOpts[i].gen;
 		relOpts[j]->type = RELOPT_TYPE_REAL;
+		relOpts[j]->namelen = strlen(relOpts[j]->name);
+		j++;
+	}
+
+	for (i = 0; enumRelOpts[i].gen.name; i++)
+	{
+		relOpts[j] = &enumRelOpts[i].gen;
+		relOpts[j]->type = RELOPT_TYPE_ENUM;
 		relOpts[j]->namelen = strlen(relOpts[j]->name);
 		j++;
 	}
@@ -621,7 +657,8 @@ add_reloption(relopt_gen *newoption)
  *		(for types other than string)
  */
 static relopt_gen *
-allocate_reloption(bits32 kinds, int type, const char *name, const char *desc)
+allocate_reloption(bits32 kinds, int type, const char *name, const char *desc,
+				   LOCKMODE lockmode)
 {
 	MemoryContext oldcxt;
 	size_t		size;
@@ -639,6 +676,9 @@ allocate_reloption(bits32 kinds, int type, const char *name, const char *desc)
 			break;
 		case RELOPT_TYPE_REAL:
 			size = sizeof(relopt_real);
+			break;
+		case RELOPT_TYPE_ENUM:
+			size = sizeof(relopt_enum);
 			break;
 		case RELOPT_TYPE_STRING:
 			size = sizeof(relopt_string);
@@ -658,6 +698,14 @@ allocate_reloption(bits32 kinds, int type, const char *name, const char *desc)
 	newoption->kinds = kinds;
 	newoption->namelen = strlen(name);
 	newoption->type = type;
+	newoption->lockmode = lockmode;
+
+	/*
+	 * Set the default lock mode for this option.  There is no actual way
+	 * for a module to enforce it when declaring a custom relation option,
+	 * so just use the highest level, which is safe for all cases.
+	 */
+	newoption->lockmode = AccessExclusiveLock;
 
 	MemoryContextSwitchTo(oldcxt);
 
@@ -669,12 +717,13 @@ allocate_reloption(bits32 kinds, int type, const char *name, const char *desc)
  *		Add a new boolean reloption
  */
 void
-add_bool_reloption(bits32 kinds, const char *name, const char *desc, bool default_val)
+add_bool_reloption(bits32 kinds, const char *name, const char *desc,
+				   bool default_val, LOCKMODE lockmode)
 {
 	relopt_bool *newoption;
 
 	newoption = (relopt_bool *) allocate_reloption(kinds, RELOPT_TYPE_BOOL,
-												   name, desc);
+												   name, desc, lockmode);
 	newoption->default_val = default_val;
 
 	add_reloption((relopt_gen *) newoption);
@@ -686,12 +735,12 @@ add_bool_reloption(bits32 kinds, const char *name, const char *desc, bool defaul
  */
 void
 add_int_reloption(bits32 kinds, const char *name, const char *desc, int default_val,
-				  int min_val, int max_val)
+				  int min_val, int max_val, LOCKMODE lockmode)
 {
 	relopt_int *newoption;
 
 	newoption = (relopt_int *) allocate_reloption(kinds, RELOPT_TYPE_INT,
-												  name, desc);
+												  name, desc, lockmode);
 	newoption->default_val = default_val;
 	newoption->min = min_val;
 	newoption->max = max_val;
@@ -705,15 +754,43 @@ add_int_reloption(bits32 kinds, const char *name, const char *desc, int default_
  */
 void
 add_real_reloption(bits32 kinds, const char *name, const char *desc, double default_val,
-				   double min_val, double max_val)
+				   double min_val, double max_val, LOCKMODE lockmode)
 {
 	relopt_real *newoption;
 
 	newoption = (relopt_real *) allocate_reloption(kinds, RELOPT_TYPE_REAL,
-												   name, desc);
+												   name, desc, lockmode);
 	newoption->default_val = default_val;
 	newoption->min = min_val;
 	newoption->max = max_val;
+
+	add_reloption((relopt_gen *) newoption);
+}
+
+/*
+ * add_enum_reloption
+ *		Add a new enum reloption
+ *
+ * The members array must have a terminating NULL entry.
+ *
+ * The detailmsg is shown when unsupported values are passed, and has this
+ * form:   "Valid values are \"foo\", \"bar\", and \"bar\"."
+ *
+ * The members array and detailmsg are not copied -- caller must ensure that
+ * they are valid throughout the life of the process.
+ */
+void
+add_enum_reloption(bits32 kinds, const char *name, const char *desc,
+				   relopt_enum_elt_def *members, int default_val,
+				   const char *detailmsg, LOCKMODE lockmode)
+{
+	relopt_enum *newoption;
+
+	newoption = (relopt_enum *) allocate_reloption(kinds, RELOPT_TYPE_ENUM,
+												   name, desc, lockmode);
+	newoption->members = members;
+	newoption->default_val = default_val;
+	newoption->detailmsg = detailmsg;
 
 	add_reloption((relopt_gen *) newoption);
 }
@@ -729,7 +806,7 @@ add_real_reloption(bits32 kinds, const char *name, const char *desc, double defa
  */
 void
 add_string_reloption(bits32 kinds, const char *name, const char *desc, const char *default_val,
-					 validate_string_relopt validator)
+					 validate_string_relopt validator, LOCKMODE lockmode)
 {
 	relopt_string *newoption;
 
@@ -738,7 +815,7 @@ add_string_reloption(bits32 kinds, const char *name, const char *desc, const cha
 		(validator) (default_val);
 
 	newoption = (relopt_string *) allocate_reloption(kinds, RELOPT_TYPE_STRING,
-													 name, desc);
+													 name, desc, lockmode);
 	newoption->validate_cb = validator;
 	if (default_val)
 	{
@@ -1234,6 +1311,37 @@ parse_one_reloption(relopt_value *option, char *text_str, int text_len,
 									   optreal->min, optreal->max)));
 			}
 			break;
+		case RELOPT_TYPE_ENUM:
+			{
+				relopt_enum *optenum = (relopt_enum *) option->gen;
+				relopt_enum_elt_def *elt;
+
+				parsed = false;
+				for (elt = optenum->members; elt->string_val; elt++)
+				{
+					if (pg_strcasecmp(value, elt->string_val) == 0)
+					{
+						option->values.enum_val = elt->symbol_val;
+						parsed = true;
+						break;
+					}
+				}
+				if (validate && !parsed)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("invalid value for enum option \"%s\": %s",
+									option->gen->name, value),
+							 optenum->detailmsg ?
+							 errdetail_internal("%s", _(optenum->detailmsg)) : 0));
+
+				/*
+				 * If value is not among the allowed string values, but we are
+				 * not asked to validate, just use the default numeric value.
+				 */
+				if (!parsed)
+					option->values.enum_val = optenum->default_val;
+			}
+			break;
 		case RELOPT_TYPE_STRING:
 			{
 				relopt_string *optstring = (relopt_string *) option->gen;
@@ -1326,6 +1434,11 @@ fillRelOptions(void *rdopts, Size basesize,
 						*(double *) itempos = options[i].isset ?
 							options[i].values.real_val :
 							((relopt_real *) options[i].gen)->default_val;
+						break;
+					case RELOPT_TYPE_ENUM:
+						*(int *) itempos = options[i].isset ?
+							options[i].values.enum_val :
+							((relopt_enum *) options[i].gen)->default_val;
 						break;
 					case RELOPT_TYPE_STRING:
 						optstring = (relopt_string *) options[i].gen;
@@ -1443,8 +1556,8 @@ view_reloptions(Datum reloptions, bool validate)
 	static const relopt_parse_elt tab[] = {
 		{"security_barrier", RELOPT_TYPE_BOOL,
 		offsetof(ViewOptions, security_barrier)},
-		{"check_option", RELOPT_TYPE_STRING,
-		offsetof(ViewOptions, check_option_offset)}
+		{"check_option", RELOPT_TYPE_ENUM,
+		offsetof(ViewOptions, check_option)}
 	};
 
 	options = parseRelOptions(reloptions, validate, RELOPT_KIND_VIEW, &numoptions);
