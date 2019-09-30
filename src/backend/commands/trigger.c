@@ -4949,7 +4949,11 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		if (ts)
 		{
 			if (table->prolonged && afterTriggers.query_depth > 0)
+			{
+				MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
 				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+				MemoryContextSwitchTo(oldcxt);
+			}
 			else
 				tuplestore_end(ts);
 		}
@@ -4958,7 +4962,11 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		if (ts)
 		{
 			if (table->prolonged && afterTriggers.query_depth > 0)
+			{
+				MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
 				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+				MemoryContextSwitchTo(oldcxt);
+			}
 			else
 				tuplestore_end(ts);
 		}
@@ -4977,7 +4985,8 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		foreach(lc, afterTriggers.prolonged_tuplestores)
 		{
 			ts = (Tuplestorestate *) lfirst(lc);
-			tuplestore_end(ts);
+			if (ts)
+				tuplestore_end(ts);
 		}
 		afterTriggers.prolonged_tuplestores = NIL;
 	}
