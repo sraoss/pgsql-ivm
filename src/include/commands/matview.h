@@ -32,6 +32,8 @@ extern DestReceiver *CreateTransientRelDestReceiver(Oid oid);
 
 extern bool MatViewIncrementalMaintenanceIsEnabled(void);
 
+extern Datum IVM_immediate_before(PG_FUNCTION_ARGS);
 extern Datum IVM_immediate_maintenance(PG_FUNCTION_ARGS);
+extern void AtAbort_IVM(void);
 
 #endif							/* MATVIEW_H */

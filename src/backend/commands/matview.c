@@ -166,7 +166,8 @@ static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query);
 static void truncate_view_delta(Oid delta_oid);
-static void clean_up_immediate_maintenance(MV_TriggerHashEntry *entry, Oid tempOid_old, Oid tempOid_new);
+static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
+static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
 
 static void mv_InitHashTables(void);
 static SPIPlanPtr mv_FetchPreparedPlan(MV_QueryKey *key);
@@ -1334,7 +1335,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	SetUserIdAndSecContext(save_userid, save_sec_context);
 
 	/* Clean up hash entry and drop temporary tables */
-	clean_up_immediate_maintenance(entry, OIDDelta_old, OIDDelta_new);
+	clean_up_IVM_hash_entry(entry);
+	clean_up_IVM_temptable(OIDDelta_old, OIDDelta_new);
 
 	return PointerGetDatum(NULL);
 }
@@ -2537,13 +2539,24 @@ truncate_view_delta(Oid delta_oid)
 	table_close(rel, NoLock);
 }
 
+void
+AtAbort_IVM()
+{
+	HASH_SEQ_STATUS seq;
+	MV_TriggerHashEntry *entry;
+
+	if (mv_trigger_info)
+	{
+		hash_seq_init(&seq, mv_trigger_info);
+		while ((entry = hash_seq_search(&seq)) != NULL)
+			clean_up_IVM_hash_entry(entry);
+	}
+}
+
 static void
-clean_up_immediate_maintenance(MV_TriggerHashEntry *entry, Oid tempOid_old, Oid tempOid_new)
+clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry)
 {
 	bool found;
-	StringInfoData querybuf;
-	Relation tempRel_old, tempRel_new;
-	char *tempname_old = NULL, *tempname_new = NULL;
 	ListCell *lc;
 
 	foreach(lc, entry->tables)
@@ -2556,6 +2569,14 @@ clean_up_immediate_maintenance(MV_TriggerHashEntry *entry, Oid tempOid_old, Oid 
 	list_free(entry->tables);
 
 	hash_search(mv_trigger_info, (void *) &entry->matview_id, HASH_REMOVE, &found);
+}
+
+static void
+clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
+{
+	StringInfoData querybuf;
+	Relation tempRel_old, tempRel_new;
+	char *tempname_old = NULL, *tempname_new = NULL;
 
 	if (OidIsValid(tempOid_new))
 	{
