@@ -48,6 +48,8 @@
 
 #include "utils/regproc.h"
 #include "nodes/makefuncs.h"
+#include "parser/analyze.h"
+#include "parser/parser.h"
 #include "parser/parse_clause.h"
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
@@ -86,7 +88,37 @@ typedef struct MV_QueryHashEntry
 	SPIPlanPtr	plan;
 } MV_QueryHashEntry;
 
+/*
+ * MV_TriggerHashEntry
+ */
+typedef struct MV_TriggerHashEntry
+{
+	Oid	matview_id;
+	int	before_trig_count;
+	int	after_trig_count;
+	TransactionId	xid;
+	CommandId	cid;
+	List *tables;
+	bool	has_old;
+	bool	has_new;
+} MV_TriggerHashEntry;
+
+/*
+ * MV_TiggerTable
+ */
+typedef struct MV_TriggerTable
+{
+	Oid	table_id;
+	List *old_tuplestores;
+	List *new_tuplestores;
+	RangeTblEntry *original_rte;
+	List *old_rtes;
+	List *new_rtes;
+	List *rte_indexes;
+} MV_TriggerTable;
+
 static HTAB *mv_query_cache = NULL;
+static HTAB *mv_trigger_info = NULL;
 
 typedef struct
 {
@@ -125,8 +157,17 @@ static void CloseMatViewIncrementalMaintenance(void);
 static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
 static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
 								  char* count_col, const char *castType);
-static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
-			Query *query, Oid relowner, int save_sec_context);
+static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate);
+static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
+static void calc_delta(MV_TriggerTable *table, int index, Query *query,
+						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
+static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
+static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
+static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
+static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query);
+static void truncate_view_delta(Oid delta_oid);
+static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
+static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
 
 static void mv_InitHashTables(void);
 static SPIPlanPtr mv_FetchPreparedPlan(MV_QueryKey *key);
@@ -1007,45 +1048,15 @@ CloseMatViewIncrementalMaintenance(void)
  */
 
 Datum
-IVM_immediate_maintenance(PG_FUNCTION_ARGS)
+IVM_immediate_before(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
-	Relation	rel;
-	Oid relid;
-	Oid matviewOid;
-	Query	   *query, *old_delta_qry, *new_delta_qry;
-	char*		matviewname = trigdata->tg_trigger->tgargs[0];
-	List	   *names;
-	Relation matviewRel;
-	int old_depth = matview_maintenance_depth;
+	char		*matviewname = trigdata->tg_trigger->tgargs[0];
+	List	*names = stringToQualifiedNameList(matviewname);
+	Oid	matviewOid;
 
-	Oid			tableSpace;
-	Oid			relowner;
-	Oid			OIDDelta_new = InvalidOid;
-	Oid			OIDDelta_old = InvalidOid;
-	DestReceiver *dest_new = NULL, *dest_old = NULL;
-	char		relpersistence;
-	Oid			save_userid;
-	int			save_sec_context;
-	int			save_nestlevel;
-
-	ParseState *pstate;
-	QueryEnvironment *queryEnv = create_queryEnv();
-
-	Const	*dmy_arg = makeConst(INT4OID,
-								 -1,
-								 InvalidOid,
-								 sizeof(int32),
-								 Int32GetDatum(1),
-								 false,
-								 true); /* pass by value */
-
-	/* Create a dummy ParseState for addRangeTableEntryForENR */
-	pstate = make_parsestate(NULL);
-	pstate->p_queryEnv = queryEnv;
-	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
-
-	names = stringToQualifiedNameList(matviewname);
+	MV_TriggerHashEntry *entry;
+	bool	found;
 
 	/*
 	 * Wait for concurrent transactions which update this materialized view at READ COMMITED.
@@ -1058,7 +1069,167 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	else
 		matviewOid = RangeVarGetRelidExtended(makeRangeVarFromNameList(names), ExclusiveLock, RVR_MISSING_OK | RVR_NOWAIT, NULL, NULL);
 
+	/*
+	 * On the first call initialize the hashtable
+	 */
+	if (!mv_query_cache)
+		mv_InitHashTables();
+
+	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
+											  (void *) &matviewOid,
+											  HASH_ENTER, &found);
+
+	/* On the first BEFORE to update the view, initialize trigger data */
+	if (!found)
+	{
+		Snapshot snapshot = GetActiveSnapshot();
+
+		entry->matview_id = matviewOid;
+		entry->before_trig_count = 0;
+		entry->after_trig_count = 0;
+		entry->xid = GetCurrentTransactionId();
+		entry->cid = snapshot->curcid;
+		entry->tables = NIL;
+		entry->has_old = false;
+		entry->has_new = false;
+
+	}
+
+	entry->before_trig_count++;
+
+	return PointerGetDatum(NULL);
+}
+
+Datum
+IVM_immediate_maintenance(PG_FUNCTION_ARGS)
+{
+	TriggerData *trigdata = (TriggerData *) fcinfo->context;
+	Relation	rel;
+	Oid relid;
+	Oid matviewOid;
+	Query	   *query, *rewritten;
+	char*		matviewname = trigdata->tg_trigger->tgargs[0];
+	List	   *names;
+	Relation matviewRel;
+	int old_depth = matview_maintenance_depth;
+
+	Oid			tableSpace;
+	Oid			relowner;
+	Oid			OIDDelta_new = InvalidOid;
+	Oid			OIDDelta_old = InvalidOid;
+	DestReceiver *dest_new = NULL, *dest_old = NULL;
+	Oid			save_userid;
+	int			save_sec_context;
+	int			save_nestlevel;
+
+	MV_TriggerHashEntry *entry;
+	MV_TriggerTable	*table;
+	bool	found;
+	ListCell   *lc;
+	MemoryContext oldcxt;
+
+
+	QueryEnvironment *queryEnv = create_queryEnv();
+	ParseState *pstate;
+
+	/* Create a ParseState for rewriting the view definition query */
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	rel = trigdata->tg_relation;
+	relid = rel->rd_id;
+
+	names = stringToQualifiedNameList(matviewname);
+	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), NoLock, true);
+
+
+	/*
+	 * On the first call initialize the hashtable
+	 */
+	if (!mv_query_cache)
+		mv_InitHashTables();
+
+	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
+											  (void *) &matviewOid,
+											  HASH_FIND, &found);
+
+	Assert (entry != NULL);
+
+	entry->after_trig_count++;
+
+	found = false;
+	foreach(lc, entry->tables)
+	{
+		table = (MV_TriggerTable *) lfirst(lc);
+		if (table->table_id == relid)
+		{
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+	{
+		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+
+		table = (MV_TriggerTable *) palloc0(sizeof(MV_TriggerTable));
+		table->table_id = relid;
+		table->old_tuplestores = NIL;
+		table->new_tuplestores = NIL;
+		table->old_rtes = NIL;
+		table->new_rtes = NIL;
+		table->rte_indexes = NIL;
+		entry->tables = lappend(entry->tables, table);
+
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	if (trigdata->tg_oldtable)
+	{
+		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		table->old_tuplestores = lappend(table->old_tuplestores, trigdata->tg_oldtable);
+		entry->has_old = true;
+		MemoryContextSwitchTo(oldcxt);
+	}
+	if (trigdata->tg_newtable)
+	{
+		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		table->new_tuplestores = lappend(table->new_tuplestores, trigdata->tg_newtable);
+		entry->has_new = true;
+		MemoryContextSwitchTo(oldcxt);
+	}
+	if (entry->has_new || entry->has_old)
+	{
+		CmdType cmd;
+
+		if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
+			cmd = CMD_INSERT;
+		else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
+			cmd = CMD_DELETE;
+		else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+			cmd = CMD_UPDATE;
+		else
+			elog(ERROR,"unsupported trigger type");
+
+		SetTransitionTablePreserved(relid, cmd);
+	}
+
+
+	/* If this is not the last AFTER trigger call, immediately exit. */
+	Assert (entry->before_trig_count >= entry->after_trig_count);
+	if (entry->before_trig_count != entry->after_trig_count)
+		return PointerGetDatum(NULL);
+
+
+	/* If this is the last AFTER trigger call, update the view. */
+
 	matviewRel = table_open(matviewOid, NoLock);
+
+	/* get view query*/
+	query = get_matview_query(matviewRel);
+
+	/* Make sure it is a materialized view. */
+	Assert(matviewRel->rd_rel->relkind == RELKIND_MATVIEW);
 
 	/*
 	 * Get and push the latast snapshot to see any changes which is commited during waiting in
@@ -1067,278 +1238,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 */
 	PushActiveSnapshot(GetTransactionSnapshot());
 
-	/* Make sure it is a materialized view. */
-	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("\"%s\" is not a materialized view",
-						RelationGetRelationName(matviewRel))));
-
-	rel = trigdata->tg_relation;
-	relid = rel->rd_id;
-
-	/* get view query*/
-	query = get_matview_query(matviewRel);
-
-	new_delta_qry = copyObject(query);
-	old_delta_qry = copyObject(query);
-
-	if (trigdata->tg_newtable)
-	{
-		RangeTblEntry *rte;
-		ListCell   *lc;
-
-		TargetEntry *tle;
-		Node *node;
-		FuncCall *fn;
-
-		EphemeralNamedRelation enr =
-			palloc(sizeof(EphemeralNamedRelationData));
-
-		enr->md.name = trigdata->tg_trigger->tgnewtable;
-		enr->md.reliddesc = trigdata->tg_relation->rd_id;
-		enr->md.tupdesc = NULL;
-		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
-		enr->md.enrtuples = tuplestore_tuple_count(trigdata->tg_newtable);
-		enr->reldata = trigdata->tg_newtable;
-		register_ENR(queryEnv, enr);
-
-		rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
-		new_delta_qry->rtable = lappend(new_delta_qry->rtable, rte);
-
-		foreach(lc, new_delta_qry->rtable)
-		{
-			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
-			if (r->relid == relid)
-			{
-				lfirst(lc) = rte;
-				break;
-			}
-		}
-
-		if (query->hasAggs)
-		{
-			ListCell *lc;
-			List *agg_counts = NIL;
-			AttrNumber next_resno = list_length(query->targetList) + 1;
-			Node *node;
-
-			foreach(lc, query->targetList)
-			{
-				TargetEntry *tle = (TargetEntry *) lfirst(lc);
-				TargetEntry *tle_count;
-
-				if (IsA(tle->expr, Aggref))
-				{
-					Aggref *aggref = (Aggref *) tle->expr;
-					const char *aggname = get_func_name(aggref->aggfnoid);
-
-					/*
-					 * For aggregate functions except to count, add count func with the same arg parameters.
-					 * Also, add sum func for agv.
-					 *
-					 * XXX: need some generalization
-					 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-					 * of adding new duplicated one.
-					 */
-					if (strcmp(aggname, "count") != 0)
-					{
-						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-
-						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-						((Aggref *)node)->args = aggref->args;
-
-						tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												NULL,
-												false);
-						agg_counts = lappend(agg_counts, tle_count);
-						next_resno++;
-					}
-					if (strcmp(aggname, "avg") == 0)
-					{
-						List *dmy_args = NIL;
-						ListCell *lc;
-						foreach(lc, aggref->aggargtypes)
-						{
-							Oid		typeid = lfirst_oid(lc);
-							Type 	type = typeidType(typeid);
-
-							Const *con = makeConst(typeid,
-												   -1,
-												   typeTypeCollation(type),
-												   typeLen(type),
-												   (Datum) 0,
-												   true,
-												   typeByVal(type));
-							dmy_args = lappend(dmy_args, con);
-							ReleaseSysCache(type);
-
-						}
-						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
-
-						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-						((Aggref *)node)->args = aggref->args;
-
-						tle_count = makeTargetEntry((Expr *) node,
-													next_resno,
-													NULL,
-													false);
-						agg_counts = lappend(agg_counts, tle_count);
-						next_resno++;
-					}
-				}
-
-			}
-			new_delta_qry->targetList = list_concat(new_delta_qry->targetList, agg_counts);
-		}
-
-		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-		fn->agg_star = true;
-		if (!new_delta_qry->groupClause && !new_delta_qry->hasAggs)
-			new_delta_qry->groupClause = transformDistinctClause(NULL, &new_delta_qry->targetList, new_delta_qry->sortClause, false);
-
-		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-		tle = makeTargetEntry((Expr *) node,
-								  list_length(new_delta_qry->targetList) + 1,
-								  NULL,
-								  false);
-		new_delta_qry->targetList = lappend(new_delta_qry->targetList, tle);
-		new_delta_qry->hasAggs = true;
-	}
-
-	if (trigdata->tg_oldtable)
-	{
-		RangeTblEntry *rte;
-		ListCell   *lc;
-
-		TargetEntry *tle;
-		Node *node;
-		FuncCall *fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-
-		EphemeralNamedRelation enr =
-			palloc(sizeof(EphemeralNamedRelationData));
-
-		enr->md.name = trigdata->tg_trigger->tgoldtable;
-		enr->md.reliddesc = trigdata->tg_relation->rd_id;
-		enr->md.tupdesc = NULL;
-		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
-		enr->md.enrtuples = tuplestore_tuple_count(trigdata->tg_oldtable);
-		enr->reldata = trigdata->tg_oldtable;
-		register_ENR(queryEnv, enr);
-
-		rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
-		old_delta_qry->rtable = lappend(old_delta_qry->rtable, rte);
-
-		foreach(lc, old_delta_qry->rtable)
-		{
-			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
-			if (r->relid == relid)
-			{
-				lfirst(lc) = rte;
-				break;
-			}
-		}
-
-		if (query->hasAggs)
-		{
-			ListCell *lc;
-			List *agg_counts = NIL;
-			AttrNumber next_resno = list_length(query->targetList) + 1;
-			Node *node;
-
-			foreach(lc, query->targetList)
-			{
-				TargetEntry *tle = (TargetEntry *) lfirst(lc);
-				TargetEntry *tle_count;
-
-				if (IsA(tle->expr, Aggref))
-				{
-					Aggref *aggref = (Aggref *) tle->expr;
-					const char *aggname = get_func_name(aggref->aggfnoid);
-
-					/*
-					 * For aggregate functions except to count, add count func with the same arg parameters.
-					 * Also, add sum func for agv.
-					 *
-					 * XXX: need some generalization
-					 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-					 * of adding new duplicated one.
-					 */
-
-					if (strcmp(aggname, "count") != 0)
-					{
-						fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-
-						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-						((Aggref *)node)->args = aggref->args;
-
-						tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												NULL,
-												false);
-						agg_counts = lappend(agg_counts, tle_count);
-						next_resno++;
-					}
-					if (strcmp(aggname, "avg") == 0)
-					{
-						List *dmy_args = NIL;
-						ListCell *lc;
-						foreach(lc, aggref->aggargtypes)
-						{
-							Oid		typeid = lfirst_oid(lc);
-							Type 	type = typeidType(typeid);
-
-							Const *con = makeConst(typeid,
-												   -1,
-												   typeTypeCollation(type),
-												   typeLen(type),
-												   (Datum) 0,
-												   true,
-												   typeByVal(type));
-							dmy_args = lappend(dmy_args, con);
-							ReleaseSysCache(type);
-
-						}
-						fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
-
-						/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-						node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-						((Aggref *)node)->args = aggref->args;
-
-						tle_count = makeTargetEntry((Expr *) node,
-													next_resno,
-													NULL,
-													false);
-						agg_counts = lappend(agg_counts, tle_count);
-						next_resno++;
-					}
-				}
-
-			}
-			old_delta_qry->targetList = list_concat(old_delta_qry->targetList, agg_counts);
-		}
-
-		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-		fn->agg_star = true;
-
-		if (!old_delta_qry->groupClause && !old_delta_qry->hasAggs)
-			old_delta_qry->groupClause = transformDistinctClause(NULL, &old_delta_qry->targetList, old_delta_qry->sortClause, false);
-
-		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-		tle = makeTargetEntry((Expr *) node,
-								  list_length(old_delta_qry->targetList) + 1,
-								  NULL,
-								  false);
-		old_delta_qry->targetList = lappend(old_delta_qry->targetList, tle);
-		old_delta_qry->hasAggs = true;
-	}
-
-
 	/*
 	 * Check for active uses of the relation in the current transaction, such
 	 * as open scans.
@@ -1346,7 +1245,12 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 * NB: We count on this to protect us against problems with refreshing the
 	 * data using TABLE_INSERT_FROZEN.
 	 */
+	 // XXX: necesarry?
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
+
+	/* rewrite query */
+	rewritten = rewrite_query_for_preupdate_state(query, entry->tables, entry->xid, entry->cid, pstate);
+	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
 
 	relowner = matviewRel->rd_rel->relowner;
 
@@ -1361,31 +1265,25 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
 	save_nestlevel = NewGUCNestLevel();
 
+	/* Create temporary tables to store view deltas */
 	tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP, false);
-	relpersistence = RELPERSISTENCE_TEMP;
-
-	/*
-	 * Create the transient table that will receive the regenerated data. Lock
-	 * it against access by any other process until commit (by which time it
-	 * will be gone).
-	 */
-	if (trigdata->tg_newtable)
+	if (entry->has_old)
 	{
-		OIDDelta_new = make_new_heap(matviewOid, tableSpace, relpersistence,
+		OIDDelta_old = make_new_heap(matviewOid, tableSpace, RELPERSISTENCE_TEMP,
 									 ExclusiveLock);
-		LockRelationOid(OIDDelta_new, AccessExclusiveLock);
-		dest_new = CreateTransientRelDestReceiver(OIDDelta_new);
-	}
-	if (trigdata->tg_oldtable)
-	{
-		if (trigdata->tg_newtable)
-			OIDDelta_old = make_new_heap(OIDDelta_new, tableSpace, relpersistence,
-										 ExclusiveLock);
-		else
-			OIDDelta_old = make_new_heap(matviewOid, tableSpace, relpersistence,
-										 ExclusiveLock);
 		LockRelationOid(OIDDelta_old, AccessExclusiveLock);
 		dest_old = CreateTransientRelDestReceiver(OIDDelta_old);
+	}
+	if (entry->has_new)
+	{
+		if (entry->has_old)
+			OIDDelta_new = make_new_heap(OIDDelta_old, tableSpace, RELPERSISTENCE_TEMP,
+										 ExclusiveLock);
+		else
+			OIDDelta_new = make_new_heap(matviewOid, tableSpace, RELPERSISTENCE_TEMP,
+										 ExclusiveLock);
+		LockRelationOid(OIDDelta_new, AccessExclusiveLock);
+		dest_new = CreateTransientRelDestReceiver(OIDDelta_new);
 	}
 
 	/*
@@ -1394,23 +1292,36 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
-	/* Generate the data. */
-	if (trigdata->tg_newtable)
-		refresh_matview_datafill(dest_new, new_delta_qry, queryEnv, NULL);
-	if (trigdata->tg_oldtable)
-		refresh_matview_datafill(dest_old, old_delta_qry, queryEnv, NULL);
+	/* for all modified tables */
+	foreach(lc, entry->tables)
+	{
+		ListCell *lc2;
 
-	PG_TRY();
-	{
-		apply_delta(matviewOid, OIDDelta_new, OIDDelta_old,
-					query, relowner, save_sec_context);
+		table = (MV_TriggerTable *) lfirst(lc);
+
+		/* loop for self-join */
+		foreach(lc2, table->rte_indexes)
+		{
+			int index = lfirst_int(lc2);
+
+			calc_delta(table, index, rewritten, dest_old, dest_new, queryEnv);
+
+			PG_TRY();
+			{
+				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query);
+			}
+			PG_CATCH();
+			{
+				matview_maintenance_depth = old_depth;
+				PG_RE_THROW();
+			}
+			PG_END_TRY();
+
+			/* truncate view delta tables */
+			truncate_view_delta(OIDDelta_old);
+			truncate_view_delta(OIDDelta_new);
+		}
 	}
-	PG_CATCH();
-	{
-		matview_maintenance_depth = old_depth;
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
 
 	/* Pop the original snapshot. */
 	PopActiveSnapshot();
@@ -1422,6 +1333,10 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	/* Restore userid and security context */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
+
+	/* Clean up hash entry and drop temporary tables */
+	clean_up_IVM_hash_entry(entry);
+	clean_up_IVM_temptable(OIDDelta_old, OIDDelta_new);
 
 	return PointerGetDatum(NULL);
 }
@@ -1500,8 +1415,362 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 
 
 static void
-apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
-			Query *query, Oid relowner, int save_sec_context)
+calc_delta(MV_TriggerTable *table, int index, Query *query,
+			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
+{
+	ListCell *lc;
+	RangeTblEntry *rte;
+
+	lc = list_nth_cell(query->rtable, index);
+	rte = (RangeTblEntry *) lfirst(lc);
+
+	/* Generate old delta */
+	if (list_length(table->old_rtes) > 0)
+	{
+		lfirst(lc) = union_ENRs(rte, table->table_id, table->old_rtes, "old", queryEnv);
+		refresh_matview_datafill(dest_old, query, queryEnv, NULL);
+	}
+
+	/* Generate new delta */
+	if (list_length(table->new_rtes) > 0)
+	{
+		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
+		refresh_matview_datafill(dest_new, query, queryEnv, NULL);
+	}
+
+	/* Retore the original RTE */
+	lfirst(lc) = table->original_rte;
+}
+
+
+static RangeTblEntry*
+union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv)
+{
+	StringInfoData str;
+	ParseState	*pstate;
+	RawStmt *raw;
+	Query *sub;
+	int	i;
+
+	/* Create a ParseState for rewriting the view definition query */
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	initStringInfo(&str);
+
+	for (i = 0; i < list_length(enr_rtes); i++)
+	{
+		if (i > 0)
+			appendStringInfo(&str, " UNION ALL ");
+		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name(prefix, relid, i));
+	}
+
+	raw = (RawStmt*)linitial(raw_parser(str.data));
+	sub = transformStmt(pstate, raw->stmt);
+
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = sub;
+	rte->security_barrier = false;
+	/* Clear fields that should not be set in a subquery RTE */
+	rte->relid = InvalidOid;
+	rte->relkind = 0;
+	rte->rellockmode = 0;
+	rte->tablesample = NULL;
+	rte->inh = false;			/* must not be set for a subquery */
+
+	rte->requiredPerms = 0;		/* no permission check on subquery itself */
+	rte->checkAsUser = InvalidOid;
+	rte->selectedCols = NULL;
+	rte->insertedCols = NULL;
+	rte->updatedCols = NULL;
+	rte->extraUpdatedCols = NULL;
+
+	return rte;
+}
+
+static char*
+make_delta_enr_name(const char *prefix, Oid relid, int count)
+{
+	char buf[NAMEDATALEN];
+	char *name;
+
+	snprintf(buf, NAMEDATALEN, "%s_%u_%u", prefix, relid, count);
+	name = pstrdup(buf);
+
+	return name;
+}
+
+static void
+register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
+{
+	QueryEnvironment *queryEnv = pstate->p_queryEnv;
+	ListCell *lc;
+	RangeTblEntry	*rte;
+
+	foreach(lc, tables)
+	{
+		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
+		ListCell *lc2;
+		int count;
+
+		count = 0;
+		foreach(lc2, table->old_tuplestores)
+		{
+			Tuplestorestate *oldtable = (Tuplestorestate *) lfirst(lc2);
+			EphemeralNamedRelation enr =
+				palloc(sizeof(EphemeralNamedRelationData));
+
+			enr->md.name = make_delta_enr_name("old", table->table_id, count);
+			enr->md.reliddesc = table->table_id;
+			enr->md.tupdesc = NULL;
+			enr->md.enrtype = ENR_NAMED_TUPLESTORE;
+			enr->md.enrtuples = tuplestore_tuple_count(oldtable);
+			enr->reldata = oldtable;
+			register_ENR(queryEnv, enr);
+
+			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			query->rtable = lappend(query->rtable, rte);
+			table->old_rtes = lappend(table->old_rtes, rte);
+
+			count++;
+		}
+
+		count = 0;
+		foreach(lc2, table->new_tuplestores)
+		{
+			Tuplestorestate *newtable = (Tuplestorestate *) lfirst(lc2);
+			EphemeralNamedRelation enr =
+				palloc(sizeof(EphemeralNamedRelationData));
+
+			enr->md.name = make_delta_enr_name("new", table->table_id, count);
+			enr->md.reliddesc = table->table_id;
+			enr->md.tupdesc = NULL;
+			enr->md.enrtype = ENR_NAMED_TUPLESTORE;
+			enr->md.enrtuples = tuplestore_tuple_count(newtable);
+			enr->reldata = newtable;
+			register_ENR(queryEnv, enr);
+
+			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			query->rtable = lappend(query->rtable, rte);
+			table->new_rtes = lappend(table->new_rtes, rte);
+
+			count++;
+		}
+	}
+}
+
+static RangeTblEntry*
+get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, CommandId cid, QueryEnvironment *queryEnv)
+{
+	StringInfoData str;
+	RawStmt *raw;
+	Query *sub;
+	Relation rel;
+	ParseState *pstate;
+	char *relname;
+	int i;
+
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	/*
+	 * We can use NoLock here since AcquireRewriteLocks should
+	 * have locked the rel already.
+	 */
+	rel = table_open(table->table_id, NoLock);
+	relname = quote_qualified_identifier(
+					get_namespace_name(RelationGetNamespace(rel)),
+									   RelationGetRelationName(rel));
+	table_close(rel, NoLock);
+
+	initStringInfo(&str);
+	appendStringInfo(&str,
+		"SELECT t.* FROM %s t"
+		" WHERE (age(t.xmin) - age(%u::text::xid) > 0) OR"
+		" (t.xmin = %u AND t.cmin::text::int < %u)",
+			relname, xid, xid, cid);
+
+	for (i=0; i<list_length(table->old_tuplestores); i++)
+	{
+		appendStringInfo(&str, " UNION ALL ");
+		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name("old", table->table_id, i));
+	}
+
+	raw = (RawStmt*)linitial(raw_parser(str.data));
+	sub = transformStmt(pstate, raw->stmt);
+
+	table->original_rte = copyObject(rte);
+
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = sub;
+	rte->security_barrier = false;
+	/* Clear fields that should not be set in a subquery RTE */
+	rte->relid = InvalidOid;
+	rte->relkind = 0;
+	rte->rellockmode = 0;
+	rte->tablesample = NULL;
+	rte->inh = false;			/* must not be set for a subquery */
+
+	rte->requiredPerms = 0;		/* no permission check on subquery itself */
+	rte->checkAsUser = InvalidOid;
+	rte->selectedCols = NULL;
+	rte->insertedCols = NULL;
+	rte->updatedCols = NULL;
+	rte->extraUpdatedCols = NULL;
+
+	return rte;
+}
+
+static Query*
+rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate)
+{
+	Query *rewritten = copyObject(query);
+	ListCell *lc;
+	int num_rte = list_length(query->rtable);
+	int i;
+
+	register_delta_ENRs(pstate, rewritten, tables);
+
+	// XXX: Is necessary? Is this right timing?
+	AcquireRewriteLocks(rewritten, true, false);
+
+	foreach(lc, tables)
+	{
+		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
+		ListCell *lc2;
+
+		i = 0;
+		foreach(lc2, rewritten->rtable)
+		{
+			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc2);
+
+			if (r->relid == table->table_id)
+			{
+				lfirst(lc2) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
+				table->rte_indexes = lappend_int(table->rte_indexes, i);
+			}
+
+			if (++i >= num_rte)
+				break;
+		}
+	}
+
+	return rewritten;
+}
+
+static Query *
+rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
+{
+	TargetEntry *tle_count;
+	FuncCall *fn;
+	Node *node;
+	Const	*dmy_arg = makeConst(INT4OID,
+								 -1,
+								 InvalidOid,
+								 sizeof(int32),
+								 Int32GetDatum(1),
+								 false,
+								 true);
+
+	if (query->hasAggs)
+	{
+		ListCell *lc;
+		List *agg_counts = NIL;
+		AttrNumber next_resno = list_length(query->targetList) + 1;
+
+		foreach(lc, query->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+			if (IsA(tle->expr, Aggref))
+			{
+				Aggref *aggref = (Aggref *) tle->expr;
+				const char *aggname = get_func_name(aggref->aggfnoid);
+
+				/*
+				 * For aggregate functions except to count, add count func with the same arg parameters.
+				 * Also, add sum func for agv.
+				 *
+				 * XXX: need some generalization
+				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+				 * of adding new duplicated one.
+				 */
+				if (strcmp(aggname, "count") != 0)
+				{
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+											next_resno,
+											NULL,
+											false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+				if (strcmp(aggname, "avg") == 0)
+				{
+					List *dmy_args = NIL;
+					ListCell *lc;
+					foreach(lc, aggref->aggargtypes)
+					{
+						Oid		typeid = lfirst_oid(lc);
+						Type	type = typeidType(typeid);
+
+						Const *con = makeConst(typeid,
+											   -1,
+											   typeTypeCollation(type),
+											   typeLen(type),
+											   (Datum) 0,
+											   true,
+											   typeByVal(type));
+						dmy_args = lappend(dmy_args, con);
+						ReleaseSysCache(type);
+
+					}
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												NULL,
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+					}
+				}
+
+			}
+			query->targetList = list_concat(query->targetList, agg_counts);
+	}
+
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
+	if (!query->groupClause && !query->hasAggs)
+		query->groupClause = transformDistinctClause(NULL, &query->targetList, query->sortClause, false);
+
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+	tle_count = makeTargetEntry((Expr *) node,
+							  list_length(query->targetList) + 1,
+							  NULL,
+							  false);
+	query->targetList = lappend(query->targetList, tle_count);
+	query->hasAggs = true;
+
+	return query;
+}
+
+
+static void
+apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 {
 	StringInfoData querybuf;
 	StringInfoData mvatts_buf, diffatts_buf;
@@ -1830,9 +2099,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
 
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-
 	OpenMatViewIncrementalMaintenance();
 
 	if (query->hasAggs)
@@ -2007,21 +2273,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old,
 
 	table_close(matviewRel, NoLock);
 
-	/* Clean up temp tables. */
-	if (OidIsValid(tempOid_new))
-	{
-		resetStringInfo(&querybuf);
-		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_new);
-		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
-			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-	}
-	if (OidIsValid(tempOid_old))
-	{
-		resetStringInfo(&querybuf);
-		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_old);
-		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
-			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-	}
 
 	/* Close SPI context. */
 	if (SPI_finish() != SPI_OK_FINISH)
@@ -2038,6 +2289,13 @@ mv_InitHashTables(void)
 	ctl.keysize = sizeof(MV_QueryKey);
 	ctl.entrysize = sizeof(MV_QueryHashEntry);
 	mv_query_cache = hash_create("MV query cache",
+								 MV_INIT_QUERYHASHSIZE,
+								 &ctl, HASH_ELEM | HASH_BLOBS);
+
+	memset(&ctl, 0, sizeof(ctl));
+	ctl.keysize = sizeof(Oid);
+	ctl.entrysize = sizeof(MV_TriggerHashEntry);
+	mv_trigger_info = hash_create("MV trigger info",
 								 MV_INIT_QUERYHASHSIZE,
 								 &ctl, HASH_ELEM | HASH_BLOBS);
 }
@@ -2265,4 +2523,99 @@ get_matview_query(Relation matviewRel)
 	 * has not been scribbled on by the planner.
 	 */
 	return linitial_node(Query, actions);
+}
+
+static void
+truncate_view_delta(Oid delta_oid)
+{
+	Relation	rel;
+
+	if (!OidIsValid(delta_oid))
+		return;
+
+	rel = table_open(delta_oid, NoLock);
+	ExecuteTruncateGuts(list_make1(rel), list_make1_oid(delta_oid), NIL,
+						DROP_RESTRICT, false);
+	table_close(rel, NoLock);
+}
+
+void
+AtAbort_IVM()
+{
+	HASH_SEQ_STATUS seq;
+	MV_TriggerHashEntry *entry;
+
+	if (mv_trigger_info)
+	{
+		hash_seq_init(&seq, mv_trigger_info);
+		while ((entry = hash_seq_search(&seq)) != NULL)
+			clean_up_IVM_hash_entry(entry);
+	}
+}
+
+static void
+clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry)
+{
+	bool found;
+	ListCell *lc;
+
+	foreach(lc, entry->tables)
+	{
+		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
+
+		list_free(table->old_tuplestores);
+		list_free(table->new_tuplestores);
+	}
+	list_free(entry->tables);
+
+	hash_search(mv_trigger_info, (void *) &entry->matview_id, HASH_REMOVE, &found);
+}
+
+static void
+clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
+{
+	StringInfoData querybuf;
+	Relation tempRel_old, tempRel_new;
+	char *tempname_old = NULL, *tempname_new = NULL;
+
+	if (OidIsValid(tempOid_new))
+	{
+		tempRel_new = table_open(tempOid_new, NoLock);
+		tempname_new = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_new)),
+												  RelationGetRelationName(tempRel_new));
+		table_close(tempRel_new, NoLock);
+	}
+	if (OidIsValid(tempOid_old))
+	{
+		tempRel_old = table_open(tempOid_old, NoLock);
+		tempname_old = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(tempRel_old)),
+												  RelationGetRelationName(tempRel_old));
+		table_close(tempRel_old, NoLock);
+	}
+
+	initStringInfo(&querybuf);
+
+	/* Open SPI context. */
+	if (SPI_connect() != SPI_OK_CONNECT)
+		elog(ERROR, "SPI_connect failed");
+
+	/* Clean up temp tables. */
+	if (OidIsValid(tempOid_old))
+	{
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_old);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+	if (OidIsValid(tempOid_new))
+	{
+		resetStringInfo(&querybuf);
+		appendStringInfo(&querybuf, "DROP TABLE %s", tempname_new);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_UTILITY)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
+
+	/* Close SPI context. */
+	if (SPI_finish() != SPI_OK_FINISH)
+		elog(ERROR, "SPI_finish failed");
 }

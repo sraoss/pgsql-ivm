@@ -10710,8 +10710,12 @@
   proargtypes => 'regclass', prosrc => 'pg_partition_root' },
 
 # IVM
-{ oid => '786', descr => 'ivm trigger',
+{ oid => '786', descr => 'ivm trigger (before)',
+  proname => 'IVM_immediate_before', provolatile => 'v', prorettype => 'trigger',
+  proargtypes => '', prosrc => 'IVM_immediate_before' },
+{ oid => '787', descr => 'ivm trigger (after)',
   proname => 'IVM_immediate_maintenance', provolatile => 'v', prorettype => 'trigger',
   proargtypes => '', prosrc => 'IVM_immediate_maintenance' },
+
 
 ]
