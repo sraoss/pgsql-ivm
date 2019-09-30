@@ -108,6 +108,59 @@ DELETE FROM mv_base_a WHERE (i,j) IN ((0,0), (7,70));
 SELECT * FROM mv_ivm_min_max;
 ROLLBACK;
 
+-- support self join view and multiple change on the same table
+BEGIN;
+CREATE TABLE t (i int, v int);
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_self(v1, v2) AS
+ SELECT t1.v, t2.v FROM t t1 JOIN t t2 ON t1.i = t2.i;
+SELECT * FROM mv_self ORDER BY v1;
+INSERT INTO t VALUES (4,40);
+DELETE FROM t WHERE i = 1;
+UPDATE t SET v = v*10 WHERE i=2;
+SELECT * FROM mv_self ORDER BY v1;
+WITH
+ ins_t1 AS (INSERT INTO t VALUES (5,50) RETURNING 1),
+ ins_t2 AS (INSERT INTO t VALUES (6,60) RETURNING 1),
+ upd_t AS (UPDATE t SET v = v + 100  RETURNING 1),
+ dlt_t AS (DELETE FROM t WHERE i IN (4,5)  RETURNING 1)
+SELECT NULL;
+SELECT * FROM mv_self ORDER BY v1;
+ROLLBACK;
+
+-- support simultaneous table changes
+BEGIN;
+CREATE TABLE r (i int, v int);
+CREATE TABLE s (i int, v int);
+INSERT INTO r VALUES (1, 10), (2, 20), (3, 30);
+INSERT INTO s VALUES (1, 100), (2, 200), (3, 300);
+CREATE INCREMENTAL MATERIALIZED VIEW mv(v1, v2) AS
+ SELECT r.v, s.v FROM r JOIN s USING(i);
+SELECT * FROM mv ORDER BY v1;
+WITH
+ ins_r AS (INSERT INTO r VALUES (1,11) RETURNING 1),
+ ins_r2 AS (INSERT INTO r VALUES (3,33) RETURNING 1),
+ ins_s AS (INSERT INTO s VALUES (2,222) RETURNING 1),
+ upd_r AS (UPDATE r SET v = v + 1000 WHERE i = 2 RETURNING 1),
+ dlt_s AS (DELETE FROM s WHERE i = 3 RETURNING 1)
+SELECT NULL;
+SELECT * FROM mv ORDER BY v1;
+ROLLBACK;
+
+-- support foreign reference constrains
+BEGIN;
+CREATE TABLE ri1 (i int PRIMARY KEY);
+CREATE TABLE ri2 (i int PRIMARY KEY REFERENCES ri1(i) ON UPDATE CASCADE ON DELETE CASCADE, v int);
+INSERT INTO ri1 VALUES (1),(2),(3);
+INSERT INTO ri2 VALUES (1),(2),(3);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ri(i1, i2) AS
+ SELECT ri1.i, ri2.i FROM ri1 JOIN ri2 USING(i);
+SELECT * FROM mv_ri ORDER BY i1;
+UPDATE ri1 SET i=10 where i=1;
+DELETE FROM ri1 WHERE i=2;
+SELECT * FROM mv_ri ORDER BY i2;
+ROLLBACK;
+
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
