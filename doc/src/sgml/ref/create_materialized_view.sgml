@@ -58,11 +58,11 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
     <term><literal>INCREMENTAL</literal></term>
     <listitem>
      <para>
-      If specified, some triggers and other objects are automatically created
-      so that the rows of the materialized view is immediately updated when
-      base tables of the materialized view are updated. In general, this
-      allows faster update of the materialized view at a price of slower
-      update of the base tables because the triggers will be invoked.
+      If specified, some triggers are automatically created so that the rows
+      of the materialized view are immediately updated when base tables of the
+      materialized view are updated. In general, this allows faster update of
+      the materialized view at a price of slower update of the base tables
+      because the triggers will be invoked.
      </para>
      <para>
       There are restrictions of query definitions allowed to use this
@@ -75,7 +75,7 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
        </listitem>
        <listitem>
         <para>
-         Some of aggregations (count, sum, avg) without HAVING clause.
+         Some of aggregations (count, sum, avg, min, max) without HAVING clause.
         </para>
         </listitem>
       </itemizedlist>
@@ -94,7 +94,7 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
         </listitem>
        <listitem>
         <para>
-         Aggregations other than count, sum or avg.
+         Aggregations other than count, sum, avg, min and max.
         </para>
         </listitem>
        <listitem>
