@@ -58,8 +58,79 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
     <term><literal>INCREMENTAL</literal></term>
     <listitem>
      <para>
-      If specified, a materialized view enables incremental view maintenance.
-      You can replace only the contents of a materialized view, which based rows are changed.
+      If specified, some triggers and other objects are automatically created
+      so that the rows of the materialized view is immediately updated when
+      base tables of the materialized view are updated. In general, this
+      allows faster update of the materialized view at a price of slower
+      update of the base tables because the triggers will be invoked.
+     </para>
+     <para>
+      There are restrictions of query definitions allowed to use this
+      option. Followings are allowed query definitions:
+      <itemizedlist>
+       <listitem>
+        <para>
+         Inner joins (including self-joins).
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         Some of aggregations (count, sum, avg) without HAVING clause.
+        </para>
+        </listitem>
+      </itemizedlist>
+
+      Prohibited queries with this option include followings:
+      <itemizedlist>
+       <listitem>
+        <para>
+         Outer joins.
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         Subqueries.
+        </para>
+        </listitem>
+       <listitem>
+        <para>
+         Aggregations other than count, sum or avg.
+        </para>
+        </listitem>
+       <listitem>
+        <para>
+         Aggregations with HAVING clause.
+        </para>
+        </listitem>
+       <listitem>
+        <para>
+         CTE, WINDOW clause.
+        </para>
+       </listitem>
+      </itemizedlist>
+
+      Other restrictions include:
+      <itemizedlist>
+       <listitem>
+        <para>
+         Incremental materialized views must be based on simple base
+         tables. Views or materialized views are not allowed to create
+         incremental materialized views.
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         When TRUNCATE command is execued on a base table, nothing occurs and
+         this is not applied to the materialized view.
+        </para>
+       </listitem>
+       <listitem>
+        <para>
+         Incremental materialized views are not supported by logical replication.
+        </para>
+        </listitem>
+      </itemizedlist>
+
      </para>
     </listitem>
    </varlistentry>
