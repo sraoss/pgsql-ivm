@@ -164,7 +164,7 @@ static void calc_delta(MV_TriggerTable *table, int index, Query *query,
 static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
 static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
-static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query);
+static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char *count_col);
 static void truncate_view_delta(Oid delta_oid);
 static void clean_up_immediate_maintenance(MV_TriggerHashEntry *entry, Oid tempOid_old, Oid tempOid_new);
 
@@ -1108,6 +1108,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Oid matviewOid;
 	Query	   *query, *rewritten;
 	char*		matviewname = trigdata->tg_trigger->tgargs[0];
+	char*		count_col = trigdata->tg_trigger->tgargs[1];
 	List	   *names;
 	Relation matviewRel;
 	int old_depth = matview_maintenance_depth;
@@ -1307,7 +1308,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 			PG_TRY();
 			{
-				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query);
+				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query,count_col);
 			}
 			PG_CATCH();
 			{
@@ -1768,7 +1769,7 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 
 
 static void
-apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
+apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,char * count_name)
 {
 	StringInfoData querybuf;
 	StringInfoData mvatts_buf, diffatts_buf;
@@ -1818,6 +1819,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 
 	sep = "";
 	sep_agg= "";
+	count_name = "__ivm_count__";
 	i = 0;
 	foreach (lc, query->targetList)
 	{
@@ -1836,6 +1838,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 
 		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", resname));
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
+		/* I want to add exists*/
+		if (query->hasSubLinks && IsA(tle->expr, Var) && !strcmp(rename, "__ivm_exists_count__"))
+		{
+			elog(LOG, "apper __ivm_exists_count__");
+			count_name = "__ivm_exists_count__";
+		}
 
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
@@ -2106,22 +2114,24 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.__ivm_count__, "
+							"  SELECT diff.%s, "
 							"         %s,"
-							"         (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, "
+							"         (diff.%s = mv.%s) AS for_dlt, "
 							"         mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
 							"), updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__,"
+							"  UPDATE %s AS mv SET %s = mv.%s - t.%s,"
 							"                      %s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
 							"   %s"
 							"), dlt AS ("
 							"  DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt "
 							") %s",
+							count_name,
 							diff_aggs_buf.data,
+							count_name, count_name,
 							matviewname, tempname_old, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							matviewname, update_aggs_old.data,
+							matviewname, count_name, count_name, count_name, update_aggs_old.data,
 							returning_buf.data,
 							matviewname,
 							(has_min_or_max && with_group) ? result_buf.data : "SELECT 1"
@@ -2217,12 +2227,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							"  UPDATE %s AS mv SET %s = mv.%s + diff.%s"
 							", %s "
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
-							matviewname, update_aggs_new.data, tempname_new,
+							matviewname, count_name, count_name, count_name, update_aggs_new.data, tempname_new,
 							mv_gkeys_buf.data, diff_gkeys_buf.data, diff_gkeys_buf.data,
 							matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
@@ -2236,13 +2246,14 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
+							"  SELECT diff.%s, (diff.%s = mv.%s) AS for_dlt, mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
 							"), updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
+							"  UPDATE %s AS mv SET %s = mv.%s - t.%s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
 							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
-							matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data, matviewname, matviewname);
+							count_name, count_name, matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data,
+							matviewname, count_name,count_name,count_name, matviewname);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
@@ -2251,11 +2262,11 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							"  UPDATE %s AS mv SET %s= mv.%s + diff.%s"
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
-							matviewname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
+							matviewname, count_name, count_name, count_name, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}

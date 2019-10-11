@@ -40,6 +40,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/guc.h"
 
 #include "parser/parser.h"
 #include "commands/matview.h"
@@ -1601,6 +1602,8 @@ ApplyRetrieveRule(Query *parsetree,
 
 	if (RelationIsIVM(relation))
 	{
+		if (Debug_print_parse)
+			elog_node_display(LOG, "ApplyRetreveRule", parsetree, Debug_pretty_print);
 		rule_action = copyObject(linitial(rule->actions));
 
 		if (!rule_action->distinctClause && !rule_action->groupClause && !rule_action->hasAggs)
@@ -1608,19 +1611,33 @@ ApplyRetrieveRule(Query *parsetree,
 			StringInfoData str;
 			RawStmt *raw;
 			Query *sub;
+			ListCell   *lc;
+			bool has_exists = false;
 
 			if (rule_action->hasDistinctOn)
 				elog(ERROR, "DISTINCT ON is not supported in IVM");
 
+			rte = rt_fetch(rt_index, parsetree->rtable);
+			foreach(lc, rte->eref->colnames)
+			{
+				char	   *cname = strVal(lfirst(lc));
+				if (!strcmp(strVal(lfirst(lc)), "__ivm_exists_count__"))
+					has_exists = true;
+			}
+
 			initStringInfo(&str);
-			appendStringInfo(&str, "SELECT mv.*, __ivm_count__ FROM %s mv, generate_series(1, mv.__ivm_count__)",
-						quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
-													RelationGetRelationName(relation)));
+			if (has_exists)
+				appendStringInfo(&str, "SELECT mv.*, __ivm_exists_count__, __ivm_count__ FROM %s mv, generate_series(1, mv.__ivm_count__)",
+							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
+														RelationGetRelationName(relation)));
+			else 
+				appendStringInfo(&str, "SELECT mv.*, __ivm_count__ FROM %s mv, generate_series(1, mv.__ivm_count__)",
+							quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
+														RelationGetRelationName(relation)));
 
 			raw = (RawStmt*)linitial(raw_parser(str.data));
 			sub = transformStmt(make_parsestate(NULL),raw->stmt);
 
-			rte = rt_fetch(rt_index, parsetree->rtable);
 
 			rte->rtekind = RTE_SUBQUERY;
 			rte->subquery = sub;
