@@ -109,6 +109,14 @@ check_and_dump_old_cluster(bool live_check)
 		check_for_tables_with_oids(&old_cluster);
 
 	/*
+	 * PG 12 changed the 'sql_identifier' type storage to be based on name,
+	 * not varchar, which breaks on-disk format for existing data. So we need
+	 * to prevent upgrade when used in user objects (tables, indexes, ...).
+	 */
+	if (GET_MAJOR_VERSION(old_cluster.major_version) <= 1100)
+		old_11_check_for_sql_identifier_data_type_usage(&old_cluster);
+
+	/*
 	 * Pre-PG 10 allowed tables with 'unknown' type columns and non WAL logged
 	 * hash indexes
 	 */
@@ -858,7 +866,7 @@ check_for_isn_and_int8_passing_mismatch(ClusterInfo *cluster)
 						 output_path, strerror(errno));
 			if (!db_used)
 			{
-				fprintf(script, "Database: %s\n", active_db->db_name);
+				fprintf(script, "In database: %s\n", active_db->db_name);
 				db_used = true;
 			}
 			fprintf(script, "  %s.%s\n",
@@ -937,7 +945,7 @@ check_for_tables_with_oids(ClusterInfo *cluster)
 						 output_path, strerror(errno));
 			if (!db_used)
 			{
-				fprintf(script, "Database: %s\n", active_db->db_name);
+				fprintf(script, "In database: %s\n", active_db->db_name);
 				db_used = true;
 			}
 			fprintf(script, "  %s.%s\n",
@@ -1046,7 +1054,7 @@ check_for_reg_data_type_usage(ClusterInfo *cluster)
 						 output_path, strerror(errno));
 			if (!db_used)
 			{
-				fprintf(script, "Database: %s\n", active_db->db_name);
+				fprintf(script, "In database: %s\n", active_db->db_name);
 				db_used = true;
 			}
 			fprintf(script, "  %s.%s.%s\n",
@@ -1137,7 +1145,7 @@ check_for_jsonb_9_4_usage(ClusterInfo *cluster)
 						 output_path, strerror(errno));
 			if (!db_used)
 			{
-				fprintf(script, "Database: %s\n", active_db->db_name);
+				fprintf(script, "In database: %s\n", active_db->db_name);
 				db_used = true;
 			}
 			fprintf(script, "  %s.%s.%s\n",

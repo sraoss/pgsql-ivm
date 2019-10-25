@@ -664,8 +664,8 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 		 */
 		options |= HEAP_INSERT_NO_LOGICAL;
 
-		heaptup = toast_insert_or_update(state->rs_new_rel, tup, NULL,
-										 options);
+		heaptup = heap_toast_insert_or_update(state->rs_new_rel, tup, NULL,
+											  options);
 	}
 	else
 		heaptup = tup;
@@ -1280,7 +1280,8 @@ CheckPointLogicalRewriteHeap(void)
 		}
 		else
 		{
-			int			fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+			/* on some operating systems fsyncing a file requires O_RDWR */
+			int			fd = OpenTransientFile(path, O_RDWR | PG_BINARY);
 
 			/*
 			 * The file cannot vanish due to concurrency since this function

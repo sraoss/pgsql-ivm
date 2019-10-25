@@ -5461,7 +5461,6 @@ validateRecoveryParameters(void)
 static void
 exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 {
-	char		recoveryPath[MAXPGPATH];
 	char		xlogfname[MAXFNAMELEN];
 	XLogSegNo	endLogSegNo;
 	XLogSegNo	startLogSegNo;
@@ -5542,17 +5541,6 @@ exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog)
 	XLogArchiveCleanup(xlogfname);
 
 	/*
-	 * Since there might be a partial WAL segment named RECOVERYXLOG, get rid
-	 * of it.
-	 */
-	snprintf(recoveryPath, MAXPGPATH, XLOGDIR "/RECOVERYXLOG");
-	unlink(recoveryPath);		/* ignore any error */
-
-	/* Get rid of any remaining recovered timeline-history file, too */
-	snprintf(recoveryPath, MAXPGPATH, XLOGDIR "/RECOVERYHISTORY");
-	unlink(recoveryPath);		/* ignore any error */
-
-	/*
 	 * Remove the signal files out of the way, so that we don't accidentally
 	 * re-enter archive recovery mode in a subsequent crash.
 	 */
@@ -5617,6 +5605,13 @@ recoveryStopsBefore(XLogReaderState *record)
 	bool		isCommit;
 	TimestampTz recordXtime = 0;
 	TransactionId recordXid;
+
+	/*
+	 * Ignore recovery target settings when not in archive recovery (meaning
+	 * we are in crash recovery).
+	 */
+	if (!ArchiveRecoveryRequested)
+		return false;
 
 	/* Check if we should stop as soon as reaching consistency */
 	if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE && reachedConsistency)
@@ -5758,6 +5753,13 @@ recoveryStopsAfter(XLogReaderState *record)
 	uint8		xact_info;
 	uint8		rmid;
 	TimestampTz recordXtime;
+
+	/*
+	 * Ignore recovery target settings when not in archive recovery (meaning
+	 * we are in crash recovery).
+	 */
+	if (!ArchiveRecoveryRequested)
+		return false;
 
 	info = XLogRecGetInfo(record) & ~XLR_INFO_MASK;
 	rmid = XLogRecGetRmid(record);
@@ -7419,6 +7421,7 @@ StartupXLOG(void)
 	if (ArchiveRecoveryRequested)
 	{
 		char		reason[200];
+		char		recoveryPath[MAXPGPATH];
 
 		Assert(InArchiveRecovery);
 
@@ -7475,6 +7478,17 @@ StartupXLOG(void)
 		 */
 		writeTimeLineHistory(ThisTimeLineID, recoveryTargetTLI,
 							 EndRecPtr, reason);
+
+		/*
+		 * Since there might be a partial WAL segment named RECOVERYXLOG, get
+		 * rid of it.
+		 */
+		snprintf(recoveryPath, MAXPGPATH, XLOGDIR "/RECOVERYXLOG");
+		unlink(recoveryPath);	/* ignore any error */
+
+		/* Get rid of any remaining recovered timeline-history file, too */
+		snprintf(recoveryPath, MAXPGPATH, XLOGDIR "/RECOVERYHISTORY");
+		unlink(recoveryPath);	/* ignore any error */
 	}
 
 	/* Save the selected TimeLineID in shared memory, too */
@@ -7596,7 +7610,10 @@ StartupXLOG(void)
 		}
 		else
 			CreateCheckPoint(CHECKPOINT_END_OF_RECOVERY | CHECKPOINT_IMMEDIATE);
+	}
 
+	if (ArchiveRecoveryRequested)
+	{
 		/*
 		 * And finally, execute the recovery_end_command, if any.
 		 */
@@ -7604,10 +7621,7 @@ StartupXLOG(void)
 			ExecuteRecoveryCommand(recoveryEndCommand,
 								   "recovery_end_command",
 								   true);
-	}
 
-	if (ArchiveRecoveryRequested)
-	{
 		/*
 		 * We switched to a new timeline. Clean up segments on the old
 		 * timeline.
