@@ -310,6 +310,78 @@ SELECT * FROM mv_ivm_min_max;
 (1 row)
 
 ROLLBACK;
+-- support subquery for using EXISTS() cluase
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ i | j  | __ivm_count__ | __ivm_exists_count__ 
+---+----+---------------+----------------------
+ 1 | 10 |             1 |                    1
+ 2 | 20 |             1 |                    1
+ 3 | 30 |             1 |                    1
+ 4 | 40 |             1 |                    1
+(4 rows)
+
+INSERT INTO mv_base_a VALUES(1,10),(6,60),(3,30),(3,300);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ i |  j  | __ivm_count__ | __ivm_exists_count__ 
+---+-----+---------------+----------------------
+ 1 |  10 |             2 |                    1
+ 1 |  10 |             2 |                    1
+ 2 |  20 |             1 |                    1
+ 3 |  30 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 | 300 |             1 |                    1
+ 4 |  40 |             1 |                    1
+(7 rows)
+
+INSERT INTO mv_base_b VALUES(1,101);
+INSERT INTO mv_base_b VALUES(1,111);
+INSERT INTO mv_base_b VALUES(2,102);
+INSERT INTO mv_base_b VALUES(6,106);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ i |  j  | __ivm_count__ | __ivm_exists_count__ 
+---+-----+---------------+----------------------
+ 1 |  10 |             2 |                    3
+ 1 |  10 |             2 |                    3
+ 2 |  20 |             1 |                    2
+ 3 |  30 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 | 300 |             1 |                    1
+ 4 |  40 |             1 |                    1
+ 6 |  60 |             1 |                    1
+(8 rows)
+
+UPDATE mv_base_a SET i = 1 WHERE j =60;
+UPDATE mv_base_b SET i = 10  WHERE k = 101;
+UPDATE mv_base_b SET k = 1002 WHERE k = 102;
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ i |  j  | __ivm_count__ | __ivm_exists_count__ 
+---+-----+---------------+----------------------
+ 1 |  10 |             2 |                    1
+ 1 |  10 |             2 |                    1
+ 1 |  60 |             1 |                    1
+ 2 |  20 |             1 |                    2
+ 3 |  30 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 | 300 |             1 |                    1
+ 4 |  40 |             1 |                    1
+(8 rows)
+
+DELETE FROM mv_base_a WHERE (i,j) = (1,60);
+DELETE FROM mv_base_b WHERE i = 2;
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ i |  j  | __ivm_count__ | __ivm_exists_count__ 
+---+-----+---------------+----------------------
+ 1 |  10 |             2 |                    1
+ 1 |  10 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 | 300 |             1 |                    1
+ 4 |  40 |             1 |                    1
+(6 rows)
+
+ROLLBACK;
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
 ERROR:  system column is not supported with IVM
@@ -317,11 +389,11 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHER
 ERROR:  system column is not supported with IVM
 -- contain subquery
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
-ERROR:  subquery is not supported with IVM
+ERROR:  subquery is not supported with IVM, except for EXISTS clause
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm04 AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
 ERROR:  subquery is not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
-ERROR:  subquery is not supported with IVM
+ERROR:  subquery is not supported with IVM, except for EXISTS clause
 -- contain CTE
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm06 AS WITH b AS (SELECT i,k FROM mv_base_b WHERE k < 103) SELECT a.i,a.j FROM mv_base_a a,b WHERE a.i = b.i;
 ERROR:  CTE is not supported with IVM

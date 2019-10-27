@@ -1602,8 +1602,6 @@ ApplyRetrieveRule(Query *parsetree,
 
 	if (RelationIsIVM(relation))
 	{
-		if (Debug_print_parse)
-			elog_node_display(LOG, "ApplyRetreveRule", parsetree, Debug_pretty_print);
 		rule_action = copyObject(linitial(rule->actions));
 
 		if (!rule_action->distinctClause && !rule_action->groupClause && !rule_action->hasAggs)
@@ -1620,7 +1618,6 @@ ApplyRetrieveRule(Query *parsetree,
 			rte = rt_fetch(rt_index, parsetree->rtable);
 			foreach(lc, rte->eref->colnames)
 			{
-				char	   *cname = strVal(lfirst(lc));
 				if (!strcmp(strVal(lfirst(lc)), "__ivm_exists_count__"))
 					has_exists = true;
 			}

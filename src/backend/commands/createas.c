@@ -58,6 +58,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
+#include "parser/parse_relation.h"
 #include "nodes/print.h"
 #include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
@@ -88,7 +89,7 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing, char *count_col);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map, bool in_subquery);
 static void check_ivm_restriction_walker(Node *node);
 
 /*
@@ -240,7 +241,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 /*
  * convert_EXISTS_subkink_to_lateral_join
  */
-static RangeTblEntry *
+RangeTblEntry *
 convert_EXISTS_sublink_to_lateral_join(Query *query)
 {
 	FromExpr *fromexpr;
@@ -252,80 +253,48 @@ convert_EXISTS_sublink_to_lateral_join(Query *query)
 	ParseState *pstate;
 	Query *subselect;
 
-	Node *clause;
-	ListCell *lc;
-	Var *join_key;
-	bool found = false;
 
 	TargetEntry *tle_count;
-	TargetEntry *tle_count2;
 	FuncCall *fn;
 	Node *node;
-	Node *opexpr;
+	Expr *opexpr;
 
-
-	elog(LOG, "start convert_EXISTS_sublink_to_join");
-	if (Debug_print_parse)
-		elog_node_display(LOG, "parse tree", query,
-						  Debug_pretty_print);
-	/* test pattern */
+	/*
+	 * This is test pattern. its pattern contain only subquery on WHERE clause.
+	 * In the feature, other expr with subquery will be supported.
+	 */
 	fromexpr = (FromExpr *)query->jointree;
 	sublink = (SubLink *)fromexpr->quals;
-	/**/
+
 	subselect = (Query *)sublink->subselect;
+	/* Currently, EXISTS is only supported */
 	if (sublink->subLinkType != EXISTS_SUBLINK)
 		return NULL;
 	if (subselect->cteList)
 		return NULL;
 	/* */
-	alias = makeAlias("test_alias", NIL);
 	pstate = make_parsestate(NULL);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
-	/* get join-key */
-	elog(LOG, "search join key in EXISTS clause");
-	clause = ((FromExpr *)subselect->jointree)->quals;
-	foreach(lc, ((OpExpr *)clause)->args)
-	{
-		Node *node = lfirst(lc);
-		if (nodeTag(node) == T_Var)
-		{
-			if (((Var *)node)->varlevelsup > 0)
-				found =true;
-			else
-				join_key =(Var *)node;
-		}
-	}
-	/* now, simple correlated sub-query only */
-	if (!found && join_key)
-		return NULL;
+	/*
+	 * convert EXISTS subquery into LATERAL subquery in FROM clause.
+	 */
 
-	/* add COUNT of join-key in subquery*/
-	elog(LOG, "add __ivm_exists_count");
+	/* add COUNT(*) for counting exists condition */
 	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-/*
-// if count(cold_name)
-	node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(join_key), NULL, fn, false, -1);
-
-	tle_count = makeTargetEntry((Expr *) node,
-								list_length(subselect->targetList) + 1,
-								pstrdup("__sub_ivm_exists_count__"),
-								false);
-*/
-	// if count(*)
 	fn->agg_star = true;
 	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 	tle_count = makeTargetEntry((Expr *) node,
 								list_length(subselect->targetList) + 1,
 								pstrdup("__ivm_exists_count__"),
 								false);
-	
-
+	/* add __ivm_exists_count__ column */
 	subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
 	subselect->hasAggs = true;
 
-	/* LATERAL == true */
-	elog(LOG, "add RangeTableEntry");
+	/* add subquery in from clause */
+	alias = makeAlias("subquery_with_exists", NIL);
+	/* it means that LATERAL is enable if fourth argument is true */
 	rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
 	query->rtable = lappend(query->rtable, rte);
 	pstate->p_rtable = query->rtable; 
@@ -333,34 +302,30 @@ convert_EXISTS_sublink_to_lateral_join(Query *query)
 	rtr = makeNode(RangeTblRef);
 	/* assume new rte is at end */
 	rtr->rtindex = list_length(query->rtable);
-	
+
 	((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
 
 
-	/* add ivm_exits_query in target_list*/
-	node = scanRTEForColumn(pstate,rte,"__ivm_exists_count__",-1, 0, NULL);
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
 
-	tle_count2 = makeTargetEntry((Expr *) node,
-								list_length(query->targetList) + 1,
-								pstrdup("__ivm_exists_count__"),
-								false);
-	query->targetList = list_concat(query->targetList, list_make1(tle_count2));
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+
+	/*
+	 * it means using int84gt( '>' operator). it will be replaced to make_op().
+	 */
 	opexpr = make_opclause(419, BOOLOID, false,
-					makeVarFromTargetEntry(list_length(subselect->targetList), tle_count),
-					makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
+					(Expr *)node,
+					(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
 					InvalidOid, InvalidOid);
-
+	fix_opfuncids((Node *) opexpr);
 	/* drop subquery in WHERE clause */
-	fromexpr->quals =NIL;
+	fromexpr->quals = NULL;
 	query->hasSubLinks = false;
 
-	fromexpr->quals = opexpr;
+	subselect->havingQual = (Node *)opexpr;
 
-
-	/* insert debug log of query tree */
-	if (Debug_print_parse)
-		elog_node_display(LOG, "parse tree", query,
-						  Debug_pretty_print);
 	return rte;
 }
 
@@ -385,7 +350,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
 	Query	   *copied_query;
-	bool ivm_has_exists_query;
+	bool hasSublink = false;
 
 	if (stmt->if_not_exists)
 	{
@@ -483,19 +448,36 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			/* If conatin EXISTS clause*/
 			if (copied_query->hasSubLinks)
 			{
-				RangeTblEntry *rte;
-				FromExpr *fromexpr;
-				SubLink *sublink;
-				AttrNumber next_resno = list_length(copied_query->targetList) + 1;
-				Node *col;
-
-				elog(LOG, "sublink is included in query");
-				fromexpr = (FromExpr *)copied_query->jointree;
-				/* test pattern */
-				sublink = (SubLink *)fromexpr->quals;
+				hasSublink = true;
 				/*sub query to rtable  */
-				rte = convert_EXISTS_sublink_to_lateral_join(copied_query);
+				convert_EXISTS_sublink_to_lateral_join(copied_query);
 			}
+
+			/* Add count(*) using EXISTS clause */
+			if (hasSublink)
+			{
+				ListCell *lc;
+				RangeTblEntry *rte;
+				Node *colCountSubquery;
+				/* search subquery in RangeTblEntry */
+				foreach(lc, copied_query->rtable)
+				{
+					rte = (RangeTblEntry *) lfirst(lc);
+					if (rte->subquery)
+					{
+						pstate->p_rtable = copied_query->rtable;
+						colCountSubquery = scanRTEForColumn(pstate,rte,"__ivm_exists_count__",-1, 0, NULL);
+						break;
+					}
+				}
+				Assert(colCountSubquery != NULL);
+				tle = makeTargetEntry((Expr *) colCountSubquery,
+											list_length(copied_query->targetList) + 1,
+											pstrdup("__ivm_exists_count__"),
+											false);
+				copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
+			}
+
 			/* group keys must be in targetlist */
 			if (copied_query->groupClause)
 			{
@@ -511,7 +493,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			}
 			else if (!copied_query->hasAggs)
 				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
-
 			if (copied_query->hasAggs)
 			{
 				ListCell *lc;
@@ -623,11 +604,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 								  	pstrdup("__ivm_count__"),
 								  	false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
+
 			copied_query->hasAggs = true;
 		}
 
-		if (Debug_print_parse)
-			elog_node_display(LOG, "parse tree", copied_query, Debug_pretty_print);
 
 		rewritten = QueryRewrite(copied_query);
 
@@ -702,7 +682,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map);
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map, false);
 
 			table_close(matviewRel, NoLock);
 
@@ -713,7 +693,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	return address;
 }
 
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map)
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map, bool in_subquery)
 {
 
 	if (jtnode == NULL)
@@ -727,28 +707,32 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		{
 			if (!bms_is_member(rte->relid, *relid_map))
 			{
-				Oid relid;
-				char *count_col = rte->subquery && rte->lateral ? "__ivm_exists_count__" : "__ivm_count__";
+				char *count_colname = in_subquery ? "__ivm_exists_count__" : "__ivm_count__";
 
-				if (rte->subquery)
-					/* On the condition, subquery contain one table */
-					relid = ((RangeTblEntry *)lfirst(list_head(rte->subquery->rtable)))->relid;
-				else 
-					relid = rte->relid;
-
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE, count_col);
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE, count_col);
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE, count_col);
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER, count_col);
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER, count_col);
-				CreateIvmTrigger(relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER, count_col);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER, count_colname);
 
 				*relid_map = bms_add_member(*relid_map, rte->relid);
 			}
 		}
+		else if (rte->rtekind == RTE_SUBQUERY)
+		{
+			Query *subquery = rte->subquery;
+			Assert(rte->subquery != NULL);
+			/*
+			 * On the condition, not allow a subquery in the subquery.
+			 */
+			if (in_subquery)
+				elog(ERROR, "subquery is not supported in subquery with IVM");
+
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relid_map, true);
+		}
 		else
-			//elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
-			elog(LOG, "unsupported RTE kind: %d", (int) rte->rtekind);
+			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
 	}
 	else if (IsA(jtnode, FromExpr))
 	{
@@ -756,14 +740,14 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map);
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map, in_subquery);
 	}
 	else if (IsA(jtnode, JoinExpr))
 	{
 		JoinExpr   *j = (JoinExpr *) jtnode;
 
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map);
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map, in_subquery);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map, in_subquery);
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
@@ -1126,8 +1110,8 @@ check_ivm_restriction_walker(Node *node)
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
-					if (rte->rtekind ==  RTE_SUBQUERY)
-						ereport(ERROR, (errmsg("subquery is not supported with IVM")));
+//					if (rte->rtekind ==  RTE_SUBQUERY)
+//						ereport(ERROR, (errmsg("subquery is not supported with IVM")));
 				}
 
 				/* search in jointree */
@@ -1219,13 +1203,9 @@ check_ivm_restriction_walker(Node *node)
 		case T_SubLink:
 			{
 				/* Now, EXISTS clause is supported only */
-
  				SubLink	*sublink = (SubLink *) node;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR, (errmsg("subquery is not supported with IVM, except for EXISTS clause")));
-
-				Query	*qry =(Query *) sublink->subselect;
-
 				break;
 			}
 		case T_SubPlan:

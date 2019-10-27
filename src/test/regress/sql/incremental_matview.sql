@@ -108,6 +108,26 @@ DELETE FROM mv_base_a WHERE (i,j) IN ((0,0), (7,70));
 SELECT * FROM mv_ivm_min_max;
 ROLLBACK;
 
+-- support subquery for using EXISTS() cluase
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+INSERT INTO mv_base_a VALUES(1,10),(6,60),(3,30),(3,300);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+INSERT INTO mv_base_b VALUES(1,101);
+INSERT INTO mv_base_b VALUES(1,111);
+INSERT INTO mv_base_b VALUES(2,102);
+INSERT INTO mv_base_b VALUES(6,106);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+UPDATE mv_base_a SET i = 1 WHERE j =60;
+UPDATE mv_base_b SET i = 10  WHERE k = 101;
+UPDATE mv_base_b SET k = 1002 WHERE k = 102;
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+DELETE FROM mv_base_a WHERE (i,j) = (1,60);
+DELETE FROM mv_base_b WHERE i = 2;
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+ROLLBACK;
+
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
