@@ -155,11 +155,17 @@ static void ExecEvalRowNullInt(ExprState *state, ExprEvalStep *op,
 static Datum ExecJustInnerVar(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustOuterVar(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustScanVar(ExprState *state, ExprContext *econtext, bool *isnull);
-static Datum ExecJustConst(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustAssignInnerVar(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustAssignOuterVar(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustAssignScanVar(ExprState *state, ExprContext *econtext, bool *isnull);
 static Datum ExecJustApplyFuncToCase(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustConst(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustInnerVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustOuterVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustScanVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustAssignInnerVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustAssignOuterVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
+static Datum ExecJustAssignScanVarVirt(ExprState *state, ExprContext *econtext, bool *isnull);
 
 
 /*
@@ -255,11 +261,45 @@ ExecReadyInterpretedExpr(ExprState *state)
 			return;
 		}
 	}
-	else if (state->steps_len == 2 &&
-			 state->steps[0].opcode == EEOP_CONST)
+	else if (state->steps_len == 2)
 	{
-		state->evalfunc_private = (void *) ExecJustConst;
-		return;
+		ExprEvalOp	step0 = state->steps[0].opcode;
+
+		if (step0 == EEOP_CONST)
+		{
+			state->evalfunc_private = (void *) ExecJustConst;
+			return;
+		}
+		else if (step0 == EEOP_INNER_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustInnerVarVirt;
+			return;
+		}
+		else if (step0 == EEOP_OUTER_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustOuterVarVirt;
+			return;
+		}
+		else if (step0 == EEOP_SCAN_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustScanVarVirt;
+			return;
+		}
+		else if (step0 == EEOP_ASSIGN_INNER_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustAssignInnerVarVirt;
+			return;
+		}
+		else if (step0 == EEOP_ASSIGN_OUTER_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustAssignOuterVarVirt;
+			return;
+		}
+		else if (step0 == EEOP_ASSIGN_SCAN_VAR)
+		{
+			state->evalfunc_private = (void *) ExecJustAssignScanVarVirt;
+			return;
+		}
 	}
 
 #if defined(EEO_USE_COMPUTED_GOTO)
@@ -1966,13 +2006,12 @@ ShutdownTupleDescRef(Datum arg)
  * Fast-path functions, for very simple expressions
  */
 
-/* Simple reference to inner Var */
-static Datum
-ExecJustInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
+/* implementation of ExecJust(Inner|Outer|Scan)Var */
+static pg_attribute_always_inline Datum
+ExecJustVarImpl(ExprState *state, TupleTableSlot *slot, bool *isnull)
 {
 	ExprEvalStep *op = &state->steps[1];
 	int			attnum = op->d.var.attnum + 1;
-	TupleTableSlot *slot = econtext->ecxt_innertuple;
 
 	CheckOpSlotCompatibility(&state->steps[0], slot);
 
@@ -1984,52 +2023,34 @@ ExecJustInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
 	return slot_getattr(slot, attnum, isnull);
 }
 
+/* Simple reference to inner Var */
+static Datum
+ExecJustInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustVarImpl(state, econtext->ecxt_innertuple, isnull);
+}
+
 /* Simple reference to outer Var */
 static Datum
 ExecJustOuterVar(ExprState *state, ExprContext *econtext, bool *isnull)
 {
-	ExprEvalStep *op = &state->steps[1];
-	int			attnum = op->d.var.attnum + 1;
-	TupleTableSlot *slot = econtext->ecxt_outertuple;
-
-	CheckOpSlotCompatibility(&state->steps[0], slot);
-
-	/* See comments in ExecJustInnerVar */
-	return slot_getattr(slot, attnum, isnull);
+	return ExecJustVarImpl(state, econtext->ecxt_outertuple, isnull);
 }
 
 /* Simple reference to scan Var */
 static Datum
 ExecJustScanVar(ExprState *state, ExprContext *econtext, bool *isnull)
 {
-	ExprEvalStep *op = &state->steps[1];
-	int			attnum = op->d.var.attnum + 1;
-	TupleTableSlot *slot = econtext->ecxt_scantuple;
-
-	CheckOpSlotCompatibility(&state->steps[0], slot);
-
-	/* See comments in ExecJustInnerVar */
-	return slot_getattr(slot, attnum, isnull);
+	return ExecJustVarImpl(state, econtext->ecxt_scantuple, isnull);
 }
 
-/* Simple Const expression */
-static Datum
-ExecJustConst(ExprState *state, ExprContext *econtext, bool *isnull)
-{
-	ExprEvalStep *op = &state->steps[0];
-
-	*isnull = op->d.constval.isnull;
-	return op->d.constval.value;
-}
-
-/* Evaluate inner Var and assign to appropriate column of result tuple */
-static Datum
-ExecJustAssignInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
+/* implementation of ExecJustAssign(Inner|Outer|Scan)Var */
+static pg_attribute_always_inline Datum
+ExecJustAssignVarImpl(ExprState *state, TupleTableSlot *inslot, bool *isnull)
 {
 	ExprEvalStep *op = &state->steps[1];
 	int			attnum = op->d.assign_var.attnum + 1;
 	int			resultnum = op->d.assign_var.resultnum;
-	TupleTableSlot *inslot = econtext->ecxt_innertuple;
 	TupleTableSlot *outslot = state->resultslot;
 
 	CheckOpSlotCompatibility(&state->steps[0], inslot);
@@ -2047,40 +2068,25 @@ ExecJustAssignInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
 	return 0;
 }
 
+/* Evaluate inner Var and assign to appropriate column of result tuple */
+static Datum
+ExecJustAssignInnerVar(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustAssignVarImpl(state, econtext->ecxt_innertuple, isnull);
+}
+
 /* Evaluate outer Var and assign to appropriate column of result tuple */
 static Datum
 ExecJustAssignOuterVar(ExprState *state, ExprContext *econtext, bool *isnull)
 {
-	ExprEvalStep *op = &state->steps[1];
-	int			attnum = op->d.assign_var.attnum + 1;
-	int			resultnum = op->d.assign_var.resultnum;
-	TupleTableSlot *inslot = econtext->ecxt_outertuple;
-	TupleTableSlot *outslot = state->resultslot;
-
-	CheckOpSlotCompatibility(&state->steps[0], inslot);
-
-	/* See comments in ExecJustAssignInnerVar */
-	outslot->tts_values[resultnum] =
-		slot_getattr(inslot, attnum, &outslot->tts_isnull[resultnum]);
-	return 0;
+	return ExecJustAssignVarImpl(state, econtext->ecxt_outertuple, isnull);
 }
 
 /* Evaluate scan Var and assign to appropriate column of result tuple */
 static Datum
 ExecJustAssignScanVar(ExprState *state, ExprContext *econtext, bool *isnull)
 {
-	ExprEvalStep *op = &state->steps[1];
-	int			attnum = op->d.assign_var.attnum + 1;
-	int			resultnum = op->d.assign_var.resultnum;
-	TupleTableSlot *inslot = econtext->ecxt_scantuple;
-	TupleTableSlot *outslot = state->resultslot;
-
-	CheckOpSlotCompatibility(&state->steps[0], inslot);
-
-	/* See comments in ExecJustAssignInnerVar */
-	outslot->tts_values[resultnum] =
-		slot_getattr(inslot, attnum, &outslot->tts_isnull[resultnum]);
-	return 0;
+	return ExecJustAssignVarImpl(state, econtext->ecxt_scantuple, isnull);
 }
 
 /* Evaluate CASE_TESTVAL and apply a strict function to it */
@@ -2118,6 +2124,101 @@ ExecJustApplyFuncToCase(ExprState *state, ExprContext *econtext, bool *isnull)
 	d = op->d.func.fn_addr(fcinfo);
 	*isnull = fcinfo->isnull;
 	return d;
+}
+
+/* Simple Const expression */
+static Datum
+ExecJustConst(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	ExprEvalStep *op = &state->steps[0];
+
+	*isnull = op->d.constval.isnull;
+	return op->d.constval.value;
+}
+
+/* implementation of ExecJust(Inner|Outer|Scan)VarVirt */
+static pg_attribute_always_inline Datum
+ExecJustVarVirtImpl(ExprState *state, TupleTableSlot *slot, bool *isnull)
+{
+	ExprEvalStep *op = &state->steps[0];
+	int			attnum = op->d.var.attnum;
+
+	/*
+	 * As it is guaranteed that a virtual slot is used, there never is a need
+	 * to perform tuple deforming (nor would it be possible). Therefore
+	 * execExpr.c has not emitted an EEOP_*_FETCHSOME step. Verify, as much as
+	 * possible, that that determination was accurate.
+	 */
+	Assert(TTS_IS_VIRTUAL(slot));
+	Assert(TTS_FIXED(slot));
+	Assert(attnum >= 0 && attnum < slot->tts_nvalid);
+
+	*isnull = slot->tts_isnull[attnum];
+
+	return slot->tts_values[attnum];
+}
+
+/* Like ExecJustInnerVar, optimized for virtual slots */
+static Datum
+ExecJustInnerVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustVarVirtImpl(state, econtext->ecxt_innertuple, isnull);
+}
+
+/* Like ExecJustOuterVar, optimized for virtual slots */
+static Datum
+ExecJustOuterVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustVarVirtImpl(state, econtext->ecxt_outertuple, isnull);
+}
+
+/* Like ExecJustScanVar, optimized for virtual slots */
+static Datum
+ExecJustScanVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustVarVirtImpl(state, econtext->ecxt_scantuple, isnull);
+}
+
+/* implementation of ExecJustAssign(Inner|Outer|Scan)VarVirt */
+static pg_attribute_always_inline Datum
+ExecJustAssignVarVirtImpl(ExprState *state, TupleTableSlot *inslot, bool *isnull)
+{
+	ExprEvalStep *op = &state->steps[0];
+	int			attnum = op->d.assign_var.attnum;
+	int			resultnum = op->d.assign_var.resultnum;
+	TupleTableSlot *outslot = state->resultslot;
+
+	/* see ExecJustVarVirtImpl for comments */
+
+	Assert(TTS_IS_VIRTUAL(inslot));
+	Assert(TTS_FIXED(inslot));
+	Assert(attnum >= 0 && attnum < inslot->tts_nvalid);
+
+	outslot->tts_values[resultnum] = inslot->tts_values[attnum];
+	outslot->tts_isnull[resultnum] = inslot->tts_isnull[attnum];
+
+	return 0;
+}
+
+/* Like ExecJustAssignInnerVar, optimized for virtual slots */
+static Datum
+ExecJustAssignInnerVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustAssignVarVirtImpl(state, econtext->ecxt_innertuple, isnull);
+}
+
+/* Like ExecJustAssignOuterVar, optimized for virtual slots */
+static Datum
+ExecJustAssignOuterVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustAssignVarVirtImpl(state, econtext->ecxt_outertuple, isnull);
+}
+
+/* Like ExecJustAssignScanVar, optimized for virtual slots */
+static Datum
+ExecJustAssignScanVarVirt(ExprState *state, ExprContext *econtext, bool *isnull)
+{
+	return ExecJustAssignVarVirtImpl(state, econtext->ecxt_scantuple, isnull);
 }
 
 #if defined(EEO_USE_COMPUTED_GOTO)

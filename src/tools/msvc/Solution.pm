@@ -125,8 +125,9 @@ sub GetOpenSSLVersion
 
 	# Attempt to get OpenSSL version and location.  This assumes that
 	# openssl.exe is in the specified directory.
+	# Quote the .exe name in case it has spaces
 	my $opensslcmd =
-	  $self->{options}->{openssl} . "\\bin\\openssl.exe version 2>&1";
+	  qq("$self->{options}->{openssl}\\bin\\openssl.exe" version 2>&1);
 	my $sslout = `$opensslcmd`;
 
 	$? >> 8 == 0
@@ -510,10 +511,8 @@ sub GenerateFiles
 		open(my $o, '>', 'src/interfaces/ecpg/include/ecpg_config.h')
 		  || confess "Could not open ecpg_config.h";
 		print $o <<EOF;
-#if (_MSC_VER > 1200)
 #define HAVE_LONG_LONG_INT 1
 #define HAVE_LONG_LONG_INT_64 1
-#endif
 #define ENABLE_THREAD_SAFETY 1
 EOF
 		close($o);

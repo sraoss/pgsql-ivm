@@ -30,7 +30,7 @@ static struct varlena *toast_decompress_datum(struct varlena *attr);
 static struct varlena *toast_decompress_datum_slice(struct varlena *attr, int32 slicelength);
 
 /* ----------
- * heap_tuple_fetch_attr -
+ * detoast_external_attr -
  *
  *	Public entry point to get back a toasted value from
  *	external source (possibly still in compressed format).
@@ -42,7 +42,7 @@ static struct varlena *toast_decompress_datum_slice(struct varlena *attr, int32 
  * ----------
  */
 struct varlena *
-heap_tuple_fetch_attr(struct varlena *attr)
+detoast_external_attr(struct varlena *attr)
 {
 	struct varlena *result;
 
@@ -68,7 +68,7 @@ heap_tuple_fetch_attr(struct varlena *attr)
 
 		/* recurse if value is still external in some other way */
 		if (VARATT_IS_EXTERNAL(attr))
-			return heap_tuple_fetch_attr(attr);
+			return detoast_external_attr(attr);
 
 		/*
 		 * Copy into the caller's memory context, in case caller tries to
@@ -103,7 +103,7 @@ heap_tuple_fetch_attr(struct varlena *attr)
 
 
 /* ----------
- * heap_tuple_untoast_attr -
+ * detoast_attr -
  *
  *	Public entry point to get back a toasted value from compression
  *	or external storage.  The result is always non-extended varlena form.
@@ -113,7 +113,7 @@ heap_tuple_fetch_attr(struct varlena *attr)
  * ----------
  */
 struct varlena *
-heap_tuple_untoast_attr(struct varlena *attr)
+detoast_attr(struct varlena *attr)
 {
 	if (VARATT_IS_EXTERNAL_ONDISK(attr))
 	{
@@ -144,7 +144,7 @@ heap_tuple_untoast_attr(struct varlena *attr)
 		Assert(!VARATT_IS_EXTERNAL_INDIRECT(attr));
 
 		/* recurse in case value is still extended in some other way */
-		attr = heap_tuple_untoast_attr(attr);
+		attr = detoast_attr(attr);
 
 		/* if it isn't, we'd better copy it */
 		if (attr == (struct varlena *) redirect.pointer)
@@ -161,7 +161,7 @@ heap_tuple_untoast_attr(struct varlena *attr)
 		/*
 		 * This is an expanded-object pointer --- get flat format
 		 */
-		attr = heap_tuple_fetch_attr(attr);
+		attr = detoast_external_attr(attr);
 		/* flatteners are not allowed to produce compressed/short output */
 		Assert(!VARATT_IS_EXTENDED(attr));
 	}
@@ -192,14 +192,16 @@ heap_tuple_untoast_attr(struct varlena *attr)
 
 
 /* ----------
- * heap_tuple_untoast_attr_slice -
+ * detoast_attr_slice -
  *
  *		Public entry point to get back part of a toasted value
  *		from compression or external storage.
+ *
+ * Note: When slicelength is negative, return suffix of the value.
  * ----------
  */
 struct varlena *
-heap_tuple_untoast_attr_slice(struct varlena *attr,
+detoast_attr_slice(struct varlena *attr,
 							  int32 sliceoffset, int32 slicelength)
 {
 	struct varlena *preslice;
@@ -217,8 +219,30 @@ heap_tuple_untoast_attr_slice(struct varlena *attr,
 		if (!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
 			return toast_fetch_datum_slice(attr, sliceoffset, slicelength);
 
-		/* fetch it back (compressed marker will get set automatically) */
-		preslice = toast_fetch_datum(attr);
+		/*
+		 * For compressed values, we need to fetch enough slices to decompress
+		 * at least the requested part (when a prefix is requested). Otherwise,
+		 * just fetch all slices.
+		 */
+		if (slicelength > 0 && sliceoffset >= 0)
+		{
+			int32 max_size;
+
+			/*
+			 * Determine maximum amount of compressed data needed for a prefix
+			 * of a given length (after decompression).
+			 */
+			max_size = pglz_maximum_compressed_size(sliceoffset + slicelength,
+													TOAST_COMPRESS_SIZE(attr));
+
+			/*
+			 * Fetch enough compressed slices (compressed marker will get set
+			 * automatically).
+			 */
+			preslice = toast_fetch_datum_slice(attr, 0, max_size);
+		}
+		else
+			preslice = toast_fetch_datum(attr);
 	}
 	else if (VARATT_IS_EXTERNAL_INDIRECT(attr))
 	{
@@ -229,13 +253,13 @@ heap_tuple_untoast_attr_slice(struct varlena *attr,
 		/* nested indirect Datums aren't allowed */
 		Assert(!VARATT_IS_EXTERNAL_INDIRECT(redirect.pointer));
 
-		return heap_tuple_untoast_attr_slice(redirect.pointer,
+		return detoast_attr_slice(redirect.pointer,
 											 sliceoffset, slicelength);
 	}
 	else if (VARATT_IS_EXTERNAL_EXPANDED(attr))
 	{
-		/* pass it off to heap_tuple_fetch_attr to flatten */
-		preslice = heap_tuple_fetch_attr(attr);
+		/* pass it off to detoast_external_attr to flatten */
+		preslice = detoast_external_attr(attr);
 	}
 	else
 		preslice = attr;
@@ -476,7 +500,9 @@ toast_fetch_datum(struct varlena *attr)
  *	Reconstruct a segment of a Datum from the chunks saved
  *	in the toast relation
  *
- *	Note that this function only supports non-compressed external datums.
+ *	Note that this function supports non-compressed external datums
+ *	and compressed external datums (in which case the requrested slice
+ *  has to be a prefix, i.e. sliceoffset has to be 0).
  * ----------
  */
 static struct varlena *
@@ -517,10 +543,11 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
 	/*
-	 * It's nonsense to fetch slices of a compressed datum -- this isn't lo_*
-	 * we can't return a compressed datum which is meaningful to toast later
+	 * It's nonsense to fetch slices of a compressed datum unless when it's
+	 * a prefix -- this isn't lo_* we can't return a compressed datum which
+	 * is meaningful to toast later.
 	 */
-	Assert(!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
+	Assert(!VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) || 0 == sliceoffset);
 
 	attrsize = toast_pointer.va_extsize;
 	totalchunks = ((attrsize - 1) / TOAST_MAX_CHUNK_SIZE) + 1;
@@ -531,12 +558,23 @@ toast_fetch_datum_slice(struct varlena *attr, int32 sliceoffset, int32 length)
 		length = 0;
 	}
 
+	/*
+	 * When fetching a prefix of a compressed external datum, account for the
+	 * rawsize tracking amount of raw data, which is stored at the beginning
+	 * as an int32 value).
+	 */
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer) && length > 0)
+		length = length + sizeof(int32);
+
 	if (((sliceoffset + length) > attrsize) || length < 0)
 		length = attrsize - sliceoffset;
 
 	result = (struct varlena *) palloc(length + VARHDRSZ);
 
-	SET_VARSIZE(result, length + VARHDRSZ);
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
+		SET_VARSIZE_COMPRESSED(result, length + VARHDRSZ);
+	else
+		SET_VARSIZE(result, length + VARHDRSZ);
 
 	if (length == 0)
 		return result;			/* Can save a lot of work at this point! */
@@ -720,7 +758,7 @@ toast_decompress_datum(struct varlena *attr)
 	SET_VARSIZE(result, TOAST_COMPRESS_RAWSIZE(attr) + VARHDRSZ);
 
 	if (pglz_decompress(TOAST_COMPRESS_RAWDATA(attr),
-						VARSIZE(attr) - TOAST_COMPRESS_HDRSZ,
+						TOAST_COMPRESS_SIZE(attr),
 						VARDATA(result),
 						TOAST_COMPRESS_RAWSIZE(attr), true) < 0)
 		elog(ERROR, "compressed data is corrupted");
@@ -733,7 +771,7 @@ toast_decompress_datum(struct varlena *attr)
  * toast_decompress_datum_slice -
  *
  * Decompress the front of a compressed version of a varlena datum.
- * offset handling happens in heap_tuple_untoast_attr_slice.
+ * offset handling happens in detoast_attr_slice.
  * Here we just decompress a slice from the front.
  */
 static struct varlena *
