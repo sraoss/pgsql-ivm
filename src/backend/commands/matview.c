@@ -55,6 +55,7 @@
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
 #include "nodes/print.h"
+#include "nodes/nodeFuncs.h"
 #include "catalog/pg_type_d.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
@@ -158,12 +159,14 @@ static void CloseMatViewIncrementalMaintenance(void);
 static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
 static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
 								  char* count_col, const char *castType);
-static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate);
+static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_paths);
 static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
-static void calc_delta(MV_TriggerTable *table, int index, Query *query,
+
+static void calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
 						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
 static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
 static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
+static bool checkQueryHasRtable_walker(Query *query, Oid relid);
 static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char *count_colname);
 static void truncate_view_delta(Oid delta_oid);
@@ -1253,12 +1256,13 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/* rewrite query */
 	rewritten = copyObject(query);
 	if (rewritten->hasSubLinks)
-		convert_EXISTS_sublink_to_lateral_join(rewritten);
-	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate);
+		rewrite_query_for_exists_subquery(rewritten);
+
+	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
 	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
 	rewritten2 = copyObject(query);
 	if (rewritten2->hasSubLinks)
-		convert_EXISTS_sublink_to_lateral_join(rewritten2);
+		rewrite_query_for_exists_subquery(rewritten2);
 
 	relowner = matviewRel->rd_rel->relowner;
 
@@ -1310,9 +1314,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		/* loop for self-join */
 		foreach(lc2, table->rte_indexes)
 		{
-			int index = lfirst_int(lc2);
+			List *index_paths = lfirst(lc2);
 
-			calc_delta(table, index, rewritten, dest_old, dest_new, queryEnv);
+			calc_delta(table, index_paths, rewritten, dest_old, dest_new, queryEnv);
 
 			PG_TRY();
 			{
@@ -1423,35 +1427,24 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 
 
 static void
-calc_delta(MV_TriggerTable *table, int index, Query *query,
+calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
 			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
 {
+	ListCell *index_path;
 	ListCell *lc;
-	ListCell *lc2;
 	RangeTblEntry *rte;
+	Query *querytree = query;
 
-	foreach(lc, query->rtable)
+	/* index change list or array or structure */
+	foreach(index_path, index_paths)
 	{
+		int index = lfirst_int(index_path);
+		lc = list_nth_cell(querytree->rtable, index);
 		rte = (RangeTblEntry *) lfirst(lc);
-		/*
-		 * Currently, it is not supported that a subquery is contained other subquery.
-		 */
-		if (rte->subquery && rte->relid != table->table_id)
-		{
-			lc2 = list_nth_cell(rte->subquery->rtable, index);
-			rte = (RangeTblEntry *) lfirst(lc2);
-			if (rte == NULL || rte->relid != table->table_id )
-				continue;
-
-			/* found tartget rte */
-			lc = lc2;
-			break;
-		}
-		else if (rte != NULL && rte->relid == table->table_id)
-		{
-			break;
-		}
+		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+			querytree = rte->subquery;
 	}
+
 
 	/* Generate old delta */
 	if (list_length(table->old_rtes) > 0)
@@ -1530,6 +1523,26 @@ make_delta_enr_name(const char *prefix, Oid relid, int count)
 	return name;
 }
 
+static bool
+checkQueryHasRtable_walker(Query *query, Oid relid)
+{
+	ListCell *lc;
+
+	foreach(lc, query->rtable)
+	{
+		RangeTblEntry *r = (RangeTblEntry *) lfirst(lc);	
+		if (r->relid == relid)
+			return true;
+		else if (r->subquery)
+		{
+			if (checkQueryHasRtable_walker(r->subquery, relid))
+				return true;
+		}
+	}
+	return false;
+
+}
+
 static void
 register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 {
@@ -1544,16 +1557,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 		ListCell *lc2;
 		int count;
 
-		foreach(lc2, query->rtable)
-		{
-			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc2);
-
-			if (r->relid == table->table_id)
-			{
-				flag = true;
-				break;
-			}
-		}
+		flag = checkQueryHasRtable_walker(query, table->table_id);
 
 		if (!flag)
 			continue;
@@ -1651,7 +1655,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, 
 	rte->subquery = sub;
 	rte->security_barrier = false;
 	/* Clear fields that should not be set in a subquery RTE */
-//	rte->relid = InvalidOid;
+	rte->relid = InvalidOid;
 	rte->relkind = 0;
 	rte->rellockmode = 0;
 	rte->tablesample = NULL;
@@ -1667,41 +1671,54 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, 
 	return rte;
 }
 
+
 static Query*
-rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate)
+rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_paths)
 {
 	ListCell *lc;
 	int num_rte = list_length(query->rtable);
 	int i;
 
-	register_delta_ENRs(pstate, query, tables);
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	/* regist delta ENRs only once */
+	if (index_paths == NIL)
+		register_delta_ENRs(pstate, query, tables);
 
 	// XXX: Is necessary? Is this right timing?
 	AcquireRewriteLocks(query, true, false);
 
-	foreach(lc, tables)
+
+
+	i = 0;
+	foreach(lc, query->rtable)
 	{
-		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
-		ListCell *lc2;
+		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
 
-		i = 0;
-		foreach(lc2, query->rtable)
+		/* if rte contains subquery, search recursively */
+		if (r->rtekind == RTE_SUBQUERY)
 		{
-			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc2);
-
-			if (r->rtekind == RTE_SUBQUERY)
-			{
-				rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate);
-			}
-			else if (r->relid == table->table_id)
-			{
-				lfirst(lc2) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
-				table->rte_indexes = lappend_int(table->rte_indexes, i);
-			}
-
-			if (++i >= num_rte)
-				break;
+			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(index_paths, i));
 		}
+		else
+		{
+			ListCell *lc2;
+			foreach(lc2, tables)
+			{
+				MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc2);
+				/* replace original rte with prestate rte(used subquery) and add rte's index path, if rte found */
+				if (r->relid == table->table_id)
+				{
+					lfirst(lc) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
+					table->rte_indexes = lappend(table->rte_indexes, lappend_int(index_paths, i));
+					break;
+				}
+			}	
+		}
+
+		if (++i >= num_rte)
+			break;
 	}
 
 	return query;
@@ -1837,6 +1854,94 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 	return query;
 }
 
+
+Query *
+rewrite_query_for_exists_subquery(Query *query)
+{
+	FromExpr *fromexpr;
+	SubLink *sublink;
+
+	RangeTblEntry *rte;
+	RangeTblRef *rtr;
+	Alias *alias;
+	ParseState *pstate;
+	Query *subselect;
+
+
+	TargetEntry *tle_count;
+	FuncCall *fn;
+	Node *node;
+	Expr *opexpr;
+
+	/*
+	 * This is test pattern. its pattern contain only subquery on WHERE clause.
+	 * In the feature, other expr with subquery will be supported.
+	 */
+	fromexpr = (FromExpr *)query->jointree;
+	sublink = (SubLink *)fromexpr->quals;
+
+	subselect = (Query *)sublink->subselect;
+	/* Currently, EXISTS is only supported */
+	if (sublink->subLinkType != EXISTS_SUBLINK)
+		return NULL;
+	if (subselect->cteList)
+		return NULL;
+	/* */
+	pstate = make_parsestate(NULL);
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	/*
+	 * convert EXISTS subquery into LATERAL subquery in FROM clause.
+	 */
+
+	/* add COUNT(*) for counting exists condition */
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+	tle_count = makeTargetEntry((Expr *) node,
+								list_length(subselect->targetList) + 1,
+								pstrdup("__ivm_exists_count__"),
+								false);
+	/* add __ivm_exists_count__ column */
+	subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
+	subselect->hasAggs = true;
+
+	/* add subquery in from clause */
+	alias = makeAlias("subquery_with_exists", NIL);
+	/* it means that LATERAL is enable if fourth argument is true */
+	rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+	query->rtable = lappend(query->rtable, rte);
+	pstate->p_rtable = query->rtable; 
+
+	rtr = makeNode(RangeTblRef);
+	/* assume new rte is at end */
+	rtr->rtindex = list_length(query->rtable);
+
+	((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
+
+
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
+
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+
+	/*
+	 * it means using int84gt( '>' operator). it will be replaced to make_op().
+	 */
+	opexpr = make_opclause(419, BOOLOID, false,
+					(Expr *)node,
+					(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
+					InvalidOid, InvalidOid);
+	fix_opfuncids((Node *) opexpr);
+	/* drop subquery in WHERE clause */
+	fromexpr->quals = NULL;
+	query->hasSubLinks = false;
+
+	subselect->havingQual = (Node *)opexpr;
+
+	return query;
+}
 
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char * count_colname)

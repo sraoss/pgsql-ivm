@@ -239,98 +239,6 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 }
 
 /*
- * convert_EXISTS_subkink_to_lateral_join
- */
-RangeTblEntry *
-convert_EXISTS_sublink_to_lateral_join(Query *query)
-{
-	FromExpr *fromexpr;
-	SubLink *sublink;
-
-	RangeTblEntry *rte;
-	RangeTblRef *rtr;
-	Alias *alias;
-	ParseState *pstate;
-	Query *subselect;
-
-
-	TargetEntry *tle_count;
-	FuncCall *fn;
-	Node *node;
-	Expr *opexpr;
-
-	/*
-	 * This is test pattern. its pattern contain only subquery on WHERE clause.
-	 * In the feature, other expr with subquery will be supported.
-	 */
-	fromexpr = (FromExpr *)query->jointree;
-	sublink = (SubLink *)fromexpr->quals;
-
-	subselect = (Query *)sublink->subselect;
-	/* Currently, EXISTS is only supported */
-	if (sublink->subLinkType != EXISTS_SUBLINK)
-		return NULL;
-	if (subselect->cteList)
-		return NULL;
-	/* */
-	pstate = make_parsestate(NULL);
-	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
-
-	/*
-	 * convert EXISTS subquery into LATERAL subquery in FROM clause.
-	 */
-
-	/* add COUNT(*) for counting exists condition */
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-	fn->agg_star = true;
-	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-	tle_count = makeTargetEntry((Expr *) node,
-								list_length(subselect->targetList) + 1,
-								pstrdup("__ivm_exists_count__"),
-								false);
-	/* add __ivm_exists_count__ column */
-	subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
-	subselect->hasAggs = true;
-
-	/* add subquery in from clause */
-	alias = makeAlias("subquery_with_exists", NIL);
-	/* it means that LATERAL is enable if fourth argument is true */
-	rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
-	query->rtable = lappend(query->rtable, rte);
-	pstate->p_rtable = query->rtable; 
-
-	rtr = makeNode(RangeTblRef);
-	/* assume new rte is at end */
-	rtr->rtindex = list_length(query->rtable);
-
-	((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
-
-
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-	fn->agg_star = true;
-
-	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-
-	/*
-	 * it means using int84gt( '>' operator). it will be replaced to make_op().
-	 */
-	opexpr = make_opclause(419, BOOLOID, false,
-					(Expr *)node,
-					(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
-					InvalidOid, InvalidOid);
-	fix_opfuncids((Node *) opexpr);
-	/* drop subquery in WHERE clause */
-	fromexpr->quals = NULL;
-	query->hasSubLinks = false;
-
-	subselect->havingQual = (Node *)opexpr;
-
-	return rte;
-}
-
-
-/*
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
 ObjectAddress
@@ -450,7 +358,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			{
 				hasSublink = true;
 				/*sub query to rtable  */
-				convert_EXISTS_sublink_to_lateral_join(copied_query);
+				rewrite_query_for_exists_subquery(copied_query);
 			}
 
 			/* Add count(*) using EXISTS clause */
@@ -1086,12 +994,6 @@ check_ivm_restriction_walker(Node *node)
 
 	if (node == NULL)
 		return;
-	/*
-	 * We currently don't support Sub-Query.
-	 */
-	if (IsA(node, SubPlan))
-//	if (IsA(node, SubPlan) || IsA(node, SubLink))
-		ereport(ERROR, (errmsg("subquery is not supported with IVM")));
 
 	switch (nodeTag(node))
 	{
@@ -1110,8 +1012,6 @@ check_ivm_restriction_walker(Node *node)
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
-//					if (rte->rtekind ==  RTE_SUBQUERY)
-//						ereport(ERROR, (errmsg("subquery is not supported with IVM")));
 				}
 
 				/* search in jointree */
@@ -1206,13 +1106,10 @@ check_ivm_restriction_walker(Node *node)
  				SubLink	*sublink = (SubLink *) node;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR, (errmsg("subquery is not supported with IVM, except for EXISTS clause")));
+				check_ivm_restriction_walker(sublink->subselect);
 				break;
 			}
 		case T_SubPlan:
-			{
-				/* Now, not supported */
-				break;
-			}
 		case T_Aggref:
 		case T_GroupingFunc:
 		case T_WindowFunc:

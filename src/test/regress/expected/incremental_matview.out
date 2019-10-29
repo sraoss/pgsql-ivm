@@ -418,6 +418,8 @@ SELECT * FROM mv_ri ORDER BY i2;
   3 |  3
  10 | 10
 (2 rows)
+
+ROLLBACK;
 -- support subquery for using EXISTS() cluase
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
@@ -499,7 +501,6 @@ ERROR:  system column is not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
 ERROR:  subquery is not supported with IVM, except for EXISTS clause
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm04 AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
-ERROR:  subquery is not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
 ERROR:  subquery is not supported with IVM, except for EXISTS clause
 -- contain CTE
@@ -513,8 +514,9 @@ ERROR:  VIEW or MATERIALIZED VIEW is not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm08 AS SELECT a.i,a.j FROM mv_base_a a,b_mview b WHERE a.i = b.i;
 ERROR:  VIEW or MATERIALIZED VIEW is not supported with IVM
 DROP TABLE mv_base_b CASCADE;
-NOTICE:  drop cascades to 3 other objects
+NOTICE:  drop cascades to 4 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1
+drop cascades to materialized view mv_ivm04
 drop cascades to view b_view
 drop cascades to materialized view b_mview
 DROP TABLE mv_base_a CASCADE;

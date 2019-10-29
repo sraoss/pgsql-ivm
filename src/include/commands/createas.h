@@ -28,6 +28,4 @@ extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
 extern DestReceiver *CreateIntoRelDestReceiver(IntoClause *intoClause);
 
-extern RangeTblEntry *convert_EXISTS_sublink_to_lateral_join(Query *query);
-
 #endif							/* CREATEAS_H */
