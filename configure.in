@@ -547,7 +547,7 @@ elif test "$PORTNAME" = "hpux"; then
   PGAC_PROG_CXX_CFLAGS_OPT([+Olibmerrno])
 fi
 
-AC_SUBST(CFLAGS_VECTOR, $CFLAGS_VECTOR)
+AC_SUBST(CFLAGS_VECTOR)
 
 # Determine flags used to emit bitcode for JIT inlining. Need to test
 # for behaviour changing compiler flags, to keep compatibility with
@@ -607,8 +607,11 @@ CXXFLAGS="$CXXFLAGS $user_CXXFLAGS"
 BITCODE_CFLAGS="$BITCODE_CFLAGS $user_BITCODE_CFLAGS"
 BITCODE_CXXFLAGS="$BITCODE_CXXFLAGS $user_BITCODE_CXXFLAGS"
 
-AC_SUBST(BITCODE_CFLAGS, $BITCODE_CFLAGS)
-AC_SUBST(BITCODE_CXXFLAGS, $BITCODE_CXXFLAGS)
+AC_SUBST(BITCODE_CFLAGS)
+AC_SUBST(BITCODE_CXXFLAGS)
+
+# The template file must set up CFLAGS_SL; we don't support user override
+AC_SUBST(CFLAGS_SL)
 
 # Check if the compiler still works with the final flag settings
 # (note, we're not checking that for CXX, which is optional)
@@ -1539,6 +1542,26 @@ case $host_cpu in
     if test x"$pgac_cv_have_ppc_mutex_hint" = xyes ; then
 	AC_DEFINE(HAVE_PPC_LWARX_MUTEX_HINT, 1, [Define to 1 if the assembler supports PPC's LWARX mutex hint bit.])
     fi
+    # Check if compiler accepts "i"(x) when __builtin_constant_p(x).
+    AC_CACHE_CHECK([whether __builtin_constant_p(x) implies "i"(x) acceptance],
+                   [pgac_cv_have_i_constraint__builtin_constant_p],
+    [AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
+    [static inline int
+     addi(int ra, int si)
+     {
+         int res = 0;
+         if (__builtin_constant_p(si))
+             __asm__ __volatile__(
+                 " addi %0,%1,%2\n" : "=r"(res) : "b"(ra), "i"(si));
+         return res;
+     }
+     int test_adds(int x) { return addi(3, x) + addi(x, 5); }], [])],
+    [pgac_cv_have_i_constraint__builtin_constant_p=yes],
+    [pgac_cv_have_i_constraint__builtin_constant_p=no])])
+    if test x"$pgac_cv_have_i_constraint__builtin_constant_p" = xyes ; then
+      AC_DEFINE(HAVE_I_CONSTRAINT__BUILTIN_CONSTANT_P, 1,
+                [Define to 1 if __builtin_constant_p(x) implies "i"(x) acceptance.])
+    fi
   ;;
 esac
 
@@ -2230,6 +2253,10 @@ if test "$with_perl" = yes; then
   # On most platforms, if perl.h is there then libperl.so will be too, but at
   # this writing Debian packages them separately.  There is no known reason to
   # waste cycles on separate probes for the Tcl or Python libraries, though.
+  # On some Red Hat platforms, the link attempt can fail if we don't use
+  # CFLAGS_SL while building the test program.
+  ac_save_CFLAGS=$CFLAGS
+  CFLAGS="$CFLAGS $CFLAGS_SL"
   pgac_save_LIBS=$LIBS
   LIBS="$perl_embed_ldflags"
   AC_MSG_CHECKING([for libperl])
@@ -2241,6 +2268,7 @@ if test "$with_perl" = yes; then
     [AC_MSG_RESULT(no)
      AC_MSG_ERROR([libperl library is required for Perl])])
   LIBS=$pgac_save_LIBS
+  CFLAGS=$ac_save_CFLAGS
   CPPFLAGS=$ac_save_CPPFLAGS
 fi
 
