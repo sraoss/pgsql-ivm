@@ -358,7 +358,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			{
 				hasSublink = true;
 				/*sub query to rtable  */
-				rewrite_query_for_exists_subquery(copied_query);
+				rewrite_query_for_exists_subquery(copied_query, (Node *)copied_query);
 			}
 
 			/* Add count(*) using EXISTS clause */
@@ -512,6 +512,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 								  	pstrdup("__ivm_count__"),
 								  	false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
+
 
 			copied_query->hasAggs = true;
 		}

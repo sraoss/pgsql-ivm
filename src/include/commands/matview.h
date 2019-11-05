@@ -36,6 +36,7 @@ extern Datum IVM_immediate_before(PG_FUNCTION_ARGS);
 extern Datum IVM_immediate_maintenance(PG_FUNCTION_ARGS);
 extern void AtAbort_IVM(void);
 
-extern Query* rewrite_query_for_exists_subquery(Query *query);
+//extern Query* rewrite_query_for_exists_subquery(Query *query);
+extern Query* rewrite_query_for_exists_subquery(Query *query, Node *node);
 
 #endif							/* MATVIEW_H */

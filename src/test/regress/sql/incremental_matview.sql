@@ -178,6 +178,8 @@ SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER B
 DELETE FROM mv_base_a WHERE (i,j) = (1,60);
 DELETE FROM mv_base_b WHERE i = 2;
 SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery2 AS SELECT a.i, a.j FROM mv_base_a a WHERE i >= 3 AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
 ROLLBACK;
 
 -- contain system column

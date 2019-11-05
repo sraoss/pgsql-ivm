@@ -491,6 +491,16 @@ SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery ORDER B
  4 |  40 |             1 |                    1
 (6 rows)
 
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery2 AS SELECT a.i, a.j FROM mv_base_a a WHERE i >= 3 AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+SELECT *,__ivm_count__, __ivm_exists_count__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
+ i |  j  | __ivm_count__ | __ivm_exists_count__ 
+---+-----+---------------+----------------------
+ 3 |  30 |             2 |                    1
+ 3 |  30 |             2 |                    1
+ 3 | 300 |             1 |                    1
+ 4 |  40 |             1 |                    1
+(4 rows)
+
 ROLLBACK;
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;

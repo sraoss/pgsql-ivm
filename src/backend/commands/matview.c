@@ -163,7 +163,7 @@ static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, Tran
 static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
 
 static void calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
-						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
+						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv, bool lateral);
 static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
 static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static bool checkQueryHasRtable_walker(Query *query, Oid relid);
@@ -1256,13 +1256,13 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/* rewrite query */
 	rewritten = copyObject(query);
 	if (rewritten->hasSubLinks)
-		rewrite_query_for_exists_subquery(rewritten);
+		rewrite_query_for_exists_subquery(rewritten, (Node *)rewritten);
 
 	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
 	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
 	rewritten2 = copyObject(query);
 	if (rewritten2->hasSubLinks)
-		rewrite_query_for_exists_subquery(rewritten2);
+		rewrite_query_for_exists_subquery(rewritten2, (Node *)rewritten2);
 
 	relowner = matviewRel->rd_rel->relowner;
 
@@ -1314,9 +1314,11 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		/* loop for self-join */
 		foreach(lc2, table->rte_indexes)
 		{
+			bool lateral = false;
 			List *index_paths = lfirst(lc2);
 
-			calc_delta(table, index_paths, rewritten, dest_old, dest_new, queryEnv);
+			calc_delta(table, index_paths, rewritten, dest_old, dest_new, queryEnv, lateral);
+
 
 			PG_TRY();
 			{
@@ -1428,7 +1430,7 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 
 static void
 calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
-			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
+			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv, bool lateral)
 {
 	ListCell *index_path;
 	ListCell *lc;
@@ -1442,7 +1444,11 @@ calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
 		lc = list_nth_cell(querytree->rtable, index);
 		rte = (RangeTblEntry *) lfirst(lc);
 		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+		{
 			querytree = rte->subquery;
+			if (rte->lateral)
+				lateral = true;
+		}
 	}
 
 
@@ -1856,92 +1862,128 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 
 
 Query *
-rewrite_query_for_exists_subquery(Query *query)
+rewrite_query_for_exists_subquery(Query *query, Node *node)
 {
-	FromExpr *fromexpr;
-	SubLink *sublink;
+	switch (nodeTag(node))
+	{
+		case T_Query:
+			{
+				FromExpr *fromexpr;
 
-	RangeTblEntry *rte;
-	RangeTblRef *rtr;
-	Alias *alias;
-	ParseState *pstate;
-	Query *subselect;
+				/* get subquery in WHERE clause */
+				fromexpr = (FromExpr *)query->jointree;
+				query = rewrite_query_for_exists_subquery(query, fromexpr->quals);
+				/* drop subquery in WHERE clause */
+				if (IsA(fromexpr->quals, SubLink))
+					fromexpr->quals = NULL;
+				break;
+			}
+		case T_BoolExpr:
+			{
+				BoolExprType type;
+
+				type = ((BoolExpr *) node)->boolop;
+				switch (type)
+				{
+					ListCell *lc;
+					case AND_EXPR:
+						foreach(lc, ((BoolExpr *)node)->args)
+						{
+							Node *opnode = (Node *)lfirst(lc);
+							query = rewrite_query_for_exists_subquery(query, opnode);
+							/* overwrite SubLink node if it is contained in AND_EXPR */
+							if (IsA(opnode, SubLink))
+								lfirst(lc) = makeConst(BOOLOID, -1, InvalidOid, sizeof(bool), BoolGetDatum(true), false, true);
+						}
+						break;
+					case OR_EXPR:
+					case NOT_EXPR:
+						break;
+				}
+				break;
+			}
+		case T_SubLink:
+			{
+				Query *subselect;
+				ParseState *pstate;
+				RangeTblEntry *rte;
+				RangeTblRef *rtr;
+				Alias *alias;
+
+				TargetEntry *tle_count;
+				FuncCall *fn;
+				Node *fn_node;
+				Expr *opexpr;
+
+				SubLink *sublink = (SubLink *)node;
+				/* return NULL if not has exist clause */
+				if (sublink->subLinkType != EXISTS_SUBLINK)
+					ereport(ERROR, (errmsg("subquery is not supported with IVM, except for EXISTS clause")));
+
+				subselect = (Query *)sublink->subselect;
+				/* return NULL if it is CTE */
+				if (subselect->cteList)
+					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+
+				pstate = make_parsestate(NULL);
+				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+				/*
+				 * convert EXISTS subquery into LATERAL subquery in FROM clause.
+				 */
+
+				/* add COUNT(*) for counting exists condition */
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn->agg_star = true;
+				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+				tle_count = makeTargetEntry((Expr *) fn_node,
+											list_length(subselect->targetList) + 1,
+											pstrdup("__ivm_exists_count__"),
+											false);
+				/* add __ivm_exists_count__ column */
+				subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
+				subselect->hasAggs = true;
+
+				/* add subquery in from clause */
+				alias = makeAlias("ivm_exists_subquery", NIL);
+				/* it means that LATERAL is enable if fourth argument is true */
+				rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+
+				query->rtable = lappend(query->rtable, rte);
+				pstate->p_rtable = query->rtable; 
+
+				rtr = makeNode(RangeTblRef);
+				/* assume new rte is at end */
+				rtr->rtindex = list_length(query->rtable);
+
+				((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
 
 
-	TargetEntry *tle_count;
-	FuncCall *fn;
-	Node *node;
-	Expr *opexpr;
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn->agg_star = true;
 
-	/*
-	 * This is test pattern. its pattern contain only subquery on WHERE clause.
-	 * In the feature, other expr with subquery will be supported.
-	 */
-	fromexpr = (FromExpr *)query->jointree;
-	sublink = (SubLink *)fromexpr->quals;
+				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 
-	subselect = (Query *)sublink->subselect;
-	/* Currently, EXISTS is only supported */
-	if (sublink->subLinkType != EXISTS_SUBLINK)
-		return NULL;
-	if (subselect->cteList)
-		return NULL;
-	/* */
-	pstate = make_parsestate(NULL);
-	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+				/*
+				 * it means using int84gt( '>' operator). it will be replaced to make_op().
+				 */
+				opexpr = make_opclause(419, BOOLOID, false,
+								(Expr *)fn_node,
+								(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
+								InvalidOid, InvalidOid);
+				fix_opfuncids((Node *) opexpr);
+				query->hasSubLinks = false;
 
-	/*
-	 * convert EXISTS subquery into LATERAL subquery in FROM clause.
-	 */
-
-	/* add COUNT(*) for counting exists condition */
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-	fn->agg_star = true;
-	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-	tle_count = makeTargetEntry((Expr *) node,
-								list_length(subselect->targetList) + 1,
-								pstrdup("__ivm_exists_count__"),
-								false);
-	/* add __ivm_exists_count__ column */
-	subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
-	subselect->hasAggs = true;
-
-	/* add subquery in from clause */
-	alias = makeAlias("subquery_with_exists", NIL);
-	/* it means that LATERAL is enable if fourth argument is true */
-	rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
-	query->rtable = lappend(query->rtable, rte);
-	pstate->p_rtable = query->rtable; 
-
-	rtr = makeNode(RangeTblRef);
-	/* assume new rte is at end */
-	rtr->rtindex = list_length(query->rtable);
-
-	((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
-
-
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-	fn->agg_star = true;
-
-	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-
-	/*
-	 * it means using int84gt( '>' operator). it will be replaced to make_op().
-	 */
-	opexpr = make_opclause(419, BOOLOID, false,
-					(Expr *)node,
-					(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
-					InvalidOid, InvalidOid);
-	fix_opfuncids((Node *) opexpr);
-	/* drop subquery in WHERE clause */
-	fromexpr->quals = NULL;
-	query->hasSubLinks = false;
-
-	subselect->havingQual = (Node *)opexpr;
-
+				subselect->havingQual = (Node *)opexpr;
+				
+				break;
+			}
+		default:
+			break;
+	}
 	return query;
 }
+
 
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char * count_colname)
