@@ -572,6 +572,12 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm07 AS SELECT a.i,a.j FROM mv_base_a 
 ERROR:  VIEW or MATERIALIZED VIEW is not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm08 AS SELECT a.i,a.j FROM mv_base_a a,b_mview b WHERE a.i = b.i;
 ERROR:  VIEW or MATERIALIZED VIEW is not supported with IVM
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
+ERROR:  aggregate functions in nested query are not supported with IVM
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm10 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR a.i > 5;
+ERROR:  OR or NOT conditions and EXISTS condition are used togther with IVM
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT 1 FROM mv_base_b c WHERE b.i = c.i));
+ERROR:  nested subquery is not supported with IVM
 DROP TABLE mv_base_b CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1

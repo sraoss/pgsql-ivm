@@ -216,6 +216,9 @@ CREATE VIEW b_view AS SELECT i,k FROM mv_base_b;
 CREATE MATERIALIZED VIEW b_mview AS SELECT i,k FROM mv_base_b;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm07 AS SELECT a.i,a.j FROM mv_base_a a,b_view b WHERE a.i = b.i;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm08 AS SELECT a.i,a.j FROM mv_base_a a,b_mview b WHERE a.i = b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm10 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR a.i > 5;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT 1 FROM mv_base_b c WHERE b.i = c.i));
 
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;

@@ -59,6 +59,7 @@
 #include "catalog/pg_type_d.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
+#include "rewrite/rewriteManip.h"
 
 /*
  * Local definitions
@@ -1943,6 +1944,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 						break;
 					case OR_EXPR:
 					case NOT_EXPR:
+						if (checkExprHasSubLink(node))
+							ereport(ERROR, (errmsg("OR or NOT conditions and EXISTS condition are used togther with IVM")));
 						break;
 				}
 				break;
@@ -2040,6 +2043,8 @@ Query *
 rewrite_query_for_exists_subquery(Query *query, Node *node)
 {
 	int count = 0;	
+	if (query->hasAggs)
+		elog(ERROR, "aggregate function and EXISTS condition are not supported at the same time");
 
 	return rewrite_exists_subquery_walker(query, node, &count);
 }
