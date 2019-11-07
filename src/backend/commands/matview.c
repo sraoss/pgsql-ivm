@@ -116,7 +116,7 @@ typedef struct MV_TriggerTable
 	RangeTblEntry *original_rte;
 	List *old_rtes;
 	List *new_rtes;
-	List *rte_indexes;
+	List *rte_indexes;			/* List of path list to RTE */
 } MV_TriggerTable;
 
 static HTAB *mv_query_cache = NULL;
@@ -163,7 +163,7 @@ static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, Tran
 static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
 
 static void calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
-						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv, bool lateral);
+						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
 static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
 static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static bool checkQueryHasRtable_walker(Query *query, Oid relid);
@@ -1113,7 +1113,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Oid matviewOid;
 	Query	   *query, *rewritten, *rewritten2;
 	char*		matviewname = trigdata->tg_trigger->tgargs[0];
-	char*		count_colname = trigdata->tg_trigger->tgargs[1];
+	char*		count_colname = NULL;
 	List	   *names;
 	Relation matviewRel;
 	int old_depth = matview_maintenance_depth;
@@ -1260,6 +1260,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
 	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
+
 	rewritten2 = copyObject(query);
 	if (rewritten2->hasSubLinks)
 		rewrite_query_for_exists_subquery(rewritten2, (Node *)rewritten2);
@@ -1314,11 +1315,29 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		/* loop for self-join */
 		foreach(lc2, table->rte_indexes)
 		{
-			bool lateral = false;
 			List *index_paths = lfirst(lc2);
+			int i;
+			Query *querytree = rewritten;
+			RangeTblEntry *rte;
 
-			calc_delta(table, index_paths, rewritten, dest_old, dest_new, queryEnv, lateral);
+			calc_delta(table, index_paths, rewritten, dest_old, dest_new, queryEnv);
 
+			/* check __ivm_exists_count_X__ columns are contained */
+			for(i = 0; i< list_length(index_paths); i++)
+			{
+				int index =  lfirst_int(list_nth_cell(index_paths, i));
+				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index));
+	
+				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+				{
+					querytree = rte->subquery;
+					if (rte->lateral)
+						count_colname = getIVMColumnName(rte, "__ivm_exists");
+				}
+			}
+
+			if (count_colname == NULL)
+				count_colname = pstrdup("__ivm_count__");
 
 			PG_TRY();
 			{
@@ -1427,15 +1446,34 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 	return buf.data;
 }
 
+char *
+getIVMColumnName(RangeTblEntry *rte, char *str)
+{
+	char *colname;
+	ListCell *lc;
+	Alias *alias = rte->eref;
+
+	foreach(lc, alias->colnames)
+	{
+		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
+		{
+			colname = pstrdup(strVal(lfirst(lc)));
+			return colname;
+		}
+	}
+	return NULL;
+}
 
 static void
 calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
-			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv, bool lateral)
+			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
 {
 	ListCell *index_path;
 	ListCell *lc;
 	RangeTblEntry *rte;
 	Query *querytree = query;
+
+	Assert(list_length(index_paths) > 0);
 
 	/* index change list or array or structure */
 	foreach(index_path, index_paths)
@@ -1446,11 +1484,8 @@ calc_delta(MV_TriggerTable *table, List *index_paths, Query *query,
 		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
 		{
 			querytree = rte->subquery;
-			if (rte->lateral)
-				lateral = true;
 		}
 	}
-
 
 	/* Generate old delta */
 	if (list_length(table->old_rtes) > 0)
@@ -1533,6 +1568,9 @@ static bool
 checkQueryHasRtable_walker(Query *query, Oid relid)
 {
 	ListCell *lc;
+
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
 
 	foreach(lc, query->rtable)
 	{
@@ -1828,17 +1866,21 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 		RangeTblEntry *rte = (RangeTblEntry *)lfirst(tbl_lc);
 		if (rte->subquery)
 		{
-			/* search subquery in RangeTblEntry */
+			char *columnName;
+
+			/* search ivm_exists_count_X__ coulumn in RangeTblEntry */
 			pstate->p_rtable = query->rtable;
-			node = scanRTEForColumn(pstate,rte,"__ivm_exists_count__",-1, 0, NULL);
-			if(node == NULL)
+			columnName = getIVMColumnName(rte, "__ivm_exists");
+			if (columnName == NULL)
+				continue;
+			node = scanRTEForColumn(pstate,rte,columnName,-1, 0, NULL);
+			if (node == NULL)
 				continue;
 			tle_count = makeTargetEntry((Expr *) node,
 										list_length(query->targetList) + 1,
-										pstrdup("__ivm_exists_count__"),
+										pstrdup(columnName),
 										false);
 			query->targetList = lappend(query->targetList, tle_count);
-			break;
 		}
 	}
 
@@ -1861,9 +1903,12 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 }
 
 
-Query *
-rewrite_query_for_exists_subquery(Query *query, Node *node)
+static Query *
+rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 {
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
 	switch (nodeTag(node))
 	{
 		case T_Query:
@@ -1872,7 +1917,7 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 
 				/* get subquery in WHERE clause */
 				fromexpr = (FromExpr *)query->jointree;
-				query = rewrite_query_for_exists_subquery(query, fromexpr->quals);
+				query = rewrite_exists_subquery_walker(query, fromexpr->quals, count);
 				/* drop subquery in WHERE clause */
 				if (IsA(fromexpr->quals, SubLink))
 					fromexpr->quals = NULL;
@@ -1890,7 +1935,7 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 						foreach(lc, ((BoolExpr *)node)->args)
 						{
 							Node *opnode = (Node *)lfirst(lc);
-							query = rewrite_query_for_exists_subquery(query, opnode);
+							query = rewrite_exists_subquery_walker(query, opnode, count);
 							/* overwrite SubLink node if it is contained in AND_EXPR */
 							if (IsA(opnode, SubLink))
 								lfirst(lc) = makeConst(BOOLOID, -1, InvalidOid, sizeof(bool), BoolGetDatum(true), false, true);
@@ -1904,6 +1949,8 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 			}
 		case T_SubLink:
 			{
+				char aliasName[NAMEDATALEN];
+				char columnName[NAMEDATALEN];
 				Query *subselect;
 				ParseState *pstate;
 				RangeTblEntry *rte;
@@ -1932,20 +1979,24 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 				 * convert EXISTS subquery into LATERAL subquery in FROM clause.
 				 */
 
+
+				snprintf(aliasName, sizeof(aliasName), "__ivm_exists_subquery_%d__", *count);
+				snprintf(columnName, sizeof(columnName), "__ivm_exists_count_%d__", *count);
+
 				/* add COUNT(*) for counting exists condition */
 				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 				fn->agg_star = true;
 				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 				tle_count = makeTargetEntry((Expr *) fn_node,
 											list_length(subselect->targetList) + 1,
-											pstrdup("__ivm_exists_count__"),
+											columnName,
 											false);
 				/* add __ivm_exists_count__ column */
 				subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
 				subselect->hasAggs = true;
 
 				/* add subquery in from clause */
-				alias = makeAlias("ivm_exists_subquery", NIL);
+				alias = makeAlias(aliasName, NIL);
 				/* it means that LATERAL is enable if fourth argument is true */
 				rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
 
@@ -1975,7 +2026,7 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 				query->hasSubLinks = false;
 
 				subselect->havingQual = (Node *)opexpr;
-				
+				(*count)++;
 				break;
 			}
 		default:
@@ -1984,6 +2035,14 @@ rewrite_query_for_exists_subquery(Query *query, Node *node)
 	return query;
 }
 
+
+Query *
+rewrite_query_for_exists_subquery(Query *query, Node *node)
+{
+	int count = 0;	
+
+	return rewrite_exists_subquery_walker(query, node, &count);
+}
 
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char * count_colname)

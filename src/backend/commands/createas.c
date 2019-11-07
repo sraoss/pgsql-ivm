@@ -88,7 +88,7 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
-static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing, char *count_col);
+static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
 static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map, bool in_subquery);
 static void check_ivm_restriction_walker(Node *node);
 
@@ -258,7 +258,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
 	Query	   *copied_query;
-	bool hasSublink = false;
 
 	if (stmt->if_not_exists)
 	{
@@ -353,37 +352,43 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
-			/* If conatin EXISTS clause*/
+			/* 
+			 * If conatin EXISTS clause, rewrite query and
+			 * add __ivm_exists_count_X__ column.
+			 */
 			if (copied_query->hasSubLinks)
-			{
-				hasSublink = true;
-				/*sub query to rtable  */
-				rewrite_query_for_exists_subquery(copied_query, (Node *)copied_query);
-			}
-
-			/* Add count(*) using EXISTS clause */
-			if (hasSublink)
 			{
 				ListCell *lc;
 				RangeTblEntry *rte;
-				Node *colCountSubquery;
-				/* search subquery in RangeTblEntry */
+
+				/* subquery to rtable  */
+				rewrite_query_for_exists_subquery(copied_query, (Node *)copied_query);
+
+				/* Add count(*) using EXISTS clause */
 				foreach(lc, copied_query->rtable)
 				{
+					char *columnName;
+					Node *countCol = NULL;
+
 					rte = (RangeTblEntry *) lfirst(lc);
-					if (rte->subquery)
+					if (!rte->subquery || !rte->lateral)
+						continue;
+					pstate->p_rtable = copied_query->rtable;
+
+					columnName = getIVMColumnName(rte, "__ivm_exists");
+					if (columnName == NULL)
+						continue;
+					countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
+
+					if (countCol != NULL)
 					{
-						pstate->p_rtable = copied_query->rtable;
-						colCountSubquery = scanRTEForColumn(pstate,rte,"__ivm_exists_count__",-1, 0, NULL);
-						break;
+						tle = makeTargetEntry((Expr *) countCol,
+													list_length(copied_query->targetList) + 1,
+													pstrdup(columnName),
+													false);
+						copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
 					}
 				}
-				Assert(colCountSubquery != NULL);
-				tle = makeTargetEntry((Expr *) colCountSubquery,
-											list_length(copied_query->targetList) + 1,
-											pstrdup("__ivm_exists_count__"),
-											false);
-				copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
 			}
 
 			/* group keys must be in targetlist */
@@ -616,14 +621,12 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		{
 			if (!bms_is_member(rte->relid, *relid_map))
 			{
-				char *count_colname = in_subquery ? "__ivm_exists_count__" : "__ivm_count__";
-
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE, count_colname);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE, count_colname);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE, count_colname);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER, count_colname);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER, count_colname);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER, count_colname);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
 
 				*relid_map = bms_add_member(*relid_map, rte->relid);
 			}
@@ -906,7 +909,7 @@ intorel_destroy(DestReceiver *self)
 
 
 static void
-CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing,char *count_col)
+CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing)
 {
 	CreateTrigStmt *ivm_trigger;
 	List *transitionRels = NIL;
@@ -973,7 +976,6 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 t
 	ivm_trigger->initdeferred = false;
 	ivm_trigger->constrrel = NULL;
 	ivm_trigger->args = list_make1(makeString(matviewname));
-	ivm_trigger->args = lappend(ivm_trigger->args, makeString(count_col));
 
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
