@@ -89,7 +89,7 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map, bool in_subquery);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map);
 static void check_ivm_restriction_walker(Node *node, int depth);
 
 /*
@@ -353,7 +353,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
 			/* 
-			 * If conatin EXISTS clause, rewrite query and
+			 * If this query has EXISTS clause, rewrite query and
 			 * add __ivm_exists_count_X__ column.
 			 */
 			if (copied_query->hasSubLinks)
@@ -361,8 +361,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 				ListCell *lc;
 				RangeTblEntry *rte;
 
-				/* subquery to rtable  */
-				rewrite_query_for_exists_subquery(copied_query, (Node *)copied_query);
+				/* rewrite EXISTS sublink to LATERAL subquery */
+				rewrite_query_for_exists_subquery(copied_query);
 
 				/* Add count(*) using EXISTS clause */
 				foreach(lc, copied_query->rtable)
@@ -593,7 +593,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map, false);
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map);
 
 			table_close(matviewRel, NoLock);
 
@@ -604,7 +604,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	return address;
 }
 
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map, bool in_subquery)
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map)
 {
 
 	if (jtnode == NULL)
@@ -632,13 +632,8 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		{
 			Query *subquery = rte->subquery;
 			Assert(rte->subquery != NULL);
-			/*
-			 * On the condition, not allow a subquery in the subquery.
-			 */
-			if (in_subquery)
-				elog(ERROR, "neseted subquery is not supported with IVM");
 
-			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relid_map, true);
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relid_map);
 		}
 		else
 			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
@@ -649,14 +644,14 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map, in_subquery);
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map);
 	}
 	else if (IsA(jtnode, JoinExpr))
 	{
 		JoinExpr   *j = (JoinExpr *) jtnode;
 
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map, in_subquery);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map, in_subquery);
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map);
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
@@ -1109,9 +1104,9 @@ check_ivm_restriction_walker(Node *node, int depth)
 				/* Now, EXISTS clause is supported only */
  				SubLink	*sublink = (SubLink *) node;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
-					ereport(ERROR, (errmsg("subquery is not supported with IVM, except for EXISTS clause")));
+					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
 				if (depth > 0)
-					ereport(ERROR, (errmsg("nested subquery is not supported with IVM")));
+					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
 				check_ivm_restriction_walker(sublink->subselect, depth + 1);
 				break;
 			}

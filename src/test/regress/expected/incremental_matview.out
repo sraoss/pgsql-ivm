@@ -559,9 +559,9 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHER
 ERROR:  system column is not supported with IVM
 -- targetlist or WHERE clause without EXISTS contain subquery 
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
-ERROR:  subquery is not supported with IVM, except for EXISTS clause
+ERROR:  subquery in WHERE is not supported by IVM, except for EXISTS clause
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
-ERROR:  subquery is not supported with IVM, except for EXISTS clause
+ERROR:  subquery in WHERE is not supported by IVM, except for EXISTS clause
 -- contain CTE
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm06 AS WITH b AS (SELECT i,k FROM mv_base_b WHERE k < 103) SELECT a.i,a.j FROM mv_base_a a,b WHERE a.i = b.i;
 ERROR:  CTE is not supported with IVM
@@ -577,7 +577,7 @@ ERROR:  aggregate functions in nested query are not supported with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm10 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR a.i > 5;
 ERROR:  OR or NOT conditions and EXISTS condition are used togther with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT 1 FROM mv_base_b c WHERE b.i = c.i));
-ERROR:  nested subquery is not supported with IVM
+ERROR:  nested subquery is not supported by IVM
 DROP TABLE mv_base_b CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1
