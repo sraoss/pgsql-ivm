@@ -18,9 +18,9 @@
 #include "postgres.h"
 
 #include "access/transam.h"
-#include "access/xlogrecord.h"
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
+#include "access/xlogrecord.h"
 #include "catalog/pg_control.h"
 #include "common/pg_lzcompress.h"
 #include "replication/origin.h"
@@ -29,7 +29,6 @@
 #include "miscadmin.h"
 #include "utils/memutils.h"
 #endif
-
 
 static void report_invalid_record(XLogReaderState *state, const char *fmt,...)
 			pg_attribute_printf(2, 3);
@@ -966,7 +965,7 @@ XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr)
 			 *
 			 * Note that record headers are MAXALIGN'ed
 			 */
-			if (MAXALIGN(header->xlp_rem_len) > (XLOG_BLCKSZ - pageHeaderSize))
+			if (MAXALIGN(header->xlp_rem_len) >= (XLOG_BLCKSZ - pageHeaderSize))
 				tmpRecPtr = targetPagePtr + XLOG_BLCKSZ;
 			else
 			{

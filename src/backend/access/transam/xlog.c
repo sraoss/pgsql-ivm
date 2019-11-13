@@ -42,15 +42,16 @@
 #include "commands/tablespace.h"
 #include "common/controldata_utils.h"
 #include "miscadmin.h"
+#include "pg_trace.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "postmaster/bgwriter.h"
-#include "postmaster/walwriter.h"
 #include "postmaster/startup.h"
+#include "postmaster/walwriter.h"
 #include "replication/basebackup.h"
 #include "replication/logical.h"
-#include "replication/slot.h"
 #include "replication/origin.h"
+#include "replication/slot.h"
 #include "replication/snapbuild.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
@@ -74,7 +75,6 @@
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
-#include "pg_trace.h"
 
 extern uint32 bootstrap_data_checksum_version;
 
@@ -6231,45 +6231,59 @@ StartupXLOG(void)
 	CurrentResourceOwner = AuxProcessResourceOwner;
 
 	/*
-	 * Verify XLOG status looks valid.
+	 * Check that contents look valid.
 	 */
-	if (ControlFile->state < DB_SHUTDOWNED ||
-		ControlFile->state > DB_IN_PRODUCTION ||
-		!XRecOffIsValid(ControlFile->checkPoint))
+	if (!XRecOffIsValid(ControlFile->checkPoint))
 		ereport(FATAL,
-				(errmsg("control file contains invalid data")));
+				(errmsg("control file contains invalid checkpoint location")));
 
-	if (ControlFile->state == DB_SHUTDOWNED)
+	switch (ControlFile->state)
 	{
-		/* This is the expected case, so don't be chatty in standalone mode */
-		ereport(IsPostmasterEnvironment ? LOG : NOTICE,
-				(errmsg("database system was shut down at %s",
-						str_time(ControlFile->time))));
+		case DB_SHUTDOWNED:
+			/* This is the expected case, so don't be chatty in standalone mode */
+			ereport(IsPostmasterEnvironment ? LOG : NOTICE,
+					(errmsg("database system was shut down at %s",
+							str_time(ControlFile->time))));
+			break;
+
+		case DB_SHUTDOWNED_IN_RECOVERY:
+			ereport(LOG,
+					(errmsg("database system was shut down in recovery at %s",
+							str_time(ControlFile->time))));
+			break;
+
+		case DB_SHUTDOWNING:
+			ereport(LOG,
+					(errmsg("database system shutdown was interrupted; last known up at %s",
+							str_time(ControlFile->time))));
+			break;
+
+		case DB_IN_CRASH_RECOVERY:
+			ereport(LOG,
+					(errmsg("database system was interrupted while in recovery at %s",
+							str_time(ControlFile->time)),
+					 errhint("This probably means that some data is corrupted and"
+							 " you will have to use the last backup for recovery.")));
+			break;
+
+		case DB_IN_ARCHIVE_RECOVERY:
+			ereport(LOG,
+					(errmsg("database system was interrupted while in recovery at log time %s",
+							str_time(ControlFile->checkPointCopy.time)),
+					 errhint("If this has occurred more than once some data might be corrupted"
+							 " and you might need to choose an earlier recovery target.")));
+			break;
+
+		case DB_IN_PRODUCTION:
+			ereport(LOG,
+					(errmsg("database system was interrupted; last known up at %s",
+							str_time(ControlFile->time))));
+			break;
+
+		default:
+			ereport(FATAL,
+					(errmsg("control file contains invalid database cluster state")));
 	}
-	else if (ControlFile->state == DB_SHUTDOWNED_IN_RECOVERY)
-		ereport(LOG,
-				(errmsg("database system was shut down in recovery at %s",
-						str_time(ControlFile->time))));
-	else if (ControlFile->state == DB_SHUTDOWNING)
-		ereport(LOG,
-				(errmsg("database system shutdown was interrupted; last known up at %s",
-						str_time(ControlFile->time))));
-	else if (ControlFile->state == DB_IN_CRASH_RECOVERY)
-		ereport(LOG,
-				(errmsg("database system was interrupted while in recovery at %s",
-						str_time(ControlFile->time)),
-				 errhint("This probably means that some data is corrupted and"
-						 " you will have to use the last backup for recovery.")));
-	else if (ControlFile->state == DB_IN_ARCHIVE_RECOVERY)
-		ereport(LOG,
-				(errmsg("database system was interrupted while in recovery at log time %s",
-						str_time(ControlFile->checkPointCopy.time)),
-				 errhint("If this has occurred more than once some data might be corrupted"
-						 " and you might need to choose an earlier recovery target.")));
-	else if (ControlFile->state == DB_IN_PRODUCTION)
-		ereport(LOG,
-				(errmsg("database system was interrupted; last known up at %s",
-						str_time(ControlFile->time))));
 
 	/* This is just to allow attaching to startup process with a debugger */
 #ifdef XLOG_REPLAY_DELAY

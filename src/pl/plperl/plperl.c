@@ -1840,7 +1840,7 @@ PG_FUNCTION_INFO_V1(plperl_call_handler);
 Datum
 plperl_call_handler(PG_FUNCTION_ARGS)
 {
-	Datum		retval;
+	Datum		retval = (Datum) 0;
 	plperl_call_data *volatile save_call_data = current_call_data;
 	plperl_interp_desc *volatile oldinterp = plperl_active_interp;
 	plperl_call_data this_call_data;
@@ -1862,20 +1862,15 @@ plperl_call_handler(PG_FUNCTION_ARGS)
 		else
 			retval = plperl_func_handler(fcinfo);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		current_call_data = save_call_data;
 		activate_interpreter(oldinterp);
 		if (this_call_data.prodesc)
 			decrement_prodesc_refcount(this_call_data.prodesc);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
 
-	current_call_data = save_call_data;
-	activate_interpreter(oldinterp);
-	if (this_call_data.prodesc)
-		decrement_prodesc_refcount(this_call_data.prodesc);
 	return retval;
 }
 
@@ -1958,21 +1953,14 @@ plperl_inline_handler(PG_FUNCTION_ARGS)
 		if (SPI_finish() != SPI_OK_FINISH)
 			elog(ERROR, "SPI_finish() failed");
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		if (desc.reference)
 			SvREFCNT_dec_current(desc.reference);
 		current_call_data = save_call_data;
 		activate_interpreter(oldinterp);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	if (desc.reference)
-		SvREFCNT_dec_current(desc.reference);
-
-	current_call_data = save_call_data;
-	activate_interpreter(oldinterp);
 
 	error_context_stack = pl_error_context.previous;
 

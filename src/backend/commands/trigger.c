@@ -179,7 +179,6 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	ScanKeyData key;
 	Relation	pgrel;
 	HeapTuple	tuple;
-	Oid			fargtypes[1];	/* dummy */
 	Oid			funcrettype;
 	Oid			trigoid;
 	char		internaltrigname[NAMEDATALEN];
@@ -690,7 +689,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	 * Find and validate the trigger function.
 	 */
 	if (!OidIsValid(funcoid))
-		funcoid = LookupFuncName(stmt->funcname, 0, fargtypes, false);
+		funcoid = LookupFuncName(stmt->funcname, 0, NULL, false);
 	if (!isInternal)
 	{
 		aclresult = pg_proc_aclcheck(funcoid, GetUserId(), ACL_EXECUTE);
@@ -2431,13 +2430,11 @@ ExecCallTriggerFunc(TriggerData *trigdata,
 	{
 		result = FunctionCallInvoke(fcinfo);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		MyTriggerDepth--;
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-	MyTriggerDepth--;
 
 	pgstat_end_function_usage(&fcusage, true);
 
@@ -5573,12 +5570,9 @@ AfterTriggerSetState(ConstraintsSetStmt *stmt)
 		foreach(lc, conoidlist)
 		{
 			Oid			conoid = lfirst_oid(lc);
-			bool		found;
 			ScanKeyData skey;
 			SysScanDesc tgscan;
 			HeapTuple	htup;
-
-			found = false;
 
 			ScanKeyInit(&skey,
 						Anum_pg_trigger_tgconstraint,
@@ -5600,16 +5594,9 @@ AfterTriggerSetState(ConstraintsSetStmt *stmt)
 				 */
 				if (pg_trigger->tgdeferrable)
 					tgoidlist = lappend_oid(tgoidlist, pg_trigger->oid);
-
-				found = true;
 			}
 
 			systable_endscan(tgscan);
-
-			/* Safety check: a deferrable constraint should have triggers */
-			if (!found)
-				elog(ERROR, "no triggers found for constraint with OID %u",
-					 conoid);
 		}
 
 		table_close(tgrel, AccessShareLock);

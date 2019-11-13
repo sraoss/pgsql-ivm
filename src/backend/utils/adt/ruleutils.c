@@ -50,9 +50,9 @@
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "parser/parse_node.h"
 #include "parser/parse_agg.h"
 #include "parser/parse_func.h"
+#include "parser/parse_node.h"
 #include "parser/parse_oper.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
@@ -73,7 +73,6 @@
 #include "utils/typcache.h"
 #include "utils/varlena.h"
 #include "utils/xml.h"
-
 
 /* ----------
  * Pretty formatting constants
@@ -834,7 +833,6 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 	char	   *tgname;
 	char	   *tgoldtable;
 	char	   *tgnewtable;
-	Oid			argtypes[1];	/* dummy */
 	Datum		value;
 	bool		isnull;
 
@@ -1046,7 +1044,7 @@ pg_get_triggerdef_worker(Oid trigid, bool pretty)
 
 	appendStringInfo(&buf, "EXECUTE FUNCTION %s(",
 					 generate_function_name(trigrec->tgfoid, 0,
-											NIL, argtypes,
+											NIL, NULL,
 											false, NULL, EXPR_KIND_NONE));
 
 	if (trigrec->tgnargs > 0)

@@ -96,6 +96,9 @@
 /* Define to 1 if you have the <atomic.h> header file. */
 #undef HAVE_ATOMIC_H
 
+/* Define to 1 if you have the `backtrace_symbols' function. */
+#undef HAVE_BACKTRACE_SYMBOLS
+
 /* Define to 1 if you have the `BIO_get_data' function. */
 #undef HAVE_BIO_GET_DATA
 
@@ -194,6 +197,9 @@
 
 /* Define to 1 if you have the <editline/readline.h> header file. */
 #undef HAVE_EDITLINE_READLINE_H
+
+/* Define to 1 if you have the <execinfo.h> header file. */
+#undef HAVE_EXECINFO_H
 
 /* Define to 1 if you have the `explicit_bzero' function. */
 #undef HAVE_EXPLICIT_BZERO
@@ -382,9 +388,6 @@
 
 /* Define to 1 if `long int' works and is 64 bits. */
 #undef HAVE_LONG_INT_64
-
-/* Define to 1 if the system has the type `long long int'. */
-#undef HAVE_LONG_LONG_INT
 
 /* Define to 1 if `long long int' works and is 64 bits. */
 #undef HAVE_LONG_LONG_INT_64
@@ -684,9 +687,6 @@
 /* Define to 1 if you have the `unsetenv' function. */
 #undef HAVE_UNSETENV
 
-/* Define to 1 if the system has the type `unsigned long long int'. */
-#undef HAVE_UNSIGNED_LONG_LONG_INT
-
 /* Define to 1 if you have the `uselocale' function. */
 #undef HAVE_USELOCALE
 
@@ -828,6 +828,9 @@
 
 /* Define to best printf format archetype, usually gnu_printf if available. */
 #undef PG_PRINTF_ATTRIBUTE
+
+/* Define to 1 to use <stdbool.h> to define type bool. */
+#undef PG_USE_STDBOOL
 
 /* PostgreSQL version as a string */
 #undef PG_VERSION
