@@ -288,20 +288,21 @@
  * bool
  *		Boolean value, either true or false.
  *
- * Use stdbool.h if available and its bool has size 1.  That's useful for
+ * We use stdbool.h if available and its bool has size 1.  That's useful for
  * better compiler and debugger output and for compatibility with third-party
  * libraries.  But PostgreSQL currently cannot deal with bool of other sizes;
  * there are static assertions around the code to prevent that.
  *
  * For C++ compilers, we assume the compiler has a compatible built-in
  * definition of bool.
+ *
+ * See also the version of this code in src/interfaces/ecpg/include/ecpglib.h.
  */
 
 #ifndef __cplusplus
 
-#if defined(HAVE_STDBOOL_H) && SIZEOF_BOOL == 1
+#ifdef PG_USE_STDBOOL
 #include <stdbool.h>
-#define USE_STDBOOL 1
 #else
 
 #ifndef bool
@@ -316,7 +317,7 @@ typedef unsigned char bool;
 #define false	((bool) 0)
 #endif
 
-#endif
+#endif							/* not PG_USE_STDBOOL */
 #endif							/* not C++ */
 
 
@@ -1030,6 +1031,30 @@ extern void ExceptionalCondition(const char *conditionName,
 			*_start++ = 0; \
 	} while (0)
 
+/*
+ * Macros for range-checking float values before converting to integer.
+ * We must be careful here that the boundary values are expressed exactly
+ * in the float domain.  PG_INTnn_MIN is an exact power of 2, so it will
+ * be represented exactly; but PG_INTnn_MAX isn't, and might get rounded
+ * off, so avoid using that.
+ * The input must be rounded to an integer beforehand, typically with rint(),
+ * else we might draw the wrong conclusion about close-to-the-limit values.
+ * These macros will do the right thing for Inf, but not necessarily for NaN,
+ * so check isnan(num) first if that's a possibility.
+ */
+#define FLOAT4_FITS_IN_INT16(num) \
+	((num) >= (float4) PG_INT16_MIN && (num) < -((float4) PG_INT16_MIN))
+#define FLOAT4_FITS_IN_INT32(num) \
+	((num) >= (float4) PG_INT32_MIN && (num) < -((float4) PG_INT32_MIN))
+#define FLOAT4_FITS_IN_INT64(num) \
+	((num) >= (float4) PG_INT64_MIN && (num) < -((float4) PG_INT64_MIN))
+#define FLOAT8_FITS_IN_INT16(num) \
+	((num) >= (float8) PG_INT16_MIN && (num) < -((float8) PG_INT16_MIN))
+#define FLOAT8_FITS_IN_INT32(num) \
+	((num) >= (float8) PG_INT32_MIN && (num) < -((float8) PG_INT32_MIN))
+#define FLOAT8_FITS_IN_INT64(num) \
+	((num) >= (float8) PG_INT64_MIN && (num) < -((float8) PG_INT64_MIN))
+
 
 /* ----------------------------------------------------------------
  *				Section 8:	random stuff
@@ -1203,7 +1228,6 @@ typedef union PGAlignedXLogBlock
 extern int	fdatasync(int fildes);
 #endif
 
-#ifdef HAVE_LONG_LONG_INT
 /* Older platforms may provide strto[u]ll functionality under other names */
 #if !defined(HAVE_STRTOLL) && defined(HAVE___STRTOLL)
 #define strtoll __strtoll
@@ -1232,7 +1256,6 @@ extern long long strtoll(const char *str, char **endptr, int base);
 #if defined(HAVE_STRTOULL) && !HAVE_DECL_STRTOULL
 extern unsigned long long strtoull(const char *str, char **endptr, int base);
 #endif
-#endif							/* HAVE_LONG_LONG_INT */
 
 #if !defined(HAVE_MEMMOVE) && !defined(memmove)
 #define memmove(d, s, c)		bcopy(s, d, c)

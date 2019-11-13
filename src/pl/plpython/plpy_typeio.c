@@ -901,7 +901,7 @@ PLyObject_ToBytea(PLyObToDatum *arg, PyObject *plrv,
 				  bool *isnull, bool inarray)
 {
 	PyObject   *volatile plrv_so = NULL;
-	Datum		rv;
+	Datum		rv = (Datum) 0;
 
 	if (plrv == Py_None)
 	{
@@ -925,14 +925,11 @@ PLyObject_ToBytea(PLyObToDatum *arg, PyObject *plrv,
 		memcpy(VARDATA(result), plrv_sc, len);
 		rv = PointerGetDatum(result);
 	}
-	PG_CATCH();
+	PG_FINALLY();
 	{
 		Py_XDECREF(plrv_so);
-		PG_RE_THROW();
 	}
 	PG_END_TRY();
-
-	Py_XDECREF(plrv_so);
 
 	return rv;
 }

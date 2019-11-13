@@ -1624,7 +1624,7 @@ ApplyRetrieveRule(Query *parsetree,
 
 			rte->rtekind = RTE_SUBQUERY;
 			rte->subquery = sub;
-			rte->security_barrier = RelationIsSecurityView(relation);
+			rte->security_barrier = relation->rd_options ? ((ViewOptions *) (relation)->rd_options)->security_barrier : false;
 			/* Clear fields that should not be set in a subquery RTE */
 			rte->relid = InvalidOid;
 			rte->relkind = 0;
