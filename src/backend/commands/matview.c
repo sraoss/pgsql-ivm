@@ -31,6 +31,7 @@
 #include "commands/matview.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
+#include "commands/createas.h"
 #include "executor/executor.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
@@ -54,9 +55,11 @@
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
 #include "nodes/print.h"
+#include "nodes/nodeFuncs.h"
 #include "catalog/pg_type_d.h"
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
+#include "rewrite/rewriteManip.h"
 
 /*
  * Local definitions
@@ -104,7 +107,7 @@ typedef struct MV_TriggerHashEntry
 } MV_TriggerHashEntry;
 
 /*
- * MV_TiggerTable
+ * MV_TriggerTable
  */
 typedef struct MV_TriggerTable
 {
@@ -114,7 +117,7 @@ typedef struct MV_TriggerTable
 	RangeTblEntry *original_rte;
 	List *old_rtes;
 	List *new_rtes;
-	List *rte_indexes;
+	List *rte_indexes;			/* List of path list to RTE */
 } MV_TriggerTable;
 
 static HTAB *mv_query_cache = NULL;
@@ -157,14 +160,15 @@ static void CloseMatViewIncrementalMaintenance(void);
 static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
 static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
 								  char* count_col, const char *castType);
-static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate);
+static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_path);
 static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
-static void calc_delta(MV_TriggerTable *table, int index, Query *query,
+
+static void calc_delta(MV_TriggerTable *table, List *index_path, Query *query,
 						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
 static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
 static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
 static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
-static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query);
+static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char *count_colname);
 static void truncate_view_delta(Oid delta_oid);
 static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
 static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
@@ -1109,6 +1113,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Oid matviewOid;
 	Query	   *query, *rewritten;
 	char*		matviewname = trigdata->tg_trigger->tgargs[0];
+	char*		count_colname = NULL;
 	List	   *names;
 	Relation matviewRel;
 	int old_depth = matview_maintenance_depth;
@@ -1249,7 +1254,11 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
 
 	/* rewrite query */
-	rewritten = rewrite_query_for_preupdate_state(query, entry->tables, entry->xid, entry->cid, pstate);
+	rewritten = copyObject(query);
+	if (rewritten->hasSubLinks)
+		rewrite_query_for_exists_subquery(rewritten);
+
+	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
 	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
 
 	relowner = matviewRel->rd_rel->relowner;
@@ -1302,13 +1311,33 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		/* loop for self-join */
 		foreach(lc2, table->rte_indexes)
 		{
-			int index = lfirst_int(lc2);
+			List *index_path = lfirst(lc2);
+			int i;
+			Query *querytree = rewritten;
+			RangeTblEntry *rte;
 
-			calc_delta(table, index, rewritten, dest_old, dest_new, queryEnv);
+			calc_delta(table, index_path, rewritten, dest_old, dest_new, queryEnv);
+
+			/* check __ivm_exists_count_X__ columns are contained */
+			for(i = 0; i< list_length(index_path); i++)
+			{
+				int index =  lfirst_int(list_nth_cell(index_path, i));
+				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index));
+	
+				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+				{
+					querytree = rte->subquery;
+					if (rte->lateral)
+						count_colname = getIVMColumnName(rte, "__ivm_exists");
+				}
+			}
+
+			if (count_colname == NULL)
+				count_colname = pstrdup("__ivm_count__");
 
 			PG_TRY();
 			{
-				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query);
+				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query,count_colname);
 			}
 			PG_CATCH();
 			{
@@ -1413,16 +1442,45 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 	return buf.data;
 }
 
+char *
+getIVMColumnName(RangeTblEntry *rte, char *str)
+{
+	char *colname;
+	ListCell *lc;
+	Alias *alias = rte->eref;
+
+	foreach(lc, alias->colnames)
+	{
+		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
+		{
+			colname = pstrdup(strVal(lfirst(lc)));
+			return colname;
+		}
+	}
+	return NULL;
+}
 
 static void
-calc_delta(MV_TriggerTable *table, int index, Query *query,
+calc_delta(MV_TriggerTable *table, List *index_path, Query *query,
 			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
 {
+	ListCell *index_cell;
 	ListCell *lc;
 	RangeTblEntry *rte;
+	Query *querytree = query;
 
-	lc = list_nth_cell(query->rtable, index);
-	rte = (RangeTblEntry *) lfirst(lc);
+	Assert(list_length(index_path) > 0);
+
+	foreach(index_cell, index_path)
+	{
+		int index = lfirst_int(index_cell);
+		lc = list_nth_cell(querytree->rtable, index);
+		rte = (RangeTblEntry *) lfirst(lc);
+		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+		{
+			querytree = rte->subquery;
+		}
+	}
 
 	/* Generate old delta */
 	if (list_length(table->old_rtes) > 0)
@@ -1623,41 +1681,57 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, 
 	return rte;
 }
 
+
 static Query*
-rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate)
+rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_path)
 {
-	Query *rewritten = copyObject(query);
 	ListCell *lc;
 	int num_rte = list_length(query->rtable);
 	int i;
 
-	register_delta_ENRs(pstate, rewritten, tables);
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	/* regist delta ENRs only once */
+	if (index_path == NIL)
+		register_delta_ENRs(pstate, query, tables);
 
 	// XXX: Is necessary? Is this right timing?
-	AcquireRewriteLocks(rewritten, true, false);
+	AcquireRewriteLocks(query, true, false);
 
-	foreach(lc, tables)
+
+
+	i = 0;
+	foreach(lc, query->rtable)
 	{
-		MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc);
-		ListCell *lc2;
+		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
 
-		i = 0;
-		foreach(lc2, rewritten->rtable)
+		/* if rte contains subquery, search recursively */
+		if (r->rtekind == RTE_SUBQUERY)
 		{
-			RangeTblEntry *r = (RangeTblEntry*) lfirst(lc2);
-
-			if (r->relid == table->table_id)
-			{
-				lfirst(lc2) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
-				table->rte_indexes = lappend_int(table->rte_indexes, i);
-			}
-
-			if (++i >= num_rte)
-				break;
+			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(index_path, i));
 		}
+		else
+		{
+			ListCell *lc2;
+			foreach(lc2, tables)
+			{
+				MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc2);
+				/* replace original rte with prestate rte(used subquery) and add rte's index path, if rte found */
+				if (r->relid == table->table_id)
+				{
+					lfirst(lc) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
+					table->rte_indexes = lappend(table->rte_indexes, lappend_int(index_path, i));
+					break;
+				}
+			}	
+		}
+
+		if (++i >= num_rte)
+			break;
 	}
 
-	return rewritten;
+	return query;
 }
 
 static Query *
@@ -1673,6 +1747,7 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 								 Int32GetDatum(1),
 								 false,
 								 true);
+	ListCell *tbl_lc;
 
 	if (query->hasAggs)
 	{
@@ -1751,6 +1826,30 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 			query->targetList = list_concat(query->targetList, agg_counts);
 	}
 
+	/* Add count(*) using EXISTS clause */
+	foreach(tbl_lc, query->rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *)lfirst(tbl_lc);
+		if (rte->subquery)
+		{
+			char *columnName;
+
+			/* search ivm_exists_count_X__ coulumn in RangeTblEntry */
+			pstate->p_rtable = query->rtable;
+			columnName = getIVMColumnName(rte, "__ivm_exists");
+			if (columnName == NULL)
+				continue;
+			node = scanRTEForColumn(pstate,rte,columnName,-1, 0, NULL);
+			if (node == NULL)
+				continue;
+			tle_count = makeTargetEntry((Expr *) node,
+										list_length(query->targetList) + 1,
+										pstrdup(columnName),
+										false);
+			query->targetList = lappend(query->targetList, tle_count);
+		}
+	}
+
 	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 	fn->agg_star = true;
 	if (!query->groupClause && !query->hasAggs)
@@ -1763,14 +1862,159 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 							  NULL,
 							  false);
 	query->targetList = lappend(query->targetList, tle_count);
+
 	query->hasAggs = true;
 
 	return query;
 }
 
 
+static Query *
+rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
+{
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	switch (nodeTag(node))
+	{
+		case T_Query:
+			{
+				FromExpr *fromexpr;
+
+				/* get subquery in WHERE clause */
+				fromexpr = (FromExpr *)query->jointree;
+				query = rewrite_exists_subquery_walker(query, fromexpr->quals, count);
+				/* drop subquery in WHERE clause */
+				if (IsA(fromexpr->quals, SubLink))
+					fromexpr->quals = NULL;
+				break;
+			}
+		case T_BoolExpr:
+			{
+				BoolExprType type;
+
+				type = ((BoolExpr *) node)->boolop;
+				switch (type)
+				{
+					ListCell *lc;
+					case AND_EXPR:
+						foreach(lc, ((BoolExpr *)node)->args)
+						{
+							Node *opnode = (Node *)lfirst(lc);
+							query = rewrite_exists_subquery_walker(query, opnode, count);
+							/* overwrite SubLink node if it is contained in AND_EXPR */
+							if (IsA(opnode, SubLink))
+								lfirst(lc) = makeConst(BOOLOID, -1, InvalidOid, sizeof(bool), BoolGetDatum(true), false, true);
+						}
+						break;
+					case OR_EXPR:
+					case NOT_EXPR:
+						if (checkExprHasSubLink(node))
+							ereport(ERROR, (errmsg("OR or NOT conditions and EXISTS condition are used togther with IVM")));
+						break;
+				}
+				break;
+			}
+		case T_SubLink:
+			{
+				char aliasName[NAMEDATALEN];
+				char columnName[NAMEDATALEN];
+				Query *subselect;
+				ParseState *pstate;
+				RangeTblEntry *rte;
+				RangeTblRef *rtr;
+				Alias *alias;
+
+				TargetEntry *tle_count;
+				FuncCall *fn;
+				Node *fn_node;
+				Expr *opexpr;
+
+				SubLink *sublink = (SubLink *)node;
+				/* raise ERROR if not has exist clause */
+				if (sublink->subLinkType != EXISTS_SUBLINK)
+					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+
+				subselect = (Query *)sublink->subselect;
+				/* raise ERROR if it is CTE */
+				if (subselect->cteList)
+					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+
+				pstate = make_parsestate(NULL);
+				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+				/*
+				 * convert EXISTS subquery into LATERAL subquery in FROM clause.
+				 */
+
+
+				snprintf(aliasName, sizeof(aliasName), "__ivm_exists_subquery_%d__", *count);
+				snprintf(columnName, sizeof(columnName), "__ivm_exists_count_%d__", *count);
+
+				/* add COUNT(*) for counting exists condition */
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn->agg_star = true;
+				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+				tle_count = makeTargetEntry((Expr *) fn_node,
+											list_length(subselect->targetList) + 1,
+											columnName,
+											false);
+				/* add __ivm_exists_count__ column */
+				subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
+				subselect->hasAggs = true;
+
+				/* add subquery in from clause */
+				alias = makeAlias(aliasName, NIL);
+				/* it means that LATERAL is enable if fourth argument is true */
+				rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+
+				query->rtable = lappend(query->rtable, rte);
+
+				rtr = makeNode(RangeTblRef);
+				/* assume new rte is at end */
+				rtr->rtindex = list_length(query->rtable);
+
+				((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
+
+
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn->agg_star = true;
+
+				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+				/*
+				 * it means using int84gt( '>' operator). it will be replaced to make_op().
+				 */
+				opexpr = make_opclause(419, BOOLOID, false,
+								(Expr *)fn_node,
+								(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
+								InvalidOid, InvalidOid);
+				fix_opfuncids((Node *) opexpr);
+				query->hasSubLinks = false;
+
+				subselect->havingQual = (Node *)opexpr;
+				(*count)++;
+				break;
+			}
+		default:
+			break;
+	}
+	return query;
+}
+
+
+Query *
+rewrite_query_for_exists_subquery(Query *query)
+{
+	int count = 0;	
+	if (query->hasAggs)
+		elog(ERROR, "aggregate function and EXISTS condition are not supported at the same time");
+
+	return rewrite_exists_subquery_walker(query, (Node *)query, &count);
+}
+
 static void
-apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
+apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char * count_colname)
 {
 	StringInfoData querybuf;
 	StringInfoData mvatts_buf, diffatts_buf;
@@ -1795,7 +2039,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 	matviewRel = table_open(matviewOid, NoLock);
 	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 											 RelationGetRelationName(matviewRel));
-
 	if (OidIsValid(tempOid_new))
 	{
 		tempRel_new = table_open(tempOid_new, NoLock);
@@ -2108,22 +2351,24 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.__ivm_count__, "
+							"  SELECT diff.%s, "
 							"         %s,"
-							"         (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, "
+							"         (diff.%s = mv.%s) AS for_dlt, "
 							"         mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
 							"), updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__,"
+							"  UPDATE %s AS mv SET %s = mv.%s - t.%s,"
 							"                      %s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
 							"   %s"
 							"), dlt AS ("
 							"  DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt "
 							") %s",
+							count_colname,
 							diff_aggs_buf.data,
+							count_colname, count_colname,
 							matviewname, tempname_old, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							matviewname, update_aggs_old.data,
+							matviewname, count_colname, count_colname, count_colname, update_aggs_old.data,
 							returning_buf.data,
 							matviewname,
 							(has_min_or_max && with_group) ? result_buf.data : "SELECT 1"
@@ -2219,12 +2464,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							"  UPDATE %s AS mv SET %s = mv.%s + diff.%s"
 							", %s "
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
-							matviewname, update_aggs_new.data, tempname_new,
+							matviewname, count_colname, count_colname, count_colname, update_aggs_new.data, tempname_new,
 							mv_gkeys_buf.data, diff_gkeys_buf.data, diff_gkeys_buf.data,
 							matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
@@ -2238,13 +2483,14 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.__ivm_count__, (diff.__ivm_count__ = mv.__ivm_count__) AS for_dlt, mv.ctid"
+							"  SELECT diff.%s, (diff.%s = mv.%s) AS for_dlt, mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
 							"), updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ - t.__ivm_count__"
+							"  UPDATE %s AS mv SET %s = mv.%s - t.%s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
 							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
-							matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data, matviewname, matviewname);
+							count_colname, count_colname, count_colname, matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data,
+							matviewname, count_colname,count_colname,count_colname, matviewname);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
@@ -2253,11 +2499,11 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query)
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
-							"  UPDATE %s AS mv SET __ivm_count__ = mv.__ivm_count__ + diff.__ivm_count__"
+							"  UPDATE %s AS mv SET %s= mv.%s + diff.%s"
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
-							matviewname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
+							matviewname, count_colname, count_colname, count_colname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}

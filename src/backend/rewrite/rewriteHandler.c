@@ -40,6 +40,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/guc.h"
 
 #include "parser/parser.h"
 #include "commands/matview.h"
@@ -1606,21 +1607,31 @@ ApplyRetrieveRule(Query *parsetree,
 		if (!rule_action->distinctClause && !rule_action->groupClause && !rule_action->hasAggs)
 		{
 			StringInfoData str;
+			StringInfoData ivm_columns;
 			RawStmt *raw;
 			Query *sub;
+			ListCell   *lc;
 
 			if (rule_action->hasDistinctOn)
 				elog(ERROR, "DISTINCT ON is not supported in IVM");
 
+			initStringInfo(&ivm_columns);
+			rte = rt_fetch(rt_index, parsetree->rtable);
+			foreach(lc, rte->eref->colnames)
+			{
+				if (!strncmp(strVal(lfirst(lc)), "__ivm_exists", 12))
+					appendStringInfo(&ivm_columns, "%s, ", strVal(lfirst(lc)));
+			}
+			appendStringInfo(&ivm_columns, "__ivm_count__");
+
 			initStringInfo(&str);
-			appendStringInfo(&str, "SELECT mv.*, __ivm_count__ FROM %s mv, generate_series(1, mv.__ivm_count__)",
-						quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
+			appendStringInfo(&str, "SELECT mv.*, %s FROM %s mv, generate_series(1, mv.__ivm_count__)",
+						ivm_columns.data, quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
 													RelationGetRelationName(relation)));
 
 			raw = (RawStmt*)linitial(raw_parser(str.data));
 			sub = transformStmt(make_parsestate(NULL),raw->stmt);
 
-			rte = rt_fetch(rt_index, parsetree->rtable);
 
 			rte->rtekind = RTE_SUBQUERY;
 			rte->subquery = sub;

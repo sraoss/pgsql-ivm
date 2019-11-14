@@ -57,6 +57,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_func.h"
 #include "parser/parse_type.h"
+#include "parser/parse_relation.h"
 #include "nodes/print.h"
 #include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
@@ -87,7 +88,7 @@ static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
 static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map);
-static void check_ivm_restriction_walker(Node *node);
+static void check_ivm_restriction_walker(Node *node, int depth);
 
 /*
  * create_ctas_internal
@@ -235,7 +236,6 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 	return create_ctas_internal(attrList, into);
 }
 
-
 /*
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
@@ -274,7 +274,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	}
 
 	if (is_matview && into->ivm)
-		check_ivm_restriction_walker((Node *) query);
+		check_ivm_restriction_walker((Node *) query, 0);
 
 	/*
 	 * Create the tuple receiver object and insert info it will need
@@ -350,6 +350,45 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
+			/* 
+			 * If this query has EXISTS clause, rewrite query and
+			 * add __ivm_exists_count_X__ column.
+			 */
+			if (copied_query->hasSubLinks)
+			{
+				ListCell *lc;
+				RangeTblEntry *rte;
+
+				/* rewrite EXISTS sublink to LATERAL subquery */
+				rewrite_query_for_exists_subquery(copied_query);
+
+				/* Add count(*) using EXISTS clause */
+				foreach(lc, copied_query->rtable)
+				{
+					char *columnName;
+					Node *countCol = NULL;
+
+					rte = (RangeTblEntry *) lfirst(lc);
+					if (!rte->subquery || !rte->lateral)
+						continue;
+					pstate->p_rtable = copied_query->rtable;
+
+					columnName = getIVMColumnName(rte, "__ivm_exists");
+					if (columnName == NULL)
+						continue;
+					countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
+
+					if (countCol != NULL)
+					{
+						tle = makeTargetEntry((Expr *) countCol,
+													list_length(copied_query->targetList) + 1,
+													pstrdup(columnName),
+													false);
+						copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
+					}
+				}
+			}
+
 			/* group keys must be in targetlist */
 			if (copied_query->groupClause)
 			{
@@ -365,7 +404,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			}
 			else if (!copied_query->hasAggs)
 				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
-
 			if (copied_query->hasAggs)
 			{
 				ListCell *lc;
@@ -587,6 +625,13 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 
 				*relid_map = bms_add_member(*relid_map, rte->relid);
 			}
+		}
+		else if (rte->rtekind == RTE_SUBQUERY)
+		{
+			Query *subquery = rte->subquery;
+			Assert(rte->subquery != NULL);
+
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relid_map);
 		}
 		else
 			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
@@ -935,18 +980,13 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 t
  * check_ivm_restriction_walker --- look for specify nodes in the query tree
  */
 static void
-check_ivm_restriction_walker(Node *node)
+check_ivm_restriction_walker(Node *node, int depth)
 {
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
 
 	if (node == NULL)
 		return;
-	/*
-	 * We currently don't support Sub-Query.
-	 */
-	if (IsA(node, SubPlan) || IsA(node, SubLink))
-		ereport(ERROR, (errmsg("subquery is not supported with IVM")));
 
 	switch (nodeTag(node))
 	{
@@ -957,6 +997,8 @@ check_ivm_restriction_walker(Node *node)
 				/* if contained CTE, return error */
 				if (qry->cteList != NIL)
 					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+				if (depth > 0 && qry->hasAggs)
+					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
 				/* if contained VIEW or subquery into RTE, return error */
 				foreach(lc, qry->rtable)
@@ -966,17 +1008,17 @@ check_ivm_restriction_walker(Node *node)
 							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
 					if (rte->rtekind ==  RTE_SUBQUERY)
-						ereport(ERROR, (errmsg("subquery is not supported with IVM")));
+						check_ivm_restriction_walker((Node *) rte->subquery, depth + 1);
 				}
 
 				/* search in jointree */
-				check_ivm_restriction_walker((Node *) qry->jointree);
+				check_ivm_restriction_walker((Node *) qry->jointree, depth);
 
 				/* search in target lists */
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					check_ivm_restriction_walker((Node *) tle->expr);
+					check_ivm_restriction_walker((Node *) tle->expr, depth);
 				}
 
 				break;
@@ -987,10 +1029,10 @@ check_ivm_restriction_walker(Node *node)
 				if (joinexpr->jointype > JOIN_INNER)
 					ereport(ERROR, (errmsg("OUTER JOIN is not supported with IVM")));
 				/* left side */
-				check_ivm_restriction_walker((Node *) joinexpr->larg);
+				check_ivm_restriction_walker((Node *) joinexpr->larg, depth);
 				/* right side */
-				check_ivm_restriction_walker((Node *) joinexpr->rarg);
-				check_ivm_restriction_walker((Node *) joinexpr->quals);
+				check_ivm_restriction_walker((Node *) joinexpr->rarg, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->quals, depth);
 			}
 			break;
 		case T_FromExpr:
@@ -999,9 +1041,9 @@ check_ivm_restriction_walker(Node *node)
 				FromExpr *fromexpr = (FromExpr *)node;
 				foreach(lc, fromexpr->fromlist)
 				{
-					check_ivm_restriction_walker((Node *) lfirst(lc));
+					check_ivm_restriction_walker((Node *) lfirst(lc), depth);
 				}
-				check_ivm_restriction_walker((Node *) fromexpr->quals);
+				check_ivm_restriction_walker((Node *) fromexpr->quals, depth);
 			}
 			break;
 		case T_Var:
@@ -1020,7 +1062,7 @@ check_ivm_restriction_walker(Node *node)
 				foreach(lc, boolexpr->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg);
+					check_ivm_restriction_walker(arg, depth);
 				}
 				break;
 			}
@@ -1033,7 +1075,7 @@ check_ivm_restriction_walker(Node *node)
 				foreach(lc, op->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg);
+					check_ivm_restriction_walker(arg, depth);
 				}
 				break;
 			}
@@ -1042,35 +1084,31 @@ check_ivm_restriction_walker(Node *node)
 				CaseExpr *caseexpr = (CaseExpr *) node;
 				ListCell *lc;
 				/* result for ELSE clause */
-				check_ivm_restriction_walker((Node *) caseexpr->defresult);
+				check_ivm_restriction_walker((Node *) caseexpr->defresult, depth);
 				/* expr for WHEN clauses */
 				foreach(lc, caseexpr->args)
 				{
 					CaseWhen *when = (CaseWhen *) lfirst(lc);
 					Node *w_expr = (Node *) when->expr;
 					/* result for WHEN clause */
-					check_ivm_restriction_walker((Node *) when->result);
+					check_ivm_restriction_walker((Node *) when->result, depth);
 					/* expr clause*/
-					check_ivm_restriction_walker((Node *) w_expr);
+					check_ivm_restriction_walker((Node *) w_expr, depth);
 				}
 				break;
 			}
 		case T_SubLink:
 			{
-				/* Now, not supported */
-/*
-				SubLink	*sublink = (SubLink *) node;
-				Query	*qry =(Query *) sublink->subselect;
-				if (qry != NULL && qry->jointree != NULL)
-					check_ivm_restriction_walker((Node *) qry->jointree->quals);
-*/
+				/* Now, EXISTS clause is supported only */
+ 				SubLink	*sublink = (SubLink *) node;
+				if (sublink->subLinkType != EXISTS_SUBLINK)
+					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+				if (depth > 0)
+					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
+				check_ivm_restriction_walker(sublink->subselect, depth + 1);
 				break;
 			}
 		case T_SubPlan:
-			{
-				/* Now, not supported */
-				break;
-			}
 		case T_Aggref:
 		case T_GroupingFunc:
 		case T_WindowFunc:
