@@ -1133,6 +1133,8 @@ AC_SEARCH_LIBS(sched_yield, rt)
 AC_SEARCH_LIBS(gethostbyname_r, nsl)
 # Cygwin:
 AC_SEARCH_LIBS(shmget, cygipc)
+# *BSD:
+AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
 if test "$with_readline" = yes; then
   PGAC_CHECK_READLINE
@@ -1275,6 +1277,7 @@ AC_HEADER_STDBOOL
 AC_CHECK_HEADERS(m4_normalize([
 	atomic.h
 	copyfile.h
+	execinfo.h
 	fp_class.h
 	getopt.h
 	ieeefp.h
@@ -1473,7 +1476,6 @@ PGAC_STRUCT_SOCKADDR_STORAGE_MEMBERS
 PGAC_STRUCT_ADDRINFO
 AC_TYPE_INTPTR_T
 AC_TYPE_UINTPTR_T
-AC_TYPE_LONG_LONG_INT
 
 PGAC_TYPE_LOCALE_T
 
@@ -1591,6 +1593,13 @@ AC_CHECK_SIZEOF([bool], [],
 #include <stdbool.h>
 #endif])
 
+dnl We use <stdbool.h> if we have it and it declares type bool as having
+dnl size 1.  Otherwise, c.h will fall back to declaring bool as unsigned char.
+if test "$ac_cv_header_stdbool_h" = yes -a "$ac_cv_sizeof_bool" = 1; then
+  AC_DEFINE([PG_USE_STDBOOL], 1,
+            [Define to 1 to use <stdbool.h> to define type bool.])
+fi
+
 
 ##
 ## Functions, global variables
@@ -1609,6 +1618,7 @@ LIBS_including_readline="$LIBS"
 LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
 AC_CHECK_FUNCS(m4_normalize([
+	backtrace_symbols
 	cbrt
 	clock_gettime
 	copyfile
