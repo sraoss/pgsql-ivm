@@ -997,6 +997,11 @@ check_ivm_restriction_walker(Node *node, int depth)
 				/* if contained CTE, return error */
 				if (qry->cteList != NIL)
 					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+				if (qry->havingQual != NULL)
+					ereport(ERROR, (errmsg(" HAVING clause is not supported with IVM")));
+				/* There is a possibility that we don't need to return an error */
+				if (qry->sortClause != NIL)
+					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
