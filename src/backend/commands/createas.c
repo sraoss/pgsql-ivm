@@ -350,7 +350,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
-			/* 
+			/*
 			 * If this query has EXISTS clause, rewrite query and
 			 * add __ivm_exists_count_X__ column.
 			 */
@@ -511,9 +511,9 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 
 			tle = makeTargetEntry((Expr *) node,
-								  	list_length(copied_query->targetList) + 1,
-								  	pstrdup("__ivm_count__"),
-								  	false);
+									list_length(copied_query->targetList) + 1,
+									pstrdup("__ivm_count__"),
+									false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
 			copied_query->hasAggs = true;
 		}
@@ -1105,7 +1105,7 @@ check_ivm_restriction_walker(Node *node, int depth)
 		case T_SubLink:
 			{
 				/* Now, EXISTS clause is supported only */
- 				SubLink	*sublink = (SubLink *) node;
+				SubLink	*sublink = (SubLink *) node;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
 				if (depth > 0)

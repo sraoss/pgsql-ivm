@@ -2580,7 +2580,7 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 static bool
 isIvmColumn(const char *s)
 {
-	return (strncmp(s, "__ivm_", 6) == 0); 
+	return (strncmp(s, "__ivm_", 6) == 0);
 }
 
 /*

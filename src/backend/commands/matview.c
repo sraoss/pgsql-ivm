@@ -1323,7 +1323,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			{
 				int index =  lfirst_int(list_nth_cell(index_path, i));
 				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index));
-	
+
 				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
 				{
 					querytree = rte->subquery;
@@ -1724,7 +1724,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid,
 					table->rte_indexes = lappend(table->rte_indexes, lappend_int(index_path, i));
 					break;
 				}
-			}	
+			}
 		}
 
 		if (++i >= num_rte)
@@ -2006,7 +2006,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 Query *
 rewrite_query_for_exists_subquery(Query *query)
 {
-	int count = 0;	
+	int count = 0;
 	if (query->hasAggs)
 		elog(ERROR, "aggregate function and EXISTS condition are not supported at the same time");
 
