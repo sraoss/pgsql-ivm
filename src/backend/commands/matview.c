@@ -61,9 +61,17 @@
 #include "commands/defrem.h"
 #include "rewrite/rewriteManip.h"
 
-/*
- * Local definitions
- */
+
+typedef struct
+{
+	DestReceiver pub;			/* publicly-known function pointers */
+	Oid			transientoid;	/* OID of new heap into which to store */
+	/* These fields are filled by transientrel_startup: */
+	Relation	transientrel;	/* relation to write to */
+	CommandId	output_cid;		/* cmin to insert in output tuples */
+	int			ti_options;		/* table_tuple_insert performance options */
+	BulkInsertState bistate;	/* bulk insert state */
+} DR_transientrel;
 
 #define MV_INIT_QUERYHASHSIZE	16
 
@@ -84,6 +92,8 @@ typedef struct MV_QueryKey
 
 /*
  * MV_QueryHashEntry
+ *
+ * Hash entry for cached plans used to maintain materizlied views.
  */
 typedef struct MV_QueryHashEntry
 {
@@ -93,47 +103,44 @@ typedef struct MV_QueryHashEntry
 
 /*
  * MV_TriggerHashEntry
+ *
+ * Hash entry for base tables on which IVM trigger is invoked
  */
 typedef struct MV_TriggerHashEntry
 {
-	Oid	matview_id;
-	int	before_trig_count;
-	int	after_trig_count;
-	TransactionId	xid;
-	CommandId	cid;
-	List *tables;
-	bool	has_old;
-	bool	has_new;
+	Oid	matview_id;			/* OID of the materialized view */
+	int	before_trig_count;	/* count of before triggers invoked */
+	int	after_trig_count;	/* count of after triggers invoked */
+
+	TransactionId	xid;	/* Transaction id before the first table is modifed*/
+	CommandId		cid;	/* Command id before the first table is modified */
+
+	List   *tables;		/* List of MV_TriggerTable */
+	bool	has_old;	/* tuples are deleted from any table? */
+	bool	has_new;	/* tuples are inserted into any table? */
 } MV_TriggerHashEntry;
 
 /*
  * MV_TriggerTable
+ *
+ * IVM related data for tables on which the trigger is invoked.
  */
 typedef struct MV_TriggerTable
 {
-	Oid	table_id;
-	List *old_tuplestores;
-	List *new_tuplestores;
-	RangeTblEntry *original_rte;
-	List *old_rtes;
-	List *new_rtes;
-	List *rte_indexes;			/* List of path list to RTE */
+	Oid		table_id;			/* OID of the modifeid table */
+	List   *old_tuplestores;	/* tuplestores for deleted tuples */
+	List   *new_tuplestores;	/* tuplestores for inserted tuples */
+	List   *old_rtes;			/* RTEs of ENRs for old_tuplestores*/
+	List   *new_rtes;			/* RTEs of ENRs for new_tuplestores */
+
+	List   *rte_paths;			/* List of paths to RTE of the modified table */
+	RangeTblEntry *original_rte;	/* the original RTE saved before rewriting query */
 } MV_TriggerTable;
 
 static HTAB *mv_query_cache = NULL;
 static HTAB *mv_trigger_info = NULL;
 
-typedef struct
-{
-	DestReceiver pub;			/* publicly-known function pointers */
-	Oid			transientoid;	/* OID of new heap into which to store */
-	/* These fields are filled by transientrel_startup: */
-	Relation	transientrel;	/* relation to write to */
-	CommandId	output_cid;		/* cmin to insert in output tuples */
-	int			ti_options;		/* table_tuple_insert performance options */
-	BulkInsertState bistate;	/* bulk insert state */
-} DR_transientrel;
-
+/* kind of IVM operation for the view */
 typedef enum
 {
 	IVM_ADD,
@@ -156,33 +163,39 @@ static void refresh_by_heap_swap(Oid matviewOid, Oid OIDNewHeap, char relpersist
 static bool is_usable_unique_index(Relation indexRel);
 static void OpenMatViewIncrementalMaintenance(void);
 static void CloseMatViewIncrementalMaintenance(void);
+static Query *get_matview_query(Relation matviewRel);
 
+static Query *rewrite_query_for_preupdate_state(Query *query, List *tables,
+								  TransactionId xid, CommandId cid,
+								  ParseState *pstate, List *rte_path);
+static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
+static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
+static RangeTblEntry *get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
+				 TransactionId xid, CommandId cid,
+				 QueryEnvironment *queryEnv);
+static RangeTblEntry *union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
+		   QueryEnvironment *queryEnv);
+static Query *rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate);
+
+static void calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
+						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
+static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
+			char *count_colname);
 static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
 static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
 								  char* count_col, const char *castType);
-static Query* rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_path);
-static Query *rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate);
-
-static void calc_delta(MV_TriggerTable *table, List *index_path, Query *query,
-						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
-static RangeTblEntry* union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv);
-static char *make_delta_enr_name(const char *prefix, Oid relid, int count);
-static void register_delta_ENRs(ParseState *pstate, Query *query, List *tables);
-static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char *count_colname);
+static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
+						  const char *group_keys, int nkeys, Oid *keyTypes, bool with_group);
+static SPIPlanPtr get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
+						  int num_min_max, Oid *valTypes, bool with_group);
 static void truncate_view_delta(Oid delta_oid);
-static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
-static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
 
 static void mv_InitHashTables(void);
 static SPIPlanPtr mv_FetchPreparedPlan(MV_QueryKey *key);
 static void mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan);
 static void mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type);
-static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-						  const char *group_keys, int nkeys, Oid *keyTypes, bool with_group);
-static SPIPlanPtr get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes, bool with_group);
-
-static Query *get_matview_query(Relation matviewRel);
+static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
+static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
 
 
 /*
@@ -1048,16 +1061,67 @@ CloseMatViewIncrementalMaintenance(void)
 }
 
 /*
- * IVM trigger function
+ * get_matview_query - get the Query from a matview's _RETURN rule.
+ */
+static Query *
+get_matview_query(Relation matviewRel)
+{
+	RewriteRule *rule;
+	List * actions;
+
+	/*
+	 * Check that everything is correct for a refresh. Problems at this point
+	 * are internal errors, so elog is sufficient.
+	 */
+	if (matviewRel->rd_rel->relhasrules == false ||
+		matviewRel->rd_rules->numLocks < 1)
+		elog(ERROR,
+			 "materialized view \"%s\" is missing rewrite information",
+			 RelationGetRelationName(matviewRel));
+
+	if (matviewRel->rd_rules->numLocks > 1)
+		elog(ERROR,
+			 "materialized view \"%s\" has too many rules",
+			 RelationGetRelationName(matviewRel));
+
+	rule = matviewRel->rd_rules->rules[0];
+	if (rule->event != CMD_SELECT || !(rule->isInstead))
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
+			 RelationGetRelationName(matviewRel));
+
+	actions = rule->actions;
+	if (list_length(actions) != 1)
+		elog(ERROR,
+			 "the rule for materialized view \"%s\" is not a single action",
+			 RelationGetRelationName(matviewRel));
+
+	/*
+	 * The stored query was rewritten at the time of the MV definition, but
+	 * has not been scribbled on by the planner.
+	 */
+	return linitial_node(Query, actions);
+}
+
+
+/* ----------------------------------------------------
+ *		Incremental View Maintenance routines
+ * ---------------------------------------------------
  */
 
+/*
+ * IVM_immediate_before
+ *
+ * IVM trigger function invoked before base table is modified. If this is invoked firstly
+ * in the same statement, we save the transaction id and the command id at that time.
+ */
 Datum
 IVM_immediate_before(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
-	char		*matviewname = trigdata->tg_trigger->tgargs[0];
-	List	*names = stringToQualifiedNameList(matviewname);
-	Oid	matviewOid;
+	char   *matviewname = trigdata->tg_trigger->tgargs[0];
+	List   *names = stringToQualifiedNameList(matviewname);
+	Oid		matviewOid;
 
 	MV_TriggerHashEntry *entry;
 	bool	found;
@@ -1104,17 +1168,25 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	return PointerGetDatum(NULL);
 }
 
+/*
+ * IVM_immediate_before
+ *
+ * IVM trigger function invoked after base table is modified.
+ * For each table, tuplestores of transition tables are collected.
+ * and after the last modification
+ */
 Datum
 IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
 	Relation	rel;
-	Oid relid;
-	Oid matviewOid;
-	Query	   *query, *rewritten;
-	char*		matviewname = trigdata->tg_trigger->tgargs[0];
-	char*		count_colname = NULL;
+	Oid			relid;
+	Oid			matviewOid;
+	Query	   *query;
+	Query	   *rewritten;
+	char	   *matviewname = trigdata->tg_trigger->tgargs[0];
 	List	   *names;
+	char	   *count_colname = NULL;
 	Relation matviewRel;
 	int old_depth = matview_maintenance_depth;
 
@@ -1128,14 +1200,14 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	int			save_nestlevel;
 
 	MV_TriggerHashEntry *entry;
-	MV_TriggerTable	*table;
+	MV_TriggerTable		*table;
 	bool	found;
-	ListCell   *lc;
-	MemoryContext oldcxt;
 
-
+	ParseState		 *pstate;
 	QueryEnvironment *queryEnv = create_queryEnv();
-	ParseState *pstate;
+	MemoryContext	oldcxt;
+	ListCell   *lc;
+
 
 	/* Create a ParseState for rewriting the view definition query */
 	pstate = make_parsestate(NULL);
@@ -1155,6 +1227,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	if (!mv_query_cache)
 		mv_InitHashTables();
 
+	/* get the entry for this materialized view */
 	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
 											  (void *) &matviewOid,
 											  HASH_FIND, &found);
@@ -1183,12 +1256,13 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		table->new_tuplestores = NIL;
 		table->old_rtes = NIL;
 		table->new_rtes = NIL;
-		table->rte_indexes = NIL;
+		table->rte_paths = NIL;
 		entry->tables = lappend(entry->tables, table);
 
 		MemoryContextSwitchTo(oldcxt);
 	}
 
+	/* Save the transition tables and make a request to not free immediately */
 	if (trigdata->tg_oldtable)
 	{
 		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
@@ -1226,7 +1300,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		return PointerGetDatum(NULL);
 
 
-	/* If this is the last AFTER trigger call, update the view. */
+	/* If this is the last AFTER trigger call, continue and update the view. */
 
 	matviewRel = table_open(matviewOid, NoLock);
 
@@ -1258,10 +1332,10 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	if (rewritten->hasSubLinks)
 		rewrite_query_for_exists_subquery(rewritten);
 
+	/* Set all ables in the query to pre-update state */
 	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
-	rewritten = rewrite_query_for_counting_and_aggregation(rewritten, pstate);
-
-	relowner = matviewRel->rd_rel->relowner;
+	/* Rewrite for counting algorithm and aggregates functions */
+	rewritten = rewrite_query_for_counting_and_aggregates(rewritten, pstate);
 
 	/*
 	 * Switch to the owner's userid, so that any functions are run as that
@@ -1269,6 +1343,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 * Don't lock it down too tight to create a temporary table just yet.  We
 	 * will switch modes when we are about to execute user code.
 	 */
+	relowner = matviewRel->rd_rel->relowner;
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(relowner,
 						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -1309,19 +1384,20 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		table = (MV_TriggerTable *) lfirst(lc);
 
 		/* loop for self-join */
-		foreach(lc2, table->rte_indexes)
+		foreach(lc2, table->rte_paths)
 		{
-			List *index_path = lfirst(lc2);
+			List *rte_path = lfirst(lc2);
 			int i;
 			Query *querytree = rewritten;
 			RangeTblEntry *rte;
 
-			calc_delta(table, index_path, rewritten, dest_old, dest_new, queryEnv);
+			/* calculate delta tables */
+			calc_delta(table, rte_path, rewritten, dest_old, dest_new, queryEnv);
 
-			/* check __ivm_exists_count_X__ columns are contained */
-			for(i = 0; i< list_length(index_path); i++)
+			/* check if the modified table is in EXISTS clause. */
+			for(i = 0; i< list_length(rte_path); i++)
 			{
-				int index =  lfirst_int(list_nth_cell(index_path, i));
+				int index =  lfirst_int(list_nth_cell(rte_path, i));
 				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index));
 
 				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
@@ -1337,6 +1413,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 			PG_TRY();
 			{
+				/* apply the delta tables to the materialized view */
 				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query,count_colname);
 			}
 			PG_CATCH();
@@ -1370,195 +1447,77 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	return PointerGetDatum(NULL);
 }
 
-#define IVM_colname(type, col) makeObjectName("__ivm_" type, col, "_")
-
-static char *
-get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
+/*
+ * rewrite_query_for_preupdate_state
+ *
+ * Rewrite the query so that base tables' RTEs will represent "pre-update"
+ * state of tables. This is necessary to calculate view delta after multiple
+ * tables are modified. xid and cid are the transction id and command id
+ * before the first table was modified.
+ */
+static Query*
+rewrite_query_for_preupdate_state(Query *query, List *tables,
+								  TransactionId xid, CommandId cid,
+								  ParseState *pstate, List *rte_path)
 {
-	StringInfoData null_cond;
-	initStringInfo(&null_cond);
-
-	switch (op)
-	{
-		case IVM_ADD:
-			appendStringInfo(&null_cond,
-				"%s = 0 AND %s = 0",
-				quote_qualified_identifier(arg1, count_col),
-				quote_qualified_identifier(arg2, count_col)
-			);
-			break;
-		case IVM_SUB:
-			appendStringInfo(&null_cond,
-				"%s = %s",
-				quote_qualified_identifier(arg1, count_col),
-				quote_qualified_identifier(arg2, count_col)
-			);
-			break;
-		default:
-			elog(ERROR,"unkwon opration");
-	}
-
-	return null_cond.data;
-}
-
-static char *
-get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_col, const char *castType)
-{
-	StringInfoData buf, castString;
-	char	*col1 = quote_qualified_identifier(arg1, col);
-	char	*col2 = quote_qualified_identifier(arg2, col);
-
-	char op_char = (op == IVM_SUB ? '-' : '+');
-	char *sign = (op == IVM_SUB ? "-" : "");
-
-	initStringInfo(&buf);
-	initStringInfo(&castString);
-
-	if (castType)
-		appendStringInfo(&castString, "::%s", castType);
-
-
-	if (!count_col)
-	{
-		appendStringInfo(&buf, "(%s %c %s)%s",
-			col1, op_char, col2, castString.data);
-	}
-	else
-	{
-		char *null_cond = get_null_condition_string(op, arg1, arg2, count_col);
-
-		appendStringInfo(&buf,
-			"(CASE WHEN %s THEN NULL "
-				" WHEN %s IS NULL THEN %s%s "
-				" WHEN %s IS NULL THEN (%s) "
-				" ELSE (%s %c %s)%s END)",
-			null_cond,
-			col1, sign, col2,
-			col2, col1,
-			col1, op_char, col2, castString.data
-		);
-	}
-
-	return buf.data;
-}
-
-char *
-getIVMColumnName(RangeTblEntry *rte, char *str)
-{
-	char *colname;
 	ListCell *lc;
-	Alias *alias = rte->eref;
+	int num_rte = list_length(query->rtable);
+	int i;
 
-	foreach(lc, alias->colnames)
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	/* regist delta ENRs only once */
+	if (rte_path == NIL)
+		register_delta_ENRs(pstate, query, tables);
+
+	// XXX: Is necessary? Is this right timing?
+	AcquireRewriteLocks(query, true, false);
+
+	i = 0;
+	foreach(lc, query->rtable)
 	{
-		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
+		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
+
+		/* if rte contains subquery, search recursively */
+		if (r->rtekind == RTE_SUBQUERY)
 		{
-			colname = pstrdup(strVal(lfirst(lc)));
-			return colname;
+			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(rte_path, i));
 		}
-	}
-	return NULL;
-}
-
-static void
-calc_delta(MV_TriggerTable *table, List *index_path, Query *query,
-			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
-{
-	ListCell *index_cell;
-	ListCell *lc;
-	RangeTblEntry *rte;
-	Query *querytree = query;
-
-	Assert(list_length(index_path) > 0);
-
-	foreach(index_cell, index_path)
-	{
-		int index = lfirst_int(index_cell);
-		lc = list_nth_cell(querytree->rtable, index);
-		rte = (RangeTblEntry *) lfirst(lc);
-		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+		else
 		{
-			querytree = rte->subquery;
+			ListCell *lc2;
+			foreach(lc2, tables)
+			{
+				MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc2);
+				/*
+				 * if the modified table is found then replace the original RTE with
+				 * "pre-state" RTE and append its path to the list.
+				 */
+				if (r->relid == table->table_id)
+				{
+					lfirst(lc) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
+					table->rte_paths = lappend(table->rte_paths, lappend_int(rte_path, i));
+					break;
+				}
+			}
 		}
+
+		/* finish the loop if we procecced all RTE included in the original query */
+		if (++i >= num_rte)
+			break;
 	}
 
-	/* Generate old delta */
-	if (list_length(table->old_rtes) > 0)
-	{
-		lfirst(lc) = union_ENRs(rte, table->table_id, table->old_rtes, "old", queryEnv);
-		refresh_matview_datafill(dest_old, query, queryEnv, NULL);
-	}
-
-	/* Generate new delta */
-	if (list_length(table->new_rtes) > 0)
-	{
-		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
-		refresh_matview_datafill(dest_new, query, queryEnv, NULL);
-	}
-
-	/* Retore the original RTE */
-	lfirst(lc) = table->original_rte;
+	return query;
 }
 
-
-static RangeTblEntry*
-union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix, QueryEnvironment *queryEnv)
-{
-	StringInfoData str;
-	ParseState	*pstate;
-	RawStmt *raw;
-	Query *sub;
-	int	i;
-
-	/* Create a ParseState for rewriting the view definition query */
-	pstate = make_parsestate(NULL);
-	pstate->p_queryEnv = queryEnv;
-	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
-
-	initStringInfo(&str);
-
-	for (i = 0; i < list_length(enr_rtes); i++)
-	{
-		if (i > 0)
-			appendStringInfo(&str, " UNION ALL ");
-		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name(prefix, relid, i));
-	}
-
-	raw = (RawStmt*)linitial(raw_parser(str.data));
-	sub = transformStmt(pstate, raw->stmt);
-
-	rte->rtekind = RTE_SUBQUERY;
-	rte->subquery = sub;
-	rte->security_barrier = false;
-	/* Clear fields that should not be set in a subquery RTE */
-	rte->relid = InvalidOid;
-	rte->relkind = 0;
-	rte->rellockmode = 0;
-	rte->tablesample = NULL;
-	rte->inh = false;			/* must not be set for a subquery */
-
-	rte->requiredPerms = 0;		/* no permission check on subquery itself */
-	rte->checkAsUser = InvalidOid;
-	rte->selectedCols = NULL;
-	rte->insertedCols = NULL;
-	rte->updatedCols = NULL;
-	rte->extraUpdatedCols = NULL;
-
-	return rte;
-}
-
-static char*
-make_delta_enr_name(const char *prefix, Oid relid, int count)
-{
-	char buf[NAMEDATALEN];
-	char *name;
-
-	snprintf(buf, NAMEDATALEN, "%s_%u_%u", prefix, relid, count);
-	name = pstrdup(buf);
-
-	return name;
-}
-
+/*
+ * register_delta_ENRs
+ *
+ * For all modified tables, make ENRs for their transition tables
+ * and register them to the queryEnv. ENR's RTEs are also apended
+ * into the list in query tree.
+ */
 static void
 register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 {
@@ -1618,8 +1577,16 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 	}
 }
 
+/*
+ * get_prestate_rte
+ *
+ * Rewrite RTE of the modified table to a subquery which represents
+ * "pre-state" table. The original RTE is saved in table->rte_original.
+ */
 static RangeTblEntry*
-get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, CommandId cid, QueryEnvironment *queryEnv)
+get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
+				 TransactionId xid, CommandId cid,
+				 QueryEnvironment *queryEnv)
 {
 	StringInfoData str;
 	RawStmt *raw;
@@ -1659,6 +1626,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, 
 	raw = (RawStmt*)linitial(raw_parser(str.data));
 	sub = transformStmt(pstate, raw->stmt);
 
+	/* save the original RTE */
 	table->original_rte = copyObject(rte);
 
 	rte->rtekind = RTE_SUBQUERY;
@@ -1681,61 +1649,84 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table, TransactionId xid, 
 	return rte;
 }
 
-
-static Query*
-rewrite_query_for_preupdate_state(Query *query, List *tables, TransactionId xid, CommandId cid, ParseState *pstate, List *index_path)
+/*
+ * make_delta_enr_name
+ *
+ * Make a name for ENR of a transtion table from the base table's oid.
+ * prefix will be "new" or "old" depending on its transition table kind.
+ */
+static char*
+make_delta_enr_name(const char *prefix, Oid relid, int count)
 {
-	ListCell *lc;
-	int num_rte = list_length(query->rtable);
-	int i;
+	char buf[NAMEDATALEN];
+	char *name;
 
-	/* This can recurse, so check for excessive recursion */
-	check_stack_depth();
+	snprintf(buf, NAMEDATALEN, "%s_%u_%u", prefix, relid, count);
+	name = pstrdup(buf);
 
-	/* regist delta ENRs only once */
-	if (index_path == NIL)
-		register_delta_ENRs(pstate, query, tables);
-
-	// XXX: Is necessary? Is this right timing?
-	AcquireRewriteLocks(query, true, false);
-
-
-
-	i = 0;
-	foreach(lc, query->rtable)
-	{
-		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
-
-		/* if rte contains subquery, search recursively */
-		if (r->rtekind == RTE_SUBQUERY)
-		{
-			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(index_path, i));
-		}
-		else
-		{
-			ListCell *lc2;
-			foreach(lc2, tables)
-			{
-				MV_TriggerTable *table = (MV_TriggerTable *) lfirst(lc2);
-				/* replace original rte with prestate rte(used subquery) and add rte's index path, if rte found */
-				if (r->relid == table->table_id)
-				{
-					lfirst(lc) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
-					table->rte_indexes = lappend(table->rte_indexes, lappend_int(index_path, i));
-					break;
-				}
-			}
-		}
-
-		if (++i >= num_rte)
-			break;
-	}
-
-	return query;
+	return name;
 }
 
+/*
+ * union_ENRs
+ *
+ * Make a single table delta by unioning all transition tables of the modified table
+ * whose RTE is specified by
+ */
+static RangeTblEntry*
+union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
+		   QueryEnvironment *queryEnv)
+{
+	StringInfoData str;
+	ParseState	*pstate;
+	RawStmt *raw;
+	Query *sub;
+	int	i;
+
+	/* Create a ParseState for rewriting the view definition query */
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	initStringInfo(&str);
+
+	for (i = 0; i < list_length(enr_rtes); i++)
+	{
+		if (i > 0)
+			appendStringInfo(&str, " UNION ALL ");
+		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name(prefix, relid, i));
+	}
+
+	raw = (RawStmt*)linitial(raw_parser(str.data));
+	sub = transformStmt(pstate, raw->stmt);
+
+	rte->rtekind = RTE_SUBQUERY;
+	rte->subquery = sub;
+	rte->security_barrier = false;
+	/* Clear fields that should not be set in a subquery RTE */
+	rte->relid = InvalidOid;
+	rte->relkind = 0;
+	rte->rellockmode = 0;
+	rte->tablesample = NULL;
+	rte->inh = false;			/* must not be set for a subquery */
+
+	rte->requiredPerms = 0;		/* no permission check on subquery itself */
+	rte->checkAsUser = InvalidOid;
+	rte->selectedCols = NULL;
+	rte->insertedCols = NULL;
+	rte->updatedCols = NULL;
+	rte->extraUpdatedCols = NULL;
+
+	return rte;
+}
+
+/*
+ * rewrite_query_for_conting_and_aggregates
+ *
+ * Rewrite query for counting algorithm and aggregate functions.
+ */
 static Query *
-rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
+rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 {
 	TargetEntry *tle_count;
 	FuncCall *fn;
@@ -1868,7 +1859,11 @@ rewrite_query_for_counting_and_aggregation(Query *query, ParseState *pstate)
 	return query;
 }
 
-
+/*
+ * rewrite_query_for_exists_subquery
+ *
+ * Rewrite EXISTS sublink in WHERE to LATERAL subquery
+ */
 static Query *
 rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 {
@@ -2002,7 +1997,6 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 	return query;
 }
 
-
 Query *
 rewrite_query_for_exists_subquery(Query *query)
 {
@@ -2013,8 +2007,64 @@ rewrite_query_for_exists_subquery(Query *query)
 	return rewrite_exists_subquery_walker(query, (Node *)query, &count);
 }
 
+/*
+ * calc_delta
+ *
+ * Calculate view deltas generated under the modification of a table specified
+ * by the RTE path.
+ */
 static void
-apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char * count_colname)
+calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
+			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
+{
+	ListCell *index_cell;
+	ListCell *lc;
+	RangeTblEntry *rte;
+	Query *querytree = query;
+
+	Assert(list_length(rte_path) > 0);
+
+	foreach(index_cell, rte_path)
+	{
+		int index = lfirst_int(index_cell);
+		lc = list_nth_cell(querytree->rtable, index);
+		rte = (RangeTblEntry *) lfirst(lc);
+		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+		{
+			querytree = rte->subquery;
+		}
+	}
+
+	/* Generate old delta */
+	if (list_length(table->old_rtes) > 0)
+	{
+		/* Replace the modified table with the old delta table and calculate the old view delta. */
+		lfirst(lc) = union_ENRs(rte, table->table_id, table->old_rtes, "old", queryEnv);
+		refresh_matview_datafill(dest_old, query, queryEnv, NULL);
+	}
+
+	/* Generate new delta */
+	if (list_length(table->new_rtes) > 0)
+	{
+		/* Replace the modified table with the new delta table and calculate the new view delta*/
+		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
+		refresh_matview_datafill(dest_new, query, queryEnv, NULL);
+	}
+
+	/* Retore the original RTE */
+	lfirst(lc) = table->original_rte;
+}
+
+#define IVM_colname(type, col) makeObjectName("__ivm_" type, col, "_")
+
+/*
+ * apply_delta
+ *
+ * Apply deltas to the materialized view.
+ */
+static void
+apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
+			char *count_colname)
 {
 	StringInfoData querybuf;
 	StringInfoData mvatts_buf, diffatts_buf;
@@ -2035,6 +2085,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 	int			num_min_or_max = 0;
 
 
+	/* get names of the materialized view and delta tables */
 	initStringInfo(&querybuf);
 	matviewRel = table_open(matviewOid, NoLock);
 	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
@@ -2052,6 +2103,10 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 												  RelationGetRelationName(tempRel_old));
 	}
 
+	/*
+	 * Build parts of the maintenance queries
+	 */
+
 	initStringInfo(&mvatts_buf);
 	initStringInfo(&diffatts_buf);
 	initStringInfo(&diff_aggs_buf);
@@ -2064,6 +2119,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 	sep = "";
 	sep_agg= "";
 	i = 0;
+	/* for attributes in the view target list ...*/
 	foreach (lc, query->targetList)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lc);
@@ -2082,6 +2138,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", resname));
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
 
+		/* building SET clause elements for updating aggregate values */
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
@@ -2210,8 +2267,10 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 				bool is_min = !strcmp(aggname, "min");
 				char *count_col = IVM_colname("count", resname);
 
+				/* We need a special RETURNING clause for min/max to check if recomputation is required */
 				if (!has_min_or_max)
 				{
+					/* the first min or max is found */
 					has_min_or_max = true;
 					appendStringInfo(&returning_buf, "RETURNING mv.ctid, (");
 				}
@@ -2226,6 +2285,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 					is_min ? ">=" : "<=",
 					quote_qualified_identifier("t", resname)
 				);
+				/* make a resname list of min or max aggregates */
 				appendStringInfo(&min_or_max_buf, "%s", quote_qualified_identifier(NULL, resname));
 
 				/* Even if the new values is not NULL, this might be recomputated afterwords. */
@@ -2278,6 +2338,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 	if (has_min_or_max)
 		appendStringInfo(&returning_buf, ") AS recalc");
 
+	/* building GROUP keys list for tuple matching */
 	if (query->hasAggs)
 	{
 		initStringInfo(&mv_gkeys_buf);
@@ -2290,7 +2351,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 			foreach (lc, query->groupClause)
 			{
 				SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
-				TargetEntry *tle = get_sortgroupclause_tle(sgcl, query->targetList);
+				TargetEntry		*tle = get_sortgroupclause_tle(sgcl, query->targetList);
 
 				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno-1);
 				char *resname = NameStr(attr->attname);
@@ -2316,12 +2377,20 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 		}
 		else
 		{
+			/*
+			 * If aggregates view doesn't have GROUP clause, the number of rows is always one,
+			 * so tuple matching is not necessary.
+			 */
 			appendStringInfo(&mv_gkeys_buf, "1");
 			appendStringInfo(&diff_gkeys_buf, "1");
 			appendStringInfo(&updt_gkeys_buf, "1");
 		}
 	}
 
+
+	/*
+	 * Build the maintenance queries and execute them.
+	 */
 
 	/* Open SPI context. */
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -2344,6 +2413,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 
 	OpenMatViewIncrementalMaintenance();
 
+	/* for aggregates views */
 	if (query->hasAggs)
 	{
 		if (tempname_old)
@@ -2476,6 +2546,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
 	}
+	/* views witout aggregates */
 	else
 	{
 		if (tempname_old)
@@ -2525,7 +2596,215 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query, char
 		elog(ERROR, "SPI_finish failed");
 }
 
+/*
+ * get_null_condition_string
+ *
+ * Build a predicate string for CASE clause to check if an aggregate value
+ * will became NULL after the given operation is applied.
+ */
+static char *
+get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
+{
+	StringInfoData null_cond;
+	initStringInfo(&null_cond);
 
+	switch (op)
+	{
+		case IVM_ADD:
+			appendStringInfo(&null_cond,
+				"%s = 0 AND %s = 0",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		case IVM_SUB:
+			appendStringInfo(&null_cond,
+				"%s = %s",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		default:
+			elog(ERROR,"unkwon opration");
+	}
+
+	return null_cond.data;
+}
+
+/*
+ * get_operation_string
+ *
+ * Build a string to calculate the new aggregate values.
+ */
+static char *
+get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_col, const char *castType)
+{
+	StringInfoData buf;
+	StringInfoData castString;
+	char   *col1 = quote_qualified_identifier(arg1, col);
+	char   *col2 = quote_qualified_identifier(arg2, col);
+	char	op_char = (op == IVM_SUB ? '-' : '+');
+	char   *sign = (op == IVM_SUB ? "-" : "");
+
+	initStringInfo(&buf);
+	initStringInfo(&castString);
+
+	if (castType)
+		appendStringInfo(&castString, "::%s", castType);
+
+
+	if (!count_col)
+	{
+		/*
+		 * If the attributes don't have count columns then calc the result
+		 * by using the operater simply.
+		 */
+		appendStringInfo(&buf, "(%s %c %s)%s",
+			col1, op_char, col2, castString.data);
+	}
+	else
+	{
+		/*
+		 * If the attributes have count columns then consider the condition
+		 * where the result becomes NULL.
+		 */
+		char *null_cond = get_null_condition_string(op, arg1, arg2, count_col);
+
+		appendStringInfo(&buf,
+			"(CASE WHEN %s THEN NULL "
+				" WHEN %s IS NULL THEN %s%s "
+				" WHEN %s IS NULL THEN (%s) "
+				" ELSE (%s %c %s)%s END)",
+			null_cond,
+			col1, sign, col2,
+			col2, col1,
+			col1, op_char, col2, castString.data
+		);
+	}
+
+	return buf.data;
+}
+
+/*
+ * get_plan_for_recalc_min_max
+ *
+ * Create or fetch a plan for recalculating min or max aggregate value from
+ * base tables using the view definition query.
+ */
+static SPIPlanPtr
+get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
+							const char *group_keys, int nkeys, Oid *keyTypes, bool with_group)
+{
+	MV_QueryKey key;
+	SPIPlanPtr	plan;
+
+	/* Fetch or prepare a saved plan for the real check */
+	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_RECALC_MINMAX);
+
+	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	{
+		char	*viewdef;
+		StringInfoData	str;
+		int		i;
+
+
+		/* get view definition of matview */
+		viewdef = text_to_cstring((text *) DatumGetPointer(
+					DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
+		/* get rid of tailling semi-collon */
+		viewdef[strlen(viewdef)-1] = '\0';
+
+		initStringInfo(&str);
+		appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
+
+		if (with_group)
+		{
+			appendStringInfo(&str, " WHERE (%s) = (", group_keys);
+
+			for (i = 1; i <= nkeys; i++)
+				appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
+
+			appendStringInfo(&str, ")");
+		}
+
+		plan = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+
+		SPI_keepplan(plan);
+		mv_HashPreparedPlan(&key, plan);
+	}
+
+	return plan;
+}
+
+/*
+ * get_plan_for_set_min_max
+ *
+ * Create or fetch a plan for applying min or max aggregate value
+ * calculated by get_plan_for_recalc_min_man to the view.
+ */
+static SPIPlanPtr
+get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
+						  int num_min_max, Oid *valTypes, bool with_group)
+{
+	MV_QueryKey key;
+	SPIPlanPtr plan;
+
+	/* Fetch or prepare a saved plan for the real check */
+	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_MINMAX);
+
+	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	{
+		StringInfoData str;
+		int		i;
+
+		initStringInfo(&str);
+		appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
+			matviewname, min_max_list);
+
+		for (i = 1; i <= num_min_max; i++)
+			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
+
+		appendStringInfo(&str, ")");
+
+		if (with_group)
+			appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
+
+		plan = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+
+		SPI_keepplan(plan);
+		mv_HashPreparedPlan(&key, plan);
+	}
+
+	return plan;
+}
+
+/*
+ * truncate_view_delta
+ *
+ * Truncate temptables for storing delta.
+ */
+static void
+truncate_view_delta(Oid delta_oid)
+{
+	Relation	rel;
+
+	if (!OidIsValid(delta_oid))
+		return;
+
+	rel = table_open(delta_oid, NoLock);
+	ExecuteTruncateGuts(list_make1(rel), list_make1_oid(delta_oid), NIL,
+						DROP_RESTRICT, false);
+	table_close(rel, NoLock);
+}
+
+
+/*
+ * mv_InitHashTables
+ */
 static void
 mv_InitHashTables(void)
 {
@@ -2546,6 +2825,9 @@ mv_InitHashTables(void)
 								 &ctl, HASH_ELEM | HASH_BLOBS);
 }
 
+/*
+ * mv_FetchPreparedPlan
+ */
 static SPIPlanPtr
 mv_FetchPreparedPlan(MV_QueryKey *key)
 {
@@ -2620,16 +2902,10 @@ mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan)
 	entry->plan = plan;
 }
 
-/* ----------
- * mv_BuildQueryKey -
+/*
+ * mv_BuildQueryKey
  *
- *	Construct a hashtable key for a prepared SPI plan for IVM.
- *
- *		key: output argument, *key is filled in based on the other arguments
- *		matview_id: OID of materialized view
- *		query_type: an internal number identifying the query type
- *			(see MV_PLAN_XXX constants at head of file)
- * ----------
+ * Construct a hashtable key for a prepared SPI plan for IVM.
  */
 static void
 mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type)
@@ -2642,149 +2918,12 @@ mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type)
 	key->query_type = query_type;
 }
 
-static SPIPlanPtr
-get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-							const char *group_keys, int nkeys, Oid *keyTypes, bool with_group)
-{
-	MV_QueryKey key;
-	SPIPlanPtr	plan;
-
-	/* Fetch or prepare a saved plan for the real check */
-	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_RECALC_MINMAX);
-
-	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
-	{
-		char	*viewdef;
-		StringInfoData	str;
-		int		i;
-
-
-		/* get view definition of matview */
-		viewdef = text_to_cstring((text *) DatumGetPointer(
-					DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
-		/* get rid of tailling semi-collon */
-		viewdef[strlen(viewdef)-1] = '\0';
-
-		initStringInfo(&str);
-		appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
-
-		if (with_group)
-		{
-			appendStringInfo(&str, " WHERE (%s) = (", group_keys);
-
-			for (i = 1; i <= nkeys; i++)
-				appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
-
-			appendStringInfo(&str, ")");
-		}
-
-		plan = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
-		if (plan == NULL)
-			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
-
-		SPI_keepplan(plan);
-		mv_HashPreparedPlan(&key, plan);
-	}
-
-	return plan;
-}
-
-static SPIPlanPtr
-get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes, bool with_group)
-{
-	MV_QueryKey key;
-	SPIPlanPtr plan;
-
-	/* Fetch or prepare a saved plan for the real check */
-	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_MINMAX);
-
-	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
-	{
-		StringInfoData str;
-		int		i;
-
-		initStringInfo(&str);
-		appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
-			matviewname, min_max_list);
-
-		for (i = 1; i <= num_min_max; i++)
-			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
-
-		appendStringInfo(&str, ")");
-
-		if (with_group)
-			appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
-
-		plan = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
-		if (plan == NULL)
-			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
-
-		SPI_keepplan(plan);
-		mv_HashPreparedPlan(&key, plan);
-	}
-
-	return plan;
-}
-
-
 /*
- * get_matview_query - get the Query from a matview's _RETURN rule.
+ * AtAbort_IVM
+ *
+ * Clean up hash entries for all materialized views. This is called at
+ * transaction abort.
  */
-static Query *
-get_matview_query(Relation matviewRel)
-{
-	RewriteRule *rule;
-	List * actions;
-
-	/*
-	 * Check that everything is correct for a refresh. Problems at this point
-	 * are internal errors, so elog is sufficient.
-	 */
-	if (matviewRel->rd_rel->relhasrules == false ||
-		matviewRel->rd_rules->numLocks < 1)
-		elog(ERROR,
-			 "materialized view \"%s\" is missing rewrite information",
-			 RelationGetRelationName(matviewRel));
-
-	if (matviewRel->rd_rules->numLocks > 1)
-		elog(ERROR,
-			 "materialized view \"%s\" has too many rules",
-			 RelationGetRelationName(matviewRel));
-
-	rule = matviewRel->rd_rules->rules[0];
-	if (rule->event != CMD_SELECT || !(rule->isInstead))
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a SELECT INSTEAD OF rule",
-			 RelationGetRelationName(matviewRel));
-
-	actions = rule->actions;
-	if (list_length(actions) != 1)
-		elog(ERROR,
-			 "the rule for materialized view \"%s\" is not a single action",
-			 RelationGetRelationName(matviewRel));
-
-	/*
-	 * The stored query was rewritten at the time of the MV definition, but
-	 * has not been scribbled on by the planner.
-	 */
-	return linitial_node(Query, actions);
-}
-
-static void
-truncate_view_delta(Oid delta_oid)
-{
-	Relation	rel;
-
-	if (!OidIsValid(delta_oid))
-		return;
-
-	rel = table_open(delta_oid, NoLock);
-	ExecuteTruncateGuts(list_make1(rel), list_make1_oid(delta_oid), NIL,
-						DROP_RESTRICT, false);
-	table_close(rel, NoLock);
-}
-
 void
 AtAbort_IVM()
 {
@@ -2799,6 +2938,12 @@ AtAbort_IVM()
 	}
 }
 
+/*
+ * clean_up_IVM_hash_entry
+ *
+ * Clean up tuple stores and hash entries for a materialized view after its
+ * maintenance finished.
+ */
 static void
 clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry)
 {
@@ -2817,13 +2962,21 @@ clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry)
 	hash_search(mv_trigger_info, (void *) &entry->matview_id, HASH_REMOVE, &found);
 }
 
+/*
+ * clean_up_IVM_temptable
+ *
+ * Drop temptables for storing deltas.
+ */
 static void
 clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
 {
 	StringInfoData querybuf;
-	Relation tempRel_old, tempRel_new;
-	char *tempname_old = NULL, *tempname_new = NULL;
+	Relation tempRel_old;
+	Relation tempRel_new;
+	char *tempname_old = NULL;
+	char *tempname_new = NULL;
 
+	/* get names of temptables */
 	if (OidIsValid(tempOid_new))
 	{
 		tempRel_new = table_open(tempOid_new, NoLock);
@@ -2864,4 +3017,28 @@ clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
 	/* Close SPI context. */
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
+}
+
+/*
+ * getColumnName
+ *
+ * Searh a column name which starts with the given string from the given RTE,
+ * and return the first found one or NULL if not found.
+ */
+char *
+getIVMColumnName(RangeTblEntry *rte, char *str)
+{
+	char *colname;
+	ListCell *lc;
+	Alias *alias = rte->eref;
+
+	foreach(lc, alias->colnames)
+	{
+		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
+		{
+			colname = pstrdup(strVal(lfirst(lc)));
+			return colname;
+		}
+	}
+	return NULL;
 }
