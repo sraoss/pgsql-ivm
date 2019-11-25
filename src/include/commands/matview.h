@@ -34,9 +34,9 @@ extern bool MatViewIncrementalMaintenanceIsEnabled(void);
 
 extern Datum IVM_immediate_before(PG_FUNCTION_ARGS);
 extern Datum IVM_immediate_maintenance(PG_FUNCTION_ARGS);
-extern void AtAbort_IVM(void);
-
 extern Query* rewrite_query_for_exists_subquery(Query *query);
-extern char* getIVMColumnName(RangeTblEntry *rte, char *str);
+extern void AtAbort_IVM(void);
+extern char *getColumnNameStartWith(RangeTblEntry *rte, char *str);
+extern bool isIvmColumn(const char *s);
 
 #endif							/* MATVIEW_H */

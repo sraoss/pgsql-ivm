@@ -59,7 +59,6 @@ static void expandTupleDesc(TupleDesc tupdesc, Alias *eref,
 							List **colnames, List **colvars, bool is_ivm);
 static int	specialAttNum(const char *attname);
 static bool isQueryUsingTempRelation_walker(Node *node, void *context);
-static bool isIvmColumn(const char *s);
 
 
 /*
@@ -2575,12 +2574,6 @@ expandRelation(Oid relid, Alias *eref, int rtindex, int sublevels_up,
 					location, include_dropped,
 					colnames, colvars, RelationIsIVM(rel));
 	relation_close(rel, AccessShareLock);
-}
-
-static bool
-isIvmColumn(const char *s)
-{
-	return (strncmp(s, "__ivm_", 6) == 0);
 }
 
 /*

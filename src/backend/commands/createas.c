@@ -64,6 +64,8 @@
 #include "commands/defrem.h"
 #include "utils/syscache.h"
 
+#include "optimizer/clauses.h"
+
 typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
@@ -76,6 +78,14 @@ typedef struct
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_intorel;
 
+typedef struct
+{
+	bool	has_outerjoin;
+	bool	has_subquery;
+	bool	has_agg;
+	List	*join_quals;
+} check_ivm_restriction_context;
+
 /* utility functions for CTAS definition creation */
 static ObjectAddress create_ctas_internal(List *attrList, IntoClause *into);
 static ObjectAddress create_ctas_nodata(List *tlist, IntoClause *into);
@@ -87,8 +97,9 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map);
-static void check_ivm_restriction_walker(Node *node, int depth);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids);
+static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
+static bool is_equijoin_condition(OpExpr *op);
 
 /*
  * create_ctas_internal
@@ -273,9 +284,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		}
 	}
 
-	if (is_matview && into->ivm)
-		check_ivm_restriction_walker((Node *) query, 0);
-
 	/*
 	 * Create the tuple receiver object and insert info it will need
 	 */
@@ -347,8 +355,11 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			Node *node;
 			ParseState *pstate = make_parsestate(NULL);
 			FuncCall *fn;
+			check_ivm_restriction_context ctx = {false, false, false, NIL};
 
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
 
 			/*
 			 * If this query has EXISTS clause, rewrite query and
@@ -373,7 +384,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						continue;
 					pstate->p_rtable = copied_query->rtable;
 
-					columnName = getIVMColumnName(rte, "__ivm_exists");
+					columnName = getColumnNameStartWith(rte, "__ivm_exists");
 					if (columnName == NULL)
 						continue;
 					countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
@@ -404,6 +415,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			}
 			else if (!copied_query->hasAggs)
 				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
+
 			if (copied_query->hasAggs)
 			{
 				ListCell *lc;
@@ -471,7 +483,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 							foreach(lc, aggref->aggargtypes)
 							{
 								Oid		typeid = lfirst_oid(lc);
-								Type 	type = typeidType(typeid);
+								Type	type = typeidType(typeid);
 
 								Const *con = makeConst(typeid,
 													   -1,
@@ -516,6 +528,28 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 									false);
 			copied_query->targetList = lappend(copied_query->targetList, tle);
 			copied_query->hasAggs = true;
+
+			/*
+			 * Add JSONB column for meta information related to outer joins.
+			 * Actually this is required only for delta tables, but we create
+			 * this here because delta tables are created using the schema
+			 * of the matview.
+			 */
+			if (ctx.has_outerjoin)
+			{
+				Const	*dmy_jsonb = makeConst(JSONBOID,
+											-1,
+											InvalidOid,
+											-1,
+											PointerGetDatum(NULL),
+											true,
+											false);
+				tle = makeTargetEntry((Expr *) dmy_jsonb,
+										list_length(copied_query->targetList) + 1,
+										pstrdup("__ivm_meta__"),
+										false);
+				copied_query->targetList = lappend(copied_query->targetList, tle);
+			}
 		}
 
 		rewritten = QueryRewrite(copied_query);
@@ -586,25 +620,26 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			Relation matviewRel = table_open(matviewOid, NoLock);
 			char	*matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 													 RelationGetRelationName(matviewRel));
-			Bitmapset  *relid_map = NULL;
+			Relids	relids = NULL;
 
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relid_map);
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relids);
 
 			table_close(matviewRel, NoLock);
 
-			bms_free(relid_map);
+			bms_free(relids);
 		}
 	}
 
 	return address;
 }
-
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Bitmapset **relid_map)
+/*
+ * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
+ */
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids)
 {
-
 	if (jtnode == NULL)
 		return;
 	if (IsA(jtnode, RangeTblRef))
@@ -614,7 +649,7 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 
 		if (rte->rtekind == RTE_RELATION)
 		{
-			if (!bms_is_member(rte->relid, *relid_map))
+			if (!bms_is_member(rte->relid, *relids))
 			{
 				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
 				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
@@ -623,7 +658,7 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
 				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
 
-				*relid_map = bms_add_member(*relid_map, rte->relid);
+				*relids = bms_add_member(*relids, rte->relid);
 			}
 		}
 		else if (rte->rtekind == RTE_SUBQUERY)
@@ -631,7 +666,7 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 			Query *subquery = rte->subquery;
 			Assert(rte->subquery != NULL);
 
-			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relid_map);
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relids);
 		}
 		else
 			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
@@ -642,14 +677,14 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relid_map);
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relids);
 	}
 	else if (IsA(jtnode, JoinExpr))
 	{
 		JoinExpr   *j = (JoinExpr *) jtnode;
 
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relid_map);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relid_map);
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relids);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relids);
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
@@ -897,13 +932,16 @@ intorel_destroy(DestReceiver *self)
 	pfree(self);
 }
 
-
+/*
+ * CreateIvmTrigger -- create IVM trigger on a base table
+ */
 static void
 CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing)
 {
+	ObjectAddress	refaddr;
+	ObjectAddress	address;
 	CreateTrigStmt *ivm_trigger;
 	List *transitionRels = NIL;
-	ObjectAddress address, refaddr;
 
 	Assert(timing == TRIGGER_TYPE_BEFORE || timing == TRIGGER_TYPE_AFTER);
 
@@ -976,11 +1014,12 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 t
 	CommandCounterIncrement();
 }
 
+
 /*
  * check_ivm_restriction_walker --- look for specify nodes in the query tree
  */
 static void
-check_ivm_restriction_walker(Node *node, int depth)
+check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth)
 {
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
@@ -1005,6 +1044,8 @@ check_ivm_restriction_walker(Node *node, int depth)
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
+				ctx->has_agg = qry->hasAggs;
+
 				/* if contained VIEW or subquery into RTE, return error */
 				foreach(lc, qry->rtable)
 				{
@@ -1013,17 +1054,75 @@ check_ivm_restriction_walker(Node *node, int depth)
 							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
 					if (rte->rtekind ==  RTE_SUBQUERY)
-						check_ivm_restriction_walker((Node *) rte->subquery, depth + 1);
+					{
+						if (ctx->has_outerjoin)
+							ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
+
+						ctx->has_subquery = true;
+						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
+					}
 				}
 
 				/* search in jointree */
-				check_ivm_restriction_walker((Node *) qry->jointree, depth);
+				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth);
 
 				/* search in target lists */
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					check_ivm_restriction_walker((Node *) tle->expr, depth);
+					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
+				}
+
+				/* additional restriction checks for outer join query */
+				if (ctx->has_outerjoin && depth == 0)
+				{
+					List	*where_quals_vars = NIL;
+					List	*nonnullable_vars = find_nonnullable_vars((Node *) qry->jointree->quals);
+					List	*qual_vars = NIL;
+					ListCell *lc;
+
+					foreach (lc, ctx->join_quals)
+					{
+						OpExpr	*op = (OpExpr *) lfirst(lc);
+
+						if (!is_equijoin_condition(op))
+							ereport(ERROR, (errmsg("Only simple equijoin is supported for IVM with outer join")));
+
+						op = (OpExpr *) flatten_join_alias_vars(qry, (Node *) op);
+						qual_vars = list_concat(qual_vars, pull_vars_of_level((Node *) op, 0));
+					}
+
+					foreach (lc, qual_vars)
+					{
+						Var	*var = lfirst(lc);
+						ListCell *lc2;
+						bool found = false;
+
+						foreach(lc2, qry->targetList)
+						{
+							TargetEntry	*tle = lfirst(lc2);
+
+							if (IsA(tle->expr, Var))
+							{
+								Var *var2 = (Var *) flatten_join_alias_vars(qry, (Node *) tle->expr);
+								if (var->varno == var2->varno && var->varattno == var2->varattno)
+								{
+									found = true;
+									break;
+								}
+							}
+						}
+						if (!found)
+							ereport(ERROR, (errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
+					}
+
+					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
+
+					if (list_length(where_quals_vars) > list_length(nonnullable_vars))
+						ereport(ERROR, (errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
+
+					if (contain_nonstrict_functions((Node *) qry->targetList))
+						ereport(ERROR, (errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
 				}
 
 				break;
@@ -1031,13 +1130,21 @@ check_ivm_restriction_walker(Node *node, int depth)
 		case T_JoinExpr:
 			{
 				JoinExpr *joinexpr = (JoinExpr *)node;
-				if (joinexpr->jointype > JOIN_INNER)
-					ereport(ERROR, (errmsg("OUTER JOIN is not supported with IVM")));
+				if (IS_OUTER_JOIN(joinexpr->jointype))
+				{
+					if (ctx->has_subquery)
+						ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
+					if (ctx->has_agg)
+						ereport(ERROR, (errmsg("aggregate is not supported with IVM together with outer join")));
+
+					ctx->has_outerjoin = true;
+					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
+				}
 				/* left side */
-				check_ivm_restriction_walker((Node *) joinexpr->larg, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth);
 				/* right side */
-				check_ivm_restriction_walker((Node *) joinexpr->rarg, depth);
-				check_ivm_restriction_walker((Node *) joinexpr->quals, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth);
 			}
 			break;
 		case T_FromExpr:
@@ -1046,9 +1153,10 @@ check_ivm_restriction_walker(Node *node, int depth)
 				FromExpr *fromexpr = (FromExpr *)node;
 				foreach(lc, fromexpr->fromlist)
 				{
-					check_ivm_restriction_walker((Node *) lfirst(lc), depth);
+					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth);
 				}
-				check_ivm_restriction_walker((Node *) fromexpr->quals, depth);
+
+				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth);
 			}
 			break;
 		case T_Var:
@@ -1067,7 +1175,7 @@ check_ivm_restriction_walker(Node *node, int depth)
 				foreach(lc, boolexpr->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, depth);
+					check_ivm_restriction_walker(arg, ctx, depth);
 				}
 				break;
 			}
@@ -1080,7 +1188,7 @@ check_ivm_restriction_walker(Node *node, int depth)
 				foreach(lc, op->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, depth);
+					check_ivm_restriction_walker(arg, ctx, depth);
 				}
 				break;
 			}
@@ -1089,16 +1197,16 @@ check_ivm_restriction_walker(Node *node, int depth)
 				CaseExpr *caseexpr = (CaseExpr *) node;
 				ListCell *lc;
 				/* result for ELSE clause */
-				check_ivm_restriction_walker((Node *) caseexpr->defresult, depth);
+				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth);
 				/* expr for WHEN clauses */
 				foreach(lc, caseexpr->args)
 				{
 					CaseWhen *when = (CaseWhen *) lfirst(lc);
 					Node *w_expr = (Node *) when->expr;
 					/* result for WHEN clause */
-					check_ivm_restriction_walker((Node *) when->result, depth);
+					check_ivm_restriction_walker((Node *) when->result, ctx, depth);
 					/* expr clause*/
-					check_ivm_restriction_walker((Node *) w_expr, depth);
+					check_ivm_restriction_walker((Node *) w_expr, ctx, depth);
 				}
 				break;
 			}
@@ -1110,7 +1218,9 @@ check_ivm_restriction_walker(Node *node, int depth)
 					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
 				if (depth > 0)
 					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
-				check_ivm_restriction_walker(sublink->subselect, depth + 1);
+				if (ctx->has_outerjoin)
+					ereport(ERROR, (errmsg("subquery is not supported by IVM together with outer join")));
+				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
 				break;
 			}
 		case T_SubPlan:
@@ -1127,4 +1237,41 @@ check_ivm_restriction_walker(Node *node, int depth)
 	}
 
 	return;
+}
+
+/*
+ * is_equijoin_condition - check if all operators must be btree equality or hash equality
+ */
+static bool
+is_equijoin_condition(OpExpr *op)
+{
+	Oid			opno;
+	Node	   *left_expr;
+	Node	   *right_expr;
+	Relids		left_varnos;
+	Relids		right_varnos;
+	Oid			opinputtype;
+
+	/* Is it a binary opclause? */
+	if (!IsA(op, OpExpr) || list_length(op->args) != 2)
+		return false;
+
+	opno = op->opno;
+	left_expr = linitial(op->args);
+	right_expr = lsecond(op->args);
+	left_varnos = pull_varnos(left_expr);
+	right_varnos = pull_varnos(right_expr);
+	opinputtype = exprType(left_expr);
+
+	if (bms_num_members(left_varnos) != 1 || bms_num_members(right_varnos) != 1 ||
+		bms_equal(left_varnos, right_varnos) !=0)
+		return false;
+
+	if (op_mergejoinable(opno, opinputtype) && get_mergejoin_opfamilies(opno) != NIL)
+		return true;
+
+	if (op_hashjoinable(opno, opinputtype))
+		return true;
+
+	return false;
 }
