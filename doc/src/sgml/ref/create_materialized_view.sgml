@@ -120,7 +120,7 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
        </listitem>
        <listitem>
         <para>
-         When TRUNCATE command is execued on a base table, nothing occurs and
+         When TRUNCATE command is executed on a base table, nothing occurs and
          this is not applied to the materialized view.
         </para>
        </listitem>
