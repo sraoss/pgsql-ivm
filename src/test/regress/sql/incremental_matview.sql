@@ -973,7 +973,74 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-way outer join (inner & FULL)
+-- 3-way outer join (right & inner)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (inner & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
