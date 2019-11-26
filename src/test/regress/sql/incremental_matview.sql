@@ -236,7 +236,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- 3-ways outer join (full & full)
+-- 3-way outer join (full & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -303,7 +303,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (full & left)
+-- 3-way outer join (full & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -370,7 +370,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (full & right)
+-- 3-way outer join (full & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -437,7 +437,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (full & inner)
+-- 3-way outer join (full & inner)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
@@ -504,7 +504,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (left & full)
+-- 3-way outer join (left & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -571,7 +571,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (left & left)
+-- 3-way outer join (left & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -638,7 +638,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (left & right)
+-- 3-way outer join (left & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -705,7 +705,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (left & inner)
+-- 3-way outer join (left & inner)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
@@ -772,7 +772,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (right & full)
+-- 3-way outer join (right & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -839,7 +839,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (right & left)
+-- 3-way outer join (right & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -906,7 +906,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (right & right)
+-- 3-way outer join (right & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -973,7 +973,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (inner & FULL)
+-- 3-way outer join (inner & FULL)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -1040,7 +1040,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (inner & left)
+-- 3-way outer join (inner & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -1107,7 +1107,7 @@ ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
 
--- 3-ways outer join (inner & right)
+-- 3-way outer join (inner & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
