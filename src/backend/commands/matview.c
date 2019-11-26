@@ -98,7 +98,7 @@ typedef struct MV_QueryKey
 /*
  * MV_QueryHashEntry
  *
- * Hash entry for cached plans used to maintain materizlied views.
+ * Hash entry for cached plans used to maintain materialized views.
  */
 typedef struct MV_QueryHashEntry
 {
@@ -117,7 +117,7 @@ typedef struct MV_TriggerHashEntry
 	int	before_trig_count;	/* count of before triggers invoked */
 	int	after_trig_count;	/* count of after triggers invoked */
 
-	TransactionId	xid;	/* Transaction id before the first table is modifed*/
+	TransactionId	xid;	/* Transaction id before the first table is modified*/
 	CommandId		cid;	/* Command id before the first table is modified */
 
 	List   *tables;		/* List of MV_TriggerTable */
@@ -132,7 +132,7 @@ typedef struct MV_TriggerHashEntry
  */
 typedef struct MV_TriggerTable
 {
-	Oid		table_id;			/* OID of the modifeid table */
+	Oid		table_id;			/* OID of the modified table */
 	List   *old_tuplestores;	/* tuplestores for deleted tuples */
 	List   *new_tuplestores;	/* tuplestores for inserted tuples */
 	List   *old_rtes;			/* RTEs of ENRs for old_tuplestores*/
@@ -189,7 +189,7 @@ typedef struct
 typedef struct
 {
 	Term	*root;				/* root of graph which doesn't have parent */
-	List	*terms;				/* list of temrs in this graph */
+	List	*terms;				/* list of terms in this graph */
 	List	*vars_in_quals;		/* list of vars included in all terms' quals */
 	List	*resnames_in_quals;	/* list of resnames corresponding vars_in_quals */
 } IvmMaintenanceGraph;
@@ -228,7 +228,7 @@ static Query *rewrite_query_for_counting_and_aggregates(Query *query, ParseState
 static IvmMaintenanceGraph *make_maintenance_graph(Query *query, Relation matviewRel);
 static List *get_normalized_form(Query *query, Node *jtnode);
 static List *multiply_terms(Query *query, List *terms1, List *terms2, Node* qual);
-static void update_maintenace_graph(IvmMaintenanceGraph *graph, int index);
+static void update_maintenance_graph(IvmMaintenanceGraph *graph, int index);
 static Query *rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph);
 static bool rewrite_jointype(Query *query, Node *node, int index);
 
@@ -1185,8 +1185,8 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 
 	/*
 	 * Wait for concurrent transactions which update this materialized view at READ COMMITED.
-	 * This is needed to see changes commited in othre transactions. No wait and raise an error
-	 * at REPEATABLE READ or SERIALIZABLE to prevent anormal update of matviews.
+	 * This is needed to see changes committed in other transactions. No wait and raise an error
+	 * at REPEATABLE READ or SERIALIZABLE to prevent update anomalies of matviews.
 	 * XXX: dead-lock is possible here.
 	 */
 	if (!IsolationUsesXactSnapshot())
@@ -1291,7 +1291,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Assert (found && entry != NULL);
 	entry->after_trig_count++;
 
-	/* search the entry for the modifeid table and create new entry if not found */
+	/* search the entry for the modified table and create new entry if not found */
 	found = false;
 	foreach(lc, entry->tables)
 	{
@@ -1367,7 +1367,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Assert(matviewRel->rd_rel->relkind == RELKIND_MATVIEW);
 
 	/*
-	 * Get and push the latast snapshot to see any changes which is commited during waiting in
+	 * Get and push the latast snapshot to see any changes which is committed during waiting in
 	 * other transactions at READ COMMITTED level.
 	 * XXX: Is this safe?
 	 */
@@ -1380,7 +1380,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 * NB: We count on this to protect us against problems with refreshing the
 	 * data using TABLE_INSERT_FROZEN.
 	 */
-	 // XXX: necesarry?
+	 // XXX: necessary?
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
 
 
@@ -1407,7 +1407,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	if (rewritten->hasSubLinks)
 		rewrite_query_for_exists_subquery(rewritten);
 
-	/* Set all ables in the query to pre-update state */
+	/* Set all tables in the query to pre-update state */
 	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
 	/* Rewrite for counting algorithm and aggregates functions */
 	rewritten = rewrite_query_for_counting_and_aggregates(rewritten, pstate);
@@ -1496,7 +1496,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 				Assert(list_length(rte_path) == 1);
 				index = linitial_int(rte_path);
 
-				update_maintenace_graph(maintenance_graph, index);
+				update_maintenance_graph(maintenance_graph, index);
 				query_for_delta = rewrite_query_for_outerjoin(rewritten, index, maintenance_graph);
 			}
 			else
@@ -1550,7 +1550,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
  *
  * Rewrite the query so that base tables' RTEs will represent "pre-update"
  * state of tables. This is necessary to calculate view delta after multiple
- * tables are modified. xid and cid are the transction id and command id
+ * tables are modified. xid and cid are the transaction id and command id
  * before the first table was modified.
  */
 static Query*
@@ -1565,7 +1565,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
 
-	/* regist delta ENRs only once at first call */
+	/* register delta ENRs only once at first call */
 	if (rte_path == NIL)
 		register_delta_ENRs(pstate, query, tables);
 
@@ -1599,7 +1599,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 			}
 		}
 
-		/* finish the loop if we procecced all RTE included in the original query */
+		/* finish the loop if we processed all RTE included in the original query */
 		if (i++ >= num_rte)
 			break;
 	}
@@ -1611,7 +1611,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
  * register_delta_ENRs
  *
  * For all modified tables, make ENRs for their transition tables
- * and register them to the queryEnv. ENR's RTEs are also apended
+ * and register them to the queryEnv. ENR's RTEs are also appended
  * into the list in query tree.
  */
 static void
@@ -1754,7 +1754,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 /*
  * make_delta_enr_name
  *
- * Make a name for ENR of a transtion table from the base table's oid.
+ * Make a name for ENR of a transition table from the base table's oid.
  * prefix will be "new" or "old" depending on its transition table kind..
  */
 static char*
@@ -1772,7 +1772,7 @@ make_delta_enr_name(const char *prefix, Oid relid, int count)
 /*
  * union_ENRs
  *
- * Make a single table delta by unioning all transition tables of the modified table
+ * Make a single table delta by unionning all transition tables of the modified table
  * whose RTE is specified by
  */
 static RangeTblEntry*
@@ -1830,7 +1830,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 }
 
 /*
- * rewrite_query_for_conting_and_aggregates
+ * rewrite_query_for_counting_and_aggregates
  *
  * Rewrite query for counting algorithm and aggregate functions.
  */
@@ -1934,7 +1934,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 		{
 			char *columnName;
 
-			/* search ivm_exists_count_X__ coulumn in RangeTblEntry */
+			/* search ivm_exists_count_X__ column in RangeTblEntry */
 			pstate->p_rtable = query->rtable;
 			columnName = getColumnNameStartWith(rte, "__ivm_exists");
 			if (columnName == NULL)
@@ -2013,7 +2013,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 					case OR_EXPR:
 					case NOT_EXPR:
 						if (checkExprHasSubLink(node))
-							ereport(ERROR, (errmsg("OR or NOT conditions and EXISTS condition are used togther with IVM")));
+							ereport(ERROR, (errmsg("OR or NOT conditions and EXISTS condition are used together with IVM")));
 						break;
 				}
 				break;
@@ -2152,7 +2152,7 @@ make_maintenance_graph(Query *query, Relation matviewRel)
 	result->resnames_in_quals = NIL;
 
 	/*
-	 * Transform query's jointree to the normaized form. This is a bag union
+	 * Transform query's jointree to the normalized form. This is a bag union
 	 * of terms each of which is inner join and/or antijoin between base tables.
 	 */
 	terms = get_normalized_form(query, (Node *)query->jointree);
@@ -2167,7 +2167,7 @@ make_maintenance_graph(Query *query, Relation matviewRel)
 	result->root = linitial(terms);
 
 	/*
-	 * Look for the parents of each term. Term t2 is a paremt of Term t1, if t2 is
+	 * Look for parents of each term. Term t2 is a parent of Term t1, if t2 is
 	 * a minimal superset of t1, that is, if there does not exists a term t in the
 	 * graph such that t is super set of t1 and t2 is super set of t.
 	 */
@@ -2247,7 +2247,7 @@ make_maintenance_graph(Query *query, Relation matviewRel)
 /*
  * get_normalized_form
  *
- * Transform query's jointree to the normaized form. This is a bag union
+ * Transform query's jointree to the normalized form. This is a bag union
  * of terms each of which is inner join and/or antijoin between base tables.
  */
 static List*
@@ -2373,7 +2373,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 			Term *term = (Term*) lfirst(l1);
 
 			/*
-			 * If the relids in the qual are not inclueded, this term can not exist
+			 * If the relids in the qual are not included, this term can not exist
 			 * because this qual references NULL values.
 			 */
 			if (!bms_is_subset(qual_relids, term->relids))
@@ -2396,7 +2396,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 
 			/*
 			 * If the relids in qual are included term1 or term2, the new term joining
-			 * these two term will servive under the condition that the qual is strict.
+			 * these two term will survive under the condition that the qual is strict.
 			 * Otherwise, the new term can not exist because the qual references NULL
 			 * values.
 			 */
@@ -2424,12 +2424,12 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
  *
  * Update each term's status about effect of a table modifying. Temrs including
  * this table is affected directly. Terms whose parents are affected directly is
- * affected indirectly (e.i. dangling tuples on this ters may be inserted or
+ * affected indirectly (e.i. dangling tuples on this terms may be inserted or
  * deleted). Other terms are not affected by this modification.
  * index is a range table index of the modified table.
  */
 static void
-update_maintenace_graph(IvmMaintenanceGraph *graph, int index)
+update_maintenance_graph(IvmMaintenanceGraph *graph, int index)
 {
 	ListCell *lc;
 
@@ -2444,7 +2444,7 @@ update_maintenace_graph(IvmMaintenanceGraph *graph, int index)
 			term->effect = IVM_NO_EFFECT;
 	}
 	/*
-	 * Then, mark IVM_INDIRECT_EFFECT for terms whose any immediate perent
+	 * Then, mark IVM_INDIRECT_EFFECT for terms whose any immediate parent
 	 * is affected directly.
 	 */
 	foreach (lc,  graph->terms)
@@ -2465,7 +2465,7 @@ update_maintenace_graph(IvmMaintenanceGraph *graph, int index)
 /*
  * rewrite_query_for_outerjoin
  *
- * Rewrite query in order to caluculate diff table for outer join.
+ * Rewrite query in order to calculate diff table for outer join.
  * index is the relid of the modified table.
  */
 static Query*
@@ -2532,7 +2532,7 @@ rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph)
 		args = lappend(args, node);
 	}
 
-	/* Store all the count for each base talbe in a JSONB object */
+	/* Store all the count for each base table in a JSONB object */
 	fn = makeFuncCall(list_make1(makeString("json_build_object")), NIL, -1);
 	node = ParseFuncOrColumn(pstate, fn->funcname, args, NULL, fn, false, -1);
 	node = coerce_type(pstate, node, JSONOID, JSONBOID, -1, COERCION_EXPLICIT, COERCE_EXPLICIT_CAST, -1);
@@ -2551,7 +2551,7 @@ rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph)
  * rewrite_jointype
  *
  * Rewrite jointree in query for calculating the primary delta. index is
- * relid of the modiifed table. For deletion or insersion on a table,
+ * relid of the modified table. For deletion or insertion on a table,
  * tuples in the primary delta are not nullable on the modified table,
  * so we can convert some outer joins to inner joins, or full outer joins
  * to left/right outer joins depending on the position of the table
@@ -2690,7 +2690,7 @@ getRteListCell(Query *query, List *rte_path)
 /*
  * apply_delta
  *
- * Apply deltas to the materialized view. In outer join cases, this requred
+ * Apply deltas to the materialized view. In outer join cases, this required
  * the view maintenance graph.
  */
 static void
@@ -2771,7 +2771,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 		/* attributes list of diff table */
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
 
-		/* tuplle matching condition */
+		/* tuple matching condition */
 		appendStringInfo(&match_cond, "(%s = %s OR (%s IS NULL AND %s IS NULL))",
 			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname),
 			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname));
@@ -3133,9 +3133,9 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 													   mv_gkeys_buf.data, num_group_keys, keyTypes, with_group);
 
 					if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
-						elog(ERROR, "SPI_execcute_plan1");
+						elog(ERROR, "SPI_execute_plan1");
 					if (SPI_processed != 1)
-						elog(ERROR, "SPI_execcute_plan returned zere or more than one rows");
+						elog(ERROR, "SPI_execute_plan returned zero or more than one rows");
 
 					tuptable_minmax = SPI_tuptable;
 					tupdesc_minmax = tuptable_minmax->tupdesc;
@@ -3185,7 +3185,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
 	}
-	/* views witout aggregates */
+	/* views without aggregates */
 	else
 	{
 		if (tempname_old)
@@ -3244,12 +3244,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 							continue;
 
 						tle = (TargetEntry *) flatten_join_alias_vars(query, (Node *) tle);
-						/* relids referrenced in this entry */
+						/* relids referenced in this entry */
 						tle_relids = pull_varnos_of_level((Node *)tle, 0);
 
 						/*
 						 * If all the column under this entry are belonging the nonnullable table, the value
-						 * in the diff can be used in dangling tuples inserted into the view. Otherwize, NULL
+						 * in the diff can be used in dangling tuples inserted into the view. Otherwise, NULL
 						 * is used as the value of the entry because it is assumed that the entry expression
 						 * doesn't contain any non-strict function.
 						 */
@@ -3288,7 +3288,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					}
 
 					sep = "";
-					/* Bulid a condition for tuples belonging to any directly affected parent terms */
+					/* Build a condition for tuples belonging to any directly affected parent terms */
 					foreach (lc_p, term->parents)
 					{
 						Term *p = (Term *) lfirst(lc_p);
@@ -3472,7 +3472,7 @@ get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
 			);
 			break;
 		default:
-			elog(ERROR,"unkwon opration");
+			elog(ERROR,"unknown operation");
 	}
 
 	return null_cond.data;
@@ -3557,7 +3557,7 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 		/* get view definition of matview */
 		viewdef = text_to_cstring((text *) DatumGetPointer(
 					DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
-		/* get rid of tailling semi-collon */
+		/* get rid of trailing semi-colon */
 		viewdef[strlen(viewdef)-1] = '\0';
 
 		initStringInfo(&str);
@@ -3868,7 +3868,7 @@ clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
 /*
  * getColumnNameStartWith
  *
- * Searh a column name which starts with the given string from the given RTE,
+ * Search a column name which starts with the given string from the given RTE,
  * and return the first found one or NULL if not found.
  */
 char *
