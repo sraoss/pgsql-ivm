@@ -1620,13 +1620,12 @@ ApplyRetrieveRule(Query *parsetree,
 			rte = rt_fetch(rt_index, parsetree->rtable);
 			foreach(lc, rte->eref->colnames)
 			{
-				if (!strncmp(strVal(lfirst(lc)), "__ivm_exists", 12))
-					appendStringInfo(&ivm_columns, "%s, ", strVal(lfirst(lc)));
+				if (isIvmColumn((strVal(lfirst(lc)))))
+					appendStringInfo(&ivm_columns, ", %s", strVal(lfirst(lc)));
 			}
-			appendStringInfo(&ivm_columns, "__ivm_count__");
 
 			initStringInfo(&str);
-			appendStringInfo(&str, "SELECT mv.*, %s FROM %s mv, generate_series(1, mv.__ivm_count__)",
+			appendStringInfo(&str, "SELECT mv.* %s FROM %s mv, generate_series(1, mv.__ivm_count__)",
 						ivm_columns.data, quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
 													RelationGetRelationName(relation)));
 

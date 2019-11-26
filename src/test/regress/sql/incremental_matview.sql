@@ -203,6 +203,1203 @@ SELECT * FROM mv_ivm_subquery ORDER BY i,j;
 
 ROLLBACK;
 
+-- views including NULL
+BEGIN;
+CREATE TABLE t (i int, v int);
+INSERT INTO t VALUES (1,10),(2, NULL);
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT * FROM t;
+SELECT * FROM mv ORDER BY i;
+UPDATE t SET v = 20 WHERE i = 2;
+SELECT * FROM mv ORDER BY i;
+ROLLBACK;
+
+-- support outer joins
+BEGIN;
+CREATE TABLE r (i int);
+CREATE TABLE s (i int, j int);
+CREATE TABLE t (j int);
+INSERT INTO r VALUES (1), (2), (3), (3);
+INSERT INTO s VALUES (2,1), (2,2), (3,1), (4,1), (4,2);
+INSERT INTO t VALUES (2), (3), (3);
+
+CREATE FUNCTION is_match() RETURNS text AS $$
+DECLARE
+x text;
+BEGIN
+ EXECUTE
+ 'SELECT CASE WHEN count(*) = 0 THEN ''OK'' ELSE ''NG'' END FROM (
+	SELECT * FROM (SELECT * FROM mv EXCEPT ALL SELECT * FROM v) v1
+	UNION ALL
+ SELECT * FROM (SELECT * FROM v EXCEPT ALL SELECT * FROM mv) v2
+ ) v' INTO x;
+ RETURN x;
+END;
+$$ LANGUAGE plpgsql;
+
+-- 3-way outer join (full & full)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SAVEPOINT p1;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (full & left)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (full & right)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (full & inner)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (left & full)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (left & left)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (left & right)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (left & inner)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r LEFT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (right & full)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (right & left)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (right & right)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (right & inner)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r RIGHT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (inner & full)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (inner & left)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (inner & right)
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT r.i, s.i, s.j, t.j
+   FROM r INNER JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- outer join with WHERE clause
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i WHERE s.i > 0;
+CREATE VIEW v(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i WHERE s.i > 0;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, s;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- self outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r1, r2) AS
+ SELECT r.i, r2.i
+   FROM r FULL JOIN r as r2 ON r.i=r2.i;
+CREATE VIEW v(r1, r2) AS
+ SELECT r.i, r2.i
+   FROM r FULL JOIN r as r2 ON r.i=r2.i;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r1, r2;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r1, r2;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r1, r2;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r1, r2;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r1, r2;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r1, r2;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- support simultaneous table changes on outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i;
+CREATE VIEW v(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, s;
+
+WITH
+ ri AS (INSERT INTO r VALUES (1),(2),(3) RETURNING 0),
+ si AS (INSERT INTO s VALUES (1,3) RETURNING 0)
+SELECT;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+WITH
+ rd AS (DELETE FROM r WHERE i=1 RETURNING 0),
+ sd AS (DELETE FROM s WHERE i=2 RETURNING 0)
+SELECT;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- multiple change of the same table on outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i;
+CREATE VIEW v(r, s) AS
+ SELECT r.i, s.i
+   FROM r FULL JOIN s ON r.i=s.i;
+SAVEPOINT p1;
+SELECT * FROM mv ORDER BY r, s;
+
+WITH
+ ri1 AS (INSERT INTO r VALUES (1),(2),(3) RETURNING 0),
+ ri2 AS (INSERT INTO r VALUES (4),(5) RETURNING 0),
+ rd AS (DELETE FROM r WHERE i IN (3,4) RETURNING 0)
+SELECT;
+SELECT * FROM mv ORDER BY r, s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+ROLLBACK;
+
+-- outer join view's targetlist must contain vars in the join conditions
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i,j,k FROM mv_base_a a LEFT JOIN mv_base_b b USING(i);
+
+-- outer join view's targetlist cannot contain non strict functions
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i, b.i, (k > 10 OR k = -1) FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i, b.i, CASE WHEN k>0 THEN 1 ELSE 0 END FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
+
+-- outer join supports only simple equijoin
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i>b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,k,j) AS SELECT a.i, b.i, k j FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i AND k=j;
+
+-- outer join view's WHERE clause cannot contain non null-rejecting predicates
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i WHERE k IS NULL;
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i WHERE (k > 10 OR k = -1);
+
+-- aggregate is not supported with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,v) AS SELECT a.i, b.i, sum(k) FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i GROUP BY a.i, b.i;
+
+-- subquery is not supported with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN (SELECT * FROM mv_base_b) b ON a.i=b.i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i WHERE EXISTS (SELECT 1 FROM mv_base_b b2 WHERE a.j = b.k);
+
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';

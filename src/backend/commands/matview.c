@@ -60,6 +60,11 @@
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
 #include "rewrite/rewriteManip.h"
+#include "nodes/pathnodes.h"
+#include "parser/parsetree.h"
+#include "parser/parse_coerce.h"
+#include "catalog/pg_collation_d.h"
+#include "parser/parse_collate.h"
 
 
 typedef struct
@@ -147,6 +152,49 @@ typedef enum
 	IVM_SUB
 } IvmOp;
 
+/*
+ * TermEffect
+ *
+ * Types of effect of how it affects each term in the maintenance graph when
+ * a base table under outer join is modified.
+ */
+typedef enum
+{
+	IVM_DIRECT_EFFECT,
+	IVM_INDIRECT_EFFECT,
+	IVM_NO_EFFECT
+} TermEffect;
+
+/*
+ * Term
+ *
+ * Term in normalized form of join expression. A normalized form is bag union
+ * of terms and each term is a inner join of some base tables, which is null
+ * extended due to antijoin with other base tables. Each term also has a
+ * predicate for inner join.
+ */
+typedef struct
+{
+	Relids	relids;		/* relids of nonnullable tables */
+	List	*quals;		/* predicate for inner join */
+	List	*parents;	/* parent terms in maintenance graph */
+	TermEffect	effect;	/* how affected by table change */
+} Term;
+
+/*
+ * IvmMaintenanceGraph
+ *
+ * Node of view maintenance graph.
+ */
+typedef struct
+{
+	Term	*root;				/* root of graph which doesn't have parent */
+	List	*terms;				/* list of temrs in this graph */
+	List	*vars_in_quals;		/* list of vars included in all terms' quals */
+	List	*resnames_in_quals;	/* list of resnames corresponding vars_in_quals */
+} IvmMaintenanceGraph;
+
+
 static int	matview_maintenance_depth = 0;
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
@@ -177,10 +225,20 @@ static RangeTblEntry *union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, 
 		   QueryEnvironment *queryEnv);
 static Query *rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate);
 
+static IvmMaintenanceGraph *make_maintenance_graph(Query *query, Relation matviewRel);
+static List *get_normalized_form(Query *query, Node *jtnode);
+static List *multiply_terms(Query *query, List *terms1, List *terms2, Node* qual);
+static void update_maintenace_graph(IvmMaintenanceGraph *graph, int index);
+static Query *rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph);
+static bool rewrite_jointype(Query *query, Node *node, int index);
+
 static void calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 						DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv);
+static Query *rewrite_query_for_postupdate_state(Query *query, MV_TriggerTable *table, List *rte_path);
+static ListCell *getRteListCell(Query *query, List *rte_path);
+
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
-			char *count_colname);
+			char *count_colname, IvmMaintenanceGraph *graph);
 static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
 static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
 								  char* count_col, const char *castType);
@@ -1122,7 +1180,6 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	char   *matviewname = trigdata->tg_trigger->tgargs[0];
 	List   *names = stringToQualifiedNameList(matviewname);
 	Oid		matviewOid;
-
 	MV_TriggerHashEntry *entry;
 	bool	found;
 
@@ -1160,7 +1217,6 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 		entry->tables = NIL;
 		entry->has_old = false;
 		entry->has_new = false;
-
 	}
 
 	entry->before_trig_count++;
@@ -1187,7 +1243,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	char	   *matviewname = trigdata->tg_trigger->tgargs[0];
 	List	   *names;
 	char	   *count_colname = NULL;
-	Relation matviewRel;
+	Relation	matviewRel;
 	int old_depth = matview_maintenance_depth;
 
 	Oid			tableSpace;
@@ -1201,6 +1257,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	MV_TriggerHashEntry *entry;
 	MV_TriggerTable		*table;
+	IvmMaintenanceGraph	*maintenance_graph = NULL;
+	bool	hasOuterJoins = false;
 	bool	found;
 
 	ParseState		 *pstate;
@@ -1220,7 +1278,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	names = stringToQualifiedNameList(matviewname);
 	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), NoLock, true);
 
-
 	/*
 	 * On the first call initialize the hashtable
 	 */
@@ -1231,11 +1288,10 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
 											  (void *) &matviewOid,
 											  HASH_FIND, &found);
-
-	Assert (entry != NULL);
-
+	Assert (found && entry != NULL);
 	entry->after_trig_count++;
 
+	/* search the entry for the modifeid table and create new entry if not found */
 	found = false;
 	foreach(lc, entry->tables)
 	{
@@ -1248,7 +1304,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	}
 	if (!found)
 	{
-		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 
 		table = (MV_TriggerTable *) palloc0(sizeof(MV_TriggerTable));
 		table->table_id = relid;
@@ -1265,14 +1321,14 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/* Save the transition tables and make a request to not free immediately */
 	if (trigdata->tg_oldtable)
 	{
-		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 		table->old_tuplestores = lappend(table->old_tuplestores, trigdata->tg_oldtable);
 		entry->has_old = true;
 		MemoryContextSwitchTo(oldcxt);
 	}
 	if (trigdata->tg_newtable)
 	{
-		oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 		table->new_tuplestores = lappend(table->new_tuplestores, trigdata->tg_newtable);
 		entry->has_new = true;
 		MemoryContextSwitchTo(oldcxt);
@@ -1327,7 +1383,26 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 // XXX: necesarry?
 	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
 
-	/* rewrite query */
+
+	/* join tree analysis for outer join */
+	foreach(lc, query->rtable)
+	{
+		RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+
+		if (rte->rtekind == RTE_JOIN && IS_OUTER_JOIN(rte->jointype))
+		{
+			hasOuterJoins = true;
+			break;
+		}
+	}
+	if (hasOuterJoins)
+		maintenance_graph = make_maintenance_graph(query, matviewRel);
+
+	/*
+	 * rewrite query for calculating deltas
+	 */
+
+	/* Rewrite for the EXISTS clause */
 	rewritten = copyObject(query);
 	if (rewritten->hasSubLinks)
 		rewrite_query_for_exists_subquery(rewritten);
@@ -1390,31 +1465,54 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			int i;
 			Query *querytree = rewritten;
 			RangeTblEntry *rte;
-
-			/* calculate delta tables */
-			calc_delta(table, rte_path, rewritten, dest_old, dest_new, queryEnv);
+			Query	*query_for_delta;
+			bool	in_exists = false;
 
 			/* check if the modified table is in EXISTS clause. */
 			for(i = 0; i< list_length(rte_path); i++)
 			{
 				int index =  lfirst_int(list_nth_cell(rte_path, i));
-				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index));
+				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index - 1));
 
 				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
 				{
 					querytree = rte->subquery;
 					if (rte->lateral)
-						count_colname = getIVMColumnName(rte, "__ivm_exists");
+					{
+						count_colname = getColumnNameStartWith(rte, "__ivm_exists");
+						in_exists = true;
+					}
 				}
 			}
 
 			if (count_colname == NULL)
 				count_colname = pstrdup("__ivm_count__");
 
+			/* For outer join query, we need additional rewrites.*/
+			if (!in_exists && hasOuterJoins)
+			{
+				int index;
+
+				Assert(list_length(rte_path) == 1);
+				index = linitial_int(rte_path);
+
+				update_maintenace_graph(maintenance_graph, index);
+				query_for_delta = rewrite_query_for_outerjoin(rewritten, index, maintenance_graph);
+			}
+			else
+				query_for_delta = rewritten;
+
+			/* calculate delta tables */
+			calc_delta(table, rte_path, query_for_delta, dest_old, dest_new, queryEnv);
+
+			/* Set the table in the query to post-update state */
+			rewritten = rewrite_query_for_postupdate_state(rewritten, table, rte_path);
+
 			PG_TRY();
 			{
 				/* apply the delta tables to the materialized view */
-				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query,count_colname);
+				apply_delta(matviewOid, OIDDelta_new, OIDDelta_old, query, count_colname,
+					hasOuterJoins ? maintenance_graph : NULL);
 			}
 			PG_CATCH();
 			{
@@ -1467,23 +1565,21 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
 
-	/* regist delta ENRs only once */
+	/* regist delta ENRs only once at first call */
 	if (rte_path == NIL)
 		register_delta_ENRs(pstate, query, tables);
 
 	// XXX: Is necessary? Is this right timing?
 	AcquireRewriteLocks(query, true, false);
 
-	i = 0;
+	i = 1;
 	foreach(lc, query->rtable)
 	{
 		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
 
 		/* if rte contains subquery, search recursively */
 		if (r->rtekind == RTE_SUBQUERY)
-		{
 			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(rte_path, i));
-		}
 		else
 		{
 			ListCell *lc2;
@@ -1504,7 +1600,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 		}
 
 		/* finish the loop if we procecced all RTE included in the original query */
-		if (++i >= num_rte)
+		if (i++ >= num_rte)
 			break;
 	}
 
@@ -1610,9 +1706,10 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 									   RelationGetRelationName(rel));
 	table_close(rel, NoLock);
 
+	/* add pseudo ctid to ENR using row_number*/
 	initStringInfo(&str);
 	appendStringInfo(&str,
-		"SELECT t.* FROM %s t"
+		"SELECT t.* , ctid::text FROM %s t"
 		" WHERE (age(t.xmin) - age(%u::text::xid) > 0) OR"
 		" (t.xmin = %u AND t.cmin::text::int < %u)",
 			relname, xid, xid, cid);
@@ -1620,7 +1717,11 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 	for (i=0; i<list_length(table->old_tuplestores); i++)
 	{
 		appendStringInfo(&str, " UNION ALL ");
-		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name("old", table->table_id, i));
+		appendStringInfo(&str," SELECT *, "
+			" ((row_number() over())::text || '_' || '%d' || '_' || '%d') AS ctid"
+			" FROM %s",
+			table->table_id, i,
+			make_delta_enr_name("old", table->table_id, i));
 	}
 
 	raw = (RawStmt*)linitial(raw_parser(str.data));
@@ -1631,6 +1732,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 
 	rte->rtekind = RTE_SUBQUERY;
 	rte->subquery = sub;
+	rte->eref->colnames = lappend(rte->eref->colnames, makeString(pstrdup("ctid")));
 	rte->security_barrier = false;
 	/* Clear fields that should not be set in a subquery RTE */
 	rte->relid = InvalidOid;
@@ -1653,7 +1755,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
  * make_delta_enr_name
  *
  * Make a name for ENR of a transtion table from the base table's oid.
- * prefix will be "new" or "old" depending on its transition table kind.
+ * prefix will be "new" or "old" depending on its transition table kind..
  */
 static char*
 make_delta_enr_name(const char *prefix, Oid relid, int count)
@@ -1694,7 +1796,14 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	{
 		if (i > 0)
 			appendStringInfo(&str, " UNION ALL ");
-		appendStringInfo(&str," SELECT * FROM %s", make_delta_enr_name(prefix, relid, i));
+
+		/* add pseudo ctid to ENR using row_number*/
+		appendStringInfo(&str,
+			" SELECT *,  "
+			" ((row_number() over())::text || '_' || '%d' || '_' || '%d') AS ctid"
+			" FROM %s",
+			relid, i,
+			make_delta_enr_name(prefix, relid, i));
 	}
 
 	raw = (RawStmt*)linitial(raw_parser(str.data));
@@ -1827,7 +1936,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 
 			/* search ivm_exists_count_X__ coulumn in RangeTblEntry */
 			pstate->p_rtable = query->rtable;
-			columnName = getIVMColumnName(rte, "__ivm_exists");
+			columnName = getColumnNameStartWith(rte, "__ivm_exists");
 			if (columnName == NULL)
 				continue;
 			node = scanRTEForColumn(pstate,rte,columnName,-1, 0, NULL);
@@ -1853,7 +1962,6 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 							  NULL,
 							  false);
 	query->targetList = lappend(query->targetList, tle_count);
-
 	query->hasAggs = true;
 
 	return query;
@@ -1942,7 +2050,6 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				 * convert EXISTS subquery into LATERAL subquery in FROM clause.
 				 */
 
-
 				snprintf(aliasName, sizeof(aliasName), "__ivm_exists_subquery_%d__", *count);
 				snprintf(columnName, sizeof(columnName), "__ivm_exists_count_%d__", *count);
 
@@ -2007,6 +2114,503 @@ rewrite_query_for_exists_subquery(Query *query)
 	return rewrite_exists_subquery_walker(query, (Node *)query, &count);
 }
 
+
+/*
+ * Comparison function for sorting Terms in normalized form of join tree.
+ */
+static int
+graph_term_cmp(const ListCell *p1, const ListCell *p2)
+{
+	int	v1 = bms_num_members(((Term *)lfirst(p1))->relids);
+	int	v2 = bms_num_members(((Term *)lfirst(p2))->relids);
+
+	if (v1 > v2)
+		return -1;
+	if (v1 < v2)
+		return 1;
+	return 0;
+}
+
+#define	graph_term_bigger(p1,p2) (graph_term_cmp(p1,p2) < 0)
+
+/*
+ * make_maintenance_graph
+ *
+ * Analyze the join tree and make a view maintenance graph.
+ */
+static IvmMaintenanceGraph*
+make_maintenance_graph(Query *query, Relation matviewRel)
+{
+	List	*terms = NIL;
+	List	*all_qual_vars;
+	ListCell *lc1;
+	IvmMaintenanceGraph *result;
+	int		i;
+
+	result = (IvmMaintenanceGraph *) palloc(sizeof(IvmMaintenanceGraph));
+	result->vars_in_quals = NIL;
+	result->resnames_in_quals = NIL;
+
+	/*
+	 * Transform query's jointree to the normaized form. This is a bag union
+	 * of terms each of which is inner join and/or antijoin between base tables.
+	 */
+	terms = get_normalized_form(query, (Node *)query->jointree);
+
+	/*
+	 * The terms list must be sorted in descending order by the number of
+	 * nonnullable tables.  This is necessary to determine the order for processing
+	 * terms.  The first term is an inner join of all tables and this is the root
+	 * node of the maintenance graph.
+	 */
+	list_sort(terms, graph_term_cmp);
+	result->root = linitial(terms);
+
+	/*
+	 * Look for the parents of each term. Term t2 is a paremt of Term t1, if t2 is
+	 * a minimal superset of t1, that is, if there does not exists a term t in the
+	 * graph such that t is super set of t1 and t2 is super set of t.
+	 */
+	foreach (lc1, terms)
+	{
+		Term *t1 = lfirst(lc1);
+		ListCell *lc2;
+
+		/* root doesn't have a parent */
+		if (t1 == result->root)
+			continue;
+
+		foreach (lc2, terms)
+		{
+			Term *t2 = lfirst(lc2);
+			ListCell *lc3;
+
+			/*
+			 * If the number of tables in t2 is not bigger than t1, this
+			 * can not be a superset. Also, we can finish this loop
+			 * because there is no longer a term bigger than t1.
+			 */
+			if (!graph_term_bigger(lc2,lc1))
+				break;
+
+			/* If t2 is superset, this can be a parent. */
+			if (bms_is_subset(t1->relids, t2->relids))
+			{
+				/*
+				 * Remove all terms which are supersets of t2 because these are no
+				 * longer minimal superset.
+				 */
+				foreach (lc3, t1->parents)
+				{
+					Term *t = (Term *) lfirst(lc3);
+
+					if (bms_is_subset(t2->relids, t->relids))
+						t1->parents = foreach_delete_current(t1->parents, lc3);
+				}
+				t1->parents = lappend(t1->parents, t2);
+			}
+		}
+
+	}
+	result->terms = terms;
+
+	/* Get all vars used in quals and their resnames. */
+	all_qual_vars = pull_vars_of_level((Node *) result->root->quals, 0);
+	i = 0;
+	foreach (lc1, query->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc1);
+		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+		char *resname = NameStr(attr->attname);
+		Var *var;
+
+		i++;
+
+		if (tle->resjunk)
+			continue;
+
+		if (!IsA(tle->expr, Var))
+			continue;
+
+		var = (Var *)flatten_join_alias_vars(query, (Node *) tle->expr);
+
+		if (list_member(all_qual_vars, var))
+		{
+			result->vars_in_quals = lappend(result->vars_in_quals, var);
+			result->resnames_in_quals = lappend(result->resnames_in_quals, makeString(pstrdup(resname)));
+		}
+	}
+
+	return result;
+}
+
+/*
+ * get_normalized_form
+ *
+ * Transform query's jointree to the normaized form. This is a bag union
+ * of terms each of which is inner join and/or antijoin between base tables.
+ */
+static List*
+get_normalized_form(Query *query, Node *jtnode)
+{
+
+	if (jtnode == NULL)
+		return NULL;
+
+	if (IsA(jtnode, RangeTblRef))
+	{
+		int			varno = ((RangeTblRef *) jtnode)->rtindex;
+		Term *term;
+
+		/*
+		 * Create and initialize a term for a single table. Currently,
+		 * we assume this is a normal table.
+		 */
+		Assert(rt_fetch(varno, query->rtable)->relkind == RELKIND_RELATION);
+
+		term = (Term*) palloc(sizeof(Term));
+		term->relids = bms_make_singleton(varno);
+		term->quals = NULL;
+		term->parents = NIL;
+		term->effect = IVM_NO_EFFECT;
+
+		return  list_make1(term);
+	}
+	else if (IsA(jtnode, FromExpr))
+	{
+		List *terms = NIL;
+		FromExpr   *f = (FromExpr *) jtnode;
+		ListCell   *l;
+		bool	is_first = true;
+
+		/*
+		 * Create a term list using the terms in FROM list. The qual of
+		 * WHERE clause is specified only the first step.
+		 */
+		foreach(l, f->fromlist)
+		{
+			List *t = get_normalized_form(query, lfirst(l));
+			terms = multiply_terms(query, terms, t, (is_first ? f->quals : NULL));
+			is_first = false;
+		}
+		return terms;
+	}
+	else if (IsA(jtnode, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) jtnode;
+		List	   *lterms = get_normalized_form(query, j->larg),
+				   *rterms = get_normalized_form(query, j->rarg);
+		List *terms = NIL;
+
+		/* Create a term list from the two term lists and the join qual */
+		terms = multiply_terms(query, lterms, rterms, j->quals);
+
+		/* In outer-join cases, add terms for dangling tuples */
+		switch (j->jointype)
+		{
+			case JOIN_LEFT:
+				terms = list_concat(terms, lterms);
+				break;
+			case JOIN_RIGHT:
+				terms = list_concat(terms, rterms);
+				break;
+			case JOIN_FULL:
+				terms = list_concat(terms, lterms);
+				terms = list_concat(terms, rterms);
+				break;
+			case JOIN_INNER:
+				break;
+			default:
+				elog(ERROR, "unexpected join type: %d", j->jointype);
+		}
+
+		return terms;
+	}
+	else
+		elog(ERROR, "unrecognized node type: %d",
+			 (int) nodeTag(jtnode));
+}
+
+/*
+ * multiply_terms
+ *
+ * Create new a term list by multiplying two term lists. If qual is
+ * given, remove terms which are filtered by this qual and add this
+ * qual to new terms. If one of the two term list is NIL, we return
+ * the other after filtering by the qual.
+ */
+static List*
+multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
+{
+	List		*result = NIL;
+	ListCell	*l1, *l2;
+	Relids		qual_relids;
+
+	/*
+	 * Convert qual to ANDs implicit expression on vars referencing to
+	 * the original relations. We assume the qual doesn't contain
+	 * non-strict functions.
+	 */
+	if (qual)
+	{
+		qual = flatten_join_alias_vars(query, qual);
+		qual = eval_const_expressions(NULL, qual);
+		qual = (Node *) canonicalize_qual((Expr *) qual, false);
+		qual = (Node *) make_ands_implicit((Expr *) qual);
+	}
+	/* all relids included in qual */
+	qual_relids = pull_varnos(qual);
+
+	/* If either is NIL, return the other after filtering by qual. */
+	if (terms1 == NIL || terms2 == NIL)
+	{
+		result = (terms1 == NIL ? terms2 : terms1);
+		if (!qual)
+			return result;
+
+		foreach (l1, result)
+		{
+			Term *term = (Term*) lfirst(l1);
+
+			/*
+			 * If the relids in the qual are not inclueded, this term can not exist
+			 * because this qual references NULL values.
+			 */
+			if (!bms_is_subset(qual_relids, term->relids))
+			{
+				result = foreach_delete_current(result, l1);
+				continue;
+			}
+			term->quals = lappend(term->quals, qual);
+		}
+
+		return result;
+	}
+
+	foreach (l1, terms1)
+	{
+		Term *term1 = (Term*) lfirst(l1);
+		foreach (l2, terms2)
+		{
+			Term *term2 = (Term*) lfirst(l2);
+
+			/*
+			 * If the relids in qual are included term1 or term2, the new term joining
+			 * these two term will servive under the condition that the qual is strict.
+			 * Otherwise, the new term can not exist because the qual references NULL
+			 * values.
+			 */
+			if (bms_is_subset(qual_relids, bms_union(term1->relids, term2->relids)))
+			{
+				Term *newterm = (Term*) palloc(sizeof(Term));
+
+				newterm->parents = NIL;
+				newterm->effect = IVM_NO_EFFECT;
+				newterm->relids = bms_union(term1->relids, term2->relids);
+				newterm->quals = list_concat_copy(term1->quals, term2->quals);
+				if (qual)
+					newterm->quals = lappend(newterm->quals, qual);
+
+				result = lappend(result, newterm);
+			}
+		}
+	}
+
+	return result;
+}
+
+/*
+ * update_maintenance_graph
+ *
+ * Update each term's status about effect of a table modifying. Temrs including
+ * this table is affected directly. Terms whose parents are affected directly is
+ * affected indirectly (e.i. dangling tuples on this ters may be inserted or
+ * deleted). Other terms are not affected by this modification.
+ * index is a range table index of the modified table.
+ */
+static void
+update_maintenace_graph(IvmMaintenanceGraph *graph, int index)
+{
+	ListCell *lc;
+
+	/* First, mark IVM_DIRECT_EFFECT for terms affected directly. */
+	foreach (lc,  graph->terms)
+	{
+		Term *term = (Term *) lfirst(lc);
+
+		if (bms_is_member(index, term->relids))
+			term->effect = IVM_DIRECT_EFFECT;
+		else
+			term->effect = IVM_NO_EFFECT;
+	}
+	/*
+	 * Then, mark IVM_INDIRECT_EFFECT for terms whose any immediate perent
+	 * is affected directly.
+	 */
+	foreach (lc,  graph->terms)
+	{
+		Term *t = (Term *) lfirst(lc);
+		ListCell *lc2;
+
+		foreach (lc2, t->parents)
+		{
+			Term *p = (Term *) lfirst(lc2);
+
+			if (t->effect == IVM_NO_EFFECT && p->effect == IVM_DIRECT_EFFECT)
+				t->effect = IVM_INDIRECT_EFFECT;
+		}
+	}
+}
+
+/*
+ * rewrite_query_for_outerjoin
+ *
+ * Rewrite query in order to caluculate diff table for outer join.
+ * index is the relid of the modified table.
+ */
+static Query*
+rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph)
+{
+	Query  *result = copyObject(query);
+	int		varno;
+	Node   *node;
+	TargetEntry *tle;
+	List		*args = NIL;
+	FuncCall	*fn;
+	ParseState	*pstate = make_parsestate(NULL);
+
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_distinct = true;
+
+	/* Rewrite join type for outer join delta */
+	if (!rewrite_jointype(result, (Node *)result->jointree, index))
+		elog(ERROR, "modified range table %d not found", index);
+
+	/* Add meta information for outer-join delta */
+	varno = -1;
+	while ((varno = bms_next_member(graph->root->relids, varno)) >= 0)
+	{
+		Var *var = NULL;
+		RangeTblEntry *rte = rt_fetch(varno, result->rtable);
+
+		/* base table */
+		if (rte->rtekind == RTE_RELATION)
+		{
+			var = makeVar(varno, SelfItemPointerAttributeNumber, TIDOID, -1, InvalidOid, 0);
+		}
+		/* This subquery must be a pre-state table made by get_prestate_rte */
+		else if (rte->rtekind == RTE_SUBQUERY)
+		{
+			ListCell *lc;
+			foreach (lc, ((Query *)rte->subquery)->targetList)
+			{
+				tle = (TargetEntry *) lfirst(lc);
+				if (!strcmp(tle->resname, "ctid"))
+				{
+					var = makeVar(varno, tle->resno, TEXTOID, -1, DEFAULT_COLLATION_OID, 0);
+					break;
+				}
+			}
+		}
+		else
+			elog(ERROR, "unexpected rte kind");
+
+		/*
+		 * Use count(distinct ctid) in order to count the tuples of each base tables which
+		 * participate in generating a tuple in diff.
+		 */
+		args = lappend(args, makeConst(INT4OID,
+								 -1,
+								 InvalidOid,
+								 sizeof(int32),
+								 Int32GetDatum(varno),
+								 false,
+								 true));
+		node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(var), NULL, fn, false, -1);
+		args = lappend(args, node);
+	}
+
+	/* Store all the count for each base talbe in a JSONB object */
+	fn = makeFuncCall(list_make1(makeString("json_build_object")), NIL, -1);
+	node = ParseFuncOrColumn(pstate, fn->funcname, args, NULL, fn, false, -1);
+	node = coerce_type(pstate, node, JSONOID, JSONBOID, -1, COERCION_EXPLICIT, COERCE_EXPLICIT_CAST, -1);
+	assign_expr_collations(pstate, node);
+	tle = makeTargetEntry((Expr *) node,
+							list_length(result->targetList) + 1,
+							pstrdup("__ivm_meta__"),
+							false);
+
+	result->targetList = lappend(result->targetList, tle);
+
+	return result;
+}
+
+/*
+ * rewrite_jointype
+ *
+ * Rewrite jointree in query for calculating the primary delta. index is
+ * relid of the modiifed table. For deletion or insersion on a table,
+ * tuples in the primary delta are not nullable on the modified table,
+ * so we can convert some outer joins to inner joins, or full outer joins
+ * to left/right outer joins depending on the position of the table
+ * in the join tree.
+ */
+static bool
+rewrite_jointype(Query *query, Node *node, int index)
+{
+	if (node == NULL)
+		return false;
+	if (IsA(node, RangeTblRef))
+	{
+		if (((RangeTblRef *) node)->rtindex == index)
+			return true;
+		else
+			return false;
+	}
+	else if (IsA(node, FromExpr))
+	{
+		FromExpr   *f = (FromExpr *) node;
+		ListCell   *l;
+
+		foreach(l, f->fromlist)
+		{
+			if (rewrite_jointype(query, lfirst(l), index))
+				return true;
+		}
+		return false;
+	}
+	else if (IsA(node, JoinExpr))
+	{
+		JoinExpr   *j = (JoinExpr *) node;
+		RangeTblEntry *rte = rt_fetch(j->rtindex, query->rtable);
+
+		if (rewrite_jointype(query, j->larg, index))
+		{
+			if (j->jointype == JOIN_FULL)
+				j->jointype = rte->jointype = JOIN_LEFT;
+			else if (j->jointype == JOIN_RIGHT)
+				j->jointype = rte->jointype = JOIN_INNER;
+
+			return true;
+		}
+		else if (rewrite_jointype(query, j->rarg, index))
+		{
+			if (j->jointype == JOIN_FULL)
+				j->jointype = rte->jointype = JOIN_RIGHT;
+			else if (j->jointype == JOIN_LEFT)
+				j->jointype = rte->jointype = JOIN_INNER;
+			return true;
+		}
+		else
+			return false;
+	}
+	else
+		elog(ERROR, "unrecognized node type: %d",
+			 (int) nodeTag(node));
+}
+
 /*
  * calc_delta
  *
@@ -2017,23 +2621,8 @@ static void
 calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 			DestReceiver *dest_old, DestReceiver *dest_new, QueryEnvironment *queryEnv)
 {
-	ListCell *index_cell;
-	ListCell *lc;
-	RangeTblEntry *rte;
-	Query *querytree = query;
-
-	Assert(list_length(rte_path) > 0);
-
-	foreach(index_cell, rte_path)
-	{
-		int index = lfirst_int(index_cell);
-		lc = list_nth_cell(querytree->rtable, index);
-		rte = (RangeTblEntry *) lfirst(lc);
-		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
-		{
-			querytree = rte->subquery;
-		}
-	}
+	ListCell *lc = getRteListCell(query, rte_path);
+	RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
 
 	/* Generate old delta */
 	if (list_length(table->old_rtes) > 0)
@@ -2050,9 +2639,50 @@ calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
 		refresh_matview_datafill(dest_new, query, queryEnv, NULL);
 	}
+}
+
+/*
+ * rewrite_query_for_postupdate_state
+ *
+ * Rewrite the query so that the specified base table's RTEs will represent
+ * "post-update" state of tables. This is called after the view delta
+ * calculation due to changes on this table finishes.
+ */
+static Query*
+rewrite_query_for_postupdate_state(Query *query, MV_TriggerTable *table, List *rte_path)
+{
+	ListCell *lc = getRteListCell(query, rte_path);
 
 	/* Retore the original RTE */
 	lfirst(lc) = table->original_rte;
+
+	return query;
+}
+
+/*
+ * getRteListCell
+ *
+ * Get ListCell which contains RTE specified by the given path.
+ */
+static ListCell*
+getRteListCell(Query *query, List *rte_path)
+{
+	ListCell *lc;
+	ListCell *rte_lc;
+
+	Assert(list_length(rte_path) > 0);
+
+	foreach (lc, rte_path)
+	{
+		int index = lfirst_int(lc);
+		RangeTblEntry	*rte;
+
+		rte_lc = list_nth_cell(query->rtable, index - 1);
+		rte = (RangeTblEntry *) lfirst(rte_lc);
+		if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
+			query = rte->subquery;
+	}
+	return rte_lc;
 }
 
 #define IVM_colname(type, col) makeObjectName("__ivm_" type, col, "_")
@@ -2060,14 +2690,15 @@ calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 /*
  * apply_delta
  *
- * Apply deltas to the materialized view.
+ * Apply deltas to the materialized view. In outer join cases, this requred
+ * the view maintenance graph.
  */
 static void
 apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
-			char *count_colname)
+			char *count_colname, IvmMaintenanceGraph *graph)
 {
 	StringInfoData querybuf;
-	StringInfoData mvatts_buf, diffatts_buf;
+	StringInfoData diffatts_buf, match_cond;
 	StringInfoData mv_gkeys_buf, diff_gkeys_buf, updt_gkeys_buf;
 	StringInfoData diff_aggs_buf, update_aggs_old, update_aggs_new;
 	StringInfoData returning_buf, result_buf;
@@ -2077,7 +2708,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	char	   *matviewname;
 	char	   *tempname_new = NULL, *tempname_old = NULL;
 	ListCell	*lc;
-	char	   *sep, *sep_agg;
+	char	   *sep, *sep_agg, *sep_and;
 	bool		with_group = query->groupClause != NULL;
 	int			i;
 	bool		has_min_or_max = false;
@@ -2107,8 +2738,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	 * Build parts of the maintenance queries
 	 */
 
-	initStringInfo(&mvatts_buf);
 	initStringInfo(&diffatts_buf);
+	initStringInfo(&match_cond);
 	initStringInfo(&diff_aggs_buf);
 	initStringInfo(&update_aggs_old);
 	initStringInfo(&update_aggs_new);
@@ -2117,7 +2748,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	initStringInfo(&min_or_max_buf);
 
 	sep = "";
-	sep_agg= "";
+	sep_agg = "";
+	sep_and = "";
 	i = 0;
 	/* for attributes in the view target list ...*/
 	foreach (lc, query->targetList)
@@ -2131,12 +2763,18 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 		if (tle->resjunk)
 			continue;
 
-		appendStringInfo(&mvatts_buf, "%s", sep);
 		appendStringInfo(&diffatts_buf, "%s", sep);
+		appendStringInfo(&match_cond, "%s", sep_and);
 		sep = ", ";
+		sep_and = " AND ";
 
-		appendStringInfo(&mvatts_buf, "%s", quote_qualified_identifier("mv", resname));
+		/* attributes list of diff table */
 		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
+
+		/* tuplle matching condition */
+		appendStringInfo(&match_cond, "(%s = %s OR (%s IS NULL AND %s IS NULL))",
+			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname),
+			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname));
 
 		/* building SET clause elements for updating aggregate values */
 		if (query->hasAggs && IsA(tle->expr, Aggref))
@@ -2279,7 +2917,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					appendStringInfo(&returning_buf, " OR ");
 					appendStringInfo(&min_or_max_buf, ",");
 				}
-
 				appendStringInfo(&returning_buf, "%s %s %s",
 					quote_qualified_identifier("mv", resname),
 					is_min ? ">=" : "<=",
@@ -2418,6 +3055,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	{
 		if (tempname_old)
 		{
+			/* Search for matching tuples from the view and update or delete if found. */
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
@@ -2539,9 +3177,10 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
-							matviewname, count_colname, count_colname, count_colname, update_aggs_new.data, tempname_new,
-							mv_gkeys_buf.data, diff_gkeys_buf.data, diff_gkeys_buf.data,
-							matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
+							matviewname, count_colname, count_colname, count_colname,
+							update_aggs_new.data,
+							tempname_new, mv_gkeys_buf.data, diff_gkeys_buf.data,
+							diff_gkeys_buf.data, matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
@@ -2555,15 +3194,141 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
 							"  SELECT diff.%s, (diff.%s = mv.%s) AS for_dlt, mv.ctid"
-							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
+							"  FROM %s AS mv, %s AS diff WHERE %s"
 							"), updt AS ("
 							"  UPDATE %s AS mv SET %s = mv.%s - t.%s"
 							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
 							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
-							count_colname, count_colname, count_colname, matviewname, tempname_old, mvatts_buf.data, diffatts_buf.data,
-							matviewname, count_colname,count_colname,count_colname, matviewname);
+							count_colname, count_colname, count_colname,
+							matviewname, tempname_old, match_cond.data,
+							matviewname, count_colname,count_colname,count_colname,
+							matviewname);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+			/* Insert dangling tuple for outer join views */
+			if (graph)
+			{
+				foreach (lc, graph->terms)
+				{
+					ListCell	*lc1, *lc2, *lc_p;
+					StringInfoData exists_cond;
+					StringInfoData targetlist;
+					StringInfoData parents_cond;
+					StringInfoData count;
+					Term *term = lfirst(lc);
+					char *sep = "";
+					char *sep2 = "";
+					int		i;
+
+
+					if (term->effect != IVM_INDIRECT_EFFECT)
+						continue;
+
+					initStringInfo(&exists_cond);
+					initStringInfo(&targetlist);
+					initStringInfo(&parents_cond);
+					initStringInfo(&count);
+
+					i = 0;
+					foreach (lc1, query->targetList)
+					{
+						TargetEntry *tle = (TargetEntry *) lfirst(lc1);
+						Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+						char *resname = NameStr(attr->attname);
+						Relids	tle_relids;
+
+						i++;
+
+						if (tle->resjunk)
+							continue;
+
+						tle = (TargetEntry *) flatten_join_alias_vars(query, (Node *) tle);
+						/* relids referrenced in this entry */
+						tle_relids = pull_varnos_of_level((Node *)tle, 0);
+
+						/*
+						 * If all the column under this entry are belonging the nonnullable table, the value
+						 * in the diff can be used in dangling tuples inserted into the view. Otherwize, NULL
+						 * is used as the value of the entry because it is assumed that the entry expression
+						 * doesn't contain any non-strict function.
+						 */
+						if (bms_is_subset(tle_relids, term->relids))
+						{
+							appendStringInfo(&targetlist, "%s%s", sep2, resname);
+							sep2 = ",";
+
+							/* Use qual vars to check if this tuple still exists in the view */
+							if (IsA(tle->expr, Var) &&
+								list_member(graph->vars_in_quals, (Var*) tle->expr))
+							{
+								appendStringInfo(&exists_cond, "%s mv.%s = diff.%s ", sep, resname, resname);
+								sep = "AND";
+							}
+						}
+					}
+					/* add counting columns for EXISTS clauses into the targetlist */
+					/*
+					for (; i<matviewRel->rd_att->natts; i++)
+					{
+						Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+						char *resname = NameStr(attr->attname);
+						if (!strncmp(resname, "__ivm_exists", 12))
+							appendStringInfo(&targetlist, ", %s", resname);
+					}
+					*/
+
+					/* counting the number of tuples to be inserted */
+					sep = "";
+					i = -1;
+					while ((i = bms_next_member(term->relids, i)) >= 0)
+					{
+						appendStringInfo(&count, "%s (__ivm_meta__->'%d')::int", sep, i);
+						sep = "*";
+					}
+
+					sep = "";
+					/* Bulid a condition for tuples belonging to any directly affected parent terms */
+					foreach (lc_p, term->parents)
+					{
+						Term *p = (Term *) lfirst(lc_p);
+
+						if (p->effect != IVM_DIRECT_EFFECT)
+							continue;
+
+						appendStringInfo(&parents_cond, "%s", sep);
+
+						sep2 = "";
+						forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+						{
+							Var *var = (Var *) lfirst(lc1);
+							char *resname = strVal(lfirst(lc2));
+
+							if (bms_is_member(var->varno, p->relids))
+							{
+								appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
+								sep2 = "AND";
+							}
+						}
+						sep = "OR ";
+					}
+
+					/* Insert dangling tuples if needed */
+					resetStringInfo(&querybuf);
+					appendStringInfo(&querybuf,
+						"INSERT INTO %s (%s, __ivm_count__)"
+						" SELECT DISTINCT %s, %s FROM %s AS diff"
+						" WHERE %s AND "
+						"  NOT EXISTS (SELECT 1 FROM %s mv WHERE %s)",
+						matviewname, targetlist.data,
+						targetlist.data, count.data, tempname_old,
+						parents_cond.data,
+						matviewname, exists_cond.data
+					);
+					if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+						elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+				}
+			}
 		}
 		if (tempname_new)
 		{
@@ -2571,12 +3336,94 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
 							"  UPDATE %s AS mv SET %s= mv.%s + diff.%s"
-							"  FROM %s AS diff WHERE (%s) = (%s)"
+							"  FROM %s AS diff WHERE %s"
 							"  RETURNING %s"
 							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
-							matviewname, count_colname, count_colname, count_colname, tempname_new, mvatts_buf.data, diffatts_buf.data, diffatts_buf.data, matviewname, tempname_new, diffatts_buf.data);
+							matviewname, count_colname, count_colname, count_colname,
+							tempname_new, match_cond.data,
+							diffatts_buf.data,
+							matviewname, tempname_new, diffatts_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+			/* Delete dangling tuple for outer join views */
+			if (graph)
+			{
+				foreach (lc, graph->terms)
+				{
+					ListCell	*lc1, *lc2, *lc_p;
+					StringInfoData dangling_cond;
+					StringInfoData key_cols;
+					StringInfoData parents_cond;
+					Term *term = lfirst(lc);
+					char *sep = "";
+					char *sep2 = "";
+
+					if (term->effect != IVM_INDIRECT_EFFECT)
+						continue;
+
+					initStringInfo(&dangling_cond);
+					initStringInfo(&key_cols);
+					initStringInfo(&parents_cond);
+
+					/* Build a condition for all dangling tuples in indirectly affected term */
+					forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+					{
+						Var *var = (Var *) lfirst(lc1);
+						char *resname = strVal(lfirst(lc2));
+
+						if (bms_is_member(var->varno, term->relids))
+						{
+							appendStringInfo(&dangling_cond, "%s %s IS NOT NULL ", sep, resname);
+							appendStringInfo(&key_cols, "%s%s", sep2, resname);
+							sep2 = ",";
+						}
+						else
+							appendStringInfo(&dangling_cond, "%s %s IS NULL ", sep, resname);
+
+						sep = "AND";
+					}
+
+					sep = "";
+					/* Build a condition for tuples belonging to any directly affected parent terms */
+					foreach (lc_p, term->parents)
+					{
+						Term *p = (Term *) lfirst(lc_p);
+
+						if (p->effect != IVM_DIRECT_EFFECT)
+							continue;
+
+						appendStringInfo(&parents_cond, "%s", sep);
+
+						sep2 = "";
+						forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+						{
+							Var *var = (Var *) lfirst(lc1);
+							char *resname = strVal(lfirst(lc2));
+
+							if (bms_is_member(var->varno, p->relids))
+							{
+								appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
+								sep2 = "AND";
+							}
+						}
+						sep = "OR ";
+					}
+
+					/* Delete dangling tuples if needed */
+					resetStringInfo(&querybuf);
+					appendStringInfo(&querybuf,
+						"DELETE FROM %s"
+						" WHERE %s AND "
+						" (%s) IN (SELECT %s FROM %s diff WHERE %s)",
+						matviewname,
+						dangling_cond.data,
+						key_cols.data, key_cols.data, tempname_new, parents_cond.data
+					);
+					if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+						elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+				}
+			}
 		}
 	}
 
@@ -2651,7 +3498,6 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 
 	if (castType)
 		appendStringInfo(&castString, "::%s", castType);
-
 
 	if (!count_col)
 	{
@@ -2875,7 +3721,7 @@ mv_FetchPreparedPlan(MV_QueryKey *key)
 }
 
 /*
- * mv_HashPreparedPlan -
+ * mv_HashPreparedPlan
  *
  * Add another plan to our private SPI query plan hashtable.
  */
@@ -2970,11 +3816,11 @@ clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry)
 static void
 clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
 {
-	StringInfoData querybuf;
 	Relation tempRel_old;
 	Relation tempRel_new;
 	char *tempname_old = NULL;
 	char *tempname_new = NULL;
+	StringInfoData querybuf;
 
 	/* get names of temptables */
 	if (OidIsValid(tempOid_new))
@@ -3020,13 +3866,13 @@ clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
 }
 
 /*
- * getColumnName
+ * getColumnNameStartWith
  *
  * Searh a column name which starts with the given string from the given RTE,
  * and return the first found one or NULL if not found.
  */
 char *
-getIVMColumnName(RangeTblEntry *rte, char *str)
+getColumnNameStartWith(RangeTblEntry *rte, char *str)
 {
 	char *colname;
 	ListCell *lc;
@@ -3041,4 +3887,15 @@ getIVMColumnName(RangeTblEntry *rte, char *str)
 		}
 	}
 	return NULL;
+}
+
+/*
+ * isIvmColumn
+ *
+ * Check if this is a IVM hidden column from the name.
+ */
+bool
+isIvmColumn(const char *s)
+{
+	return (strncmp(s, "__ivm_", 6) == 0);
 }
