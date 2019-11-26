@@ -594,7 +594,7 @@ BEGIN
  RETURN x;
 END;
 $$ LANGUAGE plpgsql;
--- 3-ways outer join (full & full)
+-- 3-way outer join (full & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -923,7 +923,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (full & left)
+-- 3-way outer join (full & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -1225,7 +1225,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (full & right)
+-- 3-way outer join (full & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -1483,7 +1483,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (full & inner)
+-- 3-way outer join (full & inner)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
@@ -1714,7 +1714,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (left & full)
+-- 3-way outer join (left & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -2014,7 +2014,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (left & left)
+-- 3-way outer join (left & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -2283,7 +2283,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (left & right)
+-- 3-way outer join (left & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -2528,7 +2528,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (left & inner)
+-- 3-way outer join (left & inner)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r LEFT JOIN s ON r.i=s.i INNER JOIN t ON s.j=t.j;
@@ -2742,7 +2742,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (right & full)
+-- 3-way outer join (right & full)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -3051,7 +3051,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (right & left)
+-- 3-way outer join (right & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -3333,7 +3333,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (right & right)
+-- 3-way outer join (right & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r RIGHT JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -3591,7 +3591,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (inner & FULL)
+-- 3-way outer join (inner & FULL)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
@@ -3871,7 +3871,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (inner & left)
+-- 3-way outer join (inner & left)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i LEFT JOIN t ON s.j=t.j;
@@ -4120,7 +4120,7 @@ SELECT is_match();
 ROLLBACK TO p1;
 DROP MATERIALIZED VIEW mv;
 DROP VIEW v;
--- 3-ways outer join (inner & right)
+-- 3-way outer join (inner & right)
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM r INNER JOIN s ON r.i=s.i RIGHT JOIN t ON s.j=t.j;
@@ -4838,11 +4838,11 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a
 ERROR:  Only simple equijoin is supported for IVM with outer join
 CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,k,j) AS SELECT a.i, b.i, k j FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i AND k=j;
 ERROR:  Only simple equijoin is supported for IVM with outer join
--- outer join view's WHERE clause cannot contain non null-rejecting predictions
+-- outer join view's WHERE clause cannot contain non null-rejecting predicates
 CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i WHERE k IS NULL;
-ERROR:  WHERE cannot contain non null-rejecting predictions for IVM with outer join
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
 CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i WHERE (k > 10 OR k = -1);
-ERROR:  WHERE cannot contain non null-rejecting predictions for IVM with outer join
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
 -- aggregate is not supported with outer join
 CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,v) AS SELECT a.i, b.i, sum(k) FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i GROUP BY a.i, b.i;
 ERROR:  aggregate is not supported with IVM together with outer join
