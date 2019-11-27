@@ -1714,7 +1714,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 		" (t.xmin = %u AND t.cmin::text::int < %u)",
 			relname, xid, xid, cid);
 
-	for (i=0; i<list_length(table->old_tuplestores); i++)
+	for (i = 0; i < list_length(table->old_tuplestores); i++)
 	{
 		appendStringInfo(&str, " UNION ALL ");
 		appendStringInfo(&str," SELECT *, "
@@ -1849,6 +1849,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 								 true);
 	ListCell *tbl_lc;
 
+	/* For aggregate views */
 	if (query->hasAggs)
 	{
 		ListCell *lc;
@@ -1950,6 +1951,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 		}
 	}
 
+	/* Add count(*) for counting distinct tuples in views */
 	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 	fn->agg_star = true;
 	if (!query->groupClause && !query->hasAggs)
@@ -2796,14 +2798,17 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			 * and handler functions.
 			 */
 
+			/* count */
 			if (!strcmp(aggname, "count"))
 			{
+				/* For tuple deletion */
 				/* resname = mv.resname - t.resname */
 				appendStringInfo(&update_aggs_old,
 					"%s = %s",
 					quote_qualified_identifier(NULL, resname),
 					get_operation_string(IVM_SUB,resname, "mv", "t", NULL, NULL));
 
+				/* For tuple insertion */
 				/* resname = mv.resname + diff.resname */
 				appendStringInfo(&update_aggs_new,
 					"%s = %s",
@@ -2814,10 +2819,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					quote_qualified_identifier("diff", resname)
 				);
 			}
+			/* sum */
 			else if (!strcmp(aggname, "sum"))
 			{
 				char *count_col = IVM_colname("count", resname);
 
+				/* For tuple deletion */
 				/* sum = mv.sum - t.sum */
 				appendStringInfo(&update_aggs_old,
 					"%s = %s, ",
@@ -2831,6 +2838,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
 				);
 
+				/* For tuple insertion */
 				/* sum = mv.sum + diff.sum */
 				appendStringInfo(&update_aggs_new,
 					"%s = %s, ",
@@ -2849,11 +2857,13 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 			}
+			/* avg */
 			else if (!strcmp(aggname, "avg"))
 			{
 				char *sum_col = IVM_colname("sum", resname);
 				char *count_col = IVM_colname("count", resname);
 
+				/* For tuple deletion */
 				/* avg = (mv.sum - t.sum)::aggtype / (mv.count - t.count) */
 				appendStringInfo(&update_aggs_old,
 					"%s = %s / %s, ",
@@ -2874,6 +2884,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
 				);
 
+				/* For tuple insertion */
 				/* avg = (mv.sum + diff.sum)::aggtype / (mv.count + diff.count) */
 				appendStringInfo(&update_aggs_new,
 					"%s = %s / %s, ",
@@ -2900,12 +2911,18 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
 				);
 			}
+			/* min/max */
 			else if (!strcmp(aggname, "min") || !strcmp(aggname, "max"))
 			{
 				bool is_min = !strcmp(aggname, "min");
 				char *count_col = IVM_colname("count", resname);
 
-				/* We need a special RETURNING clause for min/max to check if recomputation is required */
+				/*
+				 * We need a special RETURNING clause for min/max to check which tuple needs
+				 * re-calculation from base tables. This includes ctid and a boolean flag
+				 * named recalc.
+				 */
+
 				if (!has_min_or_max)
 				{
 					/* the first min or max is found */
@@ -2922,10 +2939,15 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					is_min ? ">=" : "<=",
 					quote_qualified_identifier("t", resname)
 				);
+
 				/* make a resname list of min or max aggregates */
 				appendStringInfo(&min_or_max_buf, "%s", quote_qualified_identifier(NULL, resname));
 
-				/* Even if the new values is not NULL, this might be recomputated afterwords. */
+				/* For tuple deletion */
+				/*
+				 * If the new value doesn't became NULL then use the value remaining in the view
+				 * although this will be recomputated afterwords.
+				 */
 				appendStringInfo(&update_aggs_old,
 					"%s = CASE WHEN %s THEN NULL ELSE %s END, ",
 					quote_qualified_identifier(NULL, resname),
@@ -2939,6 +2961,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
 				);
 
+				/* For tuple insertion */
 				/*
 				 * min = least(mv.min, diff.min)
 				 * max = greatest(mv.max, diff.max)
@@ -2952,7 +2975,6 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					quote_qualified_identifier("mv", resname),
 					quote_qualified_identifier("diff", resname)
 				);
-
 				/* count = mv.count + diff.count */
 				appendStringInfo(&update_aggs_new,
 					"%s = %s",
@@ -3006,10 +3028,16 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 				num_group_keys++;
 			}
 
+			/*
+			 * We get ctid and group keys from results returned by CTE for each tulpe
+			 * which needs recalculation of min/max.
+			 */
 			if (has_min_or_max)
 			{
 				appendStringInfo(&returning_buf, ", %s", mv_gkeys_buf.data);
-				appendStringInfo(&result_buf, "SELECT ctid AS tid, %s FROM updt WHERE recalc", updt_gkeys_buf.data);
+				appendStringInfo(&result_buf, "SELECT ctid AS tid, %s"
+											  " FROM updt WHERE recalc",
+											  updt_gkeys_buf.data);
 			}
 		}
 		else
@@ -3048,6 +3076,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
 
+	/* Start maintaining the materialized view. */
 	OpenMatViewIncrementalMaintenance();
 
 	/* for aggregates views */
@@ -3084,16 +3113,24 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
+			/*
+			 * If we have min or max, some tuples might need to recalculate its values from base
+			 * tables. In this case, TIDs and group keys (if any) of such tuples are returned.
+			 */
 			if (has_min_or_max && SPI_processed > 0)
 			{
 				SPITupleTable *tuptable_recalc = SPI_tuptable;
 				TupleDesc   tupdesc_recalc = tuptable_recalc->tupdesc;
 				int64		processed = SPI_processed;
 				uint64      i;
-				Oid			*keyTypes = NULL, *minmaxTypes = NULL;
-				char		*keyNulls = NULL, *minmaxNulls = NULL;
-				Datum		*keyVals = NULL, *minmaxVals = NULL;
+				Oid		   *keyTypes = NULL;
+				Oid		   *minmaxTypes = NULL;
+				char	   *keyNulls = NULL;
+				char	   *minmaxNulls = NULL;
+				Datum	   *keyVals = NULL;
+				Datum	   *minmaxVals = NULL;
 
+				/* If we have GROUP BY clause, initialize arrays for group keys information. */
 				if (with_group)
 				{
 					keyTypes = palloc(sizeof(Oid) * num_group_keys);
@@ -3101,15 +3138,18 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					keyVals = palloc(sizeof(Datum) * num_group_keys);
 					Assert(tupdesc_recalc->natts == num_group_keys + 1);
 
+					/* Types of group key attributes  */
 					for (i = 0; i < num_group_keys; i++)
-						keyTypes[i] = TupleDescAttr(tupdesc_recalc, i+1)->atttypid;
+						keyTypes[i] = TupleDescAttr(tupdesc_recalc, i + 1)->atttypid;
 				}
 
+				/* allocate memory for all min/max attribute names and ctid */
 				minmaxTypes = palloc(sizeof(Oid) * (num_min_or_max + 1));
 				minmaxNulls = palloc(sizeof(char) * (num_min_or_max + 1));
 				minmaxVals = palloc(sizeof(Datum) * (num_min_or_max + 1));
 
-				for (i=0; i< processed; i++)
+				/* For each tuple which needs recalculate */
+				for (i = 0; i < processed; i++)
 				{
 					int j;
 					bool isnull;
@@ -3117,11 +3157,12 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 					SPITupleTable *tuptable_minmax;
 					TupleDesc   tupdesc_minmax;
 
+					/* Set group key values as parameters if needed. */
 					if (with_group)
 					{
 						for (j = 0; j < num_group_keys; j++)
 						{
-							keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j+2, &isnull);
+							keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j + 2, &isnull);
 							if (isnull)
 								keyNulls[j] = 'n';
 							else
@@ -3129,11 +3170,14 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 						}
 					}
 
+					/*
+					 * Get recalculated min/max aggregate values from base tables. The result
+					 * must be only one tuple thich contains the new min/max values for a group.
+					 */
 					plan = get_plan_for_recalc_min_max(matviewOid, min_or_max_buf.data,
 													   mv_gkeys_buf.data, num_group_keys, keyTypes, with_group);
-
 					if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
-						elog(ERROR, "SPI_execute_plan1");
+						elog(ERROR, "SPI_execute_plan");
 					if (SPI_processed != 1)
 						elog(ERROR, "SPI_execute_plan returned zero or more than one rows");
 
@@ -3142,33 +3186,35 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 
 					Assert(tupdesc_minmax->natts == num_min_or_max);
 
+					/* Set the new min/max values as parameters */
 					for (j = 0; j < tupdesc_minmax->natts; j++)
 					{
 						if (i == 0)
 							minmaxTypes[j] = TupleDescAttr(tupdesc_minmax, j)->atttypid;
 
-						minmaxVals[j] = SPI_getbinval(tuptable_minmax->vals[0], tupdesc_minmax, j+1, &isnull);
+						minmaxVals[j] = SPI_getbinval(tuptable_minmax->vals[0], tupdesc_minmax, j + 1, &isnull);
 						if (isnull)
 							minmaxNulls[j] = 'n';
 						else
 							minmaxNulls[j] = ' ';
 					}
+					/* TID of the view tuple is also a parameter */
 					minmaxTypes[j] = TIDOID;
 					minmaxVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, 1, &isnull);
 					minmaxNulls[j] = ' ';
 
+					/* Update the view tuple to set the new values */
 					plan = get_plan_for_set_min_max(matviewOid, matviewname, min_or_max_buf.data,
 													num_min_or_max, minmaxTypes, with_group);
-
 					if (SPI_execute_plan(plan, minmaxVals, minmaxNulls, false, 0) != SPI_OK_UPDATE)
-						elog(ERROR, "SPI_execcute_plan2");
-
+						elog(ERROR, "SPI_execute_plan");
 				}
 			}
 
 		}
 		if (tempname_new)
 		{
+			/* Search for matching tuples from the view and update if found or insert if not. */
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
@@ -3176,11 +3222,14 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 							", %s "
 							"  FROM %s AS diff WHERE (%s) = (%s)"
 							"  RETURNING %s"
-							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
+							") INSERT INTO %s "
+							"   SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt);",
 							matviewname, count_colname, count_colname, count_colname,
 							update_aggs_new.data,
 							tempname_new, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							diff_gkeys_buf.data, matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
+							diff_gkeys_buf.data,
+							matviewname,
+							tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 		}
@@ -3190,10 +3239,13 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	{
 		if (tempname_old)
 		{
+			/* Search for matching tuples from the view and update or delete if found. */
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH t AS ("
-							"  SELECT diff.%s, (diff.%s = mv.%s) AS for_dlt, mv.ctid"
+							"  SELECT diff.%s, "
+							"         (diff.%s = mv.%s) AS for_dlt, "
+							"         mv.ctid"
 							"  FROM %s AS mv, %s AS diff WHERE %s"
 							"), updt AS ("
 							"  UPDATE %s AS mv SET %s = mv.%s - t.%s"
@@ -3267,16 +3319,20 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 							}
 						}
 					}
-					/* add counting columns for EXISTS clauses into the targetlist */
 					/*
-					for (; i<matviewRel->rd_att->natts; i++)
+					 * Search counting columns for EXISTS clauses
+					 *
+					 * XXX: Currently subqueries can not be used with outer joins, so
+					 * we arise an error here. However, when we support this in future,
+					 * these columns have to be added into the targetlist.
+					 */
+					for (; i < matviewRel->rd_att->natts; i++)
 					{
 						Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
 						char *resname = NameStr(attr->attname);
 						if (!strncmp(resname, "__ivm_exists", 12))
-							appendStringInfo(&targetlist, ", %s", resname);
+							elog(ERROR, "EXISTS cannot be used with outer joins");
 					}
-					*/
 
 					/* counting the number of tuples to be inserted */
 					sep = "";
@@ -3332,17 +3388,20 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 		}
 		if (tempname_new)
 		{
+			/* Search for matching tuples from the view and update if found or insert if not. */
 			resetStringInfo(&querybuf);
 			appendStringInfo(&querybuf,
 							"WITH updt AS ("
-							"  UPDATE %s AS mv SET %s= mv.%s + diff.%s"
+							"  UPDATE %s AS mv SET %s = mv.%s + diff.%s"
 							"  FROM %s AS diff WHERE %s"
 							"  RETURNING %s"
-							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
+							") INSERT INTO %s "
+							"   SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt);",
 							matviewname, count_colname, count_colname, count_colname,
 							tempname_new, match_cond.data,
 							diffatts_buf.data,
-							matviewname, tempname_new, diffatts_buf.data);
+							matviewname,
+							tempname_new, diffatts_buf.data);
 			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
@@ -3535,7 +3594,14 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
  * get_plan_for_recalc_min_max
  *
  * Create or fetch a plan for recalculating min or max aggregate value from
- * base tables using the view definition query.
+ * base tables using the definition query of materialized view specified by
+ * matviewOid. min_max_list is a string of resnames of min or max target
+ * list entries.
+ *
+ * If with_group is true, we have GROUP BY clause and the plan requires group
+ * keys as parameters. group_keys is a string of resnames of group keys whose
+ * number is nkeys, and KeyTypes is an array of types of group keys.
+ *
  */
 static SPIPlanPtr
 get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
@@ -3546,19 +3612,24 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 
 	/* Fetch or prepare a saved plan for the real check */
 	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_RECALC_MINMAX);
-
 	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
 	{
-		char	*viewdef;
 		StringInfoData	str;
+		char   *viewdef;
 		int		i;
-
 
 		/* get view definition of matview */
 		viewdef = text_to_cstring((text *) DatumGetPointer(
 					DirectFunctionCall1(pg_get_viewdef, ObjectIdGetDatum(matviewOid))));
 		/* get rid of trailing semi-colon */
 		viewdef[strlen(viewdef)-1] = '\0';
+
+		/*
+		 * Build a query string for recalculating min/max values. This is like
+		 *
+		 *  SELECT min, max FROM ( ... view definition query ...) mv
+		 *   WHERE (key1, key2) = ($1, $2);
+		 */
 
 		initStringInfo(&str);
 		appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
@@ -3587,23 +3658,32 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 /*
  * get_plan_for_set_min_max
  *
- * Create or fetch a plan for applying min or max aggregate value
- * calculated by get_plan_for_recalc_min_man to the view.
+ * Create or fetch a plan for applying min or max aggregate value calculated
+ * by get_plan_for_recalc_min_man to the view to the materialized view
+ * specified by matviewOid. matviewname is the name of the view and min_max_list
+ * is a string of resnames of min or max target list entries.
  */
 static SPIPlanPtr
 get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
 						  int num_min_max, Oid *valTypes, bool with_group)
 {
-	MV_QueryKey key;
-	SPIPlanPtr plan;
+	MV_QueryKey	key;
+	SPIPlanPtr	plan;
 
 	/* Fetch or prepare a saved plan for the real check */
 	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_MINMAX);
-
 	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
 	{
 		StringInfoData str;
 		int		i;
+
+		/*
+		 * Build a query string for applying min/max values. This is like
+		 *
+		 *  UPDATE matviewname AS mv
+		 *   SET (min, max, min2, max2) = ($1, $2, $3, $4)
+		 *   WHERE ctid = $5;
+		 */
 
 		initStringInfo(&str);
 		appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
