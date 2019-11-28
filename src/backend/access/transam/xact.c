@@ -3430,7 +3430,6 @@ CheckTransactionBlock(bool isTopLevel, bool throwError, const char *stmtType)
 	/* translator: %s represents an SQL statement name */
 			 errmsg("%s can only be used in transaction blocks",
 					stmtType)));
-	return;
 }
 
 /*
