@@ -2668,7 +2668,7 @@ static ListCell*
 getRteListCell(Query *query, List *rte_path)
 {
 	ListCell *lc;
-	ListCell *rte_lc;
+	ListCell *rte_lc = NULL;
 
 	Assert(list_length(rte_path) > 0);
 
