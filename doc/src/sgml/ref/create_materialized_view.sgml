@@ -62,36 +62,167 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
       of the materialized view are immediately updated when base tables of the
       materialized view are updated. In general, this allows faster update of
       the materialized view at a price of slower update of the base tables
-      because the triggers will be invoked.
+      because the triggers will be invoked. We call this form of materialized
+      view as "Incrementally Maintainable Materialized View" (IMMV).
      </para>
      <para>
       There are restrictions of query definitions allowed to use this
-      option. Followings are allowed query definitions:
+      option. Followings are supported query definitions for IMMV:
       <itemizedlist>
+
        <listitem>
         <para>
          Inner joins (including self-joins).
         </para>
        </listitem>
+
        <listitem>
         <para>
-         Some of aggregations (count, sum, avg, min, max) without HAVING clause.
+         Outer joins with following restrictions:
+
+         <itemizedlist>
+          <listitem>
+           <para>
+            Outer join view's targetlist must contain attributes used in the
+            join conditions.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT
+JOIN mv_base_b b ON a.i=b.i;
+ERROR:  targetlist must contain vars in the join condition for IVM with outer join
+            </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Outer join view's targetlist cannot contain non strict functions.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i, b.i, (k > 10 OR k = -1)
+FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
+ERROR:  targetlist cannot contain non strict functions for IVM with outer join
+             </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Outer join supports only simple equijoin.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i>b.i;
+ERROR:  Only simple equijoin is supported for IVM with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,k,j) AS SELECT a.i, b.i, k j FROM
+mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i AND k=j;
+ERROR:  Only simple equijoin is supported for IVM with outer join
+            </programlisting>
+           </para>
+           </listitem>
+
+          <listitem>
+           <para>
+            Outer join view's WHERE clause cannot contain non null-rejecting
+            predicates.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE k IS NULL;
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE (k > 10 OR k = -1);
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
+            </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Aggregate is not supported with outer join.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,v) AS SELECT a.i, b.i, sum(k) FROM
+mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i GROUP BY a.i, b.i;
+ERROR:  aggregate is not supported with IVM together with outer join
+</programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Subquery is not supported with outer join.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN (SELECT * FROM mv_base_b) b ON a.i=b.i;
+ERROR:  subquery is not supported with IVM together with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE EXISTS (SELECT 1 FROM mv_base_b b2
+WHERE a.j = b.k);
+ERROR:  subquery is not supported by IVM together with outer join
+             </programlisting>
+           </para>
+          </listitem>
+         </itemizedlist>
+        </para>
+
+       </listitem>
+
+       <listitem>
+        <para>
+         Subqueries. However following forms are not supported.
+        </para>
+
+        <para>
+         WHERE IN .. (subquery) is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm03 AS SELECT i,j FROM
+mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k &lt; 103 );
+         </programlisting>
+        </para>
+        <para>
+         subqueries in target list is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm05 AS SELECT i,j, (SELECT k
+FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
+         </programlisting>
+        </para>
+        <para>
+         Nested EXISTS subqueries is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm11 AS SELECT a.i,a.j FROM
+mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT
+1 FROM mv_base_b c WHERE b.i = c.i));
+         </programlisting>
+        </para>
+        <para>
+         EXISTS subquery with aggregate function is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists AS SELECT COUNT(*)
+FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i =
+b.i) OR a.i &gt; 5;
+         </programlisting>
+        </para>
+        <para>
+         EXISTS subquery with condition other than AND is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm10 AS SELECT a.i,a.j FROM
+mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR
+a.i &gt; 5;
+         </programlisting>
+        </para>
+        </listitem>
+
+       <listitem>
+        <para>
+         Some of aggregations (count, sum, avg, min, max) without HAVING
+         clause.  However, aggregate functions in subquery is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a
+a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
+         </programlisting>
         </para>
         </listitem>
       </itemizedlist>
 
-      Prohibited queries with this option include followings:
+      Unsupported queries with this option include followings:
+
       <itemizedlist>
-       <listitem>
-        <para>
-         Outer joins.
-        </para>
-       </listitem>
-       <listitem>
-        <para>
-         Subqueries.
-        </para>
-        </listitem>
        <listitem>
         <para>
          Aggregations other than count, sum, avg, min and max.
@@ -111,24 +242,50 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
 
       Other restrictions include:
       <itemizedlist>
+
        <listitem>
         <para>
-         Incremental materialized views must be based on simple base
-         tables. Views or materialized views are not allowed to create
-         incremental materialized views.
+         IMMVs must be based on simple base tables. Views or materialized views
+         are not allowed to create IMMV on them.
         </para>
        </listitem>
+
+       <listitem>
+        <para>
+         <command>pg_dump</command> and <command>pg_restore</command> do not
+         support IMMVs. IMMVs are dumped as ordinary materialized views.
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         <command>REFRESH MATERIALIZED VIEW</command> does not support IMMVs.
+        </para>
+       </listitem>
+
        <listitem>
         <para>
          When TRUNCATE command is executed on a base table, nothing occurs and
          this is not applied to the materialized view.
         </para>
        </listitem>
+
        <listitem>
         <para>
-         Incremental materialized views are not supported by logical replication.
+         IMMV including system columns is not supported.
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
+ERROR:  system column is not supported with IVM
+         </programlisting>
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         IMMVs not supported by logical replication.
         </para>
         </listitem>
+
       </itemizedlist>
 
      </para>
