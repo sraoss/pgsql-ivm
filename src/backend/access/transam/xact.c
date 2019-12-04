@@ -4903,6 +4903,9 @@ AbortSubTransaction(void)
 	AbortBufferIO();
 	UnlockBuffers();
 
+	/* Clean up hash entries for incremental view maintenance */
+	AtAbort_IVM();
+
 	/* Reset WAL record construction state */
 	XLogResetInsertion();
 
