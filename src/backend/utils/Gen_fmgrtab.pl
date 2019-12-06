@@ -194,7 +194,6 @@ my %seenit;
 foreach my $s (sort { $a->{oid} <=> $b->{oid} } @fmgr)
 {
 	next if $seenit{ $s->{prosrc} };
-	print $s->{prokind};
 	if ($s->{prokind} eq "a")
 	{
 		$s->{proargtypes} =~ s/ /_/;
