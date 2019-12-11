@@ -436,6 +436,13 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 
 	dataQuery = get_matview_query(matviewRel);
+	elog_node_display(LOG, "parse tree", dataQuery, Debug_pretty_print);
+
+	/* If use IMMV, need to rewrite matview query */
+	if ( matviewRel->rd_rel->relisivm)
+			dataQuery = rewriteIMMV(dataQuery,NIL);
+
+
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more

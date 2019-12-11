@@ -24,6 +24,8 @@
 extern ObjectAddress ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 									   ParamListInfo params, QueryEnvironment *queryEnv, char *completionTag);
 
+extern Query *rewriteIMMV(Query *query, List *colNames);
+
 extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
 extern DestReceiver *CreateIntoRelDestReceiver(IntoClause *intoClause);
