@@ -65,6 +65,7 @@
 #include "utils/syscache.h"
 
 #include "optimizer/clauses.h"
+#include "utils/fmgroids.h"
 
 typedef struct
 {
@@ -100,6 +101,7 @@ static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 t
 static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
+static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
 /*
  * create_ctas_internal
@@ -441,17 +443,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						Aggref *aggref = (Aggref *) tle->expr;
 						const char *aggname = get_func_name(aggref->aggfnoid);
 
-						/* XXX: need some generalization
-						 *
-						 * Specifically, Using func names is not robust.  We can use oids instead
-						 * of names, but it would be nice to add some information to pg_aggregate.
-						 */
-						if (strcmp(aggname, "sum") !=0
-							&& strcmp(aggname, "count") != 0
-							&& strcmp(aggname, "avg") != 0
-							&& strcmp(aggname, "min") != 0
-							&& strcmp(aggname, "max") != 0
-						)
+						/* Check if this supports IVM */
+						if (!check_aggregate_supports_ivm(aggref->aggfnoid))
 							elog(ERROR, "aggregate function %s is not supported", aggname);
 
 						/*
@@ -1274,4 +1267,89 @@ is_equijoin_condition(OpExpr *op)
 		return true;
 
 	return false;
+}
+
+/*
+ * check_aggregate_supports_ivm
+ *
+ * Check if the given aggregate function is supporting
+ */
+static bool
+check_aggregate_supports_ivm(Oid aggfnoid)
+{
+	switch (aggfnoid)
+	{
+		/* count */
+		case F_AGG_COUNT_ANY:
+		case F_AGG_COUNT_:
+
+		/* sum */
+		case F_AGG_SUM_INT8:
+		case F_AGG_SUM_INT4:
+		case F_AGG_SUM_INT2:
+		case F_AGG_SUM_FLOAT4:
+		case F_AGG_SUM_FLOAT8:
+		case F_AGG_SUM_MONEY:
+		case F_AGG_SUM_INTERVAL:
+		case F_AGG_SUM_NUMERIC:
+
+		/* avg */
+		case F_AGG_AVG_INT8:
+		case F_AGG_AVG_INT4:
+		case F_AGG_AVG_INT2:
+		case F_AGG_AVG_NUMERIC:
+		case F_AGG_AVG_FLOAT4:
+		case F_AGG_AVG_FLOAT8:
+		case F_AGG_AVG_INTERVAL:
+
+		/* min */
+		case F_AGG_MIN_ANYARRAY:
+		case F_AGG_MIN_INT8:
+		case F_AGG_MIN_INT4:
+		case F_AGG_MIN_INT2:
+		case F_AGG_MIN_OID:
+		case F_AGG_MIN_FLOAT4:
+		case F_AGG_MIN_FLOAT8:
+		case F_AGG_MIN_DATE:
+		case F_AGG_MIN_TIME:
+		case F_AGG_MIN_TIMETZ:
+		case F_AGG_MIN_MONEY:
+		case F_AGG_MIN_TIMESTAMP:
+		case F_AGG_MIN_TIMESTAMPTZ:
+		case F_AGG_MIN_INTERVAL:
+		case F_AGG_MIN_TEXT:
+		case F_AGG_MIN_NUMERIC:
+		case F_AGG_MIN_BPCHAR:
+		case F_AGG_MIN_TID:
+		case F_AGG_MIN_ANYENUM:
+		case F_AGG_MIN_INET:
+		case F_AGG_MIN_PG_LSN:
+
+		/* max */
+		case F_AGG_MAX_ANYARRAY:
+		case F_AGG_MAX_INT8:
+		case F_AGG_MAX_INT4:
+		case F_AGG_MAX_INT2:
+		case F_AGG_MAX_OID:
+		case F_AGG_MAX_FLOAT4:
+		case F_AGG_MAX_FLOAT8:
+		case F_AGG_MAX_DATE:
+		case F_AGG_MAX_TIME:
+		case F_AGG_MAX_TIMETZ:
+		case F_AGG_MAX_MONEY:
+		case F_AGG_MAX_TIMESTAMP:
+		case F_AGG_MAX_TIMESTAMPTZ:
+		case F_AGG_MAX_INTERVAL:
+		case F_AGG_MAX_TEXT:
+		case F_AGG_MAX_NUMERIC:
+		case F_AGG_MAX_BPCHAR:
+		case F_AGG_MAX_TID:
+		case F_AGG_MAX_ANYENUM:
+		case F_AGG_MAX_INET:
+		case F_AGG_MAX_PG_LSN:
+			return true;
+
+		default:
+			return false;
+	}
 }
