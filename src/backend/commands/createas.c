@@ -101,7 +101,7 @@ static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 t
 static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
-static void check_aggregate_supports_ivm(Oid aggfnoid);
+static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
 /*
  * create_ctas_internal
@@ -444,7 +444,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 						const char *aggname = get_func_name(aggref->aggfnoid);
 
 						/* Check if this supports IVM */
-						check_aggregate_supports_ivm(aggref->aggfnoid);
+						if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+							elog(ERROR, "aggregate function %s is not supported", aggname);
 
 						/*
 						 * For aggregate functions except to count, add count func with the same arg parameters.
@@ -1273,7 +1274,7 @@ is_equijoin_condition(OpExpr *op)
  *
  * Check if the given aggregate function is supporting
  */
-static void
+static bool
 check_aggregate_supports_ivm(Oid aggfnoid)
 {
 	switch (aggfnoid)
@@ -1346,12 +1347,9 @@ check_aggregate_supports_ivm(Oid aggfnoid)
 		case F_AGG_MAX_ANYENUM:
 		case F_AGG_MAX_INET:
 		case F_AGG_MAX_PG_LSN:
-			return;
+			return true;
 
 		default:
-		{
-			const char *aggname = get_func_name(aggfnoid);
-			elog(ERROR, "aggregate function %s is not supported", aggname);
-		}
+			return false;
 	}
 }
