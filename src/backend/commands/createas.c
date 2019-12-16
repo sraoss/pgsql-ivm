@@ -97,8 +97,8 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
-static void CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids);
+static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
@@ -611,14 +611,12 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
-			char	*matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
-													 RelationGetRelationName(matviewRel));
 			Relids	relids = NULL;
 
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relids);
+			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
 
 			table_close(matviewRel, NoLock);
 
@@ -631,7 +629,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, char* matviewname, Relids *relids)
+static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
 {
 	if (jtnode == NULL)
 		return;
@@ -644,12 +642,12 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		{
 			if (!bms_is_member(rte->relid, *relids))
 			{
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
-				CreateIvmTrigger(rte->relid, matviewOid, matviewname, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
+				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
 
 				*relids = bms_add_member(*relids, rte->relid);
 			}
@@ -659,7 +657,7 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 			Query *subquery = rte->subquery;
 			Assert(rte->subquery != NULL);
 
-			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, matviewname, relids);
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, relids);
 		}
 		else
 			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
@@ -670,14 +668,14 @@ static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewO
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, matviewname, relids);
+			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, relids);
 	}
 	else if (IsA(jtnode, JoinExpr))
 	{
 		JoinExpr   *j = (JoinExpr *) jtnode;
 
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, matviewname, relids);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, matviewname, relids);
+		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, relids);
+		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, relids);
 	}
 	else
 		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
@@ -929,7 +927,7 @@ intorel_destroy(DestReceiver *self)
  * CreateIvmTrigger -- create IVM trigger on a base table
  */
 static void
-CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 timing)
+CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 {
 	ObjectAddress	refaddr;
 	ObjectAddress	address;
@@ -996,7 +994,8 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, char *matviewname, int16 type, int16 t
 	ivm_trigger->deferrable = false;
 	ivm_trigger->initdeferred = false;
 	ivm_trigger->constrrel = NULL;
-	ivm_trigger->args = list_make1(makeString(matviewname));
+	ivm_trigger->args = list_make1(makeString(
+		DatumGetPointer(DirectFunctionCall1(oidout, ObjectIdGetDatum(viewOid)))));
 
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);

@@ -1205,11 +1205,12 @@ Datum
 IVM_immediate_before(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
-	char   *matviewname = trigdata->tg_trigger->tgargs[0];
-	List   *names = stringToQualifiedNameList(matviewname);
+	char   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
 	Oid		matviewOid;
 	MV_TriggerHashEntry *entry;
 	bool	found;
+
+	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
 
 	/*
 	 * Wait for concurrent transactions which update this materialized view at
@@ -1219,9 +1220,22 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	 * XXX: dead-lock is possible here.
 	 */
 	if (!IsolationUsesXactSnapshot())
-		matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), ExclusiveLock, true);
-	else
-		matviewOid = RangeVarGetRelidExtended(makeRangeVarFromNameList(names), ExclusiveLock, RVR_MISSING_OK | RVR_NOWAIT, NULL, NULL);
+		LockRelationOid(matviewOid, ExclusiveLock);
+	else if (!ConditionalLockRelationOid(matviewOid, ExclusiveLock))
+	{
+		/* try to throw error by name; relation could be deleted... */
+		char	   *relname = get_rel_name(matviewOid);
+
+		if (!relname)
+			ereport(ERROR,
+					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+					 errmsg("could not obtain lock on materialized view during incremental maintenance")));
+
+		ereport(ERROR,
+				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+				 errmsg("could not obtain lock on materialized view \"%s\" during incremental maintenance",
+						relname)));
+	}
 
 	/*
 	 * On the first call initialize the hashtable
@@ -1269,8 +1283,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Oid			matviewOid;
 	Query	   *query;
 	Query	   *rewritten;
-	char	   *matviewname = trigdata->tg_trigger->tgargs[0];
-	List	   *names;
+	char	   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
 	char	   *count_colname = NULL;
 	Relation	matviewRel;
 	int old_depth = matview_maintenance_depth;
@@ -1304,8 +1317,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	rel = trigdata->tg_relation;
 	relid = rel->rd_id;
 
-	names = stringToQualifiedNameList(matviewname);
-	matviewOid = RangeVarGetRelid(makeRangeVarFromNameList(names), NoLock, true);
+	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
 
 	/*
 	 * On the first call initialize the hashtable
@@ -1410,7 +1422,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 * NB: We count on this to protect us against problems with refreshing the
 	 * data using TABLE_INSERT_FROZEN.
 	 */
-	CheckTableNotInUse(matviewRel, "incrementally maintain");
+	CheckTableNotInUse(matviewRel, "refresh a materialized view incrementally");
 
 
 	/* join tree analysis for outer join */
