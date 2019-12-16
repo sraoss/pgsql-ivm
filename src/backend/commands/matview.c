@@ -1570,6 +1570,10 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		}
 	}
 
+	/* Clean up hash entry and drop temporary tables */
+	clean_up_IVM_hash_entry(entry);
+	clean_up_IVM_temptable(OIDDelta_old, OIDDelta_new);
+
 	/* Pop the original snapshot. */
 	PopActiveSnapshot();
 
@@ -1580,10 +1584,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	/* Restore userid and security context */
 	SetUserIdAndSecContext(save_userid, save_sec_context);
-
-	/* Clean up hash entry and drop temporary tables */
-	clean_up_IVM_hash_entry(entry);
-	clean_up_IVM_temptable(OIDDelta_old, OIDDelta_new);
 
 	return PointerGetDatum(NULL);
 }
