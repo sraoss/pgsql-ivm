@@ -81,8 +81,8 @@ typedef struct
 #define MV_INIT_QUERYHASHSIZE	16
 
 /* MV query type codes */
-#define MV_PLAN_RECALC_MINMAX	1
-#define MV_PLAN_SET_MINMAX		2
+#define MV_PLAN_RECALC			1
+#define MV_PLAN_SET_VALUE		2
 
 /*
  * MI_QueryKey
@@ -239,13 +239,40 @@ static ListCell *getRteListCell(Query *query, List *rte_path);
 
 static void apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			char *count_colname, IvmMaintenanceGraph *graph);
-static char *get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col);
-static char *get_operation_string(IvmOp op, char *col, char *arg1, char *arg2,
-								  char* count_col, const char *castType);
-static SPIPlanPtr get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-						  const char *group_keys, int nkeys, Oid *keyTypes, bool with_group);
-static SPIPlanPtr get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes, bool with_group);
+static void append_set_clause_for_count(const char *resname, StringInfo buf_old,
+							StringInfo buf_new,StringInfo aggs_list);
+static void append_set_clause_for_sum(const char *resname, StringInfo buf_old,
+						  StringInfo buf_new, StringInfo aggs_list);
+static void append_set_clause_for_avg(const char *resname, StringInfo buf_old,
+						  StringInfo buf_new, StringInfo aggs_list,
+						  const char *aggtype);
+static void append_set_clause_for_minmax(const char *resname, StringInfo buf_old,
+							 StringInfo buf_new, StringInfo aggs_list,
+							 bool is_min);
+static char *get_operation_string(IvmOp op, const char *col, const char *arg1, const char *arg2,
+					 const char* count_col, const char *castType);
+static char *get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
+						  const char* count_col);
+static char *build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_old,
+								List *keys, StringInfo aggs_list, StringInfo aggs_set,
+								List *minmax_list, List *is_min_list,
+								const char *count_colname);
+static char *build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_new,
+								List *keys, StringInfo aggs_set,
+								const char* count_colname);
+static char *get_matching_condition_string(List *keys);
+static char *get_returning_string(List *minmax_list, List *is_min_list, List *keys);
+static char *get_minmax_recalc_condition_string(List *minmax_list, List *is_min_list);
+static char *get_select_for_recalc_string(List *keys);
+static void recalc_and_set_values(SPITupleTable *tuptable_recalc, int64 num_tuples,
+					  List *namelist, List *keys, Relation matviewRel);
+static SPIPlanPtr get_plan_for_recalc(Oid matviewOid, List *namelist, List *keys, Oid *keyTypes);
+static SPIPlanPtr get_plan_for_set_values(Oid matviewOid, char *matviewname, List *namelist,
+						Oid *valTypes);
+static void insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
+					   Relation matviewRel, const char *deltaname_old);
+static void delete_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
+					   Relation matviewRel, const char *deltaname_new);
 static void truncate_view_delta(Oid delta_oid);
 
 static void mv_InitHashTables(void);
@@ -1170,8 +1197,9 @@ get_matview_query(Relation matviewRel)
 /*
  * IVM_immediate_before
  *
- * IVM trigger function invoked before base table is modified. If this is invoked firstly
- * in the same statement, we save the transaction id and the command id at that time.
+ * IVM trigger function invoked before base table is modified. If this is
+ * invoked firstly in the same statement, we save the transaction id and the
+ * command id at that time.
  */
 Datum
 IVM_immediate_before(PG_FUNCTION_ARGS)
@@ -1184,9 +1212,10 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	bool	found;
 
 	/*
-	 * Wait for concurrent transactions which update this materialized view at READ COMMITED.
-	 * This is needed to see changes committed in other transactions. No wait and raise an error
-	 * at REPEATABLE READ or SERIALIZABLE to prevent update anomalies of matviews.
+	 * Wait for concurrent transactions which update this materialized view at
+	 * READ COMMITED. This is needed to see changes committed in other
+	 * transactions. No wait and raise an error at REPEATABLE READ or
+	 * SERIALIZABLE to prevent update anomalies of matviews.
 	 * XXX: dead-lock is possible here.
 	 */
 	if (!IsolationUsesXactSnapshot())
@@ -1356,7 +1385,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		return PointerGetDatum(NULL);
 
 
-	/* If this is the last AFTER trigger call, continue and update the view. */
+	/*
+	 * If this is the last AFTER trigger call, continue and update the view.
+	 */
 
 	matviewRel = table_open(matviewOid, NoLock);
 
@@ -1367,9 +1398,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	Assert(matviewRel->rd_rel->relkind == RELKIND_MATVIEW);
 
 	/*
-	 * Get and push the latast snapshot to see any changes which is committed during waiting in
-	 * other transactions at READ COMMITTED level.
-	 * XXX: Is this safe?
+	 * Get and push the latast snapshot to see any changes which is committed
+	 * during waiting in other transactions at READ COMMITTED level.
 	 */
 	PushActiveSnapshot(GetTransactionSnapshot());
 
@@ -1380,8 +1410,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 * NB: We count on this to protect us against problems with refreshing the
 	 * data using TABLE_INSERT_FROZEN.
 	 */
-	 // XXX: necessary?
-	CheckTableNotInUse(matviewRel, "REFRESH MATERIALIZED VIEW");
+	CheckTableNotInUse(matviewRel, "incrementally maintain");
 
 
 	/* join tree analysis for outer join */
@@ -1408,7 +1437,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		rewrite_query_for_exists_subquery(rewritten);
 
 	/* Set all tables in the query to pre-update state */
-	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables, entry->xid, entry->cid, pstate, NIL);
+	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables,
+												  entry->xid, entry->cid,
+												  pstate, NIL);
 	/* Rewrite for counting algorithm and aggregates functions */
 	rewritten = rewrite_query_for_counting_and_aggregates(rewritten, pstate);
 
@@ -1469,7 +1500,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			bool	in_exists = false;
 
 			/* check if the modified table is in EXISTS clause. */
-			for(i = 0; i< list_length(rte_path); i++)
+			for (i = 0; i< list_length(rte_path); i++)
 			{
 				int index =  lfirst_int(list_nth_cell(rte_path, i));
 				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index - 1));
@@ -1714,7 +1745,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 		" (t.xmin = %u AND t.cmin::text::int < %u)",
 			relname, xid, xid, cid);
 
-	for (i=0; i<list_length(table->old_tuplestores); i++)
+	for (i = 0; i < list_length(table->old_tuplestores); i++)
 	{
 		appendStringInfo(&str, " UNION ALL ");
 		appendStringInfo(&str," SELECT *, "
@@ -1797,7 +1828,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 		if (i > 0)
 			appendStringInfo(&str, " UNION ALL ");
 
-		/* add pseudo ctid to ENR using row_number*/
+		/* add pseudo ctid to ENR using row_number */
 		appendStringInfo(&str,
 			" SELECT *,  "
 			" ((row_number() over())::text || '_' || '%d' || '_' || '%d') AS ctid"
@@ -1849,6 +1880,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 								 true);
 	ListCell *tbl_lc;
 
+	/* For aggregate views */
 	if (query->hasAggs)
 	{
 		ListCell *lc;
@@ -1950,6 +1982,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 		}
 	}
 
+	/* Add count(*) for counting distinct tuples in views */
 	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
 	fn->agg_star = true;
 	if (!query->groupClause && !query->hasAggs)
@@ -2690,7 +2723,7 @@ getRteListCell(Query *query, List *rte_path)
 /*
  * apply_delta
  *
- * Apply deltas to the materialized view. In outer join cases, this required
+ * Apply deltas to the materialized view. In outer join cases, this requires
  * the view maintenance graph.
  */
 static void
@@ -2698,26 +2731,24 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			char *count_colname, IvmMaintenanceGraph *graph)
 {
 	StringInfoData querybuf;
-	StringInfoData diffatts_buf, match_cond;
-	StringInfoData mv_gkeys_buf, diff_gkeys_buf, updt_gkeys_buf;
-	StringInfoData diff_aggs_buf, update_aggs_old, update_aggs_new;
-	StringInfoData returning_buf, result_buf;
-	StringInfoData min_or_max_buf;
+	StringInfo	aggs_list_buf = NULL;
+	StringInfo	aggs_set_old = NULL;
+	StringInfo	aggs_set_new = NULL;
 	Relation	matviewRel;
 	Relation	tempRel_new = NULL, tempRel_old = NULL;
 	char	   *matviewname;
 	char	   *tempname_new = NULL, *tempname_old = NULL;
 	ListCell	*lc;
-	char	   *sep, *sep_agg, *sep_and;
-	bool		with_group = query->groupClause != NULL;
 	int			i;
-	bool		has_min_or_max = false;
-	int			num_group_keys = 0;
-	int			num_min_or_max = 0;
+	List	   *keys = NIL;
+	List	   *minmax_list = NIL;
+	List	   *is_min_list = NIL;
 
 
-	/* get names of the materialized view and delta tables */
-	initStringInfo(&querybuf);
+	/*
+	 * get names of the materialized view and delta tables
+	 */
+
 	matviewRel = table_open(matviewOid, NoLock);
 	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
 											 RelationGetRelationName(matviewRel));
@@ -2738,20 +2769,18 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 	 * Build parts of the maintenance queries
 	 */
 
-	initStringInfo(&diffatts_buf);
-	initStringInfo(&match_cond);
-	initStringInfo(&diff_aggs_buf);
-	initStringInfo(&update_aggs_old);
-	initStringInfo(&update_aggs_new);
-	initStringInfo(&returning_buf);
-	initStringInfo(&result_buf);
-	initStringInfo(&min_or_max_buf);
+	initStringInfo(&querybuf);
 
-	sep = "";
-	sep_agg = "";
-	sep_and = "";
+	if (query->hasAggs)
+	{
+		if (OidIsValid(tempOid_old))
+			aggs_set_old = makeStringInfo();
+		if (OidIsValid(tempOid_new))
+			aggs_set_new = makeStringInfo();
+		aggs_list_buf = makeStringInfo();
+	}
+
 	i = 0;
-	/* for attributes in the view target list ...*/
 	foreach (lc, query->targetList)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lc);
@@ -2763,271 +2792,68 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 		if (tle->resjunk)
 			continue;
 
-		appendStringInfo(&diffatts_buf, "%s", sep);
-		appendStringInfo(&match_cond, "%s", sep_and);
-		sep = ", ";
-		sep_and = " AND ";
+		/*
+		 * For views without aggregates, all attributes are used as keys to identify a
+		 * tuple in a view.
+		 */
+		if (!query->hasAggs)
+			keys = lappend(keys, resname);
 
-		/* attributes list of diff table */
-		appendStringInfo(&diffatts_buf, "%s", quote_qualified_identifier("diff", resname));
-
-		/* tuple matching condition */
-		appendStringInfo(&match_cond, "(%s = %s OR (%s IS NULL AND %s IS NULL))",
-			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname),
-			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname));
-
-		/* building SET clause elements for updating aggregate values */
+		/* For views with aggregates, we need to build SET clause for updating aggregate
+		 * values. */
 		if (query->hasAggs && IsA(tle->expr, Aggref))
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
 			const char *aggname = get_func_name(aggref->aggfnoid);
-			const char *aggtype = format_type_be(aggref->aggtype); /* XXX: should be add_cast_to ? */
 
-			appendStringInfo(&update_aggs_old, "%s", sep_agg);
-			appendStringInfo(&update_aggs_new, "%s", sep_agg);
-			appendStringInfo(&diff_aggs_buf, "%s", sep_agg);
-
-			sep_agg = ", ";
-
-			/* XXX: need some generalization
-			 *
-			 * Specifically, Using func names is not robust.  We can use oids instead
-			 * of names, but it would be nice to add some information to pg_aggregate
-			 * and handler functions.
+			/*
+			 * We can use function names here because it is already checked if these
+			 * can be used in IMMV by its OID at the definition time.
 			 */
 
+			/* count */
 			if (!strcmp(aggname, "count"))
-			{
-				/* resname = mv.resname - t.resname */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_SUB,resname, "mv", "t", NULL, NULL));
+				append_set_clause_for_count(resname, aggs_set_old, aggs_set_new, aggs_list_buf);
 
-				/* resname = mv.resname + diff.resname */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_ADD, resname, "mv", "diff", NULL, NULL));
-
-				appendStringInfo(&diff_aggs_buf, "%s",
-					quote_qualified_identifier("diff", resname)
-				);
-			}
+			/* sum */
 			else if (!strcmp(aggname, "sum"))
-			{
-				char *count_col = IVM_colname("count", resname);
+				append_set_clause_for_sum(resname, aggs_set_old, aggs_set_new, aggs_list_buf);
 
-				/* sum = mv.sum - t.sum */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s, ",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_SUB, resname, "mv", "t", count_col, NULL)
-				);
-				/* count = mv.count - t.count */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
-				);
-
-				/* sum = mv.sum + diff.sum */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s, ",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_ADD, resname, "mv", "diff", count_col, NULL)
-				);
-				/* count = mv.count + diff.count */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
-				);
-
-				appendStringInfo(&diff_aggs_buf, "%s, %s",
-					quote_qualified_identifier("diff", resname),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
-				);
-			}
+			/* avg */
 			else if (!strcmp(aggname, "avg"))
-			{
-				char *sum_col = IVM_colname("sum", resname);
-				char *count_col = IVM_colname("count", resname);
+				append_set_clause_for_avg(resname, aggs_set_old, aggs_set_new, aggs_list_buf,
+										  format_type_be(aggref->aggtype));
 
-				/* avg = (mv.sum - t.sum)::aggtype / (mv.count - t.count) */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s / %s, ",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, aggtype),
-					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
-				);
-				/* sum = mv.sum - t.sum */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s, ",
-					quote_qualified_identifier(NULL, sum_col),
-					get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, NULL)
-				);
-				/* count = mv.count - t.count */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
-				);
-
-				/* avg = (mv.sum + diff.sum)::aggtype / (mv.count + diff.count) */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s / %s, ",
-					quote_qualified_identifier(NULL, resname),
-					get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, aggtype),
-					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
-				);
-				/* sum = mv.sum + diff.sum */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s, ",
-					quote_qualified_identifier(NULL, sum_col),
-					get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, NULL)
-				);
-				/* count = mv.count + diff.count */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
-				);
-
-				appendStringInfo(&diff_aggs_buf, "%s, %s, %s",
-					quote_qualified_identifier("diff", resname),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_sum",resname,"_")),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
-				);
-			}
+			/* min/max */
 			else if (!strcmp(aggname, "min") || !strcmp(aggname, "max"))
 			{
-				bool is_min = !strcmp(aggname, "min");
-				char *count_col = IVM_colname("count", resname);
+				bool	is_min = (!strcmp(aggname, "min"));
 
-				/* We need a special RETURNING clause for min/max to check if recomputation is required */
-				if (!has_min_or_max)
-				{
-					/* the first min or max is found */
-					has_min_or_max = true;
-					appendStringInfo(&returning_buf, "RETURNING mv.ctid, (");
-				}
-				else
-				{
-					appendStringInfo(&returning_buf, " OR ");
-					appendStringInfo(&min_or_max_buf, ",");
-				}
-				appendStringInfo(&returning_buf, "%s %s %s",
-					quote_qualified_identifier("mv", resname),
-					is_min ? ">=" : "<=",
-					quote_qualified_identifier("t", resname)
-				);
-				/* make a resname list of min or max aggregates */
-				appendStringInfo(&min_or_max_buf, "%s", quote_qualified_identifier(NULL, resname));
+				append_set_clause_for_minmax(resname, aggs_set_old, aggs_set_new, aggs_list_buf, is_min);
 
-				/* Even if the new values is not NULL, this might be recomputated afterwords. */
-				appendStringInfo(&update_aggs_old,
-					"%s = CASE WHEN %s THEN NULL ELSE %s END, ",
-					quote_qualified_identifier(NULL, resname),
-					get_null_condition_string(IVM_SUB, "mv", "t", count_col),
-					quote_qualified_identifier("mv", resname)
-				);
-				/* count = mv.count - t.count */
-				appendStringInfo(&update_aggs_old,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
-				);
-
-				/*
-				 * min = least(mv.min, diff.min)
-				 * max = greatest(mv.max, diff.max)
-				 */
-				appendStringInfo(&update_aggs_new,
-					"%s = CASE WHEN %s THEN NULL ELSE %s(%s,%s) END, ",
-					quote_qualified_identifier(NULL, resname),
-					get_null_condition_string(IVM_ADD, "mv", "diff", count_col),
-
-					is_min ? "least" : "greatest",
-					quote_qualified_identifier("mv", resname),
-					quote_qualified_identifier("diff", resname)
-				);
-
-				/* count = mv.count + diff.count */
-				appendStringInfo(&update_aggs_new,
-					"%s = %s",
-					quote_qualified_identifier(NULL, count_col),
-					get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
-				);
-
-				appendStringInfo(&diff_aggs_buf, "%s, %s",
-					quote_qualified_identifier("diff", resname),
-					quote_qualified_identifier("diff", makeObjectName("__ivm_count",resname,"_"))
-				);
-
-				num_min_or_max++;
+				/* make a resname list of min and max aggregates */
+				minmax_list = lappend(minmax_list, resname);
+				is_min_list = lappend_int(is_min_list, is_min);
 			}
 			else
 				elog(ERROR, "unsupported aggregate function: %s", aggname);
-
 		}
 	}
-	if (has_min_or_max)
-		appendStringInfo(&returning_buf, ") AS recalc");
 
-	/* building GROUP keys list for tuple matching */
-	if (query->hasAggs)
+	/* If we have GROUP BY clause, we use its entries as keys. */
+	if (query->hasAggs && query->groupClause)
 	{
-		initStringInfo(&mv_gkeys_buf);
-		initStringInfo(&diff_gkeys_buf);
-		initStringInfo(&updt_gkeys_buf);
-
-		if (with_group)
+		foreach (lc, query->groupClause)
 		{
-			sep_agg= "";
-			foreach (lc, query->groupClause)
-			{
-				SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
-				TargetEntry		*tle = get_sortgroupclause_tle(sgcl, query->targetList);
+			SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
+			TargetEntry		*tle = get_sortgroupclause_tle(sgcl, query->targetList);
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+			char *resname = NameStr(attr->attname);
 
-				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno-1);
-				char *resname = NameStr(attr->attname);
-
-				appendStringInfo(&mv_gkeys_buf, "%s", sep_agg);
-				appendStringInfo(&diff_gkeys_buf, "%s", sep_agg);
-				appendStringInfo(&updt_gkeys_buf, "%s", sep_agg);
-
-				sep_agg = ", ";
-
-				appendStringInfo(&mv_gkeys_buf, "%s", quote_qualified_identifier("mv", resname));
-				appendStringInfo(&diff_gkeys_buf, "%s", quote_qualified_identifier("diff", resname));
-				appendStringInfo(&updt_gkeys_buf, "%s", quote_qualified_identifier("updt", resname));
-
-				num_group_keys++;
-			}
-
-			if (has_min_or_max)
-			{
-				appendStringInfo(&returning_buf, ", %s", mv_gkeys_buf.data);
-				appendStringInfo(&result_buf, "SELECT ctid AS tid, %s FROM updt WHERE recalc", updt_gkeys_buf.data);
-			}
-		}
-		else
-		{
-			/*
-			 * If aggregates view doesn't have GROUP clause, the number of rows is always one,
-			 * so tuple matching is not necessary.
-			 */
-			appendStringInfo(&mv_gkeys_buf, "1");
-			appendStringInfo(&diff_gkeys_buf, "1");
-			appendStringInfo(&updt_gkeys_buf, "1");
+			keys = lappend(keys, resname);
 		}
 	}
 
-
-	/*
-	 * Build the maintenance queries and execute them.
-	 */
 
 	/* Open SPI context. */
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -3048,383 +2874,42 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
 
+	/* Start maintaining the materialized view. */
 	OpenMatViewIncrementalMaintenance();
 
-	/* for aggregates views */
-	if (query->hasAggs)
+	/* For tuple deletion */
+	if (tempname_old)
 	{
-		if (tempname_old)
-		{
-			/* Search for matching tuples from the view and update or delete if found. */
-			resetStringInfo(&querybuf);
-			appendStringInfo(&querybuf,
-							"WITH t AS ("
-							"  SELECT diff.%s, "
-							"         %s,"
-							"         (diff.%s = mv.%s) AS for_dlt, "
-							"         mv.ctid"
-							"  FROM %s AS mv, %s AS diff WHERE (%s) = (%s)"
-							"), updt AS ("
-							"  UPDATE %s AS mv SET %s = mv.%s - t.%s,"
-							"                      %s"
-							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
-							"   %s"
-							"), dlt AS ("
-							"  DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt "
-							") %s",
-							count_colname,
-							diff_aggs_buf.data,
-							count_colname, count_colname,
-							matviewname, tempname_old, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							matviewname, count_colname, count_colname, count_colname, update_aggs_old.data,
-							returning_buf.data,
-							matviewname,
-							(has_min_or_max && with_group) ? result_buf.data : "SELECT 1"
-							);
-			if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
-				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		char *qry = build_query_for_apply_old_delta(matviewname, tempname_old,
+													keys, aggs_list_buf, aggs_set_old,
+													minmax_list, is_min_list,
+													count_colname);
+		if (SPI_exec(qry, 0) != SPI_OK_SELECT)
+			elog(ERROR, "SPI_exec failed: %s", qry);
 
-			if (has_min_or_max && SPI_processed > 0)
-			{
-				SPITupleTable *tuptable_recalc = SPI_tuptable;
-				TupleDesc   tupdesc_recalc = tuptable_recalc->tupdesc;
-				int64		processed = SPI_processed;
-				uint64      i;
-				Oid			*keyTypes = NULL, *minmaxTypes = NULL;
-				char		*keyNulls = NULL, *minmaxNulls = NULL;
-				Datum		*keyVals = NULL, *minmaxVals = NULL;
+		/*
+		 * If we have min or max, we migth have to recalculate aggregate values from base tables
+		 * on some tuples. TIDs and keys such tuples are returned as a result of the above query.
+		 */
+		if (minmax_list && SPI_processed > 0)
+			recalc_and_set_values(SPI_tuptable, SPI_processed, minmax_list, keys, matviewRel);
 
-				if (with_group)
-				{
-					keyTypes = palloc(sizeof(Oid) * num_group_keys);
-					keyNulls = palloc(sizeof(char) * num_group_keys);
-					keyVals = palloc(sizeof(Datum) * num_group_keys);
-					Assert(tupdesc_recalc->natts == num_group_keys + 1);
+		/* Insert dangling tuple for outer join views */
+		if (graph && !query->hasAggs)
+			insert_dangling_tuples(graph, query, matviewRel, tempname_old);
 
-					for (i = 0; i < num_group_keys; i++)
-						keyTypes[i] = TupleDescAttr(tupdesc_recalc, i+1)->atttypid;
-				}
-
-				minmaxTypes = palloc(sizeof(Oid) * (num_min_or_max + 1));
-				minmaxNulls = palloc(sizeof(char) * (num_min_or_max + 1));
-				minmaxVals = palloc(sizeof(Datum) * (num_min_or_max + 1));
-
-				for (i=0; i< processed; i++)
-				{
-					int j;
-					bool isnull;
-					SPIPlanPtr plan;
-					SPITupleTable *tuptable_minmax;
-					TupleDesc   tupdesc_minmax;
-
-					if (with_group)
-					{
-						for (j = 0; j < num_group_keys; j++)
-						{
-							keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j+2, &isnull);
-							if (isnull)
-								keyNulls[j] = 'n';
-							else
-								keyNulls[j] = ' ';
-						}
-					}
-
-					plan = get_plan_for_recalc_min_max(matviewOid, min_or_max_buf.data,
-													   mv_gkeys_buf.data, num_group_keys, keyTypes, with_group);
-
-					if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
-						elog(ERROR, "SPI_execute_plan1");
-					if (SPI_processed != 1)
-						elog(ERROR, "SPI_execute_plan returned zero or more than one rows");
-
-					tuptable_minmax = SPI_tuptable;
-					tupdesc_minmax = tuptable_minmax->tupdesc;
-
-					Assert(tupdesc_minmax->natts == num_min_or_max);
-
-					for (j = 0; j < tupdesc_minmax->natts; j++)
-					{
-						if (i == 0)
-							minmaxTypes[j] = TupleDescAttr(tupdesc_minmax, j)->atttypid;
-
-						minmaxVals[j] = SPI_getbinval(tuptable_minmax->vals[0], tupdesc_minmax, j+1, &isnull);
-						if (isnull)
-							minmaxNulls[j] = 'n';
-						else
-							minmaxNulls[j] = ' ';
-					}
-					minmaxTypes[j] = TIDOID;
-					minmaxVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, 1, &isnull);
-					minmaxNulls[j] = ' ';
-
-					plan = get_plan_for_set_min_max(matviewOid, matviewname, min_or_max_buf.data,
-													num_min_or_max, minmaxTypes, with_group);
-
-					if (SPI_execute_plan(plan, minmaxVals, minmaxNulls, false, 0) != SPI_OK_UPDATE)
-						elog(ERROR, "SPI_execcute_plan2");
-
-				}
-			}
-
-		}
-		if (tempname_new)
-		{
-			resetStringInfo(&querybuf);
-			appendStringInfo(&querybuf,
-							"WITH updt AS ("
-							"  UPDATE %s AS mv SET %s = mv.%s + diff.%s"
-							", %s "
-							"  FROM %s AS diff WHERE (%s) = (%s)"
-							"  RETURNING %s"
-							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT %s FROM updt));",
-							matviewname, count_colname, count_colname, count_colname,
-							update_aggs_new.data,
-							tempname_new, mv_gkeys_buf.data, diff_gkeys_buf.data,
-							diff_gkeys_buf.data, matviewname, tempname_new, diff_gkeys_buf.data, updt_gkeys_buf.data);
-			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
-				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-		}
 	}
-	/* views without aggregates */
-	else
+	/* For tuple insertion */
+	if (tempname_new)
 	{
-		if (tempname_old)
-		{
-			resetStringInfo(&querybuf);
-			appendStringInfo(&querybuf,
-							"WITH t AS ("
-							"  SELECT diff.%s, (diff.%s = mv.%s) AS for_dlt, mv.ctid"
-							"  FROM %s AS mv, %s AS diff WHERE %s"
-							"), updt AS ("
-							"  UPDATE %s AS mv SET %s = mv.%s - t.%s"
-							"  FROM t WHERE mv.ctid = t.ctid AND NOT for_dlt"
-							") DELETE FROM %s AS mv USING t WHERE mv.ctid = t.ctid AND for_dlt;",
-							count_colname, count_colname, count_colname,
-							matviewname, tempname_old, match_cond.data,
-							matviewname, count_colname,count_colname,count_colname,
-							matviewname);
-			if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
-				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+		char *qry = build_query_for_apply_new_delta(matviewname, tempname_new,
+													keys, aggs_set_new, count_colname);
+		if (SPI_exec(qry, 0) != SPI_OK_INSERT)
+			elog(ERROR, "SPI_exec failed: %s", qry);
 
-			/* Insert dangling tuple for outer join views */
-			if (graph)
-			{
-				foreach (lc, graph->terms)
-				{
-					ListCell	*lc1, *lc2, *lc_p;
-					StringInfoData exists_cond;
-					StringInfoData targetlist;
-					StringInfoData parents_cond;
-					StringInfoData count;
-					Term *term = lfirst(lc);
-					char *sep = "";
-					char *sep2 = "";
-					int		i;
-
-
-					if (term->effect != IVM_INDIRECT_EFFECT)
-						continue;
-
-					initStringInfo(&exists_cond);
-					initStringInfo(&targetlist);
-					initStringInfo(&parents_cond);
-					initStringInfo(&count);
-
-					i = 0;
-					foreach (lc1, query->targetList)
-					{
-						TargetEntry *tle = (TargetEntry *) lfirst(lc1);
-						Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
-						char *resname = NameStr(attr->attname);
-						Relids	tle_relids;
-
-						i++;
-
-						if (tle->resjunk)
-							continue;
-
-						tle = (TargetEntry *) flatten_join_alias_vars(query, (Node *) tle);
-						/* relids referenced in this entry */
-						tle_relids = pull_varnos_of_level((Node *)tle, 0);
-
-						/*
-						 * If all the column under this entry are belonging the nonnullable table, the value
-						 * in the diff can be used in dangling tuples inserted into the view. Otherwise, NULL
-						 * is used as the value of the entry because it is assumed that the entry expression
-						 * doesn't contain any non-strict function.
-						 */
-						if (bms_is_subset(tle_relids, term->relids))
-						{
-							appendStringInfo(&targetlist, "%s%s", sep2, resname);
-							sep2 = ",";
-
-							/* Use qual vars to check if this tuple still exists in the view */
-							if (IsA(tle->expr, Var) &&
-								list_member(graph->vars_in_quals, (Var*) tle->expr))
-							{
-								appendStringInfo(&exists_cond, "%s mv.%s = diff.%s ", sep, resname, resname);
-								sep = "AND";
-							}
-						}
-					}
-					/* add counting columns for EXISTS clauses into the targetlist */
-					/*
-					for (; i<matviewRel->rd_att->natts; i++)
-					{
-						Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
-						char *resname = NameStr(attr->attname);
-						if (!strncmp(resname, "__ivm_exists", 12))
-							appendStringInfo(&targetlist, ", %s", resname);
-					}
-					*/
-
-					/* counting the number of tuples to be inserted */
-					sep = "";
-					i = -1;
-					while ((i = bms_next_member(term->relids, i)) >= 0)
-					{
-						appendStringInfo(&count, "%s (__ivm_meta__->'%d')::int", sep, i);
-						sep = "*";
-					}
-
-					sep = "";
-					/* Build a condition for tuples belonging to any directly affected parent terms */
-					foreach (lc_p, term->parents)
-					{
-						Term *p = (Term *) lfirst(lc_p);
-
-						if (p->effect != IVM_DIRECT_EFFECT)
-							continue;
-
-						appendStringInfo(&parents_cond, "%s", sep);
-
-						sep2 = "";
-						forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
-						{
-							Var *var = (Var *) lfirst(lc1);
-							char *resname = strVal(lfirst(lc2));
-
-							if (bms_is_member(var->varno, p->relids))
-							{
-								appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
-								sep2 = "AND";
-							}
-						}
-						sep = "OR ";
-					}
-
-					/* Insert dangling tuples if needed */
-					resetStringInfo(&querybuf);
-					appendStringInfo(&querybuf,
-						"INSERT INTO %s (%s, __ivm_count__)"
-						" SELECT DISTINCT %s, %s FROM %s AS diff"
-						" WHERE %s AND "
-						"  NOT EXISTS (SELECT 1 FROM %s mv WHERE %s)",
-						matviewname, targetlist.data,
-						targetlist.data, count.data, tempname_old,
-						parents_cond.data,
-						matviewname, exists_cond.data
-					);
-					if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
-						elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-				}
-			}
-		}
-		if (tempname_new)
-		{
-			resetStringInfo(&querybuf);
-			appendStringInfo(&querybuf,
-							"WITH updt AS ("
-							"  UPDATE %s AS mv SET %s= mv.%s + diff.%s"
-							"  FROM %s AS diff WHERE %s"
-							"  RETURNING %s"
-							") INSERT INTO %s (SELECT * FROM %s AS diff WHERE (%s) NOT IN (SELECT * FROM updt));",
-							matviewname, count_colname, count_colname, count_colname,
-							tempname_new, match_cond.data,
-							diffatts_buf.data,
-							matviewname, tempname_new, diffatts_buf.data);
-			if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
-				elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-
-			/* Delete dangling tuple for outer join views */
-			if (graph)
-			{
-				foreach (lc, graph->terms)
-				{
-					ListCell	*lc1, *lc2, *lc_p;
-					StringInfoData dangling_cond;
-					StringInfoData key_cols;
-					StringInfoData parents_cond;
-					Term *term = lfirst(lc);
-					char *sep = "";
-					char *sep2 = "";
-
-					if (term->effect != IVM_INDIRECT_EFFECT)
-						continue;
-
-					initStringInfo(&dangling_cond);
-					initStringInfo(&key_cols);
-					initStringInfo(&parents_cond);
-
-					/* Build a condition for all dangling tuples in indirectly affected term */
-					forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
-					{
-						Var *var = (Var *) lfirst(lc1);
-						char *resname = strVal(lfirst(lc2));
-
-						if (bms_is_member(var->varno, term->relids))
-						{
-							appendStringInfo(&dangling_cond, "%s %s IS NOT NULL ", sep, resname);
-							appendStringInfo(&key_cols, "%s%s", sep2, resname);
-							sep2 = ",";
-						}
-						else
-							appendStringInfo(&dangling_cond, "%s %s IS NULL ", sep, resname);
-
-						sep = "AND";
-					}
-
-					sep = "";
-					/* Build a condition for tuples belonging to any directly affected parent terms */
-					foreach (lc_p, term->parents)
-					{
-						Term *p = (Term *) lfirst(lc_p);
-
-						if (p->effect != IVM_DIRECT_EFFECT)
-							continue;
-
-						appendStringInfo(&parents_cond, "%s", sep);
-
-						sep2 = "";
-						forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
-						{
-							Var *var = (Var *) lfirst(lc1);
-							char *resname = strVal(lfirst(lc2));
-
-							if (bms_is_member(var->varno, p->relids))
-							{
-								appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
-								sep2 = "AND";
-							}
-						}
-						sep = "OR ";
-					}
-
-					/* Delete dangling tuples if needed */
-					resetStringInfo(&querybuf);
-					appendStringInfo(&querybuf,
-						"DELETE FROM %s"
-						" WHERE %s AND "
-						" (%s) IN (SELECT %s FROM %s diff WHERE %s)",
-						matviewname,
-						dangling_cond.data,
-						key_cols.data, key_cols.data, tempname_new, parents_cond.data
-					);
-					if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
-						elog(ERROR, "SPI_exec failed: %s", querybuf.data);
-				}
-			}
-		}
+		/* Delete dangling tuple for outer join views */
+		if (graph && !query->hasAggs)
+			delete_dangling_tuples(graph, query, matviewRel, tempname_new);
 	}
 
 	/* We're done maintaining the materialized view. */
@@ -3444,38 +2929,221 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 }
 
 /*
- * get_null_condition_string
+ * append_set_clause_for_count
  *
- * Build a predicate string for CASE clause to check if an aggregate value
- * will became NULL after the given operation is applied.
+ * Append SET clause string for count aggregation to given buffers.
+ * Also, append resnames required for calculating the aggregate value.
  */
-static char *
-get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
+static void
+append_set_clause_for_count(const char *resname, StringInfo buf_old,
+							StringInfo buf_new,StringInfo aggs_list)
 {
-	StringInfoData null_cond;
-	initStringInfo(&null_cond);
-
-	switch (op)
+	/* For tuple deletion */
+	if (buf_old)
 	{
-		case IVM_ADD:
-			appendStringInfo(&null_cond,
-				"%s = 0 AND %s = 0",
-				quote_qualified_identifier(arg1, count_col),
-				quote_qualified_identifier(arg2, count_col)
-			);
-			break;
-		case IVM_SUB:
-			appendStringInfo(&null_cond,
-				"%s = %s",
-				quote_qualified_identifier(arg1, count_col),
-				quote_qualified_identifier(arg2, count_col)
-			);
-			break;
-		default:
-			elog(ERROR,"unknown operation");
+		/* resname = mv.resname - t.resname */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_SUB, resname, "mv", "t", NULL, NULL));
+	}
+	/* For tuple insertion */
+	if (buf_new)
+	{
+		/* resname = mv.resname + diff.resname */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_ADD, resname, "mv", "diff", NULL, NULL));
 	}
 
-	return null_cond.data;
+	appendStringInfo(aggs_list, ", %s",
+		quote_qualified_identifier("diff", resname)
+	);
+}
+
+/*
+ * append_set_clause_for_sum
+ *
+ * Append SET clause string for sum aggregation to given buffers.
+ * Also, append resnames required for calculating the aggregate value.
+ */
+static void
+append_set_clause_for_sum(const char *resname, StringInfo buf_old,
+						  StringInfo buf_new, StringInfo aggs_list)
+{
+	char *count_col = IVM_colname("count", resname);
+
+	/* For tuple deletion */
+	if (buf_old)
+	{
+		/* sum = mv.sum - t.sum */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_SUB, resname, "mv", "t", count_col, NULL)
+		);
+		/* count = mv.count - t.count */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+		);
+	}
+	/* For tuple insertion */
+	if (buf_new)
+	{
+		/* sum = mv.sum + diff.sum */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_ADD, resname, "mv", "diff", count_col, NULL)
+		);
+		/* count = mv.count + diff.count */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
+		);
+	}
+
+	appendStringInfo(aggs_list, ", %s, %s",
+		quote_qualified_identifier("diff", resname),
+		quote_qualified_identifier("diff", IVM_colname("count", resname))
+	);
+}
+
+/*
+ * append_set_clause_for_avg
+ *
+ * Append SET clause string for avg aggregation to given buffers.
+ * Also, append resnames required for calculating the aggregate value.
+ */
+static void
+append_set_clause_for_avg(const char *resname, StringInfo buf_old,
+						  StringInfo buf_new, StringInfo aggs_list,
+						  const char *aggtype)
+{
+	char *sum_col = IVM_colname("sum", resname);
+	char *count_col = IVM_colname("count", resname);
+
+	/* For tuple deletion */
+	if (buf_old)
+	{
+		/* avg = (mv.sum - t.sum)::aggtype / (mv.count - t.count) */
+		appendStringInfo(buf_old,
+			", %s = %s OPERATOR(pg_catalog./) %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, aggtype),
+			get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+		);
+		/* sum = mv.sum - t.sum */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, sum_col),
+			get_operation_string(IVM_SUB, sum_col, "mv", "t", count_col, NULL)
+		);
+		/* count = mv.count - t.count */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+		);
+
+	}
+	/* For tuple insertion */
+	if (buf_new)
+	{
+		/* avg = (mv.sum + diff.sum)::aggtype / (mv.count + diff.count) */
+		appendStringInfo(buf_new,
+			", %s = %s OPERATOR(pg_catalog./) %s",
+			quote_qualified_identifier(NULL, resname),
+			get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, aggtype),
+			get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
+		);
+		/* sum = mv.sum + diff.sum */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, sum_col),
+			get_operation_string(IVM_ADD, sum_col, "mv", "diff", count_col, NULL)
+		);
+		/* count = mv.count + diff.count */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
+		);
+	}
+
+	appendStringInfo(aggs_list, ", %s, %s, %s",
+		quote_qualified_identifier("diff", resname),
+		quote_qualified_identifier("diff", IVM_colname("sum", resname)),
+		quote_qualified_identifier("diff", IVM_colname("count", resname))
+	);
+}
+
+/*
+ * append_set_clause_for_minmax
+ *
+ * Append SET clause string for min or max aggregation to given buffers.
+ * Also, append resnames required for calculating the aggregate value.
+ * is_min is true if this is min, false if not.
+ */
+static void
+append_set_clause_for_minmax(const char *resname, StringInfo buf_old,
+							 StringInfo buf_new, StringInfo aggs_list,
+							 bool is_min)
+{
+	char *count_col = IVM_colname("count", resname);
+
+	/* For tuple deletion */
+	if (buf_old)
+	{
+		/*
+		 * If the new value doesn't became NULL then use the value remaining
+		 * in the view although this will be recomputated afterwords.
+		 */
+		appendStringInfo(buf_old,
+			", %s = CASE WHEN %s THEN NULL ELSE %s END",
+			quote_qualified_identifier(NULL, resname),
+			get_null_condition_string(IVM_SUB, "mv", "t", count_col),
+			quote_qualified_identifier("mv", resname)
+		);
+		/* count = mv.count - t.count */
+		appendStringInfo(buf_old,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_SUB, count_col, "mv", "t", NULL, NULL)
+		);
+	}
+	/* For tuple insertion */
+	if (buf_new)
+	{
+		/*
+		 * min = LEAST(mv.min, diff.min)
+		 * max = GREATEST(mv.max, diff.max)
+		 */
+		appendStringInfo(buf_new,
+			", %s = CASE WHEN %s THEN NULL ELSE %s(%s,%s) END",
+			quote_qualified_identifier(NULL, resname),
+			get_null_condition_string(IVM_ADD, "mv", "diff", count_col),
+
+			is_min ? "LEAST" : "GREATEST",
+			quote_qualified_identifier("mv", resname),
+			quote_qualified_identifier("diff", resname)
+		);
+		/* count = mv.count + diff.count */
+		appendStringInfo(buf_new,
+			", %s = %s",
+			quote_qualified_identifier(NULL, count_col),
+			get_operation_string(IVM_ADD, count_col, "mv", "diff", NULL, NULL)
+		);
+	}
+
+	appendStringInfo(aggs_list, ", %s, %s",
+		quote_qualified_identifier("diff", resname),
+		quote_qualified_identifier("diff", IVM_colname("count", resname))
+	);
 }
 
 /*
@@ -3484,14 +3152,14 @@ get_null_condition_string(IvmOp op, char *arg1, char *arg2, char* count_col)
  * Build a string to calculate the new aggregate values.
  */
 static char *
-get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_col, const char *castType)
+get_operation_string(IvmOp op, const char *col, const char *arg1, const char *arg2,
+					 const char* count_col, const char *castType)
 {
 	StringInfoData buf;
 	StringInfoData castString;
 	char   *col1 = quote_qualified_identifier(arg1, col);
 	char   *col2 = quote_qualified_identifier(arg2, col);
 	char	op_char = (op == IVM_SUB ? '-' : '+');
-	char   *sign = (op == IVM_SUB ? "-" : "");
 
 	initStringInfo(&buf);
 	initStringInfo(&castString);
@@ -3503,9 +3171,9 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 	{
 		/*
 		 * If the attributes don't have count columns then calc the result
-		 * by using the operater simply.
+		 * by using the operator simply.
 		 */
-		appendStringInfo(&buf, "(%s %c %s)%s",
+		appendStringInfo(&buf, "(%s OPERATOR(pg_catalog.%c) %s)%s",
 			col1, op_char, col2, castString.data);
 	}
 	else
@@ -3518,11 +3186,11 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 
 		appendStringInfo(&buf,
 			"(CASE WHEN %s THEN NULL "
-				" WHEN %s IS NULL THEN %s%s "
-				" WHEN %s IS NULL THEN (%s) "
-				" ELSE (%s %c %s)%s END)",
+				"WHEN %s IS NULL THEN %s "
+				"WHEN %s IS NULL THEN %s "
+				"ELSE (%s OPERATOR(pg_catalog.%c) %s)%s END)",
 			null_cond,
-			col1, sign, col2,
+			col1, col2,
 			col2, col1,
 			col1, op_char, col2, castString.data
 		);
@@ -3532,27 +3200,426 @@ get_operation_string(IvmOp op, char *col, char *arg1, char *arg2, char* count_co
 }
 
 /*
- * get_plan_for_recalc_min_max
+ * get_null_condition_string
  *
- * Create or fetch a plan for recalculating min or max aggregate value from
- * base tables using the view definition query.
+ * Build a predicate string for CASE clause to check if an aggregate value
+ * will became NULL after the given operation is applied.
+ */
+static char *
+get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
+						  const char* count_col)
+{
+	StringInfoData null_cond;
+	initStringInfo(&null_cond);
+
+	switch (op)
+	{
+		case IVM_ADD:
+			appendStringInfo(&null_cond,
+				"%s OPERATOR(pg_catalog.=) 0 AND %s OPERATOR(pg_catalog.=) 0",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		case IVM_SUB:
+			appendStringInfo(&null_cond,
+				"%s OPERATOR(pg_catalog.=) %s",
+				quote_qualified_identifier(arg1, count_col),
+				quote_qualified_identifier(arg2, count_col)
+			);
+			break;
+		default:
+			elog(ERROR,"unknown operation");
+	}
+
+	return null_cond.data;
+}
+
+
+/*
+ * build_query_for_apply_old_delta
+ *
+ * Build and return a query for applying a delta table given by deltname_old
+ * which contains tuples to be deleted from to a materialized view given by
+ * matviewname.
+ *
+ * If the view desn't have aggregates or has GROUP BY, this requires a keys
+ * list to identify a tuple in the view. If the view has aggregates, this
+ * requires strings representing resnames of aggregates and SET clause for
+ * updating aggregate values.
+ *
+ * If the view has min or max aggregate, this requires a list of resnames of
+ * min/max aggregates and a list of boolean which represents which entries in
+ * minmax_list is min. These are necessary to check if we need to recalculate
+ * min or max aggregate values. In this case, this query returns TID and keys
+ * of tuples which need to be recalculated.
+ */
+static char *
+build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_old,
+								List *keys, StringInfo aggs_list, StringInfo aggs_set,
+								List *minmax_list, List *is_min_list,
+								const char *count_colname)
+{
+	StringInfoData	querybuf;
+	char	*match_cond;
+	char	*updt_returning = "";
+	char	*select_for_recalc = "SELECT";
+
+	/* build WHERE condition for searching tuples to be deleted */
+	match_cond = get_matching_condition_string(keys);
+
+	/*
+	 * We need a special RETURNING clause and SELECT statement for min/max to
+	 * check which tuple needs re-calculation from base tables.
+	 */
+	if (minmax_list)
+	{
+		updt_returning = get_returning_string(minmax_list, is_min_list, keys);
+		select_for_recalc = get_select_for_recalc_string(keys);
+	}
+
+	/* Search for matching tuples from the view and update or delete if found. */
+	initStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					"WITH t AS ("			/* collecting tid of target tuples in the view */
+						"SELECT diff.%s, "			/* count column */
+								"(diff.%s OPERATOR(pg_catalog.=) mv.%s) AS for_dlt, "
+								"mv.ctid "
+								"%s "				/* aggregate columns */
+						"FROM %s AS mv, %s AS diff "
+						"WHERE %s"					/* tuple matching condition */
+					"), updt AS ("			/* update a tuple if this is not to be deleted */
+						"UPDATE %s AS mv SET %s = mv.%s OPERATOR(pg_catalog.-) t.%s "
+											"%s"	/* SET clauses for aggregates */
+						"FROM t WHERE mv.ctid OPERATOR(pg_catalog.=) t.ctid AND NOT for_dlt "
+						"%s"						/* RETURNING clause for recalc infomation */
+					"), dlt AS ("			/* delete a tuple if this is to be deleted */
+						"DELETE FROM %s AS mv USING t "
+						"WHERE mv.ctid OPERATOR(pg_catalog.=) t.ctid AND for_dlt"
+					") %s",							/* SELECT returning which tuples need to be recalculated */
+					count_colname,
+					count_colname, count_colname,
+					(aggs_list != NULL ? aggs_list->data : ""),
+					matviewname, deltaname_old,
+					match_cond,
+					matviewname, count_colname, count_colname, count_colname,
+					(aggs_set != NULL ? aggs_set->data : ""),
+					updt_returning,
+					matviewname,
+					select_for_recalc);
+	return querybuf.data;
+}
+
+/*
+ * build_query_for_apply_new_delta
+ *
+ * Build and return a query for applying a delta table given by deltname_new
+ * which contains tuples to be inserted into a materialized view given by
+ * matviewname.
+ *
+ * If the view desn't have aggregates or has GROUP BY, this requires a keys
+ * list to identify a tuple in the view. If the view has aggregates, this
+ * requires strings representing SET clause for updating aggregate values.
+ */
+static char *
+build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_new,
+								List *keys, StringInfo aggs_set,
+								const char* count_colname)
+{
+	StringInfoData	querybuf;
+	StringInfoData	returning_keys;
+	ListCell	*lc;
+	char	*match_cond = "";
+
+	/* build WHERE condition for searching tuples to be updated */
+	match_cond = get_matching_condition_string(keys);
+
+	/* build string of keys list */
+	initStringInfo(&returning_keys);
+	if (keys)
+	{
+		foreach (lc, keys)
+		{
+			char *resname = (char *) lfirst(lc);
+			appendStringInfo(&returning_keys, "%s", quote_qualified_identifier("mv", resname));
+			if (lnext(keys, lc))
+				appendStringInfo(&returning_keys, ", ");
+		}
+	}
+	else
+		appendStringInfo(&returning_keys, "NULL");
+
+	/* Search for matching tuples from the view and update if found or insert if not. */
+	initStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					"WITH updt AS ("		/* update a tuple if this exists in the view */
+						"UPDATE %s AS mv SET %s = mv.%s OPERATOR(pg_catalog.+) diff.%s "
+											"%s "	/* SET clauses for aggregates */
+						"FROM %s AS diff "
+						"WHERE %s "					/* tuple matching condition */
+						"RETURNING %s"				/* returning keys of updated tuples */
+					") INSERT INTO %s "		/* insert a new tuple if this doesn't existw */
+						"SELECT * FROM %s AS diff "
+						"WHERE NOT EXISTS (SELECT 1 FROM updt AS mv WHERE %s);",
+					matviewname, count_colname, count_colname, count_colname,
+					(aggs_set != NULL ? aggs_set->data : ""),
+					deltaname_new,
+					match_cond,
+					returning_keys.data,
+					matviewname,
+					deltaname_new,
+					match_cond);
+	return querybuf.data;
+}
+
+/*
+ * get_matching_condition_string
+ *
+ * Build a predicate string for looking for a tuple with given keys.
+ */
+static char *
+get_matching_condition_string(List *keys)
+{
+	StringInfoData match_cond;
+	ListCell	*lc;
+
+	/* If there is no key columns, the condition is always true. */
+	if (keys == NIL)
+		return "true";
+
+	initStringInfo(&match_cond);
+	foreach (lc, keys)
+	{
+		char *resname = (char *) lfirst(lc);
+		/* Considering NULL values, we can not use simple = operator. */
+		appendStringInfo(&match_cond, "(%s OPERATOR(pg_catalog.=) %s OR (%s IS NULL AND %s IS NULL))",
+			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname),
+			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname));
+
+		if (lnext(keys, lc))
+			appendStringInfo(&match_cond, " AND ");
+	}
+
+	return match_cond.data;
+}
+
+/*
+ * get_returning_string
+ *
+ * Build a string for RETURNING clause used in build_query_for_apply_old_delta.
+ */
+static char *
+get_returning_string(List *minmax_list, List *is_min_list, List *keys)
+{
+	StringInfoData returning;
+	char		*recalc_cond;
+	ListCell	*lc;
+
+	Assert(minmax_list != NIL && is_min_list != NIL);
+	recalc_cond = get_minmax_recalc_condition_string(minmax_list, is_min_list);
+
+	initStringInfo(&returning);
+
+	appendStringInfo(&returning, "RETURNING mv.ctid AS tid, (%s) AS recalc", recalc_cond);
+	foreach (lc, keys)
+	{
+		char *resname = (char *) lfirst(lc);
+		appendStringInfo(&returning, ", %s", quote_qualified_identifier("mv", resname));
+	}
+
+	return returning.data;
+}
+
+/*
+ * get_minmax_recalc_condition_string
+ *
+ * Build a predicate string for checking if any min/max aggregate
+ * value needs to be recalculated.
+ */
+static char *
+get_minmax_recalc_condition_string(List *minmax_list, List *is_min_list)
+{
+	StringInfoData recalc_cond;
+	ListCell	*lc1, *lc2;
+
+	initStringInfo(&recalc_cond);
+
+	Assert (list_length(minmax_list) == list_length(is_min_list));
+
+	forboth (lc1, minmax_list, lc2, is_min_list)
+	{
+		char   *resname = (char *) lfirst(lc1);
+		bool	is_min = (bool) lfirst_int(lc2);
+		char   *op_str = (is_min ? ">=" : "<=");
+
+		appendStringInfo(&recalc_cond, "%s OPERATOR(pg_catalog.%s) %s",
+			quote_qualified_identifier("mv", resname),
+			op_str,
+			quote_qualified_identifier("t", resname)
+		);
+
+		if (lnext(minmax_list, lc1))
+			appendStringInfo(&recalc_cond, " OR ");
+	}
+
+	return recalc_cond.data;
+}
+
+/*
+ * get_select_for_recalc_string
+ *
+ * Build a query to return tid and keys of tuples which need
+ * recalculation. This is used as the result of the query
+ * built by build_query_for_apply_old_delta.
+ */
+static char *
+get_select_for_recalc_string(List *keys)
+{
+	StringInfoData qry;
+	ListCell	*lc;
+
+	initStringInfo(&qry);
+
+	appendStringInfo(&qry, "SELECT tid");
+	foreach (lc, keys)
+		appendStringInfo(&qry, ", %s", (char *) lfirst(lc));
+
+	appendStringInfo(&qry, " FROM updt WHERE recalc");
+
+	return qry.data;
+}
+
+/*
+ * recalc_and_set_values
+ *
+ * Recalculate tuples in a materialized from base tables and update these.
+ * The tuples which needs recalculation are specified by keys, and resnames
+ * of columns to be updated are specified by namelist. TIDs and key values
+ * are given by tuples in tuptable_recalc. Its first attribute must be TID
+ * and key values must be following this.
+ */
+static void
+recalc_and_set_values(SPITupleTable *tuptable_recalc, int64 num_tuples,
+					  List *namelist, List *keys, Relation matviewRel)
+{
+	TupleDesc   tupdesc_recalc = tuptable_recalc->tupdesc;
+	Oid		   *keyTypes = NULL, *types = NULL;
+	char	   *keyNulls = NULL, *nulls = NULL;
+	Datum	   *keyVals = NULL, *vals = NULL;
+	int			num_vals = list_length(namelist);
+	int			num_keys = list_length(keys);
+	uint64      i;
+	Oid			matviewOid;
+	char	   *matviewname;
+
+	matviewOid = RelationGetRelid(matviewRel);
+	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+											 RelationGetRelationName(matviewRel));
+
+	/* If we have keys, initialize arrays for them. */
+	if (keys)
+	{
+		keyTypes = palloc(sizeof(Oid) * num_keys);
+		keyNulls = palloc(sizeof(char) * num_keys);
+		keyVals = palloc(sizeof(Datum) * num_keys);
+		/* a tuple contains keys to be recalculaetd and ctid to be updated*/
+		Assert(tupdesc_recalc->natts == num_keys + 1);
+
+		/* Types of key attributes  */
+		for (i = 0; i < num_keys; i++)
+			keyTypes[i] = TupleDescAttr(tupdesc_recalc, i + 1)->atttypid;
+	}
+
+	/* allocate memory for all attribute names and tid */
+	types = palloc(sizeof(Oid) * (num_vals + 1));
+	nulls = palloc(sizeof(char) * (num_vals + 1));
+	vals = palloc(sizeof(Datum) * (num_vals + 1));
+
+	/* For each tuple which needs recalculation */
+	for (i = 0; i < num_tuples; i++)
+	{
+		int j;
+		bool isnull;
+		SPIPlanPtr plan;
+		SPITupleTable *tuptable_newvals;
+		TupleDesc   tupdesc_newvals;
+
+		/* Set group key values as parameters if needed. */
+		if (keys)
+		{
+			for (j = 0; j < num_keys; j++)
+			{
+				keyVals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, j + 2, &isnull);
+				if (isnull)
+					keyNulls[j] = 'n';
+				else
+					keyNulls[j] = ' ';
+			}
+		}
+
+		/*
+		 * Get recalculated values from base tables. The result must be
+		 * only one tuple thich contains the new values for speified keys.
+		 */
+		plan = get_plan_for_recalc(matviewOid, namelist, keys, keyTypes);
+		if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
+			elog(ERROR, "SPI_execute_plan");
+		if (SPI_processed != 1)
+			elog(ERROR, "SPI_execute_plan returned zero or more than one rows");
+
+		tuptable_newvals = SPI_tuptable;
+		tupdesc_newvals = tuptable_newvals->tupdesc;
+
+		Assert(tupdesc_newvals->natts == num_vals);
+
+		/* Set the new values as parameters */
+		for (j = 0; j < tupdesc_newvals->natts; j++)
+		{
+			if (i == 0)
+				types[j] = TupleDescAttr(tupdesc_newvals, j)->atttypid;
+
+			vals[j] = SPI_getbinval(tuptable_newvals->vals[0], tupdesc_newvals, j + 1, &isnull);
+			if (isnull)
+				nulls[j] = 'n';
+			else
+				nulls[j] = ' ';
+		}
+		/* Set TID of the view tuple to be updated as a parameter */
+		types[j] = TIDOID;
+		vals[j] = SPI_getbinval(tuptable_recalc->vals[i], tupdesc_recalc, 1, &isnull);
+		nulls[j] = ' ';
+
+		/* Update the view tuple to the new values */
+		plan = get_plan_for_set_values(matviewOid, matviewname, namelist, types);
+		if (SPI_execute_plan(plan, vals, nulls, false, 0) != SPI_OK_UPDATE)
+			elog(ERROR, "SPI_execute_plan");
+	}
+}
+
+
+/*
+ * get_plan_for_recalc
+ *
+ * Create or fetch a plan for recalculating value in the view's target list
+ * from base tables using the definition query of materialized view specified
+ * by matviewOid. namelist is a list of resnames of values to be recalculated.
+ *
+ * keys is a list of keys to identify tuples to be recalculated if this is not
+ * empty. KeyTypes is an array of types of keys.
  */
 static SPIPlanPtr
-get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
-							const char *group_keys, int nkeys, Oid *keyTypes, bool with_group)
+get_plan_for_recalc(Oid matviewOid, List *namelist, List *keys, Oid *keyTypes)
 {
-	MV_QueryKey key;
+	MV_QueryKey hash_key;
 	SPIPlanPtr	plan;
 
-	/* Fetch or prepare a saved plan for the real check */
-	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_RECALC_MINMAX);
-
-	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	/* Fetch or prepare a saved plan for the recalculation */
+	mv_BuildQueryKey(&hash_key, matviewOid, MV_PLAN_RECALC);
+	if ((plan = mv_FetchPreparedPlan(&hash_key)) == NULL)
 	{
-		char	*viewdef;
+		ListCell	   *lc;
 		StringInfoData	str;
-		int		i;
-
+		char   *viewdef;
 
 		/* get view definition of matview */
 		viewdef = text_to_cstring((text *) DatumGetPointer(
@@ -3560,20 +3627,103 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 		/* get rid of trailing semi-colon */
 		viewdef[strlen(viewdef)-1] = '\0';
 
+		/*
+		 * Build a query string for recalculating values. This is like
+		 *
+		 *  SELECT x1, x2, x3, ... FROM ( ... view definition query ...) mv
+		 *   WHERE (key1, key2, ...) = ($1, $2, ...);
+		 */
+
 		initStringInfo(&str);
-		appendStringInfo(&str, "SELECT %s FROM (%s) mv", min_max_list, viewdef);
-
-		if (with_group)
+		appendStringInfo(&str, "SELECT ");
+		foreach (lc, namelist)
 		{
-			appendStringInfo(&str, " WHERE (%s) = (", group_keys);
+			appendStringInfo(&str, "%s", (char *) lfirst(lc));
+			if (lnext(namelist, lc))
+				appendStringInfoString(&str, ", ");
+		}
+		appendStringInfo(&str, " FROM (%s) mv", viewdef);
 
-			for (i = 1; i <= nkeys; i++)
-				appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "),i );
+		if (keys)
+		{
+			int i = 1;
 
+			appendStringInfo(&str, " WHERE (");
+			foreach (lc, keys)
+			{
+				char *resname = (char *) lfirst(lc);
+
+				appendStringInfo(&str, "(%s OPERATOR(pg_catalog.=) $%d OR (%s IS NULL AND $%d IS NULL))",
+					resname, i, resname, i);
+
+				if (lnext(keys, lc))
+					appendStringInfoString(&str, " AND ");
+				i++;
+			}
 			appendStringInfo(&str, ")");
 		}
+		else
+			keyTypes = NULL;
 
-		plan = SPI_prepare(str.data, (with_group ? nkeys : 0), (with_group ? keyTypes : NULL));
+		plan = SPI_prepare(str.data, list_length(keys), keyTypes);
+		if (plan == NULL)
+			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+
+		SPI_keepplan(plan);
+		mv_HashPreparedPlan(&hash_key, plan);
+	}
+
+	return plan;
+}
+
+/*
+ * get_plan_for_set_values
+ *
+ * Create or fetch a plan for applying new values calculated by
+ * get_plan_for_recalc to a materialized view specified by matviewOid.
+ * matviewname is the name of the view.  namelist is a list of resnames
+ * of attributes to be updated, and valTypes is an array of types of the
+ * values.
+ */
+static SPIPlanPtr
+get_plan_for_set_values(Oid matviewOid, char *matviewname, List *namelist,
+						Oid *valTypes)
+{
+	MV_QueryKey	key;
+	SPIPlanPtr	plan;
+
+	/* Fetch or prepare a saved plan for the real check */
+	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_VALUE);
+	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	{
+		ListCell	  *lc;
+		StringInfoData str;
+		int		i;
+
+		/*
+		 * Build a query string for applying min/max values. This is like
+		 *
+		 *  UPDATE matviewname AS mv
+		 *   SET (x1, x2, x3, x4) = ($1, $2, $3, $4)
+		 *   WHERE ctid = $5;
+		 */
+
+		initStringInfo(&str);
+		appendStringInfo(&str, "UPDATE %s AS mv SET (", matviewname);
+		foreach (lc, namelist)
+		{
+			appendStringInfo(&str, "%s", (char *) lfirst(lc));
+			if (lnext(namelist, lc))
+				appendStringInfoString(&str, ", ");
+		}
+		appendStringInfo(&str, ") = ROW(");
+
+		for (i = 1; i <= list_length(namelist); i++)
+			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
+
+		appendStringInfo(&str, ") WHERE ctid OPERATOR(pg_catalog.=) $%d", i);
+
+		plan = SPI_prepare(str.data, list_length(namelist) + 1, valTypes);
 		if (plan == NULL)
 			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
 
@@ -3585,47 +3735,242 @@ get_plan_for_recalc_min_max(Oid matviewOid, const char *min_max_list,
 }
 
 /*
- * get_plan_for_set_min_max
+ * insert_dangling_tuples
  *
- * Create or fetch a plan for applying min or max aggregate value
- * calculated by get_plan_for_recalc_min_man to the view.
+ * Insert dangling tuples generated as a result of tuples deletion
+ * on base tables of a materialized view which has outer join.
+ * graph is the view maintenance graph.
  */
-static SPIPlanPtr
-get_plan_for_set_min_max(Oid matviewOid, char *matviewname, const char *min_max_list,
-						  int num_min_max, Oid *valTypes, bool with_group)
+static void
+insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
+					   Relation matviewRel, const char *deltaname_old)
 {
-	MV_QueryKey key;
-	SPIPlanPtr plan;
+	StringInfoData querybuf;
+	char	   *matviewname;
+	ListCell   *lc;
 
-	/* Fetch or prepare a saved plan for the real check */
-	mv_BuildQueryKey(&key, matviewOid, MV_PLAN_SET_MINMAX);
+	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+											 RelationGetRelationName(matviewRel));
 
-	if ((plan = mv_FetchPreparedPlan(&key)) == NULL)
+	foreach (lc, graph->terms)
 	{
-		StringInfoData str;
+		ListCell	*lc1, *lc2, *lc_p;
+		StringInfoData exists_cond;
+		StringInfoData targetlist;
+		StringInfoData parents_cond;
+		StringInfoData count;
+		Term *term = lfirst(lc);
+		char *sep = "";
+		char *sep2 = "";
 		int		i;
 
-		initStringInfo(&str);
-		appendStringInfo(&str, "UPDATE %s AS mv SET (%s) = (",
-			matviewname, min_max_list);
 
-		for (i = 1; i <= num_min_max; i++)
-			appendStringInfo(&str, "%s$%d", (i==1 ? "" : ", "), i);
+		if (term->effect != IVM_INDIRECT_EFFECT)
+			continue;
 
-		appendStringInfo(&str, ")");
+		initStringInfo(&exists_cond);
+		initStringInfo(&targetlist);
+		initStringInfo(&parents_cond);
+		initStringInfo(&count);
 
-		if (with_group)
-			appendStringInfo(&str, " WHERE ctid = $%d", num_min_max + 1);
+		i = 0;
+		foreach (lc1, query->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc1);
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+			char *resname = NameStr(attr->attname);
+			Relids	tle_relids;
 
-		plan = SPI_prepare(str.data, num_min_max + (with_group ? 1 : 0), valTypes);
-		if (plan == NULL)
-			elog(ERROR, "SPI_prepare returned %s for %s", SPI_result_code_string(SPI_result), str.data);
+			i++;
 
-		SPI_keepplan(plan);
-		mv_HashPreparedPlan(&key, plan);
+			if (tle->resjunk)
+				continue;
+
+			tle = (TargetEntry *) flatten_join_alias_vars(query, (Node *) tle);
+
+			/* get relids referenced in this entry */
+			tle_relids = pull_varnos_of_level((Node *)tle, 0);
+
+			/*
+			 * If all the column under this entry are belonging the nonnullable table, the value
+			 * in the diff can be used in dangling tuples inserted into the view. Otherwise, NULL
+			 * is used as the value of the entry because it is assumed that the entry expression
+			 * doesn't contain any non-strict function.
+			 */
+			if (bms_is_subset(tle_relids, term->relids))
+			{
+				appendStringInfo(&targetlist, "%s%s", sep2, resname);
+				sep2 = ",";
+
+				/* Use qual vars to check if this tuple still exists in the view */
+				if (IsA(tle->expr, Var) &&
+					list_member(graph->vars_in_quals, (Var*) tle->expr))
+				{
+					appendStringInfo(&exists_cond, "%s mv.%s OPERATOR(pg_catalog.=) diff.%s ",sep, resname, resname);
+					sep = "AND";
+				}
+			}
+		}
+
+		/*
+		 * Looking for counting columns for EXISTS clauses
+		 *
+		 * XXX: Currently subqueries can not be used with outer joins, so
+		 * we arise an error here. However, when we support this in future,
+		 * these columns have to be added into the targetlist.
+		 */
+		for (; i < matviewRel->rd_att->natts; i++)
+		{
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+			char *resname = NameStr(attr->attname);
+			if (!strncmp(resname, "__ivm_exists", 12))
+				elog(ERROR, "EXISTS cannot be used with outer joins");
+		}
+
+		/* counting the number of tuples to be inserted */
+		sep = "";
+		i = -1;
+		while ((i = bms_next_member(term->relids, i)) >= 0)
+		{
+			appendStringInfo(&count, "%s (__ivm_meta__->'%d')::pg_catalog.int8", sep, i);
+			sep = " OPERATOR(pg_catalog.*) ";
+		}
+
+		sep = "";
+		/* Build a condition for tuples belonging to any directly affected parent terms */
+		foreach (lc_p, term->parents)
+		{
+			Term *p = (Term *) lfirst(lc_p);
+
+			if (p->effect != IVM_DIRECT_EFFECT)
+				continue;
+
+			appendStringInfo(&parents_cond, "%s", sep);
+
+			sep2 = "";
+			forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+			{
+				Var *var = (Var *) lfirst(lc1);
+				char *resname = strVal(lfirst(lc2));
+
+				if (bms_is_member(var->varno, p->relids))
+				{
+					appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
+					sep2 = "AND";
+				}
+			}
+			sep = "OR ";
+		}
+
+		/* Insert dangling tuples if needed */
+		initStringInfo(&querybuf);
+		appendStringInfo(&querybuf,
+			"INSERT INTO %s (%s, __ivm_count__) "
+				"SELECT DISTINCT %s, %s FROM %s AS diff "
+				"WHERE %s AND "
+					"NOT EXISTS (SELECT 1 FROM %s mv WHERE %s)",
+			matviewname, targetlist.data,
+			targetlist.data, count.data, deltaname_old,
+			parents_cond.data,
+			matviewname, exists_cond.data
+		);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
+}
 
-	return plan;
+/*
+ * delete_dangling_tuples
+ *
+ * Delete dangling tuples generated as a result of tuples insertion
+ * on base tables of a materialized view which has outer join.
+ * graph is the view maintenance graph.
+ */
+static void
+delete_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
+					   Relation matviewRel, const char *deltaname_new)
+{
+	char	 *matviewname;
+	ListCell *lc;
+
+	matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+											 RelationGetRelationName(matviewRel));
+
+	foreach (lc, graph->terms)
+	{
+		ListCell	*lc1, *lc2, *lc_p;
+		StringInfoData querybuf;
+		StringInfoData dangling_cond;
+		StringInfoData key_cols;
+		StringInfoData parents_cond;
+		Term *term = lfirst(lc);
+		char *sep = "";
+		char *sep2 = "";
+
+		if (term->effect != IVM_INDIRECT_EFFECT)
+			continue;
+
+		initStringInfo(&dangling_cond);
+		initStringInfo(&key_cols);
+		initStringInfo(&parents_cond);
+
+		/* Build a condition for looking up all dangling tuples in indirectly affected term */
+		forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+		{
+			Var *var = (Var *) lfirst(lc1);
+			char *resname = strVal(lfirst(lc2));
+
+			if (bms_is_member(var->varno, term->relids))
+			{
+				appendStringInfo(&dangling_cond, "%s %s IS NOT NULL ", sep, resname);
+				appendStringInfo(&key_cols, "%s%s", sep2, resname);
+				sep2 = ",";
+			}
+			else
+				appendStringInfo(&dangling_cond, "%s %s IS NULL ", sep, resname);
+
+			sep = "AND";
+		}
+
+		sep = "";
+		/* Build a condition for tuples belonging to any directly affected parent terms */
+		foreach (lc_p, term->parents)
+		{
+			Term *p = (Term *) lfirst(lc_p);
+
+			if (p->effect != IVM_DIRECT_EFFECT)
+				continue;
+
+			appendStringInfo(&parents_cond, "%s", sep);
+
+			sep2 = "";
+			forboth (lc1, graph->vars_in_quals, lc2, graph->resnames_in_quals)
+			{
+				Var *var = (Var *) lfirst(lc1);
+				char *resname = strVal(lfirst(lc2));
+
+				if (bms_is_member(var->varno, p->relids))
+				{
+					appendStringInfo(&parents_cond, "%s %s IS NOT NULL ", sep2, resname);
+					sep2 = "AND";
+				}
+			}
+			sep = "OR ";
+		}
+
+		/* Delete dangling tuples if needed */
+		initStringInfo(&querybuf);
+		appendStringInfo(&querybuf,
+			"DELETE FROM %s "
+			"WHERE %s AND "
+				"(%s) IN (SELECT %s FROM %s diff WHERE %s)",
+			matviewname,
+			dangling_cond.data,
+			key_cols.data, key_cols.data, deltaname_new, parents_cond.data
+		);
+		if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+	}
 }
 
 /*

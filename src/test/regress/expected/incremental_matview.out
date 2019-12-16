@@ -573,6 +573,75 @@ SELECT * FROM mv ORDER BY i;
 (2 rows)
 
 ROLLBACK;
+BEGIN;
+CREATE TABLE t (i int);
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT * FROM t;
+SELECT * FROM mv ORDER BY i;
+ i 
+---
+(0 rows)
+
+INSERT INTO t VALUES (1),(NULL);
+SELECT * FROM mv ORDER BY i;
+ i 
+---
+ 1
+  
+(2 rows)
+
+ROLLBACK;
+BEGIN;
+CREATE TABLE t (i int, v int);
+INSERT INTO t VALUES (NULL, 1), (NULL, 2), (1, 10), (1, 20);
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT i, sum(v) FROM t GROUP BY i;
+SELECT * FROM mv ORDER BY i;
+ i | sum 
+---+-----
+ 1 |  30
+   |   3
+(2 rows)
+
+UPDATE t SET v = v * 10;
+SELECT * FROM mv ORDER BY i;
+ i | sum 
+---+-----
+ 1 | 300
+   |  30
+(2 rows)
+
+ROLLBACK;
+BEGIN;
+CREATE TABLE t (i int, v int);
+INSERT INTO t VALUES (NULL, 1), (NULL, 2), (NULL, 3), (NULL, 4), (NULL, 5);
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT i, min(v), max(v) FROM t GROUP BY i;
+SELECT * FROM mv ORDER BY i;
+ i | min | max 
+---+-----+-----
+   |   1 |   5
+(1 row)
+
+DELETE FROM t WHERE v = 1;
+SELECT * FROM mv ORDER BY i;
+ i | min | max 
+---+-----+-----
+   |   2 |   5
+(1 row)
+
+DELETE FROM t WHERE v = 3;
+SELECT * FROM mv ORDER BY i;
+ i | min | max 
+---+-----+-----
+   |   2 |   5
+(1 row)
+
+DELETE FROM t WHERE v = 5;
+SELECT * FROM mv ORDER BY i;
+ i | min | max 
+---+-----+-----
+   |   2 |   4
+(1 row)
+
+ROLLBACK;
 -- support outer joins
 BEGIN;
 CREATE TABLE r (i int);
