@@ -19,6 +19,7 @@
  *-------------------------------------------------------------------------
  */
 #include "postgres.h"
+#include "nodes/print.h"
 
 #include "access/relation.h"
 #include "access/sysattr.h"
@@ -1625,13 +1626,12 @@ ApplyRetrieveRule(Query *parsetree,
 			}
 
 			initStringInfo(&str);
-			appendStringInfo(&str, "SELECT mv.* %s FROM %s mv, generate_series(1, mv.__ivm_count__)",
+			appendStringInfo(&str, "select mv.* %s ,generate_series(1, mv.__ivm_count__) from %s mv",
 						ivm_columns.data, quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
 													RelationGetRelationName(relation)));
 
 			raw = (RawStmt*)linitial(raw_parser(str.data));
 			sub = transformStmt(make_parsestate(NULL),raw->stmt);
-
 
 			rte->rtekind = RTE_SUBQUERY;
 			rte->subquery = sub;
