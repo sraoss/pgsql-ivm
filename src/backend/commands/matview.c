@@ -65,6 +65,9 @@
 #include "parser/parse_coerce.h"
 #include "catalog/pg_collation_d.h"
 #include "parser/parse_collate.h"
+#include "catalog/pg_depend.h"
+#include "catalog/pg_trigger.h"
+#include "utils/fmgroids.h"
 
 
 typedef struct
@@ -439,8 +442,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	elog_node_display(LOG, "parse tree", dataQuery, Debug_pretty_print);
 
 	/* If use IMMV, need to rewrite matview query */
-	if ( matviewRel->rd_rel->relisivm)
-			dataQuery = rewriteIMMV(dataQuery,NIL);
+	if (!stmt->skipData && matviewRel->rd_rel->relisivm)
+		dataQuery = rewriteIMMV(dataQuery,NIL);
 
 
 
@@ -517,6 +520,52 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		relpersistence = matviewRel->rd_rel->relpersistence;
 	}
 
+	/* delete immv triggers */
+	if (matviewRel->rd_rel->relisivm)	
+	{
+		/* use deleted trigger */
+		Relation	depRel;
+		ScanKeyData key;
+		SysScanDesc scan;
+		HeapTuple	tup;
+		ObjectAddresses *immv_triggers;
+
+		immv_triggers = new_object_addresses();
+
+		/*
+		 * We save some cycles by opening pg_depend just once and passing the
+		 * Relation pointer down to all the recursive deletion steps.
+		 */
+		depRel = table_open(DependRelationId, RowExclusiveLock);
+
+		ScanKeyInit(&key,
+					Anum_pg_depend_refobjid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(matviewOid));
+
+		scan = systable_beginscan(depRel, DependReferenceIndexId, true,
+								  NULL, 1, &key);
+		while ((tup = systable_getnext(scan)) != NULL)
+		{
+			ObjectAddress obj;
+			Form_pg_depend foundDep = (Form_pg_depend) GETSTRUCT(tup);
+
+			if (foundDep->deptype == DEPENDENCY_IMMV)
+			{
+				obj.classId = foundDep->classid;
+				obj.objectId = foundDep->objid;
+				obj.objectSubId = foundDep->refobjsubid;
+				add_exact_object_address(&obj, immv_triggers);
+			}
+		}
+		systable_endscan(scan);
+
+		performMultipleDeletions(immv_triggers, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+
+		table_close(depRel, RowExclusiveLock);
+		free_object_addresses(immv_triggers);
+	}
+
 	/*
 	 * Create the transient table that will receive the regenerated data. Lock
 	 * it against access by any other process until commit (by which time it
@@ -569,6 +618,22 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		if (!stmt->skipData)
 			pgstat_count_heap_insert(matviewRel, processed);
 	}
+	if (!stmt->skipData && matviewRel->rd_rel->relisivm)	
+	{
+		Query *copied_query;
+
+		char	*matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
+												 RelationGetRelationName(matviewRel));
+		Relids	relids = NULL;
+		// maybe dataQuery
+		copied_query = copyObject(dataQuery);
+		AcquireRewriteLocks(copied_query, true, false);
+
+		CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relids);
+
+		bms_free(relids);
+	}
+
 
 	table_close(matviewRel, NoLock);
 

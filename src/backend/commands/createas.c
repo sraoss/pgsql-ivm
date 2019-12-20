@@ -98,7 +98,6 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
@@ -328,13 +327,45 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 	if (into->skipData)
 	{
+
+		copied_query = copyObject(query);
+		if (is_matview && into->ivm)
+		{
+			TargetEntry *tle;
+			check_ivm_restriction_context ctx = {false, false, false, NIL};
+			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
+			copied_query = rewriteIMMV(copied_query, into->colNames);
+			
+			/*
+			 * Add JSONB column for meta information related to outer joins.
+			 * Actually this is required only for delta tables, but we create
+			 * this here because delta tables are created using the schema
+			 * of the matview.
+			 */
+			if (ctx.has_outerjoin)
+			{
+				Const	*dmy_jsonb = makeConst(JSONBOID,
+											-1,
+											InvalidOid,
+											-1,
+											PointerGetDatum(NULL),
+											true,
+											false);
+				tle = makeTargetEntry((Expr *) dmy_jsonb,
+										list_length(copied_query->targetList) + 1,
+										pstrdup("__ivm_meta__"),
+										false);
+				copied_query->targetList = lappend(copied_query->targetList, tle);
+			}
+		}
+
 		/*
 		 * If WITH NO DATA was specified, do not go through the rewriter,
 		 * planner and executor.  Just define the relation using a code path
 		 * similar to CREATE VIEW.  This avoids dump/restore problems stemming
 		 * from running the planner before all dependencies are set up.
 		 */
-		address = create_ctas_nodata(query->targetList, into);
+		address = create_ctas_nodata(copied_query->targetList, into);
 	}
 	else
 	{
@@ -466,7 +497,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 }
 
 /*
- *
+ * rewriteIMMV -- rewrite query for define query of IMMV
  */
 Query *
 rewriteIMMV(Query *query, List *colNames)
@@ -649,7 +680,8 @@ rewriteIMMV(Query *query, List *colNames)
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
+void 
+CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
 {
 	if (jtnode == NULL)
 		return;
@@ -1020,7 +1052,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
 
-	recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+	recordDependencyOn(&address, &refaddr, DEPENDENCY_IMMV);
 
 	/* Make changes-so-far visible */
 	CommandCounterIncrement();

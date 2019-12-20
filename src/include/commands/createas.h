@@ -17,12 +17,15 @@
 #include "catalog/objectaddress.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
+#include "nodes/pathnodes.h"
 #include "tcop/dest.h"
 #include "utils/queryenvironment.h"
 
 
 extern ObjectAddress ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 									   ParamListInfo params, QueryEnvironment *queryEnv, char *completionTag);
+
+extern void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
 
 extern Query *rewriteIMMV(Query *query, List *colNames);
 
