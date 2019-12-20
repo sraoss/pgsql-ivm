@@ -3742,6 +3742,10 @@ typedef struct AfterTriggerEventList
  * end of the list, so it is relatively easy to discard them.  The event
  * list chunks themselves are stored in event_cxt.
  *
+ * prolonged_tuplestored is a list of transition table tuplestores whose
+ * life are prolonged to the end of the outmost query instead of each nested
+ * query.
+ *
  * query_depth is the current depth of nested AfterTriggerBeginQuery calls
  * (-1 when the stack is empty).
  *
@@ -3807,6 +3811,7 @@ typedef struct AfterTriggersData
 	SetConstraintState state;	/* the active S C state */
 	AfterTriggerEventList events;	/* deferred-event list */
 	MemoryContext event_cxt;	/* memory context for events, if any */
+	List   *prolonged_tuplestores;	/* list of prolonged tuplestores */
 
 	/* per-query-level data: */
 	AfterTriggersQueryData *query_stack;	/* array of structs shown below */
@@ -3842,6 +3847,7 @@ struct AfterTriggersTableData
 	bool		closed;			/* true when no longer OK to add tuples */
 	bool		before_trig_done;	/* did we already queue BS triggers? */
 	bool		after_trig_done;	/* did we already queue AS triggers? */
+	bool		prolonged;			/* are transition tables prolonged? */
 	AfterTriggerEventList after_trig_events;	/* if so, saved list pointer */
 
 	/*
@@ -3891,6 +3897,7 @@ static void TransitionTableAddTuple(EState *estate,
 									TupleTableSlot *original_insert_tuple,
 									Tuplestorestate *tuplestore);
 static void AfterTriggerFreeQuery(AfterTriggersQueryData *qs);
+static void release_or_prolong_tuplestore(Tuplestorestate *ts, bool prolonged);
 static SetConstraintState SetConstraintStateCreate(int numalloc);
 static SetConstraintState SetConstraintStateCopy(SetConstraintState origstate);
 static SetConstraintState SetConstraintStateAddItem(SetConstraintState state,
@@ -4769,6 +4776,45 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 
 
 /*
+ * SetTransitionTablePreserved
+ *
+ * Prolong lifespan of transition tables corresponding specified relid and
+ * command type to the end of the outmost query instead of each nested query.
+ * This enables to use nested AFTER trigger's transition tables from outer
+ * query's triggers.  Currently, only immediate incremental view maintenance
+ * uses this.
+ */
+void
+SetTransitionTablePreserved(Oid relid, CmdType cmdType)
+{
+	AfterTriggersTableData *table;
+	AfterTriggersQueryData *qs;
+	bool		found = false;
+	ListCell   *lc;
+
+	/* Check state, like AfterTriggerSaveEvent. */
+	if (afterTriggers.query_depth < 0)
+		elog(ERROR, "SetTransitionTablePreserved() called outside of query");
+
+	qs = &afterTriggers.query_stack[afterTriggers.query_depth];
+
+	foreach(lc, qs->tables)
+	{
+		table = (AfterTriggersTableData *) lfirst(lc);
+		if (table->relid == relid && table->cmdType == cmdType &&
+			table->closed)
+		{
+			table->prolonged = true;
+			found = true;
+		}
+	}
+
+	if (!found)
+		elog(ERROR,"could not find table with OID %d and command type %d", relid, cmdType);
+}
+
+
+/*
  * GetAfterTriggersTableData
  *
  * Find or create an AfterTriggersTableData struct for the specified
@@ -4978,6 +5024,7 @@ AfterTriggerBeginXact(void)
 	 */
 	afterTriggers.firing_counter = (CommandId) 1;	/* mustn't be 0 */
 	afterTriggers.query_depth = -1;
+	afterTriggers.prolonged_tuplestores = NIL;
 
 	/*
 	 * Verify that there is no leftover state remaining.  If these assertions
@@ -5138,19 +5185,19 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		ts = table->old_upd_tuplestore;
 		table->old_upd_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->new_upd_tuplestore;
 		table->new_upd_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->old_del_tuplestore;
 		table->old_del_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->new_ins_tuplestore;
 		table->new_ins_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		if (table->storeslot)
 		{
 			TupleTableSlot *slot = table->storeslot;
@@ -5167,6 +5214,34 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 	 */
 	qs->tables = NIL;
 	list_free_deep(tables);
+
+	/* Release prolonged tuplestores at the end of the outmost query */
+	if (afterTriggers.query_depth == 0)
+	{
+		foreach(lc, afterTriggers.prolonged_tuplestores)
+		{
+			ts = (Tuplestorestate *) lfirst(lc);
+			if (ts)
+				tuplestore_end(ts);
+		}
+		afterTriggers.prolonged_tuplestores = NIL;
+	}
+}
+
+/*
+ * Release the tuplestore, or append it to the prolonged tuplestores list.
+ */
+static void
+release_or_prolong_tuplestore(Tuplestorestate *ts, bool prolonged)
+{
+	if (prolonged && afterTriggers.query_depth > 0)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	else
+		tuplestore_end(ts);
 }
 
 
