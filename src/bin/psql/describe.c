@@ -1534,6 +1534,7 @@ describeOneTableDetails(const char *schemaname,
 		char		relpersistence;
 		char		relreplident;
 		char	   *relam;
+		bool		isivm;
 	}			tableinfo;
 	bool		show_column_details = false;
 
@@ -1546,7 +1547,26 @@ describeOneTableDetails(const char *schemaname,
 	initPQExpBuffer(&tmpbuf);
 
 	/* Get general table info */
-	if (pset.sversion >= 120000)
+	if (pset.sversion >= 150000)
+	{
+		printfPQExpBuffer(&buf,
+						  "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, "
+						  "c.relhastriggers, c.relrowsecurity, c.relforcerowsecurity, "
+						  "false AS relhasoids, c.relispartition, %s, c.reltablespace, "
+						  "CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, "
+						  "c.relpersistence, c.relreplident, am.amname, "
+						  "c.relisivm\n"
+						  "FROM pg_catalog.pg_class c\n "
+						  "LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)\n"
+						  "LEFT JOIN pg_catalog.pg_am am ON (c.relam = am.oid)\n"
+						  "WHERE c.oid = '%s';",
+						  (verbose ?
+						   "pg_catalog.array_to_string(c.reloptions || "
+						   "array(select 'toast.' || x from pg_catalog.unnest(tc.reloptions) x), ', ')\n"
+						   : "''"),
+						  oid);
+	}
+	else if (pset.sversion >= 120000)
 	{
 		printfPQExpBuffer(&buf,
 						  "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, "
@@ -1666,6 +1686,10 @@ describeOneTableDetails(const char *schemaname,
 			(char *) NULL : pg_strdup(PQgetvalue(res, 0, 14));
 	else
 		tableinfo.relam = NULL;
+	if (pset.sversion >= 150000)
+		tableinfo.isivm = strcmp(PQgetvalue(res, 0, 15), "t") == 0;
+	else
+		tableinfo.isivm = false;
 	PQclear(res);
 	res = NULL;
 
@@ -3465,6 +3489,12 @@ describeOneTableDetails(const char *schemaname,
 		{
 			printfPQExpBuffer(&buf, _("Access method: %s"), tableinfo.relam);
 			printTableAddFooter(&cont, buf.data);
+		}
+
+		/* Incremental view maintance info */
+		if (verbose && tableinfo.relkind == RELKIND_MATVIEW && tableinfo.isivm)
+		{
+			printTableAddFooter(&cont, _("Incremental view maintenance: yes"));
 		}
 	}
 
