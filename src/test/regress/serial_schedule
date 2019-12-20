@@ -116,6 +116,7 @@ test: init_privs
 test: security_label
 test: collate
 test: matview
+test: incremental_matview
 test: lock
 test: replica_identity
 test: rowsecurity
