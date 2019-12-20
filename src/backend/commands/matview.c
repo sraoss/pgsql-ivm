@@ -1240,7 +1240,7 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!mv_query_cache)
+	if (!mv_trigger_info)
 		mv_InitHashTables();
 
 	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
@@ -1322,7 +1322,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/*
 	 * On the first call initialize the hashtable
 	 */
-	if (!mv_query_cache)
+	if (!mv_trigger_info)
 		mv_InitHashTables();
 
 	/* get the entry for this materialized view */

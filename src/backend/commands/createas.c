@@ -249,6 +249,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
 	return create_ctas_internal(attrList, into);
 }
 
+
 /*
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
