@@ -146,6 +146,7 @@ CREATE VIEW pg_matviews AS
         T.spcname AS tablespace,
         C.relhasindex AS hasindexes,
         C.relispopulated AS ispopulated,
+        C.relisivm AS isimmv,
         pg_get_viewdef(C.oid) AS definition
     FROM pg_class C LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
          LEFT JOIN pg_tablespace T ON (T.oid = C.reltablespace)

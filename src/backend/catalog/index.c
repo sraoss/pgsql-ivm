@@ -993,6 +993,7 @@ index_create(Relation heapRelation,
 	indexRelation->rd_rel->relowner = heapRelation->rd_rel->relowner;
 	indexRelation->rd_rel->relam = accessMethodId;
 	indexRelation->rd_rel->relispartition = OidIsValid(parentIndexRelid);
+	indexRelation->rd_rel->relisivm = false;
 
 	/*
 	 * store index's pg_class entry
