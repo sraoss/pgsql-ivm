@@ -146,6 +146,7 @@ typedef struct IntoClause
 	/* materialized view's SELECT query */
 	Node	   *viewQuery pg_node_attr(query_jumble_ignore);
 	bool		skipData;		/* true for WITH NO DATA */
+	bool		ivm;			/* true for WITH IVM */
 } IntoClause;
 
 
