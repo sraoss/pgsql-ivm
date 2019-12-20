@@ -1789,6 +1789,15 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>isimmv</structfield> <type>bool</type>
+      </para>
+      <para>
+       True if materialized view is incrementally maintainable
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>definition</structfield> <type>text</type>
       </para>
       <para>
