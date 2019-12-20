@@ -443,7 +443,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	/* If use IMMV, need to rewrite matview query */
 	if (!stmt->skipData && matviewRel->rd_rel->relisivm)
-		dataQuery = rewriteIMMV(dataQuery,NIL);
+		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
 
 
 
@@ -521,7 +521,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	}
 
 	/* delete immv triggers */
-	if (matviewRel->rd_rel->relisivm)	
+	if (matviewRel->rd_rel->relisivm)
 	{
 		/* use deleted trigger */
 		Relation	depRel;
@@ -622,14 +622,12 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	{
 		Query *copied_query;
 
-		char	*matviewname = quote_qualified_identifier(get_namespace_name(RelationGetNamespace(matviewRel)),
-												 RelationGetRelationName(matviewRel));
 		Relids	relids = NULL;
 		// maybe dataQuery
 		copied_query = copyObject(dataQuery);
 		AcquireRewriteLocks(copied_query, true, false);
 
-		CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, matviewname, &relids);
+		CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
 
 		bms_free(relids);
 	}

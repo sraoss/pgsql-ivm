@@ -334,8 +334,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			TargetEntry *tle;
 			check_ivm_restriction_context ctx = {false, false, false, NIL};
 			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
-			copied_query = rewriteIMMV(copied_query, into->colNames);
-			
+			copied_query = rewriteQueryForIMMV(copied_query, into->colNames);
 			/*
 			 * Add JSONB column for meta information related to outer joins.
 			 * Actually this is required only for delta tables, but we create
@@ -389,8 +388,8 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			check_ivm_restriction_context ctx = {false, false, false, NIL};
 			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
 
-			copied_query = rewriteIMMV(copied_query, into->colNames);
-			
+			copied_query = rewriteQueryForIMMV(copied_query, into->colNames);
+
 			/*
 			 * Add JSONB column for meta information related to outer joins.
 			 * Actually this is required only for delta tables, but we create
@@ -497,10 +496,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 }
 
 /*
- * rewriteIMMV -- rewrite query for define query of IMMV
+ * rewriteQueryForIMMV -- rewrite query for definition query of IMMV
  */
 Query *
-rewriteIMMV(Query *query, List *colNames)
+rewriteQueryForIMMV(Query *query, List *colNames)
 {
 	Query *rewritten;
 
@@ -680,7 +679,7 @@ rewriteIMMV(Query *query, List *colNames)
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
-void 
+void
 CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
 {
 	if (jtnode == NULL)
