@@ -476,11 +476,15 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		if (into->ivm)
 		{
-
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
 			Relids	relids = NULL;
 
+			/*
+			 * Mark relisivm field, if it's a matview and into->ivm is true.
+			 */
+			if (is_matview && into->ivm)
+				SetMatViewIVMState(matviewRel, true);
 			copied_query = copyObject(query);
 			AcquireRewriteLocks(copied_query, true, false);
 
@@ -896,11 +900,6 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	if (is_matview && !into->skipData)
 		SetMatViewPopulatedState(intoRelationDesc, true);
 
-	/*
-	 * Mark relisivm field, if it's a matview and into->ivm is true.
-	 */
-	if (is_matview && into->ivm)
-		SetMatViewIVMState(intoRelationDesc, true);
 	/*
 	 * Fill private fields of myState for use by later routines
 	 */
