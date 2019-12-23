@@ -443,7 +443,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	/* If use IMMV, need to rewrite matview query */
 	if (!stmt->skipData && matviewRel->rd_rel->relisivm)
-		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
+		dataQuery = rewriteQueryForIMMV(dataQuery,NIL, true);
 
 
 

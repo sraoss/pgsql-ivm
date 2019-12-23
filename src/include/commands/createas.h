@@ -27,7 +27,7 @@ extern ObjectAddress ExecCreateTableAs(CreateTableAsStmt *stmt, const char *quer
 
 extern void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
 
-extern Query *rewriteQueryForIMMV(Query *query, List *colNames);
+extern Query *rewriteQueryForIMMV(Query *query, List *colNames, bool noerror);
 
 extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
