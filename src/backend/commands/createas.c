@@ -426,16 +426,17 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			/*
 			 * Mark relisivm field, if it's a matview and into->ivm is true.
 			 */
-			if (is_matview && into->ivm)
-				SetMatViewIVMState(matviewRel, true);
-			copied_query = copyObject(query);
-			AcquireRewriteLocks(copied_query, true, false);
+			SetMatViewIVMState(matviewRel, true);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
+			if (!into->skipData)
+			{
+				copied_query = copyObject(query);
+				AcquireRewriteLocks(copied_query, true, false);
 
+				CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
+				bms_free(relids);
+			}
 			table_close(matviewRel, NoLock);
-
-			bms_free(relids);
 		}
 	}
 
