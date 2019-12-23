@@ -98,8 +98,7 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
-static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
+static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth, bool noerror);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
@@ -326,6 +325,12 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		save_nestlevel = NewGUCNestLevel();
 	}
 
+	copied_query = copyObject(query);
+	if (is_matview && into->ivm)
+	{
+		copied_query = rewriteQueryForIMMV(copied_query, into->colNames, false);
+	}
+
 	if (into->skipData)
 	{
 		/*
@@ -334,7 +339,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * similar to CREATE VIEW.  This avoids dump/restore problems stemming
 		 * from running the planner before all dependencies are set up.
 		 */
-		address = create_ctas_nodata(query->targetList, into);
+		address = create_ctas_nodata(copied_query->targetList, into);
 	}
 	else
 	{
@@ -350,201 +355,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * and is executed repeatedly.  (See also the same hack in EXPLAIN and
 		 * PREPARE.)
 		 */
-
-		copied_query = copyObject(query);
-		if (is_matview && into->ivm)
-		{
-			TargetEntry *tle;
-			Node *node;
-			ParseState *pstate = make_parsestate(NULL);
-			FuncCall *fn;
-			check_ivm_restriction_context ctx = {false, false, false, NIL};
-
-			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
-
-			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
-
-			/*
-			 * If this query has EXISTS clause, rewrite query and
-			 * add __ivm_exists_count_X__ column.
-			 */
-			if (copied_query->hasSubLinks)
-			{
-				ListCell *lc;
-				RangeTblEntry *rte;
-
-				/* rewrite EXISTS sublink to LATERAL subquery */
-				rewrite_query_for_exists_subquery(copied_query);
-
-				/* Add count(*) using EXISTS clause */
-				foreach(lc, copied_query->rtable)
-				{
-					char *columnName;
-					Node *countCol = NULL;
-
-					rte = (RangeTblEntry *) lfirst(lc);
-					if (!rte->subquery || !rte->lateral)
-						continue;
-					pstate->p_rtable = copied_query->rtable;
-
-					columnName = getColumnNameStartWith(rte, "__ivm_exists");
-					if (columnName == NULL)
-						continue;
-					countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
-
-					if (countCol != NULL)
-					{
-						tle = makeTargetEntry((Expr *) countCol,
-													list_length(copied_query->targetList) + 1,
-													pstrdup(columnName),
-													false);
-						copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
-					}
-				}
-			}
-
-			/* group keys must be in targetlist */
-			if (copied_query->groupClause)
-			{
-				ListCell *lc;
-				foreach(lc, copied_query->groupClause)
-				{
-					SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
-					TargetEntry *tle = get_sortgroupclause_tle(scl, copied_query->targetList);
-
-					if (tle->resjunk)
-						elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
-				}
-			}
-			else if (!copied_query->hasAggs)
-				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
-
-			if (copied_query->hasAggs)
-			{
-				ListCell *lc;
-				List *agg_counts = NIL;
-				AttrNumber next_resno = list_length(copied_query->targetList) + 1;
-				Const	*dmy_arg = makeConst(INT4OID,
-											 -1,
-											 InvalidOid,
-											 sizeof(int32),
-											 Int32GetDatum(1),
-											 false,
-											 true); /* pass by value */
-
-				foreach(lc, copied_query->targetList)
-				{
-					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					TargetEntry *tle_count;
-					char *resname = (into->colNames == NIL ? tle->resname : strVal(list_nth(into->colNames, tle->resno-1)));
-
-
-					if (IsA(tle->expr, Aggref))
-					{
-						Aggref *aggref = (Aggref *) tle->expr;
-						const char *aggname = get_func_name(aggref->aggfnoid);
-
-						/* Check if this supports IVM */
-						if (!check_aggregate_supports_ivm(aggref->aggfnoid))
-							elog(ERROR, "aggregate function %s is not supported", aggname);
-
-						/*
-						 * For aggregate functions except to count, add count func with the same arg parameters.
-						 * Also, add sum func for agv.
-						 *
-						 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-						 * of adding new duplicated one.
-						 */
-						if (strcmp(aggname, "count") != 0)
-						{
-							fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-
-							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-							node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-							((Aggref *)node)->args = aggref->args;
-
-							tle_count = makeTargetEntry((Expr *) node,
-														next_resno,
-														pstrdup(makeObjectName("__ivm_count",resname, "_")),
-														false);
-							agg_counts = lappend(agg_counts, tle_count);
-							next_resno++;
-						}
-						if (strcmp(aggname, "avg") == 0)
-						{
-							List *dmy_args = NIL;
-							ListCell *lc;
-							foreach(lc, aggref->aggargtypes)
-							{
-								Oid		typeid = lfirst_oid(lc);
-								Type	type = typeidType(typeid);
-
-								Const *con = makeConst(typeid,
-													   -1,
-													   typeTypeCollation(type),
-													   typeLen(type),
-													   (Datum) 0,
-													   true,
-													   typeByVal(type));
-								dmy_args = lappend(dmy_args, con);
-								ReleaseSysCache(type);
-
-							}
-							fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
-
-							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-							node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-							((Aggref *)node)->args = aggref->args;
-
-							tle_count = makeTargetEntry((Expr *) node,
-														next_resno,
-														pstrdup(makeObjectName("__ivm_sum",resname, "_")),
-														false);
-							agg_counts = lappend(agg_counts, tle_count);
-							next_resno++;
-						}
-
-					}
-				}
-				copied_query->targetList = list_concat(copied_query->targetList, agg_counts);
-
-			}
-
-			/* Add count(*) for counting algorithm */
-			fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-			fn->agg_star = true;
-
-			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-			tle = makeTargetEntry((Expr *) node,
-									list_length(copied_query->targetList) + 1,
-									pstrdup("__ivm_count__"),
-									false);
-			copied_query->targetList = lappend(copied_query->targetList, tle);
-			copied_query->hasAggs = true;
-
-			/*
-			 * Add JSONB column for meta information related to outer joins.
-			 * Actually this is required only for delta tables, but we create
-			 * this here because delta tables are created using the schema
-			 * of the matview.
-			 */
-			if (ctx.has_outerjoin)
-			{
-				Const	*dmy_jsonb = makeConst(JSONBOID,
-											-1,
-											InvalidOid,
-											-1,
-											PointerGetDatum(NULL),
-											true,
-											false);
-				tle = makeTargetEntry((Expr *) dmy_jsonb,
-										list_length(copied_query->targetList) + 1,
-										pstrdup("__ivm_meta__"),
-										false);
-				copied_query->targetList = lappend(copied_query->targetList, tle);
-			}
-		}
 
 		rewritten = QueryRewrite(copied_query);
 
@@ -609,28 +419,239 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		if (into->ivm)
 		{
-
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
 			Relids	relids = NULL;
 
-			copied_query = copyObject(query);
-			AcquireRewriteLocks(copied_query, true, false);
+			/*
+			 * Mark relisivm field, if it's a matview and into->ivm is true.
+			 */
+			SetMatViewIVMState(matviewRel, true);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
+			if (!into->skipData)
+			{
+				copied_query = copyObject(query);
+				AcquireRewriteLocks(copied_query, true, false);
 
+				CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
+				bms_free(relids);
+			}
 			table_close(matviewRel, NoLock);
-
-			bms_free(relids);
 		}
 	}
 
 	return address;
 }
+
+/*
+ * rewriteQueryForIMMV -- rewrite query for definition query of IMMV
+ * noerror is used by check_ivm_restriction_walker().
+ */
+Query *
+rewriteQueryForIMMV(Query *query, List *colNames, bool noerror)
+{
+	Query *rewritten;
+
+	TargetEntry *tle;
+	Node *node;
+	ParseState *pstate = make_parsestate(NULL);
+	FuncCall *fn;
+
+	check_ivm_restriction_context ctx = {false, false, false, NIL};
+	check_ivm_restriction_walker((Node *) query, &ctx, 0, noerror);
+
+	rewritten = copyObject(query);
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+	/*
+	 * If this query has EXISTS clause, rewrite query and
+	 * add __ivm_exists_count_X__ column.
+	 */
+	if (rewritten->hasSubLinks)
+	{
+		ListCell *lc;
+		RangeTblEntry *rte;
+
+		/* rewrite EXISTS sublink to LATERAL subquery */
+		rewrite_query_for_exists_subquery(rewritten);
+
+		/* Add count(*) using EXISTS clause */
+		foreach(lc, rewritten->rtable)
+		{
+			char *columnName;
+			Node *countCol = NULL;
+
+			rte = (RangeTblEntry *) lfirst(lc);
+			if (!rte->subquery || !rte->lateral)
+				continue;
+			pstate->p_rtable = rewritten->rtable;
+
+			columnName = getColumnNameStartWith(rte, "__ivm_exists");
+			if (columnName == NULL)
+				continue;
+			countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
+
+			if (countCol != NULL)
+			{
+				tle = makeTargetEntry((Expr *) countCol,
+											list_length(rewritten->targetList) + 1,
+											pstrdup(columnName),
+											false);
+				rewritten->targetList = list_concat(rewritten->targetList, list_make1(tle));
+			}
+		}
+	}
+
+	/* group keys must be in targetlist */
+	if (rewritten->groupClause)
+	{
+		ListCell *lc;
+		foreach(lc, rewritten->groupClause)
+		{
+			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, rewritten->targetList);
+
+			if (tle->resjunk)
+				elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
+		}
+	}
+	else if (!rewritten->hasAggs)
+		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
+
+	if (rewritten->hasAggs)
+	{
+		ListCell *lc;
+		List *agg_counts = NIL;
+		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
+		Const	*dmy_arg = makeConst(INT4OID,
+									 -1,
+									 InvalidOid,
+									 sizeof(int32),
+									 Int32GetDatum(1),
+									 false,
+									 true); /* pass by value */
+
+		foreach(lc, rewritten->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			TargetEntry *tle_count;
+			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno-1)));
+
+
+			if (IsA(tle->expr, Aggref))
+			{
+				Aggref *aggref = (Aggref *) tle->expr;
+				const char *aggname = get_func_name(aggref->aggfnoid);
+
+				/* Check if this supports IVM */
+				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+					elog(ERROR, "aggregate function %s is not supported", aggname);
+
+				/*
+				 * For aggregate functions except to count, add count func with the same arg parameters.
+				 * Also, add sum func for agv.
+				 *
+				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+				 * of adding new duplicated one.
+				 */
+				if (strcmp(aggname, "count") != 0)
+				{
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_count",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+				if (strcmp(aggname, "avg") == 0)
+				{
+					List *dmy_args = NIL;
+					ListCell *lc;
+					foreach(lc, aggref->aggargtypes)
+					{
+						Oid		typeid = lfirst_oid(lc);
+						Type	type = typeidType(typeid);
+
+						Const *con = makeConst(typeid,
+											   -1,
+											   typeTypeCollation(type),
+											   typeLen(type),
+											   (Datum) 0,
+											   true,
+											   typeByVal(type));
+						dmy_args = lappend(dmy_args, con);
+						ReleaseSysCache(type);
+
+					}
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_sum",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+
+			}
+		}
+		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
+
+	}
+
+	/* Add count(*) for counting algorithm */
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
+
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+	tle = makeTargetEntry((Expr *) node,
+							list_length(rewritten->targetList) + 1,
+							pstrdup("__ivm_count__"),
+							false);
+	rewritten->targetList = lappend(rewritten->targetList, tle);
+	rewritten->hasAggs = true;
+
+
+	/*
+	 * Add JSONB column for meta information related to outer joins.
+	 * Actually this is required only for delta tables, but we create
+	 * this here because delta tables are created using the schema
+	 * of the matview.
+	 */
+	if (ctx.has_outerjoin)
+	{
+		Const	*dmy_jsonb = makeConst(JSONBOID,
+									-1,
+									InvalidOid,
+									-1,
+									PointerGetDatum(NULL),
+									true,
+									false);
+		tle = makeTargetEntry((Expr *) dmy_jsonb,
+								list_length(rewritten->targetList) + 1,
+								pstrdup("__ivm_meta__"),
+								false);
+		rewritten->targetList = lappend(rewritten->targetList, tle);
+	}
+
+	return rewritten;
+}
+
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
+void
+CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
 {
 	if (jtnode == NULL)
 		return;
@@ -847,11 +868,6 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 		SetMatViewPopulatedState(intoRelationDesc, true);
 
 	/*
-	 * Mark relisivm field, if it's a matview and into->ivm is true.
-	 */
-	if (is_matview && into->ivm)
-		SetMatViewIVMState(intoRelationDesc, true);
-	/*
 	 * Fill private fields of myState for use by later routines
 	 */
 	myState->rel = intoRelationDesc;
@@ -1010,9 +1026,10 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 
 /*
  * check_ivm_restriction_walker --- look for specify nodes in the query tree
+ * if noerror is true, this function don't return errors.
  */
 static void
-check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth)
+check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth, bool noerror)
 {
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
@@ -1027,14 +1044,14 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				Query *qry = (Query *)node;
 				ListCell   *lc;
 				/* if contained CTE, return error */
-				if (qry->cteList != NIL)
+				if (qry->cteList != NIL && !noerror)
 					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
-				if (qry->havingQual != NULL)
+				if (qry->havingQual != NULL  && !noerror)
 					ereport(ERROR, (errmsg(" HAVING clause is not supported with IVM")));
 				/* There is a possibility that we don't need to return an error */
-				if (qry->sortClause != NIL)
+				if (qry->sortClause != NIL && !noerror)
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
-				if (depth > 0 && qry->hasAggs)
+				if (depth > 0 && qry->hasAggs  && !noerror)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
 				ctx->has_agg = qry->hasAggs;
@@ -1043,27 +1060,27 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->rtable)
 				{
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
-					if (rte->relkind == RELKIND_VIEW ||
-							rte->relkind == RELKIND_MATVIEW)
+					if ((rte->relkind == RELKIND_VIEW ||
+							rte->relkind == RELKIND_MATVIEW) && !noerror)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
-						if (ctx->has_outerjoin)
+						if (ctx->has_outerjoin && !noerror)
 							ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
 
 						ctx->has_subquery = true;
-						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
+						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1, noerror);
 					}
 				}
 
 				/* search in jointree */
-				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth);
+				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth, noerror);
 
 				/* search in target lists */
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
+					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth, noerror);
 				}
 
 				/* additional restriction checks for outer join query */
@@ -1078,7 +1095,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					{
 						OpExpr	*op = (OpExpr *) lfirst(lc);
 
-						if (!is_equijoin_condition(op))
+						if (!is_equijoin_condition(op)  && !noerror)
 							ereport(ERROR, (errmsg("Only simple equijoin is supported for IVM with outer join")));
 
 						op = (OpExpr *) flatten_join_alias_vars(qry, (Node *) op);
@@ -1105,16 +1122,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 								}
 							}
 						}
-						if (!found)
+						if (!found  && !noerror)
 							ereport(ERROR, (errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
 					}
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
 
-					if (list_length(where_quals_vars) > list_length(nonnullable_vars))
+					if (list_length(where_quals_vars) > list_length(nonnullable_vars) && !noerror)
 						ereport(ERROR, (errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
 
-					if (contain_nonstrict_functions((Node *) qry->targetList))
+					if (contain_nonstrict_functions((Node *) qry->targetList) && !noerror)
 						ereport(ERROR, (errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
 				}
 
@@ -1125,19 +1142,19 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				JoinExpr *joinexpr = (JoinExpr *)node;
 				if (IS_OUTER_JOIN(joinexpr->jointype))
 				{
-					if (ctx->has_subquery)
+					if (ctx->has_subquery && !noerror)
 						ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
-					if (ctx->has_agg)
+					if (ctx->has_agg && !noerror)
 						ereport(ERROR, (errmsg("aggregate is not supported with IVM together with outer join")));
 
 					ctx->has_outerjoin = true;
 					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
 				}
 				/* left side */
-				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth, noerror);
 				/* right side */
-				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth);
-				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth, noerror);
 			}
 			break;
 		case T_FromExpr:
@@ -1146,17 +1163,17 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				FromExpr *fromexpr = (FromExpr *)node;
 				foreach(lc, fromexpr->fromlist)
 				{
-					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth);
+					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth, noerror);
 				}
 
-				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth);
+				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth, noerror);
 			}
 			break;
 		case T_Var:
 			{
 				/* if system column, return error */
 				Var	*variable = (Var *) node;
-				if (variable->varattno < 0)
+				if (variable->varattno < 0 && !noerror)
 					ereport(ERROR, (errmsg("system column is not supported with IVM")));
 			}
 			break;
@@ -1168,7 +1185,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, boolexpr->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth);
+					check_ivm_restriction_walker(arg, ctx, depth, noerror);
 				}
 				break;
 			}
@@ -1181,7 +1198,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, op->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth);
+					check_ivm_restriction_walker(arg, ctx, depth, noerror);
 				}
 				break;
 			}
@@ -1190,16 +1207,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				CaseExpr *caseexpr = (CaseExpr *) node;
 				ListCell *lc;
 				/* result for ELSE clause */
-				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth);
+				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth, noerror);
 				/* expr for WHEN clauses */
 				foreach(lc, caseexpr->args)
 				{
 					CaseWhen *when = (CaseWhen *) lfirst(lc);
 					Node *w_expr = (Node *) when->expr;
 					/* result for WHEN clause */
-					check_ivm_restriction_walker((Node *) when->result, ctx, depth);
+					check_ivm_restriction_walker((Node *) when->result, ctx, depth, noerror);
 					/* expr clause*/
-					check_ivm_restriction_walker((Node *) w_expr, ctx, depth);
+					check_ivm_restriction_walker((Node *) w_expr, ctx, depth, noerror);
 				}
 				break;
 			}
@@ -1207,13 +1224,13 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				/* Now, EXISTS clause is supported only */
 				SubLink	*sublink = (SubLink *) node;
-				if (sublink->subLinkType != EXISTS_SUBLINK)
+				if (sublink->subLinkType != EXISTS_SUBLINK && !noerror)
 					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
-				if (depth > 0)
+				if (depth > 0 && !noerror)
 					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
-				if (ctx->has_outerjoin)
+				if (ctx->has_outerjoin  && !noerror)
 					ereport(ERROR, (errmsg("subquery is not supported by IVM together with outer join")));
-				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
+				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1, noerror);
 				break;
 			}
 		case T_SubPlan:

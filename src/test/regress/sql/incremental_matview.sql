@@ -13,8 +13,9 @@ INSERT INTO mv_base_b VALUES
   (3,103),
   (4,104);
 
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i);
-
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) WITH NO DATA;
+SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
+REFRESH MATERIALIZED VIEW mv_ivm_1;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 -- immediaite maintenance
 BEGIN;
