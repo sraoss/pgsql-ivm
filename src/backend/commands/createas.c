@@ -363,7 +363,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
 			if(contain_mutable_functions((Node *)copied_query))
-				ereport(ERROR, (errmsg("mutable functions not supported")));
+				ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
 				
 			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
 

@@ -5185,7 +5185,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a 
 ERROR:  nested subquery is not supported by IVM
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
-ERROR:  mutable functions not supported
+ERROR:  functions in IMMV must be marked IMMUTABLE
 DROP TABLE mv_base_b CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1
