@@ -28,6 +28,14 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 ROLLBACK;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 
+-- rename of IVM columns
+ALTER MATERIALIZED VIEW mv_ivm_1 RENAME COLUMN __ivm_count__ TO xxx;
+
+-- unique index on IVM columns
+CREATE UNIQUE INDEX ON mv_ivm_1(__ivm_count__);
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__));
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__ + 1));
+
 -- result of materliazied view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
