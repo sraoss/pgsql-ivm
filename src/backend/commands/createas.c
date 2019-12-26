@@ -364,7 +364,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			if(contain_mutable_functions((Node *)copied_query))
 				ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
-				
+
 			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
 
 			/*
