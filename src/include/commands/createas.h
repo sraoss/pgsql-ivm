@@ -22,7 +22,7 @@
 #include "utils/queryenvironment.h"
 
 
-extern ObjectAddress ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
+extern ObjectAddress ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 									   ParamListInfo params, QueryEnvironment *queryEnv, char *completionTag);
 
 extern void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
