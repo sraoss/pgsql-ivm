@@ -325,11 +325,9 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		save_nestlevel = NewGUCNestLevel();
 	}
 
-	copied_query = copyObject(query);
+//	copied_query = copyObject(query);
 	if (is_matview && into->ivm)
-	{
-		copied_query = rewriteQueryForIMMV(copied_query, into->colNames, false);
-	}
+		query = rewriteQueryForIMMV(query, into->colNames, false);
 
 	if (into->skipData)
 	{
@@ -339,7 +337,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * similar to CREATE VIEW.  This avoids dump/restore problems stemming
 		 * from running the planner before all dependencies are set up.
 		 */
-		address = create_ctas_nodata(copied_query->targetList, into);
+		address = create_ctas_nodata(query->targetList, into);
 	}
 	else
 	{
@@ -356,7 +354,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * PREPARE.)
 		 */
 
-		rewritten = QueryRewrite(copied_query);
+		rewritten = QueryRewrite(copyObject(query));
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
 		if (list_length(rewritten) != 1)
@@ -430,10 +428,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 			if (!into->skipData)
 			{
-				copied_query = copyObject(query);
-				AcquireRewriteLocks(copied_query, true, false);
-
-				CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
+				CreateIvmTriggersOnBaseTables(query, (Node *)query->jointree, matviewOid, &relids);
 				bms_free(relids);
 			}
 			table_close(matviewRel, NoLock);
@@ -444,7 +439,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 }
 
 /*
- * rewriteQueryForIMMV -- rewrite query for definition query of IMMV
+ * rewriteQueryForIMMV -- rewrite view definition query for IMMV
  * noerror is used by check_ivm_restriction_walker().
  */
 Query *

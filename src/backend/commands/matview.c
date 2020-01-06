@@ -405,6 +405,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	int			save_sec_context;
 	int			save_nestlevel;
 	ObjectAddress address;
+	bool oldPopulated;
 
 	/* Determine strength of lock needed. */
 	concurrent = stmt->concurrent;
@@ -417,6 +418,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 										  lockmode, 0,
 										  RangeVarCallbackOwnsTable, NULL);
 	matviewRel = table_open(matviewOid, NoLock);
+	oldPopulated = RelationIsPopulated(matviewRel);
 
 	/* Make sure it is a materialized view. */
 	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
@@ -439,10 +441,9 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 
 	dataQuery = get_matview_query(matviewRel);
-	elog_node_display(LOG, "parse tree", dataQuery, Debug_pretty_print);
 
 	/* If use IMMV, need to rewrite matview query */
-	if (!stmt->skipData && matviewRel->rd_rel->relisivm)
+	if (!stmt->skipData && RelationIsIVM(matviewRel))
 		dataQuery = rewriteQueryForIMMV(dataQuery,NIL, true);
 
 
@@ -521,7 +522,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	}
 
 	/* delete immv triggers */
-	if (matviewRel->rd_rel->relisivm)
+	if (RelationIsIVM(matviewRel) && stmt->skipData )
 	{
 		/* use deleted trigger */
 		Relation	depRel;
@@ -618,17 +619,11 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		if (!stmt->skipData)
 			pgstat_count_heap_insert(matviewRel, processed);
 	}
-	if (!stmt->skipData && matviewRel->rd_rel->relisivm)
+	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
 	{
-		Query *copied_query;
-
 		Relids	relids = NULL;
-		// maybe dataQuery
-		copied_query = copyObject(dataQuery);
-		AcquireRewriteLocks(copied_query, true, false);
 
-		CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
-
+		CreateIvmTriggersOnBaseTables(dataQuery, (Node *)dataQuery->jointree, matviewOid, &relids);
 		bms_free(relids);
 	}
 
