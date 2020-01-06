@@ -444,7 +444,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	/* If use IMMV, need to rewrite matview query */
 	if (!stmt->skipData && RelationIsIVM(matviewRel))
-		dataQuery = rewriteQueryForIMMV(dataQuery,NIL, true);
+		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
 
 
 

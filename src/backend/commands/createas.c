@@ -98,7 +98,7 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
-static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth, bool noerror);
+static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
@@ -325,9 +325,12 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		save_nestlevel = NewGUCNestLevel();
 	}
 
-//	copied_query = copyObject(query);
 	if (is_matview && into->ivm)
-		query = rewriteQueryForIMMV(query, into->colNames, false);
+	{
+		check_ivm_restriction_context ctx = {false, false, false, NIL};
+		check_ivm_restriction_walker((Node *) query, &ctx, 0);
+		query = rewriteQueryForIMMV(query, into->colNames);
+	}
 
 	if (into->skipData)
 	{
@@ -440,10 +443,9 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 /*
  * rewriteQueryForIMMV -- rewrite view definition query for IMMV
- * noerror is used by check_ivm_restriction_walker().
  */
 Query *
-rewriteQueryForIMMV(Query *query, List *colNames, bool noerror)
+rewriteQueryForIMMV(Query *query, List *colNames)
 {
 	Query *rewritten;
 
@@ -451,9 +453,7 @@ rewriteQueryForIMMV(Query *query, List *colNames, bool noerror)
 	Node *node;
 	ParseState *pstate = make_parsestate(NULL);
 	FuncCall *fn;
-
-	check_ivm_restriction_context ctx = {false, false, false, NIL};
-	check_ivm_restriction_walker((Node *) query, &ctx, 0, noerror);
+	bool hasOuterJoins = false;
 
 	rewritten = copyObject(query);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
@@ -617,13 +617,27 @@ rewriteQueryForIMMV(Query *query, List *colNames, bool noerror)
 	rewritten->hasAggs = true;
 
 
+	/* join tree analysis for outer join */
+	{
+		ListCell   *lc;
+		foreach(lc, rewritten->rtable)
+		{
+			RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+			if (rte->rtekind == RTE_JOIN && IS_OUTER_JOIN(rte->jointype))
+			{
+				hasOuterJoins = true;
+				break;
+			}
+		}
+	}
+
 	/*
 	 * Add JSONB column for meta information related to outer joins.
 	 * Actually this is required only for delta tables, but we create
 	 * this here because delta tables are created using the schema
 	 * of the matview.
 	 */
-	if (ctx.has_outerjoin)
+	if (hasOuterJoins)
 	{
 		Const	*dmy_jsonb = makeConst(JSONBOID,
 									-1,
@@ -1021,10 +1035,9 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 
 /*
  * check_ivm_restriction_walker --- look for specify nodes in the query tree
- * if noerror is true, this function don't return errors.
  */
 static void
-check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth, bool noerror)
+check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth)
 {
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
@@ -1039,14 +1052,14 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				Query *qry = (Query *)node;
 				ListCell   *lc;
 				/* if contained CTE, return error */
-				if (qry->cteList != NIL && !noerror)
+				if (qry->cteList != NIL)
 					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
-				if (qry->havingQual != NULL  && !noerror)
+				if (qry->havingQual != NULL)
 					ereport(ERROR, (errmsg(" HAVING clause is not supported with IVM")));
 				/* There is a possibility that we don't need to return an error */
-				if (qry->sortClause != NIL && !noerror)
+				if (qry->sortClause != NIL)
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
-				if (depth > 0 && qry->hasAggs  && !noerror)
+				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
 				ctx->has_agg = qry->hasAggs;
@@ -1055,27 +1068,27 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->rtable)
 				{
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
-					if ((rte->relkind == RELKIND_VIEW ||
-							rte->relkind == RELKIND_MATVIEW) && !noerror)
+					if (rte->relkind == RELKIND_VIEW ||
+							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
-						if (ctx->has_outerjoin && !noerror)
+						if (ctx->has_outerjoin)
 							ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
 
 						ctx->has_subquery = true;
-						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1, noerror);
+						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
 					}
 				}
 
 				/* search in jointree */
-				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth);
 
 				/* search in target lists */
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth, noerror);
+					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 
 				/* additional restriction checks for outer join query */
@@ -1090,7 +1103,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					{
 						OpExpr	*op = (OpExpr *) lfirst(lc);
 
-						if (!is_equijoin_condition(op)  && !noerror)
+						if (!is_equijoin_condition(op))
 							ereport(ERROR, (errmsg("Only simple equijoin is supported for IVM with outer join")));
 
 						op = (OpExpr *) flatten_join_alias_vars(qry, (Node *) op);
@@ -1117,16 +1130,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 								}
 							}
 						}
-						if (!found  && !noerror)
+						if (!found)
 							ereport(ERROR, (errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
 					}
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
 
-					if (list_length(where_quals_vars) > list_length(nonnullable_vars) && !noerror)
+					if (list_length(where_quals_vars) > list_length(nonnullable_vars))
 						ereport(ERROR, (errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
 
-					if (contain_nonstrict_functions((Node *) qry->targetList) && !noerror)
+					if (contain_nonstrict_functions((Node *) qry->targetList))
 						ereport(ERROR, (errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
 				}
 
@@ -1137,19 +1150,19 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				JoinExpr *joinexpr = (JoinExpr *)node;
 				if (IS_OUTER_JOIN(joinexpr->jointype))
 				{
-					if (ctx->has_subquery && !noerror)
+					if (ctx->has_subquery)
 						ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
-					if (ctx->has_agg && !noerror)
+					if (ctx->has_agg)
 						ereport(ERROR, (errmsg("aggregate is not supported with IVM together with outer join")));
 
 					ctx->has_outerjoin = true;
 					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
 				}
 				/* left side */
-				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth);
 				/* right side */
-				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth, noerror);
-				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth);
+				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth);
 			}
 			break;
 		case T_FromExpr:
@@ -1158,17 +1171,17 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				FromExpr *fromexpr = (FromExpr *)node;
 				foreach(lc, fromexpr->fromlist)
 				{
-					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth, noerror);
+					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth);
 				}
 
-				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth);
 			}
 			break;
 		case T_Var:
 			{
 				/* if system column, return error */
 				Var	*variable = (Var *) node;
-				if (variable->varattno < 0 && !noerror)
+				if (variable->varattno < 0)
 					ereport(ERROR, (errmsg("system column is not supported with IVM")));
 			}
 			break;
@@ -1180,7 +1193,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, boolexpr->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth, noerror);
+					check_ivm_restriction_walker(arg, ctx, depth);
 				}
 				break;
 			}
@@ -1193,7 +1206,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, op->args)
 				{
 					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth, noerror);
+					check_ivm_restriction_walker(arg, ctx, depth);
 				}
 				break;
 			}
@@ -1202,16 +1215,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				CaseExpr *caseexpr = (CaseExpr *) node;
 				ListCell *lc;
 				/* result for ELSE clause */
-				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth, noerror);
+				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth);
 				/* expr for WHEN clauses */
 				foreach(lc, caseexpr->args)
 				{
 					CaseWhen *when = (CaseWhen *) lfirst(lc);
 					Node *w_expr = (Node *) when->expr;
 					/* result for WHEN clause */
-					check_ivm_restriction_walker((Node *) when->result, ctx, depth, noerror);
+					check_ivm_restriction_walker((Node *) when->result, ctx, depth);
 					/* expr clause*/
-					check_ivm_restriction_walker((Node *) w_expr, ctx, depth, noerror);
+					check_ivm_restriction_walker((Node *) w_expr, ctx, depth);
 				}
 				break;
 			}
@@ -1219,13 +1232,13 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				/* Now, EXISTS clause is supported only */
 				SubLink	*sublink = (SubLink *) node;
-				if (sublink->subLinkType != EXISTS_SUBLINK && !noerror)
+				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
-				if (depth > 0 && !noerror)
+				if (depth > 0)
 					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
-				if (ctx->has_outerjoin  && !noerror)
+				if (ctx->has_outerjoin)
 					ereport(ERROR, (errmsg("subquery is not supported by IVM together with outer join")));
-				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1, noerror);
+				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
 				break;
 			}
 		case T_SubPlan:
