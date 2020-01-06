@@ -328,6 +328,10 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	if (is_matview && into->ivm)
 	{
 		check_ivm_restriction_context ctx = {false, false, false, NIL};
+
+		if(contain_mutable_functions((Node *)query))
+			ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
+
 		check_ivm_restriction_walker((Node *) query, &ctx, 0);
 		query = rewriteQueryForIMMV(query, into->colNames);
 	}
