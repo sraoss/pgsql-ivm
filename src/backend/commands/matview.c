@@ -60,6 +60,7 @@
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
 #include "rewrite/rewriteManip.h"
+#include "rewrite/rowsecurity.h"
 #include "nodes/pathnodes.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
@@ -281,7 +282,7 @@ static void mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan);
 static void mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type);
 static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
 static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
-
+static List *get_securityQuals(Oid relId,Query *query);
 
 /*
  * SetMatViewPopulatedState
@@ -1686,6 +1687,9 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			register_ENR(queryEnv, enr);
 
 			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			/* if base table has RLS, set secuirty condition to enr*/
+			rte->securityQuals = get_securityQuals(table->table_id, query);
+
 			query->rtable = lappend(query->rtable, rte);
 			table->old_rtes = lappend(table->old_rtes, rte);
 
@@ -1708,6 +1712,9 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			register_ENR(queryEnv, enr);
 
 			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			/* if base table has RLS, set secuirty condition to enr*/
+			rte->securityQuals = get_securityQuals(table->table_id, query);
+
 			query->rtable = lappend(query->rtable, rte);
 			table->new_rtes = lappend(table->new_rtes, rte);
 
@@ -1827,6 +1834,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	RawStmt *raw;
 	Query *sub;
 	int	i;
+	RangeTblEntry *enr_rte;
 
 	/* Create a ParseState for rewriting the view definition query */
 	pstate = make_parsestate(NULL);
@@ -1868,6 +1876,9 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	rte->insertedCols = NULL;
 	rte->updatedCols = NULL;
 	rte->extraUpdatedCols = NULL;
+	/* if base table has RLS, set secuirty condition to enr*/
+	enr_rte = (RangeTblEntry *)linitial(sub->rtable);
+	enr_rte->securityQuals = get_securityQuals(relid, sub);
 
 	return rte;
 }
@@ -4255,4 +4266,46 @@ bool
 isIvmColumn(const char *s)
 {
 	return (strncmp(s, "__ivm_", 6) == 0);
+}
+
+/*
+ * get_securityQuals
+ *
+ * Get row security policy on a relation.
+ * This is used by IVM for copying RLS from base table to enr.
+ */
+static List *
+get_securityQuals(Oid relId,Query *query)
+{
+	ParseState *pstate;
+	Relation rel;
+	RangeTblEntry *rte;
+	List *securityQuals;
+	List *withCheckOptions;
+	bool  hasRowSecurity;
+	bool  hasSubLinks;
+
+	securityQuals = NIL;
+	pstate = make_parsestate(NULL);
+
+	rel = table_open(relId, NoLock);
+	rte = addRangeTableEntryForRelation(pstate, rel, AccessShareLock, NULL, false, false);
+
+	get_row_security_policies(query, rte, 1,
+							  &securityQuals, &withCheckOptions,
+							  &hasRowSecurity, &hasSubLinks);
+	rte->securityQuals = list_concat(securityQuals, rte->securityQuals);
+
+	/*
+	 * Make sure the query is marked correctly if row level security
+	 * applies, or if the new quals had sublinks.
+	 */
+	if (hasRowSecurity)
+		query->hasRowSecurity = true;
+	if (hasSubLinks)
+		query->hasSubLinks = true;
+
+	table_close(rel, NoLock);
+
+	return securityQuals;
 }
