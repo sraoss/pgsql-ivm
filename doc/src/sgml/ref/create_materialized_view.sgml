@@ -282,6 +282,16 @@ ERROR:  system column is not supported with IVM
 
        <listitem>
         <para>
+         IMMV including non-immutable functions is not supported.
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
+ERROR:  functions in IMMV must be marked IMMUTABLE
+         </programlisting>
+        </para>
+        </listitem>
+
+       <listitem>
+        <para>
          IMMVs not supported by logical replication.
         </para>
         </listitem>
