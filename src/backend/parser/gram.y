@@ -640,7 +640,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	DOUBLE_P DROP
 
 	EACH ELSE ENABLE_P ENCODING ENCRYPTED END_P ENUM_P ESCAPE EVENT EXCEPT
-	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN
+	EXCLUDE EXCLUDING EXCLUSIVE EXECUTE EXISTS EXPLAIN EXPRESSION
 	EXTENSION EXTERNAL EXTRACT
 
 	FALSE_P FAMILY FETCH FILTER FIRST_P FLOAT_P FOLLOWING FOR
@@ -2128,6 +2128,23 @@ alter_table_cmd:
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_SetNotNull;
 					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> DROP EXPRESSION */
+			| ALTER opt_column ColId DROP EXPRESSION
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DropExpression;
+					n->name = $3;
+					$$ = (Node *)n;
+				}
+			/* ALTER TABLE <name> ALTER [COLUMN] <colname> DROP EXPRESSION IF EXISTS */
+			| ALTER opt_column ColId DROP EXPRESSION IF_P EXISTS
+				{
+					AlterTableCmd *n = makeNode(AlterTableCmd);
+					n->subtype = AT_DropExpression;
+					n->name = $3;
+					n->missing_ok = true;
 					$$ = (Node *)n;
 				}
 			/* ALTER TABLE <name> ALTER [COLUMN] <colname> SET STATISTICS <SignedIconst> */
@@ -15204,6 +15221,7 @@ unreserved_keyword:
 			| EXCLUSIVE
 			| EXECUTE
 			| EXPLAIN
+			| EXPRESSION
 			| EXTENSION
 			| EXTERNAL
 			| FAMILY
