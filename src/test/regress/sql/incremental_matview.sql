@@ -1455,5 +1455,8 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a 
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 
+-- LIMIT/OFFSET is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
+
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;

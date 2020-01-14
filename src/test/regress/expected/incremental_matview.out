@@ -5186,6 +5186,9 @@ ERROR:  nested subquery is not supported by IVM
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 ERROR:  functions in IMMV must be marked IMMUTABLE
+-- LIMIT/OFFSET is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
+ERROR:  LIMIT/OFFSET clause is not supported with IVM
 DROP TABLE mv_base_b CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1

@@ -1037,6 +1037,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* There is a possibility that we don't need to return an error */
 				if (qry->sortClause != NIL)
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
+				if (qry->limitOffset != NULL || qry->limitCount != NULL)
+					ereport(ERROR, (errmsg("LIMIT/OFFSET clause is not supported with IVM")));
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
