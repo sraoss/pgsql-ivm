@@ -235,7 +235,7 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
         </listitem>
        <listitem>
         <para>
-         CTE, WINDOW clause.
+         CTE, WINDOW, LIMIT and OFFSET clause.
         </para>
        </listitem>
       </itemizedlist>
@@ -279,6 +279,16 @@ ERROR:  system column is not supported with IVM
          </programlisting>
         </para>
        </listitem>
+
+       <listitem>
+        <para>
+         IMMV including non-immutable functions is not supported.
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
+ERROR:  functions in IMMV must be marked IMMUTABLE
+         </programlisting>
+        </para>
+        </listitem>
 
        <listitem>
         <para>

@@ -1436,7 +1436,19 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
+            LIMIT and OFFSET clause cannot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
             <acronym>IMMV</acronym> cannot contain system columns.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            <acronym>IMMV</acronym> cannot contain non-immutable functions.
           </para>
         </listitem>
 
