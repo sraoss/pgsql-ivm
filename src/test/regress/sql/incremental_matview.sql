@@ -1455,5 +1455,35 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a 
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 
+-- base table has row level security
+DROP USER IF EXISTS ivm_admin;
+DROP USER IF EXISTS ivm_user;
+CREATE USER ivm_admin;
+CREATE USER ivm_user;
+SET SESSION AUTHORIZATION ivm_admin;
+
+CREATE TABLE rls_tbl(id int, data text, owner name);
+INSERT INTO rls_tbl VALUES
+  (1,'foo','ivm_user'),
+  (2,'bar','postgres');
+CREATE POLICY rls_tbl_policy ON rls_tbl FOR SELECT TO PUBLIC USING(owner = current_user);
+CREATE POLICY rls_tbl_policy2 ON rls_tbl FOR INSERT TO PUBLIC WITH CHECK(current_user LIKE 'ivm_%');
+ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
+GRANT ALL on rls_tbl TO PUBLIC;
+
+SET SESSION AUTHORIZATION ivm_user;
+
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls AS SELECT * FROM rls_tbl;
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+INSERT INTO rls_tbl VALUES
+  (3,'baz','ivm_user'),
+  (4,'qux','postgres');
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+
+RESET SESSION AUTHORIZATION;
+DROP TABLE rls_tbl CASCADE;
+DROP USER ivm_user;
+DROP USER ivm_admin;
+
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;

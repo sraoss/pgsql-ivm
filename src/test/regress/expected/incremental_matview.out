@@ -5186,6 +5186,45 @@ ERROR:  nested subquery is not supported by IVM
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 ERROR:  functions in IMMV must be marked IMMUTABLE
+-- base table has row level security
+DROP USER IF EXISTS ivm_admin;
+NOTICE:  role "ivm_admin" does not exist, skipping
+DROP USER IF EXISTS ivm_user;
+NOTICE:  role "ivm_user" does not exist, skipping
+CREATE USER ivm_admin;
+CREATE USER ivm_user;
+SET SESSION AUTHORIZATION ivm_admin;
+CREATE TABLE rls_tbl(id int, data text, owner name);
+INSERT INTO rls_tbl VALUES
+  (1,'foo','ivm_user'),
+  (2,'bar','postgres');
+CREATE POLICY rls_tbl_policy ON rls_tbl FOR SELECT TO PUBLIC USING(owner = current_user);
+CREATE POLICY rls_tbl_policy2 ON rls_tbl FOR INSERT TO PUBLIC WITH CHECK(current_user LIKE 'ivm_%');
+ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
+GRANT ALL on rls_tbl TO PUBLIC;
+SET SESSION AUTHORIZATION ivm_user;
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls AS SELECT * FROM rls_tbl;
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+ id | data |  owner   
+----+------+----------
+  1 | foo  | ivm_user
+(1 row)
+
+INSERT INTO rls_tbl VALUES
+  (3,'baz','ivm_user'),
+  (4,'qux','postgres');
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+ id | data |  owner   
+----+------+----------
+  1 | foo  | ivm_user
+  3 | baz  | ivm_user
+(2 rows)
+
+RESET SESSION AUTHORIZATION;
+DROP TABLE rls_tbl CASCADE;
+NOTICE:  drop cascades to materialized view ivm_rls
+DROP USER ivm_user;
+DROP USER ivm_admin;
 DROP TABLE mv_base_b CASCADE;
 NOTICE:  drop cascades to 3 other objects
 DETAIL:  drop cascades to materialized view mv_ivm_1
