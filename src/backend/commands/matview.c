@@ -2205,7 +2205,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				/*
 				 * it means using int84gt( '>' operator). it will be replaced to make_op().
 				 */
-				opexpr = make_opclause(419, BOOLOID, false,
+				opId = OpernameGetOprid(list_make1(makeString(">")), INT8OID, INT4OID);
+				opexpr = make_opclause(opId, BOOLOID, false,
 								(Expr *)fn_node,
 								(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
 								InvalidOid, InvalidOid);
