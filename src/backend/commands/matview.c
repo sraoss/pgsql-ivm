@@ -1587,7 +1587,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					querytree = rte->subquery;
 					if (rte->lateral)
 					{
-						count_colname = getColumnNameStartWith(rte, "__ivm_exists");
+						int attnum;
+						count_colname = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 						in_exists = true;
 					}
 				}
@@ -1948,6 +1949,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	TargetEntry *tle_count;
 	FuncCall *fn;
 	Node *node;
+	int varno = 0;
 	Const	*dmy_arg = makeConst(INT4OID,
 								 -1,
 								 InvalidOid,
@@ -2039,16 +2041,21 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	foreach(tbl_lc, query->rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *)lfirst(tbl_lc);
+		varno++;
 		if (rte->subquery)
 		{
 			char *columnName;
+			int attnum;
 
 			/* search ivm_exists_count_X__ column in RangeTblEntry */
 			pstate->p_rtable = query->rtable;
-			columnName = getColumnNameStartWith(rte, "__ivm_exists");
+			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 			if (columnName == NULL)
 				continue;
-			node = scanRTEForColumn(pstate,rte,columnName,-1, 0, NULL);
+
+			node = (Node *)makeVar(varno ,attnum,
+					INT8OID, -1, InvalidOid, 0);
+
 			if (node == NULL)
 				continue;
 			tle_count = makeTargetEntry((Expr *) node,
@@ -2137,6 +2144,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				RangeTblEntry *rte;
 				RangeTblRef *rtr;
 				Alias *alias;
+				Oid opId;
 
 				TargetEntry *tle_count;
 				FuncCall *fn;
@@ -4294,14 +4302,16 @@ clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
  * and return the first found one or NULL if not found.
  */
 char *
-getColumnNameStartWith(RangeTblEntry *rte, char *str)
+getColumnNameStartWith(RangeTblEntry *rte, char *str, int *attnum)
 {
 	char *colname;
 	ListCell *lc;
 	Alias *alias = rte->eref;
 
+	(*attnum) = 0;
 	foreach(lc, alias->colnames)
 	{
+		(*attnum)++;
 		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
 		{
 			colname = pstrdup(strVal(lfirst(lc)));
