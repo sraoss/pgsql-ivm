@@ -3,7 +3,7 @@
  * pgstatfuncs.c
  *	  Functions for accessing the statistics collector data
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -459,8 +459,7 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -469,6 +468,8 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 	/* Translate command name into command type code. */
 	if (pg_strcasecmp(cmd, "VACUUM") == 0)
 		cmdtype = PROGRESS_COMMAND_VACUUM;
+	else if (pg_strcasecmp(cmd, "ANALYZE") == 0)
+		cmdtype = PROGRESS_COMMAND_ANALYZE;
 	else if (pg_strcasecmp(cmd, "CLUSTER") == 0)
 		cmdtype = PROGRESS_COMMAND_CLUSTER;
 	else if (pg_strcasecmp(cmd, "CREATE INDEX") == 0)
@@ -564,8 +565,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -726,7 +726,13 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			else
 				nulls[7] = true;
 
-			if (beentry->st_xact_start_timestamp != 0)
+			/*
+			 * Don't expose transaction time for walsenders; it confuses
+			 * monitoring, particularly because we don't keep the time up-to-
+			 * date.
+			 */
+			if (beentry->st_xact_start_timestamp != 0 &&
+				beentry->st_backendType != B_WAL_SENDER)
 				values[8] = TimestampTzGetDatum(beentry->st_xact_start_timestamp);
 			else
 				nulls[8] = true;

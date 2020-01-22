@@ -44,11 +44,10 @@
 #define TEXTDOMAIN PG_TEXTDOMAIN("plperl")
 
 /* perl stuff */
-#include "plperl.h"
-#include "plperl_helpers.h"
-
 /* string literal macros defining chunks of perl code */
 #include "perlchunks.h"
+#include "plperl.h"
+#include "plperl_helpers.h"
 /* defines PLPERL_SET_OPMASK */
 #include "plperl_opmask.h"
 
@@ -2148,8 +2147,6 @@ plperl_create_sub(plperl_proc_desc *prodesc, const char *s, Oid fn_oid)
 						prodesc->proname)));
 
 	prodesc->reference = subref;
-
-	return;
 }
 
 
@@ -2389,8 +2386,6 @@ plperl_call_perl_event_trigger_func(plperl_proc_desc *desc,
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
-
-	return;
 }
 
 static Datum

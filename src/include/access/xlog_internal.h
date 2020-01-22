@@ -11,7 +11,7 @@
  * Note: This file must be includable in both frontend and backend contexts,
  * to allow stand-alone tools like pg_receivewal to deal with WAL files.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/xlog_internal.h
@@ -31,7 +31,7 @@
 /*
  * Each page of XLOG file has a header like this:
  */
-#define XLOG_PAGE_MAGIC 0xD102	/* can be used as WAL version indicator */
+#define XLOG_PAGE_MAGIC 0xD104	/* can be used as WAL version indicator */
 
 typedef struct XLogPageHeaderData
 {
@@ -152,6 +152,10 @@ typedef XLogLongPageHeaderData *XLogLongPageHeader;
 /* Length of XLog file name */
 #define XLOG_FNAME_LEN	   24
 
+/*
+ * Generate a WAL segment file name.  Do not use this macro in a helper
+ * function allocating the result generated.
+ */
 #define XLogFileName(fname, tli, logSegNo, wal_segsz_bytes)	\
 	snprintf(fname, MAXFNAMELEN, "%08X%08X%08X", tli,		\
 			 (uint32) ((logSegNo) / XLogSegmentsPerXLogId(wal_segsz_bytes)), \

@@ -4,7 +4,7 @@
  * src/backend/utils/adt/formatting.c
  *
  *
- *	 Portions Copyright (c) 1999-2019, PostgreSQL Global Development Group
+ *	 Portions Copyright (c) 1999-2020, PostgreSQL Global Development Group
  *
  *
  *	 TO_CHAR(); TO_TIMESTAMP(); TO_DATE(); TO_NUMBER();
@@ -4128,7 +4128,7 @@ parse_datetime(text *date_txt, text *fmt, bool strict, Oid *typid,
 {
 	struct pg_tm tm;
 	fsec_t		fsec;
-	int			fprec = 0;
+	int			fprec;
 	uint32		flags;
 
 	do_to_timestamp(date_txt, fmt, strict, &tm, &fsec, &fprec, &flags, have_error);
@@ -4318,11 +4318,18 @@ do_to_timestamp(text *date_txt, text *fmt, bool std,
 	int			fmask;
 	bool		incache = false;
 
+	Assert(tm != NULL);
+	Assert(fsec != NULL);
+
 	date_str = text_to_cstring(date_txt);
 
 	ZERO_tmfc(&tmfc);
 	ZERO_tm(tm);
 	*fsec = 0;
+	if (fprec)
+		*fprec = 0;
+	if (flags)
+		*flags = 0;
 	fmask = 0;					/* bit mask for ValidateDate() */
 
 	fmt_len = VARSIZE_ANY_EXHDR(fmt);

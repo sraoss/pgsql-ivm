@@ -3,7 +3,7 @@
  * dict_int.c
  *	  Text search dictionary for integers
  *
- * Copyright (c) 2007-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2007-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/dict_int/dict_int.c
@@ -45,6 +45,11 @@ dintdict_init(PG_FUNCTION_ARGS)
 		if (strcmp(defel->defname, "maxlen") == 0)
 		{
 			d->maxlen = atoi(defGetString(defel));
+
+			if (d->maxlen < 1)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("maxlen value has to be >= 1")));
 		}
 		else if (strcmp(defel->defname, "rejectlong") == 0)
 		{

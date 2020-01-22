@@ -6,7 +6,7 @@
  *	  message integrity and endpoint authentication.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -431,6 +431,24 @@ PQsslAttributeNames(PGconn *conn)
 	static const char *const result[] = {NULL};
 
 	return result;
+}
+
+PQsslKeyPassHook_type
+PQgetSSLKeyPassHook(void)
+{
+	return NULL;
+}
+
+void
+PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook)
+{
+	return;
+}
+
+int
+PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn)
+{
+	return 0;
 }
 #endif							/* USE_SSL */
 

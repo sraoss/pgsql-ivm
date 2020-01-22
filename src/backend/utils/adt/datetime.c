@@ -3,7 +3,7 @@
  * datetime.c
  *	  Support functions for date/time types.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -313,8 +313,6 @@ j2date(int jd, int *year, int *month, int *day)
 	quad = julian * 2141 / 65536;
 	*day = julian - 7834 * quad / 256;
 	*month = (quad + 10) % MONTHS_PER_YEAR + 1;
-
-	return;
 }								/* j2date() */
 
 

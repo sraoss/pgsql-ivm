@@ -6,7 +6,7 @@
  * See src/backend/utils/misc/README for more information.
  *
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -204,6 +204,10 @@ static const char *show_log_file_mode(void);
 static const char *show_data_directory_mode(void);
 static bool check_backtrace_functions(char **newval, void **extra, GucSource source);
 static void assign_backtrace_functions(const char *newval, void *extra);
+static bool check_ssl_min_protocol_version(int *newval, void **extra,
+										   GucSource source);
+static bool check_ssl_max_protocol_version(int *newval, void **extra,
+										   GucSource source);
 static bool check_recovery_target_timeline(char **newval, void **extra, GucSource source);
 static void assign_recovery_target_timeline(const char *newval, void *extra);
 static bool check_recovery_target(char **newval, void **extra, GucSource source);
@@ -486,6 +490,7 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * GUC option variables that are exported from this module
  */
 bool		log_duration = false;
+bool		log_parameters_on_error = false;
 bool		Debug_print_plan = false;
 bool		Debug_print_parse = false;
 bool		Debug_print_rewritten = false;
@@ -1301,6 +1306,15 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"log_parameters_on_error", PGC_SUSET, LOGGING_WHAT,
+			gettext_noop("Logs bind parameters of the logged statements where possible."),
+			NULL
+		},
+		&log_parameters_on_error,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"debug_print_parse", PGC_USERSET, LOGGING_WHAT,
 			gettext_noop("Logs each query's parse tree."),
 			NULL
@@ -1777,7 +1791,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"allow_system_table_mods", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+		{"allow_system_table_mods", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Allows modifications of the structure of system tables."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
@@ -1956,6 +1970,15 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&data_sync_retry,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_receiver_create_temp_slot", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."),
+		},
+		&wal_receiver_create_temp_slot,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -3200,7 +3223,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BYTE
 		},
 		&pgstat_track_activity_query_size,
-		1024, 100, 102400,
+		1024, 100, 1048576,
 		NULL, NULL, NULL
 	},
 
@@ -4573,9 +4596,9 @@ static struct config_enum ConfigureNamesEnum[] =
 			GUC_SUPERUSER_ONLY
 		},
 		&ssl_min_protocol_version,
-		PG_TLS1_VERSION,
+		PG_TLS1_2_VERSION,
 		ssl_protocol_versions_info + 1, /* don't allow PG_TLS_ANY */
-		NULL, NULL, NULL
+		check_ssl_min_protocol_version, NULL, NULL
 	},
 
 	{
@@ -4587,7 +4610,7 @@ static struct config_enum ConfigureNamesEnum[] =
 		&ssl_max_protocol_version,
 		PG_TLS_ANY,
 		ssl_protocol_versions_info,
-		NULL, NULL, NULL
+		check_ssl_max_protocol_version, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -9497,8 +9520,7 @@ show_all_file_settings(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Scan the config files using current context as workspace */
 	conf = ProcessConfigFileInternal(PGC_SIGHUP, false, DEBUG3);
@@ -11583,6 +11605,49 @@ static void
 assign_backtrace_functions(const char *newval, void *extra)
 {
 	backtrace_symbol_list = (char *) extra;
+}
+
+static bool
+check_ssl_min_protocol_version(int *newval, void **extra, GucSource source)
+{
+	int			new_ssl_min_protocol_version = *newval;
+
+	/* PG_TLS_ANY is not supported for the minimum bound */
+	Assert(new_ssl_min_protocol_version > PG_TLS_ANY);
+
+	if (ssl_max_protocol_version &&
+		new_ssl_min_protocol_version > ssl_max_protocol_version)
+	{
+		GUC_check_errhint("\"%s\" cannot be higher than \"%s\".",
+						  "ssl_min_protocol_version",
+						  "ssl_max_protocol_version");
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+check_ssl_max_protocol_version(int *newval, void **extra, GucSource source)
+{
+	int			new_ssl_max_protocol_version = *newval;
+
+	/* if PG_TLS_ANY, there is no need to check the bounds */
+	if (new_ssl_max_protocol_version == PG_TLS_ANY)
+		return true;
+
+	if (ssl_min_protocol_version &&
+		ssl_min_protocol_version > new_ssl_max_protocol_version)
+	{
+		GUC_check_errhint("\"%s\" cannot be lower than \"%s\".",
+						  "ssl_max_protocol_version",
+						  "ssl_min_protocol_version");
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		return false;
+	}
+
+	return true;
 }
 
 static bool

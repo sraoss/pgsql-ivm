@@ -3,7 +3,7 @@
  * parse_coerce.c
  *		handle type coercions/conversions for parser
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1010,11 +1010,10 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 		int			rtindex = ((Var *) node)->varno;
 		int			sublevels_up = ((Var *) node)->varlevelsup;
 		int			vlocation = ((Var *) node)->location;
-		RangeTblEntry *rte;
+		ParseNamespaceItem *nsitem;
 
-		rte = GetRTEByRangeTablePosn(pstate, rtindex, sublevels_up);
-		expandRTE(rte, rtindex, sublevels_up, vlocation, false,
-				  NULL, &args);
+		nsitem = GetNSItemByRangeTablePosn(pstate, rtindex, sublevels_up);
+		args = expandNSItemVars(nsitem, sublevels_up, vlocation, NULL);
 	}
 	else
 		ereport(ERROR,

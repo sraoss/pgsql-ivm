@@ -8,7 +8,7 @@
  * pager open/close functions, all that stuff came with it.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/fe_utils/print.c
@@ -19,7 +19,6 @@
 
 #include <limits.h>
 #include <math.h>
-#include <signal.h>
 #include <unistd.h>
 
 #ifndef WIN32
@@ -41,7 +40,7 @@
  * Note: print.c's general strategy for when to check cancel_pressed is to do
  * so at completion of each row of output.
  */
-volatile bool cancel_pressed = false;
+volatile sig_atomic_t cancel_pressed = false;
 
 static bool always_ignore_sigpipe = false;
 
@@ -3619,8 +3618,6 @@ refresh_utf8format(const printTableOpt *opt)
 	popt->wrap_left = unicode_style.wrap_left;
 	popt->wrap_right = unicode_style.wrap_right;
 	popt->wrap_right_border = unicode_style.wrap_right_border;
-
-	return;
 }
 
 /*

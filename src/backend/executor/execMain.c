@@ -26,7 +26,7 @@
  *	before ExecutorEnd.  This can be omitted only in case of EXPLAIN,
  *	which should also omit ExecutorRun.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1101,10 +1101,10 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation)
 
 			/*
 			 * Okay only if there's a suitable INSTEAD OF trigger.  Messages
-			 * here should match rewriteHandler.c's rewriteTargetView, except
-			 * that we omit errdetail because we haven't got the information
-			 * handy (and given that we really shouldn't get here anyway, it's
-			 * not worth great exertion to get).
+			 * here should match rewriteHandler.c's rewriteTargetView and
+			 * RewriteQuery, except that we omit errdetail because we haven't
+			 * got the information handy (and given that we really shouldn't
+			 * get here anyway, it's not worth great exertion to get).
 			 */
 			switch (operation)
 			{
@@ -1843,14 +1843,14 @@ ExecPartitionCheckEmitError(ResultRelInfo *resultRelInfo,
 	if (resultRelInfo->ri_PartitionRoot)
 	{
 		TupleDesc	old_tupdesc;
-		AttrNumber *map;
+		AttrMap    *map;
 
 		root_relid = RelationGetRelid(resultRelInfo->ri_PartitionRoot);
 		tupdesc = RelationGetDescr(resultRelInfo->ri_PartitionRoot);
 
 		old_tupdesc = RelationGetDescr(resultRelInfo->ri_RelationDesc);
 		/* a reverse map */
-		map = convert_tuples_by_name_map_if_req(old_tupdesc, tupdesc);
+		map = build_attrmap_by_name_if_req(old_tupdesc, tupdesc);
 
 		/*
 		 * Partition-specific slot's tupdesc can't be changed, so allocate a
@@ -1929,13 +1929,13 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 				 */
 				if (resultRelInfo->ri_PartitionRoot)
 				{
-					AttrNumber *map;
+					AttrMap    *map;
 
 					rel = resultRelInfo->ri_PartitionRoot;
 					tupdesc = RelationGetDescr(rel);
 					/* a reverse map */
-					map = convert_tuples_by_name_map_if_req(orig_tupdesc,
-															tupdesc);
+					map = build_attrmap_by_name_if_req(orig_tupdesc,
+													   tupdesc);
 
 					/*
 					 * Partition-specific slot's tupdesc can't be changed, so
@@ -1978,13 +1978,13 @@ ExecConstraints(ResultRelInfo *resultRelInfo,
 			if (resultRelInfo->ri_PartitionRoot)
 			{
 				TupleDesc	old_tupdesc = RelationGetDescr(rel);
-				AttrNumber *map;
+				AttrMap    *map;
 
 				rel = resultRelInfo->ri_PartitionRoot;
 				tupdesc = RelationGetDescr(rel);
 				/* a reverse map */
-				map = convert_tuples_by_name_map_if_req(old_tupdesc,
-														tupdesc);
+				map = build_attrmap_by_name_if_req(old_tupdesc,
+												   tupdesc);
 
 				/*
 				 * Partition-specific slot's tupdesc can't be changed, so
@@ -2085,13 +2085,13 @@ ExecWithCheckOptions(WCOKind kind, ResultRelInfo *resultRelInfo,
 					if (resultRelInfo->ri_PartitionRoot)
 					{
 						TupleDesc	old_tupdesc = RelationGetDescr(rel);
-						AttrNumber *map;
+						AttrMap    *map;
 
 						rel = resultRelInfo->ri_PartitionRoot;
 						tupdesc = RelationGetDescr(rel);
 						/* a reverse map */
-						map = convert_tuples_by_name_map_if_req(old_tupdesc,
-																tupdesc);
+						map = build_attrmap_by_name_if_req(old_tupdesc,
+														   tupdesc);
 
 						/*
 						 * Partition-specific slot's tupdesc can't be changed,

@@ -5,7 +5,7 @@
  *	  strategy.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/buf_internals.h
@@ -15,16 +15,15 @@
 #ifndef BUFMGR_INTERNALS_H
 #define BUFMGR_INTERNALS_H
 
+#include "port/atomics.h"
 #include "storage/buf.h"
 #include "storage/bufmgr.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/smgr.h"
-#include "port/atomics.h"
 #include "storage/spin.h"
 #include "utils/relcache.h"
-
 
 /*
  * Buffer state is a single 32-bit variable where following data is combined.

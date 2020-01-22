@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the completionTag.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -253,7 +253,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
 ObjectAddress
-ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
+ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 				  ParamListInfo params, QueryEnvironment *queryEnv,
 				  char *completionTag)
 {
@@ -301,7 +301,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		ExecuteStmt *estmt = castNode(ExecuteStmt, query->utilityStmt);
 
 		Assert(!is_matview);	/* excluded by syntax */
-		ExecuteQuery(estmt, into, queryString, params, dest, completionTag);
+		ExecuteQuery(pstate, estmt, into, params, dest, completionTag);
 
 		/* get object address that intorel_startup saved for us */
 		address = ((DR_intorel *) dest)->reladdr;
@@ -385,7 +385,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		UpdateActiveSnapshotCommandId();
 
 		/* Create a QueryDesc, redirecting output to our tuple receiver */
-		queryDesc = CreateQueryDesc(plan, queryString,
+		queryDesc = CreateQueryDesc(plan, pstate->p_sourcetext,
 									GetActiveSnapshot(), InvalidSnapshot,
 									dest, params, queryEnv, 0);
 

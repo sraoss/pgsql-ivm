@@ -3,7 +3,7 @@
  * parse_func.c
  *		handle function calls in parser
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1913,13 +1913,15 @@ ParseComplexProjection(ParseState *pstate, const char *funcname, Node *first_arg
 	if (IsA(first_arg, Var) &&
 		((Var *) first_arg)->varattno == InvalidAttrNumber)
 	{
-		RangeTblEntry *rte;
+		ParseNamespaceItem *nsitem;
 
-		rte = GetRTEByRangeTablePosn(pstate,
-									 ((Var *) first_arg)->varno,
-									 ((Var *) first_arg)->varlevelsup);
+		nsitem = GetNSItemByRangeTablePosn(pstate,
+										   ((Var *) first_arg)->varno,
+										   ((Var *) first_arg)->varlevelsup);
 		/* Return a Var if funcname matches a column, else NULL */
-		return scanRTEForColumn(pstate, rte, funcname, location, 0, NULL);
+		return scanNSItemForColumn(pstate, nsitem,
+								   ((Var *) first_arg)->varlevelsup,
+								   funcname, location);
 	}
 
 	/*

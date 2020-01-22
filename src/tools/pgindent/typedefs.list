@@ -137,6 +137,7 @@ AttoptCacheEntry
 AttoptCacheKey
 AttrDefInfo
 AttrDefault
+AttrMap
 AttrMissing
 AttrNumber
 AttributeOpts
@@ -171,6 +172,7 @@ BTInsertStateData
 BTLeader
 BTMetaPageData
 BTOneVacInfo
+BTOptions
 BTPS_State
 BTPageOpaque
 BTPageOpaqueData
@@ -978,6 +980,7 @@ HashJoinTuple
 HashMemoryChunk
 HashMetaPage
 HashMetaPageData
+HashOptions
 HashPageOpaque
 HashPageOpaqueData
 HashPageStat
@@ -1213,7 +1216,11 @@ LPVOID
 LPWSTR
 LSEG
 LUID
+LVDeadTuples
+LVParallelState
 LVRelStats
+LVShared
+LVSharedIndStats
 LWLock
 LWLockHandle
 LWLockMinimallyPadded
@@ -2270,6 +2277,7 @@ SpGistLeafTupleData
 SpGistMetaPageData
 SpGistNodeTuple
 SpGistNodeTupleData
+SpGistOptions
 SpGistPageOpaque
 SpGistPageOpaqueData
 SpGistScanOpaque

@@ -48,7 +48,7 @@
  * in the file to be read or written while holding only shared lock.
  *
  *
- * Copyright (c) 2008-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2008-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/pg_stat_statements/pg_stat_statements.c
@@ -1415,8 +1415,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Switch into long-lived context to construct returned data structures */
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;

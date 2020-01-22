@@ -2,7 +2,7 @@
 #
 # Makefile for src/backend/utils/mb/Unicode
 #
-# Copyright (c) 2001-2019, PostgreSQL Global Development Group
+# Copyright (c) 2001-2020, PostgreSQL Global Development Group
 #
 # src/backend/utils/mb/Unicode/Makefile
 #
@@ -114,9 +114,6 @@ distclean: clean
 maintainer-clean: distclean
 	rm -f $(MAPS)
 
-
-DOWNLOAD = wget -O $@ --no-use-server-timestamps
-#DOWNLOAD = curl -o $@
 
 BIG5.TXT CNS11643.TXT:
 	$(DOWNLOAD) https://www.unicode.org/Public/MAPPINGS/OBSOLETE/EASTASIA/OTHER/$(@F)

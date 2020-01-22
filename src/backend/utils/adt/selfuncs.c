@@ -10,7 +10,7 @@
  *	  Index cost functions are located via the index AM's API struct,
  *	  which is obtained from the handler function registered in pg_am.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -4613,6 +4613,52 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 									rte->securityQuals == NIL &&
 									(pg_class_aclcheck(rte->relid, userid,
 													   ACL_SELECT) == ACLCHECK_OK);
+
+								/*
+								 * If the user doesn't have permissions to
+								 * access an inheritance child relation, check
+								 * the permissions of the table actually
+								 * mentioned in the query, since most likely
+								 * the user does have that permission.  Note
+								 * that whole-table select privilege on the
+								 * parent doesn't quite guarantee that the
+								 * user could read all columns of the child.
+								 * But in practice it's unlikely that any
+								 * interesting security violation could result
+								 * from allowing access to the expression
+								 * index's stats, so we allow it anyway.  See
+								 * similar code in examine_simple_variable()
+								 * for additional comments.
+								 */
+								if (!vardata->acl_ok &&
+									root->append_rel_array != NULL)
+								{
+									AppendRelInfo *appinfo;
+									Index		varno = index->rel->relid;
+
+									appinfo = root->append_rel_array[varno];
+									while (appinfo &&
+										   planner_rt_fetch(appinfo->parent_relid,
+															root)->rtekind == RTE_RELATION)
+									{
+										varno = appinfo->parent_relid;
+										appinfo = root->append_rel_array[varno];
+									}
+									if (varno != index->rel->relid)
+									{
+										/* Repeat access check on this rel */
+										rte = planner_rt_fetch(varno, root);
+										Assert(rte->rtekind == RTE_RELATION);
+
+										userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
+										vardata->acl_ok =
+											rte->securityQuals == NIL &&
+											(pg_class_aclcheck(rte->relid,
+															   userid,
+															   ACL_SELECT) == ACLCHECK_OK);
+									}
+								}
 							}
 							else
 							{
@@ -4690,6 +4736,76 @@ examine_simple_variable(PlannerInfo *root, Var *var,
 									ACL_SELECT) == ACLCHECK_OK) ||
 				 (pg_attribute_aclcheck(rte->relid, var->varattno, userid,
 										ACL_SELECT) == ACLCHECK_OK));
+
+			/*
+			 * If the user doesn't have permissions to access an inheritance
+			 * child relation or specifically this attribute, check the
+			 * permissions of the table/column actually mentioned in the
+			 * query, since most likely the user does have that permission
+			 * (else the query will fail at runtime), and if the user can read
+			 * the column there then he can get the values of the child table
+			 * too.  To do that, we must find out which of the root parent's
+			 * attributes the child relation's attribute corresponds to.
+			 */
+			if (!vardata->acl_ok && var->varattno > 0 &&
+				root->append_rel_array != NULL)
+			{
+				AppendRelInfo *appinfo;
+				Index		varno = var->varno;
+				int			varattno = var->varattno;
+				bool		found = false;
+
+				appinfo = root->append_rel_array[varno];
+
+				/*
+				 * Partitions are mapped to their immediate parent, not the
+				 * root parent, so must be ready to walk up multiple
+				 * AppendRelInfos.  But stop if we hit a parent that is not
+				 * RTE_RELATION --- that's a flattened UNION ALL subquery, not
+				 * an inheritance parent.
+				 */
+				while (appinfo &&
+					   planner_rt_fetch(appinfo->parent_relid,
+										root)->rtekind == RTE_RELATION)
+				{
+					int			parent_varattno;
+
+					found = false;
+					if (varattno <= 0 || varattno > appinfo->num_child_cols)
+						break;	/* safety check */
+					parent_varattno = appinfo->parent_colnos[varattno - 1];
+					if (parent_varattno == 0)
+						break;	/* Var is local to child */
+
+					varno = appinfo->parent_relid;
+					varattno = parent_varattno;
+					found = true;
+
+					/* If the parent is itself a child, continue up. */
+					appinfo = root->append_rel_array[varno];
+				}
+
+				/*
+				 * In rare cases, the Var may be local to the child table, in
+				 * which case, we've got to live with having no access to this
+				 * column's stats.
+				 */
+				if (!found)
+					return;
+
+				/* Repeat the access check on this parent rel & column */
+				rte = planner_rt_fetch(varno, root);
+				Assert(rte->rtekind == RTE_RELATION);
+
+				userid = rte->checkAsUser ? rte->checkAsUser : GetUserId();
+
+				vardata->acl_ok =
+					rte->securityQuals == NIL &&
+					((pg_class_aclcheck(rte->relid, userid,
+										ACL_SELECT) == ACLCHECK_OK) ||
+					 (pg_attribute_aclcheck(rte->relid, varattno, userid,
+											ACL_SELECT) == ACLCHECK_OK));
+			}
 		}
 		else
 		{
@@ -6240,7 +6356,8 @@ spgcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 
 typedef struct
 {
-	bool		haveFullScan;
+	bool		attHasFullScan[INDEX_MAX_KEYS];
+	bool		attHasNormalScan[INDEX_MAX_KEYS];
 	double		partialEntries;
 	double		exactEntries;
 	double		searchEntries;
@@ -6336,16 +6453,21 @@ gincost_pattern(IndexOptInfo *index, int indexcol,
 		counts->searchEntries++;
 	}
 
-	if (searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY)
+	if (searchMode == GIN_SEARCH_MODE_DEFAULT)
+	{
+		counts->attHasNormalScan[indexcol] = true;
+	}
+	else if (searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY)
 	{
 		/* Treat "include empty" like an exact-match item */
+		counts->attHasNormalScan[indexcol] = true;
 		counts->exactEntries++;
 		counts->searchEntries++;
 	}
-	else if (searchMode != GIN_SEARCH_MODE_DEFAULT)
+	else
 	{
 		/* It's GIN_SEARCH_MODE_ALL */
-		counts->haveFullScan = true;
+		counts->attHasFullScan[indexcol] = true;
 	}
 
 	return true;
@@ -6481,7 +6603,8 @@ gincost_scalararrayopexpr(PlannerInfo *root,
 			/* We ignore array elements that are unsatisfiable patterns */
 			numPossible++;
 
-			if (elemcounts.haveFullScan)
+			if (elemcounts.attHasFullScan[indexcol] &&
+				!elemcounts.attHasNormalScan[indexcol])
 			{
 				/*
 				 * Full index scan will be required.  We treat this as if
@@ -6538,6 +6661,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				numEntries;
 	GinQualCounts counts;
 	bool		matchPossible;
+	bool		fullIndexScan;
 	double		partialScale;
 	double		entryPagesFetched,
 				dataPagesFetched,
@@ -6549,6 +6673,7 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	Relation	indexRel;
 	GinStatsData ginStats;
 	ListCell   *lc;
+	int			i;
 
 	/*
 	 * Obtain statistical information from the meta page, if possible.  Else
@@ -6705,7 +6830,23 @@ gincostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		return;
 	}
 
-	if (counts.haveFullScan || indexQuals == NIL)
+	/*
+	 * If attribute has a full scan and at the same time doesn't have normal
+	 * scan, then we'll have to scan all non-null entries of that attribute.
+	 * Currently, we don't have per-attribute statistics for GIN.  Thus, we
+	 * must assume the whole GIN index has to be scanned in this case.
+	 */
+	fullIndexScan = false;
+	for (i = 0; i < index->nkeycolumns; i++)
+	{
+		if (counts.attHasFullScan[i] && !counts.attHasNormalScan[i])
+		{
+			fullIndexScan = true;
+			break;
+		}
+	}
+
+	if (fullIndexScan || indexQuals == NIL)
 	{
 		/*
 		 * Full index scan will be required.  We treat this as if every key in

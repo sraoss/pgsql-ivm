@@ -2,7 +2,7 @@
  *
  * reindexdb
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * src/bin/scripts/reindexdb.c
  *
@@ -14,6 +14,7 @@
 #include "catalog/pg_class_d.h"
 #include "common.h"
 #include "common/logging.h"
+#include "fe_utils/cancel.h"
 #include "fe_utils/connect.h"
 #include "fe_utils/simple_list.h"
 #include "fe_utils/string_utils.h"
@@ -187,7 +188,7 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	setup_cancel_handler();
+	setup_cancel_handler(NULL);
 
 	if (alldb)
 	{

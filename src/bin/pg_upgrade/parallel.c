@@ -3,7 +3,7 @@
  *
  *	multi-process support
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/parallel.c
  */
 
@@ -148,8 +148,6 @@ parallel_exec_prog(const char *log_file, const char *opt_log_file,
 		thread_handles[parallel_jobs - 1] = child;
 #endif
 	}
-
-	return;
 }
 
 
@@ -263,8 +261,6 @@ parallel_transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 		thread_handles[parallel_jobs - 1] = child;
 #endif
 	}
-
-	return;
 }
 
 

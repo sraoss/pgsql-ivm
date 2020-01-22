@@ -3,7 +3,7 @@
  * pg_type.c
  *	  routines to support manipulation of the pg_type relation
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -785,15 +785,12 @@ makeArrayTypeName(const char *typeName, Oid typeNamespace)
 {
 	char	   *arr = (char *) palloc(NAMEDATALEN);
 	int			namelen = strlen(typeName);
-	Relation	pg_type_desc;
 	int			i;
 
 	/*
 	 * The idea is to prepend underscores as needed until we make a name that
 	 * doesn't collide with anything...
 	 */
-	pg_type_desc = table_open(TypeRelationId, AccessShareLock);
-
 	for (i = 1; i < NAMEDATALEN - 1; i++)
 	{
 		arr[i - 1] = '_';
@@ -809,8 +806,6 @@ makeArrayTypeName(const char *typeName, Oid typeNamespace)
 								   ObjectIdGetDatum(typeNamespace)))
 			break;
 	}
-
-	table_close(pg_type_desc, AccessShareLock);
 
 	if (i >= NAMEDATALEN - 1)
 		ereport(ERROR,

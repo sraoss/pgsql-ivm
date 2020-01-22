@@ -3,7 +3,7 @@
  *
  *	tablespace functions
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/tablespace.c
  */
 
@@ -100,8 +100,6 @@ get_tablespace_paths(void)
 	PQclear(res);
 
 	PQfinish(conn);
-
-	return;
 }
 
 

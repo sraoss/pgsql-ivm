@@ -3,7 +3,7 @@
  * nodeModifyTable.c
  *	  routines to handle ModifyTable nodes.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -411,7 +411,6 @@ ExecInsert(ModifyTableState *mtstate,
 		 * them.
 		 */
 		slot->tts_tableOid = RelationGetRelid(resultRelInfo->ri_RelationDesc);
-
 	}
 	else
 	{
@@ -2526,9 +2525,6 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 
 		econtext = mtstate->ps.ps_ExprContext;
 		relationDesc = resultRelInfo->ri_RelationDesc->rd_att;
-
-		/* carried forward solely for the benefit of explain */
-		mtstate->mt_excludedtlist = node->exclRelTlist;
 
 		/* create state for DO UPDATE SET operation */
 		resultRelInfo->ri_onConflict = makeNode(OnConflictSetState);

@@ -3,7 +3,7 @@
  * auth.c
  *	  Routines to handle network authentication
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -38,7 +38,6 @@
 #include "storage/ipc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
-
 
 /*----------------------------------------------------------------
  * Global authentication functions
@@ -78,9 +77,7 @@ static int	ident_inet(hbaPort *port);
  * Peer authentication
  *----------------------------------------------------------------
  */
-#ifdef HAVE_UNIX_SOCKETS
 static int	auth_peer(hbaPort *port);
-#endif
 
 
 /*----------------------------------------------------------------
@@ -560,11 +557,7 @@ ClientAuthentication(Port *port)
 			break;
 
 		case uaPeer:
-#ifdef HAVE_UNIX_SOCKETS
 			status = auth_peer(port);
-#else
-			Assert(false);
-#endif
 			break;
 
 		case uaIdent:
@@ -1985,16 +1978,16 @@ ident_inet_done:
  *
  *	Iff authorized, return STATUS_OK, otherwise return STATUS_ERROR.
  */
-#ifdef HAVE_UNIX_SOCKETS
-
 static int
 auth_peer(hbaPort *port)
 {
 	uid_t		uid;
 	gid_t		gid;
+#ifndef WIN32
 	struct passwd *pw;
 	char	   *peer_user;
 	int			ret;
+#endif
 
 	if (getpeereid(port->sock, &uid, &gid) != 0)
 	{
@@ -2010,6 +2003,7 @@ auth_peer(hbaPort *port)
 		return STATUS_ERROR;
 	}
 
+#ifndef WIN32
 	errno = 0;					/* clear errno before call */
 	pw = getpwuid(uid);
 	if (!pw)
@@ -2031,8 +2025,12 @@ auth_peer(hbaPort *port)
 	pfree(peer_user);
 
 	return ret;
+#else
+	/* should have failed with ENOSYS above */
+	Assert(false);
+	return STATUS_ERROR;
+#endif
 }
-#endif							/* HAVE_UNIX_SOCKETS */
 
 
 /*----------------------------------------------------------------

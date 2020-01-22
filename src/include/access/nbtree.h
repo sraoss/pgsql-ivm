@@ -4,7 +4,7 @@
  *	  header file for postgres btree access method implementation.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/nbtree.h
@@ -18,6 +18,7 @@
 #include "access/itup.h"
 #include "access/sdir.h"
 #include "access/xlogreader.h"
+#include "catalog/pg_am_d.h"
 #include "catalog/pg_index.h"
 #include "lib/stringinfo.h"
 #include "storage/bufmgr.h"
@@ -131,8 +132,8 @@ typedef struct BTMetaPageData
 #define BTREE_METAPAGE	0		/* first page is meta */
 #define BTREE_MAGIC		0x053162	/* magic number in metapage */
 #define BTREE_VERSION	4		/* current version number */
-#define BTREE_MIN_VERSION	2	/* minimal supported version number */
-#define BTREE_NOVAC_VERSION	3	/* minimal version with all meta fields */
+#define BTREE_MIN_VERSION	2	/* minimum supported version */
+#define BTREE_NOVAC_VERSION	3	/* version with all meta fields set */
 
 /*
  * Maximum size of a btree index entry, including its tuple header.
@@ -262,9 +263,8 @@ typedef struct BTMetaPageData
  * offset field only stores the number of columns/attributes when the
  * INDEX_ALT_TID_MASK bit is set, which doesn't count the trailing heap
  * TID column sometimes stored in pivot tuples -- that's represented by
- * the presence of BT_HEAP_TID_ATTR.  The INDEX_ALT_TID_MASK bit in t_info
- * is always set on BTREE_VERSION 4.  BT_HEAP_TID_ATTR can only be set on
- * BTREE_VERSION 4.
+ * the presence of BT_PIVOT_HEAP_TID_ATTR.  The INDEX_ALT_TID_MASK bit in
+ * t_info is always set on BTREE_VERSION 4 pivot tuples.
  *
  * In version 3 indexes, the INDEX_ALT_TID_MASK flag might not be set in
  * pivot tuples.  In that case, the number of key columns is implicitly
@@ -295,12 +295,12 @@ typedef struct BTMetaPageData
 /* Item pointer offset bits */
 #define BT_RESERVED_OFFSET_MASK		0xF000
 #define BT_N_KEYS_OFFSET_MASK		0x0FFF
-#define BT_HEAP_TID_ATTR			0x1000
+#define BT_PIVOT_HEAP_TID_ATTR		0x1000
 
-/* Get/set downlink block number */
-#define BTreeInnerTupleGetDownLink(itup) \
+/* Get/set downlink block number in pivot tuple */
+#define BTreeTupleGetDownLink(itup) \
 	ItemPointerGetBlockNumberNoCheck(&((itup)->t_tid))
-#define BTreeInnerTupleSetDownLink(itup, blkno) \
+#define BTreeTupleSetDownLink(itup, blkno) \
 	ItemPointerSetBlockNumber(&((itup)->t_tid), (blkno))
 
 /*
@@ -346,7 +346,7 @@ typedef struct BTMetaPageData
 #define BTreeTupleGetHeapTID(itup) \
 	( \
 	  (itup)->t_info & INDEX_ALT_TID_MASK && \
-	  (ItemPointerGetOffsetNumberNoCheck(&(itup)->t_tid) & BT_HEAP_TID_ATTR) != 0 ? \
+	  (ItemPointerGetOffsetNumberNoCheck(&(itup)->t_tid) & BT_PIVOT_HEAP_TID_ATTR) != 0 ? \
 	  ( \
 		(ItemPointer) (((char *) (itup) + IndexTupleSize(itup)) - \
 					   sizeof(ItemPointerData)) \
@@ -361,7 +361,7 @@ typedef struct BTMetaPageData
 	do { \
 		Assert((itup)->t_info & INDEX_ALT_TID_MASK); \
 		ItemPointerSetOffsetNumber(&(itup)->t_tid, \
-								   ItemPointerGetOffsetNumberNoCheck(&(itup)->t_tid) | BT_HEAP_TID_ATTR); \
+								   ItemPointerGetOffsetNumberNoCheck(&(itup)->t_tid) | BT_PIVOT_HEAP_TID_ATTR); \
 	} while(0)
 
 /*
@@ -680,6 +680,23 @@ typedef BTScanOpaqueData *BTScanOpaque;
 #define SK_BT_DESC			(INDOPTION_DESC << SK_BT_INDOPTION_SHIFT)
 #define SK_BT_NULLS_FIRST	(INDOPTION_NULLS_FIRST << SK_BT_INDOPTION_SHIFT)
 
+typedef struct BTOptions
+{
+	int32		varlena_header_;	/* varlena header (do not touch directly!) */
+	int			fillfactor;		/* page fill factor in percent (0..100) */
+	/* fraction of newly inserted tuples prior to trigger index cleanup */
+	float8		vacuum_cleanup_index_scale_factor;
+} BTOptions;
+
+#define BTGetFillFactor(relation) \
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
+				 relation->rd_rel->relam == BTREE_AM_OID), \
+	 (relation)->rd_options ? \
+	 ((BTOptions *) (relation)->rd_options)->fillfactor : \
+	 BTREE_DEFAULT_FILLFACTOR)
+#define BTGetTargetPageFreeSpace(relation) \
+	(BLCKSZ * (100 - BTGetFillFactor(relation)) / 100)
+
 /*
  * Constant definition for progress reporting.  Phase numbers must match
  * btbuildphasename.
@@ -730,7 +747,7 @@ extern void _bt_parallel_advance_array_keys(IndexScanDesc scan);
  */
 extern bool _bt_doinsert(Relation rel, IndexTuple itup,
 						 IndexUniqueCheck checkUnique, Relation heapRel);
-extern void _bt_finish_split(Relation rel, Buffer bbuf, BTStack stack);
+extern void _bt_finish_split(Relation rel, Buffer lbuf, BTStack stack);
 extern Buffer _bt_getstackbuf(Relation rel, BTStack stack, BlockNumber child);
 
 /*
@@ -758,11 +775,11 @@ extern Buffer _bt_relandgetbuf(Relation rel, Buffer obuf,
 extern void _bt_relbuf(Relation rel, Buffer buf);
 extern void _bt_pageinit(Page page, Size size);
 extern bool _bt_page_recyclable(Page page);
-extern void _bt_delitems_delete(Relation rel, Buffer buf,
-								OffsetNumber *itemnos, int nitems, Relation heapRel);
 extern void _bt_delitems_vacuum(Relation rel, Buffer buf,
-								OffsetNumber *itemnos, int nitems,
-								BlockNumber lastBlockVacuumed);
+								OffsetNumber *deletable, int ndeletable);
+extern void _bt_delitems_delete(Relation rel, Buffer buf,
+								OffsetNumber *deletable, int ndeletable,
+								Relation heapRel);
 extern int	_bt_pagedel(Relation rel, Buffer buf);
 
 /*

@@ -4,7 +4,7 @@
  *	  PREPARE, EXECUTE and DEALLOCATE commands, and prepared-stmt storage
  *
  *
- * Copyright (c) 2002-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * src/include/commands/prepare.h
  *
@@ -35,10 +35,11 @@ typedef struct
 
 
 /* Utility statements PREPARE, EXECUTE, DEALLOCATE, EXPLAIN EXECUTE */
-extern void PrepareQuery(PrepareStmt *stmt, const char *queryString,
+extern void PrepareQuery(ParseState *pstate, PrepareStmt *stmt,
 						 int stmt_location, int stmt_len);
-extern void ExecuteQuery(ExecuteStmt *stmt, IntoClause *intoClause,
-						 const char *queryString, ParamListInfo params,
+extern void ExecuteQuery(ParseState *pstate,
+						 ExecuteStmt *stmt, IntoClause *intoClause,
+						 ParamListInfo params,
 						 DestReceiver *dest, char *completionTag);
 extern void DeallocateQuery(DeallocateStmt *stmt);
 extern void ExplainExecuteQuery(ExecuteStmt *execstmt, IntoClause *into,

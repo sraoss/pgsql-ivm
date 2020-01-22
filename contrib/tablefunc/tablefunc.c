@@ -10,7 +10,7 @@
  * And contributors:
  * Nabil Sayegh <postgresql@e-trolley.de>
  *
- * Copyright (c) 2002-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * Permission to use, copy, modify, and distribute this software and its
  * documentation for any purpose, without fee, and without a written agreement
@@ -373,8 +373,7 @@ crosstab(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 
@@ -650,8 +649,7 @@ crosstab_hash(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -762,6 +760,11 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 
 			/* get the category from the current sql result tuple */
 			catname = SPI_getvalue(spi_tuple, spi_tupdesc, 1);
+			if (catname == NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("provided \"categories\" SQL must " \
+								"not return NULL values")));
 
 			SPIcontext = MemoryContextSwitchTo(per_query_ctx);
 
@@ -1006,8 +1009,7 @@ connectby_text(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	if (fcinfo->nargs == 6)
 	{
@@ -1086,8 +1088,7 @@ connectby_text_serial(PG_FUNCTION_ARGS)
 		rsinfo->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	if (fcinfo->nargs == 7)
 	{

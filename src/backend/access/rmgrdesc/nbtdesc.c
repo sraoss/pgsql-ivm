@@ -3,7 +3,7 @@
  * nbtdesc.c
  *	  rmgr descriptor routines for access/nbtree/nbtxlog.c
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -46,16 +46,15 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 			{
 				xl_btree_vacuum *xlrec = (xl_btree_vacuum *) rec;
 
-				appendStringInfo(buf, "lastBlockVacuumed %u",
-								 xlrec->lastBlockVacuumed);
+				appendStringInfo(buf, "ndeleted %u", xlrec->ndeleted);
 				break;
 			}
 		case XLOG_BTREE_DELETE:
 			{
 				xl_btree_delete *xlrec = (xl_btree_delete *) rec;
 
-				appendStringInfo(buf, "%d items, latest removed xid %u",
-								 xlrec->nitems, xlrec->latestRemovedXid);
+				appendStringInfo(buf, "latestRemovedXid %u; ndeleted %u",
+								 xlrec->latestRemovedXid, xlrec->ndeleted);
 				break;
 			}
 		case XLOG_BTREE_MARK_PAGE_HALFDEAD:

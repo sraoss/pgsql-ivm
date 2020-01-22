@@ -29,7 +29,7 @@
  * in the current environment, but that may change if the row_security GUC or
  * the current role changes.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  */
 #include "postgres.h"
@@ -394,8 +394,6 @@ get_row_security_policies(Query *root, RangeTblEntry *rte, int rt_index,
 	 * when necessary (eg: role changes)
 	 */
 	*hasRowSecurity = true;
-
-	return;
 }
 
 /*

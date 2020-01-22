@@ -8,7 +8,7 @@
  * higher-level API provided by parser.h.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/parser/scanner.h
@@ -48,7 +48,7 @@ typedef union core_YYSTYPE
  * However, those are not defined in this file, because bison insists on
  * defining them for itself.  The token codes used by the core scanner are
  * the ASCII characters plus these:
- *	%token <str>	IDENT FCONST SCONST BCONST XCONST Op
+ *	%token <str>	IDENT UIDENT FCONST SCONST USCONST BCONST XCONST Op
  *	%token <ival>	ICONST PARAM
  *	%token			TYPECAST DOT_DOT COLON_EQUALS EQUALS_GREATER
  *	%token			LESS_EQUALS GREATER_EQUALS NOT_EQUALS
@@ -99,6 +99,7 @@ typedef struct core_yy_extra_type
 	int			literallen;		/* actual current string length */
 	int			literalalloc;	/* current allocated buffer size */
 
+	int			state_before_str_stop;	/* start cond. before end quote */
 	int			xcdepth;		/* depth of nesting in slash-star comments */
 	char	   *dolqstart;		/* current $foo$ quote start string */
 

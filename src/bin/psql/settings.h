@@ -1,16 +1,15 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/settings.h
  */
 #ifndef SETTINGS_H
 #define SETTINGS_H
 
-
-#include "variables.h"
 #include "fe_utils/print.h"
+#include "variables.h"
 
 #define DEFAULT_CSV_FIELD_SEP ','
 #define DEFAULT_FIELD_SEP "|"

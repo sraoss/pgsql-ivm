@@ -2,7 +2,7 @@
  *
  * clusterdb
  *
- * Portions Copyright (c) 2002-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * src/bin/scripts/clusterdb.c
  *
@@ -12,6 +12,7 @@
 #include "postgres_fe.h"
 #include "common.h"
 #include "common/logging.h"
+#include "fe_utils/cancel.h"
 #include "fe_utils/simple_list.h"
 #include "fe_utils/string_utils.h"
 
@@ -133,7 +134,7 @@ main(int argc, char *argv[])
 		exit(1);
 	}
 
-	setup_cancel_handler();
+	setup_cancel_handler(NULL);
 
 	if (alldb)
 	{

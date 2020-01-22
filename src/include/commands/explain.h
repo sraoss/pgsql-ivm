@@ -3,7 +3,7 @@
  * explain.h
  *	  prototypes for explain.c
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * src/include/commands/explain.h
@@ -46,6 +46,7 @@ typedef struct ExplainState
 	List	   *rtable_names;	/* alias names for RTEs */
 	List	   *deparse_cxt;	/* context list for deparsing expressions */
 	Bitmapset  *printed_subplans;	/* ids of SubPlans we've printed */
+	bool		hide_workers;	/* set if we find an invisible Gather */
 } ExplainState;
 
 /* Hook for plugins to get control in ExplainOneQuery() */
@@ -63,8 +64,8 @@ typedef const char *(*explain_get_index_name_hook_type) (Oid indexId);
 extern PGDLLIMPORT explain_get_index_name_hook_type explain_get_index_name_hook;
 
 
-extern void ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
-						 ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest);
+extern void ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
+						 ParamListInfo params, DestReceiver *dest);
 
 extern ExplainState *NewExplainState(void);
 

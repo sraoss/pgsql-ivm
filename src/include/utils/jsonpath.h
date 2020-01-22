@@ -3,7 +3,7 @@
  * jsonpath.h
  *	Definitions for jsonpath datatype
  *
- * Copyright (c) 2019, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/include/utils/jsonpath.h
@@ -15,8 +15,8 @@
 #define JSONPATH_H
 
 #include "fmgr.h"
-#include "utils/jsonb.h"
 #include "nodes/pg_list.h"
+#include "utils/jsonb.h"
 
 typedef struct
 {

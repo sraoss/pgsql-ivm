@@ -4,7 +4,7 @@
  *	  PostgreSQL logical replay/reorder buffer management
  *
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -131,13 +131,21 @@ typedef struct ReorderBufferTupleCidEnt
 	CommandId	combocid;		/* just for debugging */
 } ReorderBufferTupleCidEnt;
 
+/* Virtual file descriptor with file offset tracking */
+typedef struct TXNEntryFile
+{
+	File		vfd;			/* -1 when the file is closed */
+	off_t		curOffset;		/* offset for next write or read. Reset to 0
+								 * when vfd is opened. */
+} TXNEntryFile;
+
 /* k-way in-order change iteration support structures */
 typedef struct ReorderBufferIterTXNEntry
 {
 	XLogRecPtr	lsn;
 	ReorderBufferChange *change;
 	ReorderBufferTXN *txn;
-	int			fd;
+	TXNEntryFile file;
 	XLogSegNo	segno;
 } ReorderBufferIterTXNEntry;
 
@@ -207,7 +215,8 @@ static void AssertTXNLsnOrder(ReorderBuffer *rb);
  * subtransactions
  * ---------------------------------------
  */
-static ReorderBufferIterTXNState *ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn);
+static void ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn,
+									 ReorderBufferIterTXNState *volatile *iter_state);
 static ReorderBufferChange *ReorderBufferIterTXNNext(ReorderBuffer *rb, ReorderBufferIterTXNState *state);
 static void ReorderBufferIterTXNFinish(ReorderBuffer *rb,
 									   ReorderBufferIterTXNState *state);
@@ -223,7 +232,7 @@ static void ReorderBufferSerializeTXN(ReorderBuffer *rb, ReorderBufferTXN *txn);
 static void ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 										 int fd, ReorderBufferChange *change);
 static Size ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
-										int *fd, XLogSegNo *segno);
+										TXNEntryFile *file, XLogSegNo *segno);
 static void ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 									   char *change);
 static void ReorderBufferRestoreCleanup(ReorderBuffer *rb, ReorderBufferTXN *txn);
@@ -731,7 +740,7 @@ AssertTXNLsnOrder(ReorderBuffer *rb)
 			Assert(prev_first_lsn < cur_txn->first_lsn);
 
 		/* known-as-subtxn txns must not be listed */
-		Assert(!cur_txn->is_known_as_subxact);
+		Assert(!rbtxn_is_known_subxact(cur_txn));
 
 		prev_first_lsn = cur_txn->first_lsn;
 	}
@@ -751,7 +760,7 @@ AssertTXNLsnOrder(ReorderBuffer *rb)
 			Assert(prev_base_snap_lsn < cur_txn->base_snapshot_lsn);
 
 		/* known-as-subtxn txns must not be listed */
-		Assert(!cur_txn->is_known_as_subxact);
+		Assert(!rbtxn_is_known_subxact(cur_txn));
 
 		prev_base_snap_lsn = cur_txn->base_snapshot_lsn;
 	}
@@ -774,7 +783,7 @@ ReorderBufferGetOldestTXN(ReorderBuffer *rb)
 
 	txn = dlist_head_element(ReorderBufferTXN, node, &rb->toplevel_by_lsn);
 
-	Assert(!txn->is_known_as_subxact);
+	Assert(!rbtxn_is_known_subxact(txn));
 	Assert(txn->first_lsn != InvalidXLogRecPtr);
 	return txn;
 }
@@ -834,7 +843,7 @@ ReorderBufferAssignChild(ReorderBuffer *rb, TransactionId xid,
 
 	if (!new_sub)
 	{
-		if (subtxn->is_known_as_subxact)
+		if (rbtxn_is_known_subxact(subtxn))
 		{
 			/* already associated, nothing to do */
 			return;
@@ -850,7 +859,7 @@ ReorderBufferAssignChild(ReorderBuffer *rb, TransactionId xid,
 		}
 	}
 
-	subtxn->is_known_as_subxact = true;
+	subtxn->txn_flags |= RBTXN_IS_SUBXACT;
 	subtxn->toplevel_xid = xid;
 	Assert(subtxn->nsubtxns == 0);
 
@@ -996,14 +1005,22 @@ ReorderBufferIterCompare(Datum a, Datum b, void *arg)
 /*
  * Allocate & initialize an iterator which iterates in lsn order over a
  * transaction and all its subtransactions.
+ *
+ * Note: The iterator state is returned through iter_state parameter rather
+ * than the function's return value.  This is because the state gets cleaned up
+ * in a PG_CATCH block in the caller, so we want to make sure the caller gets
+ * back the state even if this function throws an exception.
  */
-static ReorderBufferIterTXNState *
-ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
+static void
+ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn,
+						 ReorderBufferIterTXNState *volatile *iter_state)
 {
 	Size		nr_txns = 0;
 	ReorderBufferIterTXNState *state;
 	dlist_iter	cur_txn_i;
 	int32		off;
+
+	*iter_state = NULL;
 
 	/*
 	 * Calculate the size of our heap: one element for every transaction that
@@ -1039,7 +1056,7 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 	for (off = 0; off < state->nr_txns; off++)
 	{
-		state->entries[off].fd = -1;
+		state->entries[off].file.vfd = -1;
 		state->entries[off].segno = 0;
 	}
 
@@ -1047,6 +1064,9 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	state->heap = binaryheap_allocate(state->nr_txns,
 									  ReorderBufferIterCompare,
 									  state);
+
+	/* Now that the state fields are initialized, it is safe to return it. */
+	*iter_state = state;
 
 	/*
 	 * Now insert items into the binary heap, in an unordered fashion.  (We
@@ -1060,11 +1080,11 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	{
 		ReorderBufferChange *cur_change;
 
-		if (txn->serialized)
+		if (rbtxn_is_serialized(txn))
 		{
 			/* serialize remaining changes */
 			ReorderBufferSerializeTXN(rb, txn);
-			ReorderBufferRestoreChanges(rb, txn, &state->entries[off].fd,
+			ReorderBufferRestoreChanges(rb, txn, &state->entries[off].file,
 										&state->entries[off].segno);
 		}
 
@@ -1089,12 +1109,12 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		{
 			ReorderBufferChange *cur_change;
 
-			if (cur_txn->serialized)
+			if (rbtxn_is_serialized(cur_txn))
 			{
 				/* serialize remaining changes */
 				ReorderBufferSerializeTXN(rb, cur_txn);
 				ReorderBufferRestoreChanges(rb, cur_txn,
-											&state->entries[off].fd,
+											&state->entries[off].file,
 											&state->entries[off].segno);
 			}
 			cur_change = dlist_head_element(ReorderBufferChange, node,
@@ -1110,8 +1130,6 @@ ReorderBufferIterTXNInit(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 	/* assemble a valid binary heap */
 	binaryheap_build(state->heap);
-
-	return state;
 }
 
 /*
@@ -1175,7 +1193,7 @@ ReorderBufferIterTXNNext(ReorderBuffer *rb, ReorderBufferIterTXNState *state)
 		dlist_delete(&change->node);
 		dlist_push_tail(&state->old_change, &change->node);
 
-		if (ReorderBufferRestoreChanges(rb, entry->txn, &entry->fd,
+		if (ReorderBufferRestoreChanges(rb, entry->txn, &entry->file,
 										&state->entries[off].segno))
 		{
 			/* successfully restored changes from disk */
@@ -1214,8 +1232,8 @@ ReorderBufferIterTXNFinish(ReorderBuffer *rb,
 
 	for (off = 0; off < state->nr_txns; off++)
 	{
-		if (state->entries[off].fd != -1)
-			CloseTransientFile(state->entries[off].fd);
+		if (state->entries[off].file.vfd != -1)
+			FileClose(state->entries[off].file.vfd);
 	}
 
 	/* free memory we might have "leaked" in the last *Next call */
@@ -1255,7 +1273,7 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 		 * they originally were happening inside another subtxn, so we won't
 		 * ever recurse more than one level deep here.
 		 */
-		Assert(subtxn->is_known_as_subxact);
+		Assert(rbtxn_is_known_subxact(subtxn));
 		Assert(subtxn->nsubtxns == 0);
 
 		ReorderBufferCleanupTXN(rb, subtxn);
@@ -1303,7 +1321,7 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	/*
 	 * Remove TXN from its containing list.
 	 *
-	 * Note: if txn->is_known_as_subxact, we are deleting the TXN from its
+	 * Note: if txn is known as subxact, we are deleting the TXN from its
 	 * parent's list of known subxacts; this leaves the parent's nsubxacts
 	 * count too high, but we don't care.  Otherwise, we are deleting the TXN
 	 * from the LSN-ordered list of toplevel TXNs.
@@ -1318,7 +1336,7 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	Assert(found);
 
 	/* remove entries spilled to disk */
-	if (txn->serialized)
+	if (rbtxn_is_serialized(txn))
 		ReorderBufferRestoreCleanup(rb, txn);
 
 	/* deallocate */
@@ -1335,7 +1353,7 @@ ReorderBufferBuildTupleCidHash(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	dlist_iter	iter;
 	HASHCTL		hash_ctl;
 
-	if (!txn->has_catalog_changes || dlist_is_empty(&txn->tuplecids))
+	if (!rbtxn_has_catalog_changes(txn) || dlist_is_empty(&txn->tuplecids))
 		return;
 
 	memset(&hash_ctl, 0, sizeof(hash_ctl));
@@ -1558,7 +1576,7 @@ ReorderBufferCommit(ReorderBuffer *rb, TransactionId xid,
 
 		rb->begin(rb, txn);
 
-		iterstate = ReorderBufferIterTXNInit(rb, txn);
+		ReorderBufferIterTXNInit(rb, txn, &iterstate);
 		while ((change = ReorderBufferIterTXNNext(rb, iterstate)) != NULL)
 		{
 			Relation	relation = NULL;
@@ -1956,21 +1974,6 @@ ReorderBufferAbortOld(ReorderBuffer *rb, TransactionId oldestRunningXid)
 
 		if (TransactionIdPrecedes(txn->xid, oldestRunningXid))
 		{
-			/*
-			 * We set final_lsn on a transaction when we decode its commit or
-			 * abort record, but we never see those records for crashed
-			 * transactions.  To ensure cleanup of these transactions, set
-			 * final_lsn to that of their last change; this causes
-			 * ReorderBufferRestoreCleanup to do the right thing.
-			 */
-			if (txn->serialized && txn->final_lsn == 0)
-			{
-				ReorderBufferChange *last =
-				dlist_tail_element(ReorderBufferChange, node, &txn->changes);
-
-				txn->final_lsn = last->lsn;
-			}
-
 			elog(DEBUG2, "aborting old transaction %u", txn->xid);
 
 			/* remove potential on-disk data, and deallocate this tx */
@@ -2111,7 +2114,7 @@ ReorderBufferSetBaseSnapshot(ReorderBuffer *rb, TransactionId xid,
 	 * operate on its top-level transaction instead.
 	 */
 	txn = ReorderBufferTXNByXid(rb, xid, true, &is_new, lsn, true);
-	if (txn->is_known_as_subxact)
+	if (rbtxn_is_known_subxact(txn))
 		txn = ReorderBufferTXNByXid(rb, txn->toplevel_xid, false,
 									NULL, InvalidXLogRecPtr, false);
 	Assert(txn->base_snapshot == NULL);
@@ -2258,7 +2261,7 @@ ReorderBufferXidSetCatalogChanges(ReorderBuffer *rb, TransactionId xid,
 
 	txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
 
-	txn->has_catalog_changes = true;
+	txn->txn_flags |= RBTXN_HAS_CATALOG_CHANGES;
 }
 
 /*
@@ -2275,7 +2278,7 @@ ReorderBufferXidHasCatalogChanges(ReorderBuffer *rb, TransactionId xid)
 	if (txn == NULL)
 		return false;
 
-	return txn->has_catalog_changes;
+	return rbtxn_has_catalog_changes(txn);
 }
 
 /*
@@ -2295,7 +2298,7 @@ ReorderBufferXidHasBaseSnapshot(ReorderBuffer *rb, TransactionId xid)
 		return false;
 
 	/* a known subtxn? operate on top-level txn instead */
-	if (txn->is_known_as_subxact)
+	if (rbtxn_is_known_subxact(txn))
 		txn = ReorderBufferTXNByXid(rb, txn->toplevel_xid, false,
 									NULL, InvalidXLogRecPtr, false);
 
@@ -2482,13 +2485,13 @@ ReorderBufferSerializeTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	rb->spillCount += 1;
 	rb->spillBytes += size;
 
-	/* Don't consider already serialized transaction. */
-	rb->spillTxns += txn->serialized ? 0 : 1;
+	/* Don't consider already serialized transactions. */
+	rb->spillTxns += rbtxn_is_serialized(txn) ? 0 : 1;
 
 	Assert(spilled == txn->nentries_mem);
 	Assert(dlist_is_empty(&txn->changes));
 	txn->nentries_mem = 0;
-	txn->serialized = true;
+	txn->txn_flags |= RBTXN_IS_SERIALIZED;
 
 	if (fd != -1)
 		CloseTransientFile(fd);
@@ -2605,8 +2608,7 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 
 				sz += sizeof(SnapshotData) +
 					sizeof(TransactionId) * snap->xcnt +
-					sizeof(TransactionId) * snap->subxcnt
-					;
+					sizeof(TransactionId) * snap->subxcnt;
 
 				/* make sure we have enough space */
 				ReorderBufferSerializeReserve(rb, sz);
@@ -2678,6 +2680,17 @@ ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
 						txn->xid)));
 	}
 	pgstat_report_wait_end();
+
+	/*
+	 * Keep the transaction's final_lsn up to date with each change we send to
+	 * disk, so that ReorderBufferRestoreCleanup works correctly.  (We used to
+	 * only do this on commit and abort records, but that doesn't work if a
+	 * system crash leaves a transaction without its abort record).
+	 *
+	 * Make sure not to move it backwards.
+	 */
+	if (txn->final_lsn < change->lsn)
+		txn->final_lsn = change->lsn;
 
 	Assert(ondisk->change.action == change->action);
 }
@@ -2765,11 +2778,12 @@ ReorderBufferChangeSize(ReorderBufferChange *change)
  */
 static Size
 ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
-							int *fd, XLogSegNo *segno)
+							TXNEntryFile *file, XLogSegNo *segno)
 {
 	Size		restored = 0;
 	XLogSegNo	last_segno;
 	dlist_mutable_iter cleanup_iter;
+	File	   *fd = &file->vfd;
 
 	Assert(txn->first_lsn != InvalidXLogRecPtr);
 	Assert(txn->final_lsn != InvalidXLogRecPtr);
@@ -2810,7 +2824,11 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			ReorderBufferSerializedPath(path, MyReplicationSlot, txn->xid,
 										*segno);
 
-			*fd = OpenTransientFile(path, O_RDONLY | PG_BINARY);
+			*fd = PathNameOpenFile(path, O_RDONLY | PG_BINARY);
+
+			/* No harm in resetting the offset even in case of failure */
+			file->curOffset = 0;
+
 			if (*fd < 0 && errno == ENOENT)
 			{
 				*fd = -1;
@@ -2830,14 +2848,14 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 		 * end of this file.
 		 */
 		ReorderBufferSerializeReserve(rb, sizeof(ReorderBufferDiskChange));
-		pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_READ);
-		readBytes = read(*fd, rb->outbuf, sizeof(ReorderBufferDiskChange));
-		pgstat_report_wait_end();
+		readBytes = FileRead(file->vfd, rb->outbuf,
+							 sizeof(ReorderBufferDiskChange),
+							 file->curOffset, WAIT_EVENT_REORDER_BUFFER_READ);
 
 		/* eof */
 		if (readBytes == 0)
 		{
-			CloseTransientFile(*fd);
+			FileClose(*fd);
 			*fd = -1;
 			(*segno)++;
 			continue;
@@ -2853,16 +2871,19 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 							readBytes,
 							(uint32) sizeof(ReorderBufferDiskChange))));
 
+		file->curOffset += readBytes;
+
 		ondisk = (ReorderBufferDiskChange *) rb->outbuf;
 
 		ReorderBufferSerializeReserve(rb,
 									  sizeof(ReorderBufferDiskChange) + ondisk->size);
 		ondisk = (ReorderBufferDiskChange *) rb->outbuf;
 
-		pgstat_report_wait_start(WAIT_EVENT_REORDER_BUFFER_READ);
-		readBytes = read(*fd, rb->outbuf + sizeof(ReorderBufferDiskChange),
-						 ondisk->size - sizeof(ReorderBufferDiskChange));
-		pgstat_report_wait_end();
+		readBytes = FileRead(file->vfd,
+							 rb->outbuf + sizeof(ReorderBufferDiskChange),
+							 ondisk->size - sizeof(ReorderBufferDiskChange),
+							 file->curOffset,
+							 WAIT_EVENT_REORDER_BUFFER_READ);
 
 		if (readBytes < 0)
 			ereport(ERROR,
@@ -2874,6 +2895,8 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 					 errmsg("could not read from reorderbuffer spill file: read %d instead of %u bytes",
 							readBytes,
 							(uint32) (ondisk->size - sizeof(ReorderBufferDiskChange)))));
+
+		file->curOffset += readBytes;
 
 		/*
 		 * ok, read a full change from disk, now restore it into proper

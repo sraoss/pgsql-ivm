@@ -3,7 +3,7 @@
  * pl_exec.c		- Executor for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,6 +28,7 @@
 #include "executor/spi.h"
 #include "executor/spi_priv.h"
 #include "funcapi.h"
+#include "mb/stringinfo_mb.h"
 #include "miscadmin.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
@@ -1189,8 +1190,6 @@ plpgsql_exec_event_trigger(PLpgSQL_function *func, EventTriggerData *trigdata)
 	 * Pop the error context stack
 	 */
 	error_context_stack = plerrcontext.previous;
-
-	return;
 }
 
 /*
@@ -6079,6 +6078,7 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 	LocalTransactionId curlxid = MyProc->lxid;
 	CachedPlan *cplan;
 	void	   *save_setup_arg;
+	bool		need_snapshot;
 	MemoryContext oldcontext;
 
 	/*
@@ -6150,12 +6150,19 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 
 	/*
 	 * We have to do some of the things SPI_execute_plan would do, in
-	 * particular advance the snapshot if we are in a non-read-only function.
-	 * Without this, stable functions within the expression would fail to see
-	 * updates made so far by our own function.
+	 * particular push a new snapshot so that stable functions within the
+	 * expression can see updates made so far by our own function.  However,
+	 * we can skip doing that (and just invoke the expression with the same
+	 * snapshot passed to our function) in some cases, which is useful because
+	 * it's quite expensive relative to the cost of a simple expression.  We
+	 * can skip it if the expression contains no stable or volatile functions;
+	 * immutable functions shouldn't need to see our updates.  Also, if this
+	 * is a read-only function, we haven't made any updates so again it's okay
+	 * to skip.
 	 */
 	oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
-	if (!estate->readonly_func)
+	need_snapshot = (expr->expr_simple_mutable && !estate->readonly_func);
+	if (need_snapshot)
 	{
 		CommandCounterIncrement();
 		PushActiveSnapshot(GetTransactionSnapshot());
@@ -6180,7 +6187,7 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 
 	estate->paramLI->parserSetupArg = save_setup_arg;
 
-	if (!estate->readonly_func)
+	if (need_snapshot)
 		PopActiveSnapshot();
 
 	MemoryContextSwitchTo(oldcontext);
@@ -6851,7 +6858,16 @@ revalidate_rectypeid(PLpgSQL_rec *rec)
 	Assert(typ != NULL);
 	if (typ->tcache &&
 		typ->tcache->tupDesc_identifier == typ->tupdesc_id)
-		return;					/* known up-to-date */
+	{
+		/*
+		 * Although *typ is known up-to-date, it's possible that rectypeid
+		 * isn't, because *rec is cloned during each function startup from a
+		 * copy that we don't have a good way to update.  Hence, forcibly fix
+		 * rectypeid before returning.
+		 */
+		rec->rectypeid = typ->typoid;
+		return;
+	}
 
 	/*
 	 * typcache entry has suffered invalidation, so re-look-up the type name
@@ -8051,6 +8067,8 @@ exec_save_simple_expr(PLpgSQL_expr *expr, CachedPlan *cplan)
 	/* Also stash away the expression result type */
 	expr->expr_simple_type = exprType((Node *) tle_expr);
 	expr->expr_simple_typmod = exprTypmod((Node *) tle_expr);
+	/* We also want to remember if it is immutable or not */
+	expr->expr_simple_mutable = contain_mutable_functions((Node *) tle_expr);
 }
 
 /*
@@ -8603,19 +8621,11 @@ format_expr_params(PLpgSQL_execstate *estate,
 		if (paramisnull)
 			appendStringInfoString(&paramstr, "NULL");
 		else
-		{
-			char	   *value = convert_value_to_string(estate, paramdatum, paramtypeid);
-			char	   *p;
-
-			appendStringInfoCharMacro(&paramstr, '\'');
-			for (p = value; *p; p++)
-			{
-				if (*p == '\'') /* double single quotes */
-					appendStringInfoCharMacro(&paramstr, *p);
-				appendStringInfoCharMacro(&paramstr, *p);
-			}
-			appendStringInfoCharMacro(&paramstr, '\'');
-		}
+			appendStringInfoStringQuoted(&paramstr,
+										 convert_value_to_string(estate,
+																 paramdatum,
+																 paramtypeid),
+										 0);
 
 		paramno++;
 	}
@@ -8653,19 +8663,11 @@ format_preparedparamsdata(PLpgSQL_execstate *estate,
 		if (ppd->nulls[paramno] == 'n')
 			appendStringInfoString(&paramstr, "NULL");
 		else
-		{
-			char	   *value = convert_value_to_string(estate, ppd->values[paramno], ppd->types[paramno]);
-			char	   *p;
-
-			appendStringInfoCharMacro(&paramstr, '\'');
-			for (p = value; *p; p++)
-			{
-				if (*p == '\'') /* double single quotes */
-					appendStringInfoCharMacro(&paramstr, *p);
-				appendStringInfoCharMacro(&paramstr, *p);
-			}
-			appendStringInfoCharMacro(&paramstr, '\'');
-		}
+			appendStringInfoStringQuoted(&paramstr,
+										 convert_value_to_string(estate,
+																 ppd->values[paramno],
+																 ppd->types[paramno]),
+										 0);
 	}
 
 	MemoryContextSwitchTo(oldcontext);

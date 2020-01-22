@@ -3,7 +3,7 @@
  * aclchk.c
  *	  Routines to check access control permissions.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3851,7 +3851,7 @@ pg_class_aclmask(Oid table_oid, Oid roleid,
 
 	/*
 	 * Deny anyone permission to update a system catalog unless
-	 * pg_authid.rolsuper is set.  Also allow it if allowSystemTableMods.
+	 * pg_authid.rolsuper is set.
 	 *
 	 * As of 7.4 we have some updatable system views; those shouldn't be
 	 * protected in this way.  Assume the view rules can take care of
@@ -3860,8 +3860,7 @@ pg_class_aclmask(Oid table_oid, Oid roleid,
 	if ((mask & (ACL_INSERT | ACL_UPDATE | ACL_DELETE | ACL_TRUNCATE | ACL_USAGE)) &&
 		IsSystemClass(table_oid, classForm) &&
 		classForm->relkind != RELKIND_VIEW &&
-		!superuser_arg(roleid) &&
-		!allowSystemTableMods)
+		!superuser_arg(roleid))
 	{
 #ifdef ACLDEBUG
 		elog(DEBUG2, "permission denied for system catalog update");

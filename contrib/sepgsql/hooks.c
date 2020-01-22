@@ -4,7 +4,7 @@
  *
  * Entrypoints of the hooks in PostgreSQL, and dispatches the callbacks.
  *
- * Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -181,6 +181,20 @@ sepgsql_object_access(ObjectAccessType access,
 						sepgsql_proc_drop(objectId);
 						break;
 
+					default:
+						/* Ignore unsupported object classes */
+						break;
+				}
+			}
+			break;
+
+		case OAT_TRUNCATE:
+			{
+				switch (classId)
+				{
+					case RelationRelationId:
+						sepgsql_relation_truncate(objectId);
+						break;
 					default:
 						/* Ignore unsupported object classes */
 						break;

@@ -3,7 +3,7 @@
  * test_ginpostinglist.c
  *		Test varbyte-encoding in ginpostinglist.c
  *
- * Copyright (c) 2019, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/test/modules/test_ginpostinglist/test_ginpostinglist.c
@@ -12,8 +12,8 @@
  */
 #include "postgres.h"
 
-#include "access/ginblock.h"
 #include "access/gin_private.h"
+#include "access/ginblock.h"
 #include "access/htup_details.h"
 #include "fmgr.h"
 

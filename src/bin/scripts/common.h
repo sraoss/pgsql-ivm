@@ -2,7 +2,7 @@
  *	common.h
  *		Common support routines for bin/scripts/
  *
- *	Copyright (c) 2003-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2003-2020, PostgreSQL Global Development Group
  *
  *	src/bin/scripts/common.h
  */
@@ -10,8 +10,8 @@
 #define COMMON_H
 
 #include "common/username.h"
-#include "libpq-fe.h"
 #include "getopt_long.h"		/* pgrminclude ignore */
+#include "libpq-fe.h"
 #include "pqexpbuffer.h"		/* pgrminclude ignore */
 
 enum trivalue
@@ -20,8 +20,6 @@ enum trivalue
 	TRI_NO,
 	TRI_YES
 };
-
-extern bool CancelRequested;
 
 typedef void (*help_handler) (const char *progname);
 
@@ -59,11 +57,5 @@ extern void appendQualifiedRelation(PQExpBuffer buf, const char *name,
 									PGconn *conn, bool echo);
 
 extern bool yesno_prompt(const char *question);
-
-extern void setup_cancel_handler(void);
-
-extern void SetCancelConn(PGconn *conn);
-extern void ResetCancelConn(void);
-
 
 #endif							/* COMMON_H */

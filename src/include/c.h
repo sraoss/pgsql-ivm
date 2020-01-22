@@ -9,7 +9,7 @@
  *	  polluting the namespace with lots of stuff...
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/c.h
@@ -490,6 +490,12 @@ typedef signed int Offset;
  */
 typedef float float4;
 typedef double float8;
+
+#ifdef USE_FLOAT8_BYVAL
+#define FLOAT8PASSBYVAL true
+#else
+#define FLOAT8PASSBYVAL false
+#endif
 
 /*
  * Oid, RegProcedure, TransactionId, SubTransactionId, MultiXactId,
@@ -1114,7 +1120,6 @@ typedef union PGAlignedXLogBlock
 #define STATUS_OK				(0)
 #define STATUS_ERROR			(-1)
 #define STATUS_EOF				(-2)
-#define STATUS_FOUND			(1)
 #define STATUS_WAITING			(2)
 
 /*

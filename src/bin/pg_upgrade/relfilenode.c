@@ -3,7 +3,7 @@
  *
  *	relfilenode functions
  *
- *	Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/relfilenode.c
  */
 
@@ -73,8 +73,6 @@ transfer_all_new_tablespaces(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 
 	end_progress_output();
 	check_ok();
-
-	return;
 }
 
 
@@ -128,8 +126,6 @@ transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 		/* We allocate something even for n_maps == 0 */
 		pg_free(mappings);
 	}
-
-	return;
 }
 
 /*

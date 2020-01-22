@@ -43,7 +43,7 @@
  * overflow.)
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -845,8 +845,6 @@ errbacktrace(void)
 {
 	ErrorData   *edata = &errordata[errordata_stack_depth];
 	MemoryContext oldcontext;
-
-	Assert(false);
 
 	recursion_depth++;
 	CHECK_STACK_DEPTH();

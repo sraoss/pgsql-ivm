@@ -3,7 +3,7 @@
  * async.c
  *	  Asynchronous notification: NOTIFY, LISTEN, UNLISTEN
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -347,7 +347,7 @@ typedef struct
 typedef struct ActionList
 {
 	int			nestingLevel;	/* current transaction nesting depth */
-	List	   *actions;			/* list of ListenAction structs */
+	List	   *actions;		/* list of ListenAction structs */
 	struct ActionList *upper;	/* details for upper transaction levels */
 } ActionList;
 
@@ -393,7 +393,7 @@ typedef struct NotificationList
 	int			nestingLevel;	/* current transaction nesting depth */
 	List	   *events;			/* list of Notification structs */
 	HTAB	   *hashtab;		/* hash of NotificationHash structs, or NULL */
-	struct NotificationList *upper;	/* details for upper transaction levels */
+	struct NotificationList *upper; /* details for upper transaction levels */
 } NotificationList;
 
 #define MIN_HASHABLE_NOTIFIES 16	/* threshold to build hashtab */
@@ -1112,14 +1112,12 @@ Exec_ListenPreCommit(void)
 	amRegisteredListener = true;
 
 	/*
-	 * Try to move our pointer forward as far as possible. This will skip over
-	 * already-committed notifications. Still, we could get notifications that
-	 * have already committed before we started to LISTEN.
-	 *
-	 * Note that we are not yet listening on anything, so we won't deliver any
-	 * notification to the frontend.  Also, although our transaction might
-	 * have executed NOTIFY, those message(s) aren't queued yet so we can't
-	 * see them in the queue.
+	 * Try to move our pointer forward as far as possible.  This will skip
+	 * over already-committed notifications, which we want to do because they
+	 * might be quite stale.  Note that we are not yet listening on anything,
+	 * so we won't deliver such notifications to our frontend.  Also, although
+	 * our transaction might have executed NOTIFY, those message(s) aren't
+	 * queued yet so we won't skip them here.
 	 */
 	if (!QUEUE_POS_EQUAL(max, head))
 		asyncQueueReadAllNotifications();
@@ -1554,6 +1552,9 @@ pg_notification_queue_usage(PG_FUNCTION_ARGS)
 {
 	double		usage;
 
+	/* Advance the queue tail so we don't report a too-large result */
+	asyncQueueAdvanceTail();
+
 	LWLockAcquire(AsyncQueueLock, LW_SHARED);
 	usage = asyncQueueUsage();
 	LWLockRelease(AsyncQueueLock);
@@ -1834,9 +1835,8 @@ AtSubAbort_Notify(void)
 	 * those are allocated in TopTransactionContext.
 	 *
 	 * Note that there might be no entries at all, or no entries for the
-	 * current subtransaction level, either because none were ever created,
-	 * or because we reentered this routine due to trouble during subxact
-	 * abort.
+	 * current subtransaction level, either because none were ever created, or
+	 * because we reentered this routine due to trouble during subxact abort.
 	 */
 	while (pendingActions != NULL &&
 		   pendingActions->nestingLevel >= my_level)
@@ -1883,11 +1883,13 @@ HandleNotifyInterrupt(void)
 /*
  * ProcessNotifyInterrupt
  *
- *		This is called just after waiting for a frontend command.  If a
- *		interrupt arrives (via HandleNotifyInterrupt()) while reading, the
- *		read will be interrupted via the process's latch, and this routine
- *		will get called.  If we are truly idle (ie, *not* inside a transaction
- *		block), process the incoming notifies.
+ *		This is called if we see notifyInterruptPending set, just before
+ *		transmitting ReadyForQuery at the end of a frontend command, and
+ *		also if a notify signal occurs while reading from the frontend.
+ *		HandleNotifyInterrupt() will cause the read to be interrupted
+ *		via the process's latch, and this routine will get called.
+ *		If we are truly idle (ie, *not* inside a transaction block),
+ *		process the incoming notifies.
  */
 void
 ProcessNotifyInterrupt(void)
@@ -1934,42 +1936,56 @@ asyncQueueReadAllNotifications(void)
 		return;
 	}
 
-	/* Get snapshot we'll use to decide which xacts are still in progress */
-	snapshot = RegisterSnapshot(GetLatestSnapshot());
-
 	/*----------
-	 * Note that we deliver everything that we see in the queue and that
-	 * matches our _current_ listening state.
-	 * Especially we do not take into account different commit times.
+	 * Get snapshot we'll use to decide which xacts are still in progress.
+	 * This is trickier than it might seem, because of race conditions.
 	 * Consider the following example:
 	 *
 	 * Backend 1:					 Backend 2:
 	 *
 	 * transaction starts
+	 * UPDATE foo SET ...;
 	 * NOTIFY foo;
 	 * commit starts
+	 * queue the notify message
 	 *								 transaction starts
-	 *								 LISTEN foo;
-	 *								 commit starts
+	 *								 LISTEN foo;  -- first LISTEN in session
+	 *								 SELECT * FROM foo WHERE ...;
 	 * commit to clog
+	 *								 commit starts
+	 *								 add backend 2 to array of listeners
+	 *								 advance to queue head (this code)
 	 *								 commit to clog
 	 *
-	 * It could happen that backend 2 sees the notification from backend 1 in
-	 * the queue.  Even though the notifying transaction committed before
-	 * the listening transaction, we still deliver the notification.
+	 * Transaction 2's SELECT has not seen the UPDATE's effects, since that
+	 * wasn't committed yet.  Ideally we'd ensure that client 2 would
+	 * eventually get transaction 1's notify message, but there's no way
+	 * to do that; until we're in the listener array, there's no guarantee
+	 * that the notify message doesn't get removed from the queue.
 	 *
-	 * The idea is that an additional notification does not do any harm, we
-	 * just need to make sure that we do not miss a notification.
+	 * Therefore the coding technique transaction 2 is using is unsafe:
+	 * applications must commit a LISTEN before inspecting database state,
+	 * if they want to ensure they will see notifications about subsequent
+	 * changes to that state.
 	 *
-	 * It is possible that we fail while trying to send a message to our
-	 * frontend (for example, because of encoding conversion failure).
-	 * If that happens it is critical that we not try to send the same
-	 * message over and over again.  Therefore, we place a PG_TRY block
-	 * here that will forcibly advance our backend position before we lose
-	 * control to an error.  (We could alternatively retake AsyncQueueLock
-	 * and move the position before handling each individual message, but
-	 * that seems like too much lock traffic.)
+	 * What we do guarantee is that we'll see all notifications from
+	 * transactions committing after the snapshot we take here.
+	 * Exec_ListenPreCommit has already added us to the listener array,
+	 * so no not-yet-committed messages can be removed from the queue
+	 * before we see them.
 	 *----------
+	 */
+	snapshot = RegisterSnapshot(GetLatestSnapshot());
+
+	/*
+	 * It is possible that we fail while trying to send a message to our
+	 * frontend (for example, because of encoding conversion failure).  If
+	 * that happens it is critical that we not try to send the same message
+	 * over and over again.  Therefore, we place a PG_TRY block here that will
+	 * forcibly advance our queue position before we lose control to an error.
+	 * (We could alternatively retake AsyncQueueLock and move the position
+	 * before handling each individual message, but that seems like too much
+	 * lock traffic.)
 	 */
 	PG_TRY();
 	{
@@ -2400,9 +2416,9 @@ ClearPendingActionsAndNotifies(void)
 {
 	/*
 	 * Everything's allocated in either TopTransactionContext or the context
-	 * for the subtransaction to which it corresponds. So, there's nothing
-	 * to do here except rest the pointers; the space will be reclaimed when
-	 * the contexts are deleted.
+	 * for the subtransaction to which it corresponds.  So, there's nothing to
+	 * do here except reset the pointers; the space will be reclaimed when the
+	 * contexts are deleted.
 	 */
 	pendingActions = NULL;
 	pendingNotifies = NULL;

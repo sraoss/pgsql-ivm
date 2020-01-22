@@ -4,7 +4,7 @@
  *	  This file contains definitions for structures and
  *	  externs for functions used by frontend postgres applications.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/libpq/libpq-fe.h
@@ -616,6 +616,14 @@ extern char *PQencryptPasswordConn(PGconn *conn, const char *passwd, const char 
 extern int	pg_char_to_encoding(const char *name);
 extern const char *pg_encoding_to_char(int encoding);
 extern int	pg_valid_server_encoding_id(int encoding);
+
+/* == in fe-secure-openssl.c === */
+
+/* Support for overriding sslpassword handling with a callback. */
+typedef int (*PQsslKeyPassHook_type)(char *buf, int size, PGconn *conn);
+extern PQsslKeyPassHook_type PQgetSSLKeyPassHook(void);
+extern void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
+extern int PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn);
 
 #ifdef __cplusplus
 }

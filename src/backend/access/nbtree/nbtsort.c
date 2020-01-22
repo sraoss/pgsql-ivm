@@ -46,7 +46,7 @@
  * This code isn't concerned about the FSM at all. The caller is responsible
  * for initializing that.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -716,8 +716,8 @@ _bt_pagestate(BTWriteState *wstate, uint32 level)
 	if (level > 0)
 		state->btps_full = (BLCKSZ * (100 - BTREE_NONLEAF_FILLFACTOR) / 100);
 	else
-		state->btps_full = RelationGetTargetPageFreeSpace(wstate->index,
-														  BTREE_DEFAULT_FILLFACTOR);
+		state->btps_full = BTGetTargetPageFreeSpace(wstate->index);
+
 	/* no parent level, yet */
 	state->btps_next = NULL;
 
@@ -982,7 +982,7 @@ _bt_buildadd(BTWriteState *wstate, BTPageState *state, IndexTuple itup)
 			   P_LEFTMOST((BTPageOpaque) PageGetSpecialPointer(opage)));
 		Assert(BTreeTupleGetNAtts(state->btps_lowkey, wstate->index) == 0 ||
 			   !P_LEFTMOST((BTPageOpaque) PageGetSpecialPointer(opage)));
-		BTreeInnerTupleSetDownLink(state->btps_lowkey, oblkno);
+		BTreeTupleSetDownLink(state->btps_lowkey, oblkno);
 		_bt_buildadd(wstate, state->btps_next, state->btps_lowkey);
 		pfree(state->btps_lowkey);
 
@@ -1089,7 +1089,7 @@ _bt_uppershutdown(BTWriteState *wstate, BTPageState *state)
 				   P_LEFTMOST(opaque));
 			Assert(BTreeTupleGetNAtts(s->btps_lowkey, wstate->index) == 0 ||
 				   !P_LEFTMOST(opaque));
-			BTreeInnerTupleSetDownLink(s->btps_lowkey, blkno);
+			BTreeTupleSetDownLink(s->btps_lowkey, blkno);
 			_bt_buildadd(wstate, s->btps_next, s->btps_lowkey);
 			pfree(s->btps_lowkey);
 			s->btps_lowkey = NULL;

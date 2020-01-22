@@ -1721,6 +1721,11 @@ pg_shadow| SELECT pg_authid.rolname AS usename,
    FROM (pg_authid
      LEFT JOIN pg_db_role_setting s ON (((pg_authid.oid = s.setrole) AND (s.setdatabase = (0)::oid))))
   WHERE pg_authid.rolcanlogin;
+pg_shmem_allocations| SELECT pg_get_shmem_allocations.name,
+    pg_get_shmem_allocations.off,
+    pg_get_shmem_allocations.size,
+    pg_get_shmem_allocations.allocated_size
+   FROM pg_get_shmem_allocations() pg_get_shmem_allocations(name, off, size, allocated_size);
 pg_stat_activity| SELECT s.datid,
     d.datname,
     s.pid,
@@ -1847,6 +1852,28 @@ pg_stat_gssapi| SELECT s.pid,
     s.gss_enc AS encrypted
    FROM pg_stat_get_activity(NULL::integer) s(datid, pid, usesysid, application_name, state, query, wait_event_type, wait_event, xact_start, query_start, backend_start, state_change, client_addr, client_hostname, client_port, backend_xid, backend_xmin, backend_type, ssl, sslversion, sslcipher, sslbits, sslcompression, ssl_client_dn, ssl_client_serial, ssl_issuer_dn, gss_auth, gss_princ, gss_enc)
   WHERE (s.client_port IS NOT NULL);
+pg_stat_progress_analyze| SELECT s.pid,
+    s.datid,
+    d.datname,
+    s.relid,
+        CASE s.param1
+            WHEN 0 THEN 'initializing'::text
+            WHEN 1 THEN 'acquiring sample rows'::text
+            WHEN 2 THEN 'acquiring inherited sample rows'::text
+            WHEN 3 THEN 'computing statistics'::text
+            WHEN 4 THEN 'computing extended statistics'::text
+            WHEN 5 THEN 'finalizing analyze'::text
+            ELSE NULL::text
+        END AS phase,
+    s.param2 AS sample_blks_total,
+    s.param3 AS sample_blks_scanned,
+    s.param4 AS ext_stats_total,
+    s.param5 AS ext_stats_computed,
+    s.param6 AS child_tables_total,
+    s.param7 AS child_tables_done,
+    (s.param8)::oid AS current_child_table_relid
+   FROM (pg_stat_get_progress_info('ANALYZE'::text) s(pid, datid, relid, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13, param14, param15, param16, param17, param18, param19, param20)
+     LEFT JOIN pg_database d ON ((s.datid = d.oid)));
 pg_stat_progress_cluster| SELECT s.pid,
     s.datid,
     d.datname,
@@ -2974,6 +3001,30 @@ Rules:
     ON UPDATE TO rules_src DO INSTEAD  UPDATE rules_log trgt SET tag = 'updated'::text
   WHERE trgt.f1 = new.f1
 
+--
+-- Also check multiassignment deparsing.
+--
+create table rule_t1(f1 int, f2 int);
+create table rule_dest(f1 int, f2 int[], tag text);
+create rule rr as on update to rule_t1 do instead UPDATE rule_dest trgt
+  SET (f2[1], f1, tag) = (SELECT new.f2, new.f1, 'updated'::varchar)
+  WHERE trgt.f1 = new.f1 RETURNING new.*;
+\d+ rule_t1
+                                  Table "public.rule_t1"
+ Column |  Type   | Collation | Nullable | Default | Storage | Stats target | Description 
+--------+---------+-----------+----------+---------+---------+--------------+-------------
+ f1     | integer |           |          |         | plain   |              | 
+ f2     | integer |           |          |         | plain   |              | 
+Rules:
+    rr AS
+    ON UPDATE TO rule_t1 DO INSTEAD  UPDATE rule_dest trgt SET (f2[1], f1, tag) = ( SELECT new.f2,
+            new.f1,
+            'updated'::character varying AS "varchar")
+  WHERE trgt.f1 = new.f1
+  RETURNING new.f1,
+    new.f2
+
+drop table rule_t1, rule_dest;
 --
 -- check alter rename rule
 --

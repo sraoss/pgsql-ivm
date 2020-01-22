@@ -5,7 +5,7 @@
 # This makefile generates a static library, libpgfeutils.a,
 # for use by client applications
 #
-# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # IDENTIFICATION
@@ -20,6 +20,7 @@ include $(top_builddir)/src/Makefile.global
 override CPPFLAGS := -DFRONTEND -I$(libpq_srcdir) $(CPPFLAGS)
 
 OBJS = \
+	cancel.o \
 	conditional.o \
 	mbprint.o \
 	print.o \
