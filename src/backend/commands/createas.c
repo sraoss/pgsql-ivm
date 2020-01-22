@@ -268,7 +268,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
-	Query	   *copied_query;
 
 	if (stmt->if_not_exists)
 	{
@@ -469,6 +468,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	{
 		ListCell *lc;
 		RangeTblEntry *rte;
+		int varno = 0;
 
 		/* rewrite EXISTS sublink to LATERAL subquery */
 		rewrite_query_for_exists_subquery(rewritten);
@@ -477,17 +477,21 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 		foreach(lc, rewritten->rtable)
 		{
 			char *columnName;
+			int attnum;
 			Node *countCol = NULL;
+			varno++;
 
 			rte = (RangeTblEntry *) lfirst(lc);
 			if (!rte->subquery || !rte->lateral)
 				continue;
 			pstate->p_rtable = rewritten->rtable;
 
-			columnName = getColumnNameStartWith(rte, "__ivm_exists");
+			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 			if (columnName == NULL)
 				continue;
-			countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
+			countCol = (Node *)makeVar(varno ,attnum,
+						INT8OID, -1, InvalidOid, 0);
+
 
 			if (countCol != NULL)
 			{
