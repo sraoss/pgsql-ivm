@@ -3031,7 +3031,6 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 	ListCell   *name,
 			   *var;
 	List	   *te_list = NIL;
-	bool refStar = rte->selectedCols == NULL ? true : false;
 
 	vars = expandNSItemVars(nsitem, sublevels_up, location, &names);
 
@@ -3048,14 +3047,14 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 		Var		   *varnode = (Var *) lfirst(var);
 		TargetEntry *te;
 
+		/* if transform * into columnlist with IMMV, remove IVM columns */
+		if (rte->relisivm && isIvmColumn(label) && !MatViewIncrementalMaintenanceIsEnabled())
+			continue;
+
 		te = makeTargetEntry((Expr *) varnode,
 							 (AttrNumber) pstate->p_next_resno++,
 							 label,
 							 false);
-
-		/* if transform * into columnlist with IMMV, remove IVM columns */
-		if (refStar && rte->relisivm && isIvmColumn(label) && !MatViewIncrementalMaintenanceIsEnabled())
-			continue;
 		te_list = lappend(te_list, te);
 
 		/* Require read access to each column */
