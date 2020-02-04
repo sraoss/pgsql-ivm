@@ -380,7 +380,7 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATATYPE_MISMATCH),
-				 (errmsg("could not convert value \"%s\" to jsonb", str))));
+				 errmsg("could not convert value \"%s\" to jsonb", str)));
 	}
 	PG_END_TRY();
 
@@ -394,7 +394,7 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 	if (numeric_is_nan(num))
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 (errmsg("cannot convert NaN to jsonb"))));
+				 errmsg("cannot convert NaN to jsonb")));
 
 	jbvNum->type = jbvNumeric;
 	jbvNum->val.numeric = num;
@@ -410,7 +410,6 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 static JsonbValue *
 PLyObject_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state, bool is_elem)
 {
-	JsonbValue	buf;
 	JsonbValue *out;
 
 	if (!(PyString_Check(obj) || PyUnicode_Check(obj)))
@@ -421,11 +420,7 @@ PLyObject_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state, bool is_ele
 			return PLyMapping_ToJsonbValue(obj, jsonb_state);
 	}
 
-	/* Allocate JsonbValue in heap only if it is raw scalar value. */
-	if (*jsonb_state)
-		out = &buf;
-	else
-		out = palloc(sizeof(JsonbValue));
+	out = palloc(sizeof(JsonbValue));
 
 	if (obj == Py_None)
 		out->type = jbvNull;
@@ -446,8 +441,8 @@ PLyObject_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state, bool is_ele
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 (errmsg("Python type \"%s\" cannot be transformed to jsonb",
-						 PLyObject_AsString((PyObject *) obj->ob_type)))));
+				 errmsg("Python type \"%s\" cannot be transformed to jsonb",
+						PLyObject_AsString((PyObject *) obj->ob_type))));
 
 	/* Push result into 'jsonb_state' unless it is raw scalar value. */
 	return (*jsonb_state ?

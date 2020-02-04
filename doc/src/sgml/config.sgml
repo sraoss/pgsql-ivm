@@ -3571,6 +3571,11 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         If <xref linkend="guc-hot-standby"/> is not enabled, a setting of
         <literal>pause</literal> will act the same as <literal>shutdown</literal>.
        </para>
+       <para>
+        In any case, if a recovery target is configured but the archive
+        recovery ends before the target is reached, the server will shut down
+        with a fatal error.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -9946,6 +9951,31 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         the index before turning this parameter off again.  The
         default setting is <literal>off</literal>, and it can only be changed
         by a superuser.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ignore-invalid-pages" xreflabel="ignore_invalid_pages">
+      <term><varname>ignore_invalid_pages</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>ignore_invalid_pages</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>off</literal> (the default), detection of
+        WAL records having references to invalid pages during
+        recovery causes <productname>PostgreSQL</productname> to
+        raise a PANIC-level error, aborting the recovery. Setting
+        <varname>ignore_invalid_pages</varname> to <literal>on</literal>
+        causes the system to ignore invalid page references in WAL records
+        (but still report a warning), and continue the recovery.
+        This behavior may <emphasis>cause crashes, data loss,
+        propagate or hide corruption, or other serious problems</emphasis>.
+        However, it may allow you to get past the PANIC-level error,
+        to finish the recovery, and to cause the server to start up.
+        The parameter can only be set at server start. It only has effect
+        during recovery or in standby mode.
        </para>
       </listitem>
      </varlistentry>

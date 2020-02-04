@@ -999,7 +999,7 @@ initialize_dh(SSL_CTX *context, bool isServerStart)
 	{
 		ereport(isServerStart ? FATAL : LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 (errmsg("DH: could not load DH parameters"))));
+				 errmsg("DH: could not load DH parameters")));
 		return false;
 	}
 
@@ -1007,8 +1007,8 @@ initialize_dh(SSL_CTX *context, bool isServerStart)
 	{
 		ereport(isServerStart ? FATAL : LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
-				 (errmsg("DH: could not set DH parameters: %s",
-						 SSLerrmessage(ERR_get_error())))));
+				 errmsg("DH: could not set DH parameters: %s",
+						SSLerrmessage(ERR_get_error()))));
 		DH_free(dh);
 		return false;
 	}
@@ -1274,6 +1274,9 @@ X509_NAME_to_cstring(X509_NAME *name)
  * version, then we log with the given loglevel and return (if we return) -1.
  * If a nonnegative value is returned, subsequent code can assume it's working
  * with a supported version.
+ *
+ * Note: this is rather similar to libpq's routine in fe-secure-openssl.c,
+ * so make sure to update both routines if changing this one.
  */
 static int
 ssl_protocol_version_to_openssl(int v, const char *guc_name, int loglevel)

@@ -215,7 +215,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	offsetof(struct pg_conn, pgpassfile)},
 
 	{"channel_binding", "PGCHANNELBINDING", NULL, NULL,
-		"Channel-Binding", "", 7,	/* sizeof("require") */
+		"Channel-Binding", "", 8,	/* sizeof("require") == 8 */
 	offsetof(struct pg_conn, channel_binding)},
 
 	{"connect_timeout", "PGCONNECT_TIMEOUT", NULL, NULL,
@@ -320,12 +320,20 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Require-Peer", "", 10,
 	offsetof(struct pg_conn, requirepeer)},
 
+	{"sslminprotocolversion", "PGSSLMINPROTOCOLVERSION", NULL, NULL,
+		"SSL-Minimum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
+	offsetof(struct pg_conn, sslminprotocolversion)},
+
+	{"sslmaxprotocolversion", "PGSSLMAXPROTOCOLVERSION", NULL, NULL,
+		"SSL-Maximum-Protocol-Version", "", 8,	/* sizeof("TLSv1.x") == 8 */
+	offsetof(struct pg_conn, sslmaxprotocolversion)},
+
 	/*
 	 * As with SSL, all GSS options are exposed even in builds that don't have
 	 * support.
 	 */
 	{"gssencmode", "PGGSSENCMODE", DefaultGSSMode, NULL,
-		"GSSENC-Mode", "", 7,	/* sizeof("disable") == 7 */
+		"GSSENC-Mode", "", 8,	/* sizeof("disable") == 8 */
 	offsetof(struct pg_conn, gssencmode)},
 
 	/* Kerberos and GSSAPI authentication support specifying the service name */
@@ -334,7 +342,7 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 	offsetof(struct pg_conn, krbsrvname)},
 
 	{"gsslib", "PGGSSLIB", NULL, NULL,
-		"GSS-library", "", 7,	/* sizeof("gssapi") = 7 */
+		"GSS-library", "", 7,	/* sizeof("gssapi") == 7 */
 	offsetof(struct pg_conn, gsslib)},
 
 	{"replication", NULL, NULL, NULL,
@@ -426,6 +434,8 @@ static char *passwordFromFile(const char *hostname, const char *port, const char
 							  const char *username, const char *pgpassfile);
 static void pgpassfileWarning(PGconn *conn);
 static void default_threadlock(int acquire);
+static bool sslVerifyProtocolVersion(const char *version);
+static bool sslVerifyProtocolRange(const char *min, const char *max);
 
 
 /* global variable because fe-auth.c needs to access it */
@@ -1085,12 +1095,17 @@ connectOptions2(PGconn *conn)
 			if (ch->host)
 				free(ch->host);
 #ifdef HAVE_UNIX_SOCKETS
-			ch->host = strdup(DEFAULT_PGSOCKET_DIR);
-			ch->type = CHT_UNIX_SOCKET;
-#else
-			ch->host = strdup(DefaultHost);
-			ch->type = CHT_HOST_NAME;
+			if (DEFAULT_PGSOCKET_DIR[0])
+			{
+				ch->host = strdup(DEFAULT_PGSOCKET_DIR);
+				ch->type = CHT_UNIX_SOCKET;
+			}
+			else
 #endif
+			{
+				ch->host = strdup(DefaultHost);
+				ch->type = CHT_HOST_NAME;
+			}
 			if (ch->host == NULL)
 				goto oom_error;
 		}
@@ -1283,6 +1298,43 @@ connectOptions2(PGconn *conn)
 		conn->sslmode = strdup(DefaultSSLMode);
 		if (!conn->sslmode)
 			goto oom_error;
+	}
+
+	/*
+	 * Validate TLS protocol versions for sslminprotocolversion and
+	 * sslmaxprotocolversion.
+	 */
+	if (!sslVerifyProtocolVersion(conn->sslminprotocolversion))
+	{
+		conn->status = CONNECTION_BAD;
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("invalid sslminprotocolversion value: \"%s\"\n"),
+						  conn->sslminprotocolversion);
+		return false;
+	}
+	if (!sslVerifyProtocolVersion(conn->sslmaxprotocolversion))
+	{
+		conn->status = CONNECTION_BAD;
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("invalid sslmaxprotocolversion value: \"%s\"\n"),
+						  conn->sslmaxprotocolversion);
+		return false;
+	}
+
+	/*
+	 * Check if the range of SSL protocols defined is correct.  This is done
+	 * at this early step because this is independent of the SSL
+	 * implementation used, and this avoids unnecessary cycles with an
+	 * already-built SSL context when the connection is being established, as
+	 * it would be doomed anyway.
+	 */
+	if (!sslVerifyProtocolRange(conn->sslminprotocolversion,
+								conn->sslmaxprotocolversion))
+	{
+		conn->status = CONNECTION_BAD;
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("invalid SSL protocol version range"));
+		return false;
 	}
 
 	/*
@@ -2257,10 +2309,7 @@ PQconnectPoll(PGconn *conn)
 
 		default:
 			appendPQExpBufferStr(&conn->errorMessage,
-								 libpq_gettext(
-											   "invalid connection state, "
-											   "probably indicative of memory corruption\n"
-											   ));
+								 libpq_gettext("invalid connection state, probably indicative of memory corruption\n"));
 			goto error_return;
 	}
 
@@ -3173,9 +3222,7 @@ keep_going:						/* We will come back to here until there is
 				if (!(beresp == 'R' || beresp == 'E'))
 				{
 					appendPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext(
-													"expected authentication request from "
-													"server, but received %c\n"),
+									  libpq_gettext("expected authentication request from server, but received %c\n"),
 									  beresp);
 					goto error_return;
 				}
@@ -3206,9 +3253,7 @@ keep_going:						/* We will come back to here until there is
 				if (beresp == 'R' && (msgLength < 8 || msgLength > 2000))
 				{
 					appendPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext(
-													"expected authentication request from "
-													"server, but received %c\n"),
+									  libpq_gettext("expected authentication request from server, but received %c\n"),
 									  beresp);
 					goto error_return;
 				}
@@ -4001,6 +4046,10 @@ freePGconn(PGconn *conn)
 		free(conn->sslcompression);
 	if (conn->requirepeer)
 		free(conn->requirepeer);
+	if (conn->sslminprotocolversion)
+		free(conn->sslminprotocolversion);
+	if (conn->sslmaxprotocolversion)
+		free(conn->sslmaxprotocolversion);
 	if (conn->gssencmode)
 		free(conn->gssencmode);
 	if (conn->krbsrvname)
@@ -4589,8 +4638,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	p = strchr(url + strlen(LDAP_URL), '/');
 	if (p == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext(
-													  "invalid LDAP URL \"%s\": missing distinguished name\n"), purl);
+		printfPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": missing distinguished name\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4600,8 +4650,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* attribute */
 	if ((p = strchr(dn, '?')) == NULL || *(p + 1) == '\0' || *(p + 1) == '?')
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext(
-													  "invalid LDAP URL \"%s\": must have exactly one attribute\n"), purl);
+		printfPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": must have exactly one attribute\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4642,8 +4693,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 		lport = strtol(portstr, &endptr, 10);
 		if (*portstr == '\0' || *endptr != '\0' || errno || lport < 0 || lport > 65535)
 		{
-			printfPQExpBuffer(errorMessage, libpq_gettext(
-														  "invalid LDAP URL \"%s\": invalid port number\n"), purl);
+			printfPQExpBuffer(errorMessage,
+							  libpq_gettext("invalid LDAP URL \"%s\": invalid port number\n"),
+							  purl);
 			free(url);
 			return 3;
 		}
@@ -4653,8 +4705,9 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 	/* Allow only one attribute */
 	if (strchr(attrs[0], ',') != NULL)
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext(
-													  "invalid LDAP URL \"%s\": must have exactly one attribute\n"), purl);
+		printfPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid LDAP URL \"%s\": must have exactly one attribute\n"),
+						  purl);
 		free(url);
 		return 3;
 	}
@@ -4852,8 +4905,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 				}
 				else if (ld_is_nl_cr(*p))
 				{
-					printfPQExpBuffer(errorMessage, libpq_gettext(
-																  "missing \"=\" after \"%s\" in connection info string\n"),
+					printfPQExpBuffer(errorMessage,
+									  libpq_gettext("missing \"=\" after \"%s\" in connection info string\n"),
 									  optname);
 					free(result);
 					return 3;
@@ -4871,8 +4924,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 				}
 				else if (!ld_is_sp_tab(*p))
 				{
-					printfPQExpBuffer(errorMessage, libpq_gettext(
-																  "missing \"=\" after \"%s\" in connection info string\n"),
+					printfPQExpBuffer(errorMessage,
+									  libpq_gettext("missing \"=\" after \"%s\" in connection info string\n"),
 									  optname);
 					free(result);
 					return 3;
@@ -4960,8 +5013,8 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
 
 	if (state == 5 || state == 6)
 	{
-		printfPQExpBuffer(errorMessage, libpq_gettext(
-													  "unterminated quoted string in connection info string\n"));
+		printfPQExpBuffer(errorMessage,
+						  libpq_gettext("unterminated quoted string in connection info string\n"));
 		return 3;
 	}
 
@@ -7029,6 +7082,71 @@ pgpassfileWarning(PGconn *conn)
 							  libpq_gettext("password retrieved from file \"%s\"\n"),
 							  conn->pgpassfile);
 	}
+}
+
+/*
+ * Check if the SSL procotol value given in input is valid or not.
+ * This is used as a sanity check routine for the connection parameters
+ * sslminprotocolversion and sslmaxprotocolversion.
+ */
+static bool
+sslVerifyProtocolVersion(const char *version)
+{
+	/*
+	 * An empty string and a NULL value are considered valid as it is
+	 * equivalent to ignoring the parameter.
+	 */
+	if (!version || strlen(version) == 0)
+		return true;
+
+	if (pg_strcasecmp(version, "TLSv1") == 0 ||
+		pg_strcasecmp(version, "TLSv1.1") == 0 ||
+		pg_strcasecmp(version, "TLSv1.2") == 0 ||
+		pg_strcasecmp(version, "TLSv1.3") == 0)
+		return true;
+
+	/* anything else is wrong */
+	return false;
+}
+
+
+/*
+ * Ensure that the SSL protocol range given in input is correct.  The check
+ * is performed on the input string to keep it TLS backend agnostic.  Input
+ * to this function is expected verified with sslVerifyProtocolVersion().
+ */
+static bool
+sslVerifyProtocolRange(const char *min, const char *max)
+{
+	Assert(sslVerifyProtocolVersion(min) &&
+		   sslVerifyProtocolVersion(max));
+
+	/* If at least one of the bounds is not set, the range is valid */
+	if (min == NULL || max == NULL || strlen(min) == 0 || strlen(max) == 0)
+		return true;
+
+	/*
+	 * If the minimum version is the lowest one we accept, then all options
+	 * for the maximum are valid.
+	 */
+	if (pg_strcasecmp(min, "TLSv1") == 0)
+		return true;
+
+	/*
+	 * The minimum bound is valid, and cannot be TLSv1, so using TLSv1 for the
+	 * maximum is incorrect.
+	 */
+	if (pg_strcasecmp(max, "TLSv1") == 0)
+		return false;
+
+	/*
+	 * At this point we know that we have a mix of TLSv1.1 through 1.3
+	 * versions.
+	 */
+	if (pg_strcasecmp(min, max) > 0)
+		return false;
+
+	return true;
 }
 
 
