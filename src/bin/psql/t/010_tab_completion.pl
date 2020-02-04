@@ -128,7 +128,15 @@ sub clear_query
 	return;
 }
 
-=======
+# Clear current line to start over
+# (this will work in an incomplete string literal, but it's less desirable
+# than clear_query because we lose evidence in the history file)
+sub clear_line
+{
+	check_completion("\025\n", qr/postgres=# /, "control-U works");
+	return;
+}
+
 # check basic command completion: SEL<tab> produces SELECT<space>
 check_completion("SEL\t", qr/SELECT /, "complete SEL<tab> to SELECT");
 
@@ -167,8 +175,6 @@ check_completion("\\DRD\t", qr/drds /, "complete \\DRD<tab> to \\drds");
 
 clear_query();
 
-<<<<<<< HEAD
-=======
 # check filename completion
 check_completion(
 	"\\lo_import tmp_check/some\t",
@@ -210,7 +216,6 @@ check_completion(
 
 clear_line();
 
->>>>>>> master
 # send psql an explicit \q to shut it down, else pty won't close properly
 $timer->start(5);
 $in .= "\\q\n";

@@ -55,23 +55,6 @@ typedef struct
 	AttrNumber	second;			/* Second closest attribute so far */
 } FuzzyAttrMatchState;
 
-
-/*
- * Support for fuzzily matching columns.
- *
- * This is for building diagnostic messages, where non-exact matching
- * attributes are suggested to the user.  The struct's fields may be facets of
- * a particular RTE, or of an entire range table, depending on context.
- */
-typedef struct
-{
-	int			distance;		/* Weighted distance (lowest so far) */
-	RangeTblEntry *rfirst;		/* RTE of first */
-	AttrNumber	first;			/* Closest attribute so far */
-	RangeTblEntry *rsecond;		/* RTE of second */
-	AttrNumber	second;			/* Second closest attribute so far */
-} FuzzyAttrMatchState;
-
 #define MAX_FUZZY_DISTANCE				3
 
 

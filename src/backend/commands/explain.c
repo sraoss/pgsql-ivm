@@ -813,10 +813,6 @@ ExplainPrintJIT(ExplainState *es, int jit_flags, JitInstrumentation *ji)
 	if (!ji || ji->created_functions == 0)
 		return;
 
-	/* don't print per-worker info if we're supposed to hide that */
-	if (for_workers && es->hide_workers)
-		return;
-
 	/* calculate total time */
 	INSTR_TIME_SET_ZERO(total_time);
 	INSTR_TIME_ADD(total_time, ji->generation_counter);
