@@ -4,7 +4,7 @@
  *	  definition of the system catalog containing the state for each
  *	  replicated table in each subscription (pg_subscription_rel)
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_subscription_rel.h
@@ -18,10 +18,9 @@
 #ifndef PG_SUBSCRIPTION_REL_H
 #define PG_SUBSCRIPTION_REL_H
 
+#include "access/xlogdefs.h"
 #include "catalog/genbki.h"
 #include "catalog/pg_subscription_rel_d.h"
-
-#include "access/xlogdefs.h"
 #include "nodes/pg_list.h"
 
 /* ----------------

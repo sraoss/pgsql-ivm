@@ -12,7 +12,7 @@
  *	  http://www.ietf.org/rfc/rfc4013.txt
  *
  *
- * Portions Copyright (c) 2017-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2017-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/common/saslprep.c
@@ -27,12 +27,6 @@
 
 #include "common/saslprep.h"
 #include "common/unicode_norm.h"
-
-/*
- * Note: The functions in this file depend on functions from
- * src/backend/utils/mb/wchar.c, so in order to use this in frontend
- * code, you will need to link that in, too.
- */
 #include "mb/pg_wchar.h"
 
 /*

@@ -4,7 +4,7 @@
  *		Header file for structures and utility functions related to
  *		partitioning
  *
- * Copyright (c) 2007-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2007-2020, PostgreSQL Global Development Group
  *
  * src/include/catalog/partition.h
  *
@@ -23,8 +23,7 @@ extern Oid	get_partition_parent(Oid relid);
 extern List *get_partition_ancestors(Oid relid);
 extern Oid	index_get_partition(Relation partition, Oid indexId);
 extern List *map_partition_varattnos(List *expr, int fromrel_varno,
-									 Relation to_rel, Relation from_rel,
-									 bool *found_whole_row);
+									 Relation to_rel, Relation from_rel);
 extern bool has_partition_attrs(Relation rel, Bitmapset *attnums,
 								bool *used_in_expr);
 

@@ -3,7 +3,7 @@
  * heap.c
  *	  code to create and destroy POSTGRES heap relations
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -83,7 +83,6 @@
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
-#include "utils/rel.h"
 #include "utils/ruleutils.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -572,6 +571,10 @@ CheckAttributeNamesTypes(TupleDesc tupdesc, char relkind,
  * are reliably identifiable only within a session, since the identity info
  * may use a typmod that is only locally assigned.  The caller is expected
  * to know whether these cases are safe.)
+ *
+ * flags can also control the phrasing of the error messages.  If
+ * CHKATYPE_IS_PARTKEY is specified, "attname" should be a partition key
+ * column number as text, not a real column name.
  * --------------------------------
  */
 void
@@ -598,10 +601,19 @@ CheckAttributeType(const char *attname,
 		if (!((atttypid == ANYARRAYOID && (flags & CHKATYPE_ANYARRAY)) ||
 			  (atttypid == RECORDOID && (flags & CHKATYPE_ANYRECORD)) ||
 			  (atttypid == RECORDARRAYOID && (flags & CHKATYPE_ANYRECORD))))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("column \"%s\" has pseudo-type %s",
-							attname, format_type_be(atttypid))));
+		{
+			if (flags & CHKATYPE_IS_PARTKEY)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+				/* translator: first %s is an integer not a name */
+						 errmsg("partition key column %s has pseudo-type %s",
+								attname, format_type_be(atttypid))));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+						 errmsg("column \"%s\" has pseudo-type %s",
+								attname, format_type_be(atttypid))));
+		}
 	}
 	else if (att_typtype == TYPTYPE_DOMAIN)
 	{
@@ -648,12 +660,22 @@ CheckAttributeType(const char *attname,
 			CheckAttributeType(NameStr(attr->attname),
 							   attr->atttypid, attr->attcollation,
 							   containing_rowtypes,
-							   flags);
+							   flags & ~CHKATYPE_IS_PARTKEY);
 		}
 
 		relation_close(relation, AccessShareLock);
 
 		containing_rowtypes = list_delete_last(containing_rowtypes);
+	}
+	else if (att_typtype == TYPTYPE_RANGE)
+	{
+		/*
+		 * If it's a range, recurse to check its subtype.
+		 */
+		CheckAttributeType(attname, get_range_subtype(atttypid),
+						   get_range_collation(atttypid),
+						   containing_rowtypes,
+						   flags);
 	}
 	else if (OidIsValid((att_typelem = get_element_type(atttypid))))
 	{
@@ -670,11 +692,21 @@ CheckAttributeType(const char *attname,
 	 * useless, and it cannot be dumped, so we must disallow it.
 	 */
 	if (!OidIsValid(attcollation) && type_is_collatable(atttypid))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-				 errmsg("no collation was derived for column \"%s\" with collatable type %s",
-						attname, format_type_be(atttypid)),
-				 errhint("Use the COLLATE clause to set the collation explicitly.")));
+	{
+		if (flags & CHKATYPE_IS_PARTKEY)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+			/* translator: first %s is an integer not a name */
+					 errmsg("no collation was derived for partition key column %s with collatable type %s",
+							attname, format_type_be(atttypid)),
+					 errhint("Use the COLLATE clause to set the collation explicitly.")));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
+					 errmsg("no collation was derived for column \"%s\" with collatable type %s",
+							attname, format_type_be(atttypid)),
+					 errhint("Use the COLLATE clause to set the collation explicitly.")));
+	}
 }
 
 /*
@@ -2226,8 +2258,7 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 			else
 			{
 				/* otherwise make a one-element array of the value */
-				missingval = PointerGetDatum(
-											 construct_array(&missingval,
+				missingval = PointerGetDatum(construct_array(&missingval,
 															 1,
 															 defAttStruct->atttypid,
 															 defAttStruct->attlen,
@@ -2501,7 +2532,7 @@ AddRelationNewConstraints(Relation rel,
 	TupleConstr *oldconstr;
 	int			numoldchecks;
 	ParseState *pstate;
-	RangeTblEntry *rte;
+	ParseNamespaceItem *nsitem;
 	int			numchecks;
 	List	   *checknames;
 	ListCell   *cell;
@@ -2524,13 +2555,13 @@ AddRelationNewConstraints(Relation rel,
 	 */
 	pstate = make_parsestate(NULL);
 	pstate->p_sourcetext = queryString;
-	rte = addRangeTableEntryForRelation(pstate,
-										rel,
-										AccessShareLock,
-										NULL,
-										false,
-										true);
-	addRTEtoQuery(pstate, rte, true, true, true);
+	nsitem = addRangeTableEntryForRelation(pstate,
+										   rel,
+										   AccessShareLock,
+										   NULL,
+										   false,
+										   true);
+	addNSItemToQuery(pstate, nsitem, true, true, true);
 
 	/*
 	 * Process column default expressions.
@@ -3149,8 +3180,15 @@ RelationTruncateIndexes(Relation heapRelation)
 		/* Open the index relation; use exclusive lock, just to be sure */
 		currentIndex = index_open(indexId, AccessExclusiveLock);
 
-		/* Fetch info needed for index_build */
-		indexInfo = BuildIndexInfo(currentIndex);
+		/*
+		 * Fetch info needed for index_build.  Since we know there are no
+		 * tuples that actually need indexing, we can use a dummy IndexInfo.
+		 * This is slightly cheaper to build, but the real point is to avoid
+		 * possibly running user-defined code in index expressions or
+		 * predicates.  We might be getting invoked during ON COMMIT
+		 * processing, and we don't want to run any such code then.
+		 */
+		indexInfo = BuildDummyIndexInfo(currentIndex);
 
 		/*
 		 * Now truncate the actual file (and discard buffers).

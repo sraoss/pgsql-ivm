@@ -2,7 +2,7 @@
 #
 # Makefile for src/bin/psql
 #
-# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/bin/psql/Makefile
@@ -15,6 +15,9 @@ PGAPPICON=win32
 subdir = src/bin/psql
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
+
+# make this available to TAP test scripts
+export with_readline
 
 REFDOCDIR= $(top_srcdir)/doc/src/sgml/ref
 
@@ -73,8 +76,15 @@ uninstall:
 
 clean distclean:
 	rm -f psql$(X) $(OBJS) lex.backup
+	rm -rf tmp_check
 
 # files removed here are supposed to be in the distribution tarball,
 # so do not clean them in the clean/distclean rules
 maintainer-clean: distclean
 	rm -f sql_help.h sql_help.c psqlscanslash.c
+
+check:
+	$(prove_check)
+
+installcheck:
+	$(prove_installcheck)

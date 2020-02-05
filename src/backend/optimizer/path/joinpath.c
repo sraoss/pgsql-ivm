@@ -3,7 +3,7 @@
  * joinpath.c
  *	  Routines to find all possible paths for processing a set of joins
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1538,8 +1538,7 @@ match_unsorted_outer(PlannerInfo *root,
 			if (save_jointype == JOIN_UNIQUE_INNER)
 				return;
 
-			inner_cheapest_total = get_cheapest_parallel_safe_total_inner(
-																		  innerrel->pathlist);
+			inner_cheapest_total = get_cheapest_parallel_safe_total_inner(innerrel->pathlist);
 		}
 
 		if (inner_cheapest_total)

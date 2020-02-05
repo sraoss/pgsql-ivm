@@ -4,7 +4,7 @@
  *	  Routines to support inter-object dependencies.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/dependency.h
@@ -37,7 +37,8 @@ typedef enum DependencyType
 	DEPENDENCY_PARTITION_SEC = 'S',
 	DEPENDENCY_EXTENSION = 'e',
 	DEPENDENCY_AUTO_EXTENSION = 'x',
-	DEPENDENCY_PIN = 'p'
+	DEPENDENCY_PIN = 'p',
+	DEPENDENCY_IMMV = 'm'
 } DependencyType;
 
 /*

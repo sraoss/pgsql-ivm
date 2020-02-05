@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/tab-complete.c
  */
@@ -33,32 +33,44 @@
  */
 
 #include "postgres_fe.h"
-#include "tab-complete.h"
+
 #include "input.h"
+#include "tab-complete.h"
 
 /* If we don't have this, we might as well forget about the whole thing: */
 #ifdef USE_READLINE
 
 #include <ctype.h>
+#include <sys/stat.h>
 
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_class_d.h"
-
+#include "common.h"
 #include "libpq-fe.h"
 #include "pqexpbuffer.h"
-#include "common.h"
 #include "settings.h"
 #include "stringutils.h"
 
-#ifdef HAVE_RL_FILENAME_COMPLETION_FUNCTION
-#define filename_completion_function rl_filename_completion_function
-#else
-/* missing in some header files */
-extern char *filename_completion_function();
+/*
+ * Ancient versions of libedit provide filename_completion_function()
+ * instead of rl_filename_completion_function().  Likewise for
+ * [rl_]completion_matches().
+ */
+#ifndef HAVE_RL_FILENAME_COMPLETION_FUNCTION
+#define rl_filename_completion_function filename_completion_function
 #endif
 
-#ifdef HAVE_RL_COMPLETION_MATCHES
-#define completion_matches rl_completion_matches
+#ifndef HAVE_RL_COMPLETION_MATCHES
+#define rl_completion_matches completion_matches
+#endif
+
+/*
+ * Currently we assume that rl_filename_dequoting_function exists if
+ * rl_filename_quoting_function does.  If that proves not to be the case,
+ * we'd need to test for the former, or possibly both, in configure.
+ */
+#ifdef HAVE_RL_FILENAME_QUOTING_FUNCTION
+#define USE_FILENAME_QUOTING_FUNCTIONS 1
 #endif
 
 /* word break characters */
@@ -155,9 +167,11 @@ typedef struct SchemaQuery
 static int	completion_max_records;
 
 /*
- * Communication variables set by COMPLETE_WITH_FOO macros and then used by
- * the completion callback functions.  Ugly but there is no better way.
+ * Communication variables set by psql_completion (mostly in COMPLETE_WITH_FOO
+ * macros) and then used by the completion callback functions.  Ugly but there
+ * is no better way.
  */
+static char completion_last_char;	/* last char of input word */
 static const char *completion_charp;	/* to pass a string */
 static const char *const *completion_charpp;	/* to pass a list of strings */
 static const char *completion_info_charp;	/* to pass a second string */
@@ -165,6 +179,7 @@ static const char *completion_info_charp2;	/* to pass a third string */
 static const VersionedQuery *completion_vquery; /* to pass a VersionedQuery */
 static const SchemaQuery *completion_squery;	/* to pass a SchemaQuery */
 static bool completion_case_sensitive;	/* completion is case sensitive */
+static bool completion_force_quote; /* true to force-quote filenames */
 
 /*
  * A few macros to ease typing. You can use these to complete the given
@@ -182,27 +197,27 @@ static bool completion_case_sensitive;	/* completion is case sensitive */
 #define COMPLETE_WITH_QUERY(query) \
 do { \
 	completion_charp = query; \
-	matches = completion_matches(text, complete_from_query); \
+	matches = rl_completion_matches(text, complete_from_query); \
 } while (0)
 
 #define COMPLETE_WITH_VERSIONED_QUERY(query) \
 do { \
 	completion_vquery = query; \
-	matches = completion_matches(text, complete_from_versioned_query); \
+	matches = rl_completion_matches(text, complete_from_versioned_query); \
 } while (0)
 
 #define COMPLETE_WITH_SCHEMA_QUERY(query, addon) \
 do { \
 	completion_squery = &(query); \
 	completion_charp = addon; \
-	matches = completion_matches(text, complete_from_schema_query); \
+	matches = rl_completion_matches(text, complete_from_schema_query); \
 } while (0)
 
 #define COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(query, addon) \
 do { \
 	completion_squery = query; \
 	completion_vquery = addon; \
-	matches = completion_matches(text, complete_from_versioned_schema_query); \
+	matches = rl_completion_matches(text, complete_from_versioned_schema_query); \
 } while (0)
 
 /*
@@ -213,14 +228,14 @@ do { \
 do { \
 	completion_case_sensitive = (cs); \
 	completion_charp = (con); \
-	matches = completion_matches(text, complete_from_const); \
+	matches = rl_completion_matches(text, complete_from_const); \
 } while (0)
 
 #define COMPLETE_WITH_LIST_INT(cs, list) \
 do { \
 	completion_case_sensitive = (cs); \
 	completion_charpp = (list); \
-	matches = completion_matches(text, complete_from_list); \
+	matches = rl_completion_matches(text, complete_from_list); \
 } while (0)
 
 #define COMPLETE_WITH_LIST(list) COMPLETE_WITH_LIST_INT(false, list)
@@ -260,7 +275,7 @@ do { \
 		completion_info_charp = _completion_table; \
 		completion_info_charp2 = _completion_schema; \
 	} \
-	matches = completion_matches(text, complete_from_query); \
+	matches = rl_completion_matches(text, complete_from_query); \
 } while (0)
 
 #define COMPLETE_WITH_ENUM_VALUE(type) \
@@ -285,7 +300,7 @@ do { \
 		completion_info_charp = _completion_type; \
 		completion_info_charp2 = _completion_schema; \
 	} \
-	matches = completion_matches(text, complete_from_query); \
+	matches = rl_completion_matches(text, complete_from_query); \
 } while (0)
 
 #define COMPLETE_WITH_FUNCTION_ARG(function) \
@@ -310,7 +325,7 @@ do { \
 		completion_info_charp = _completion_function; \
 		completion_info_charp2 = _completion_schema; \
 	} \
-	matches = completion_matches(text, complete_from_query); \
+	matches = rl_completion_matches(text, complete_from_query); \
 } while (0)
 
 /*
@@ -1113,9 +1128,9 @@ static char **get_previous_words(int point, char **buffer, int *nwords);
 
 static char *get_guctype(const char *varname);
 
-#ifdef NOT_USED
-static char *quote_file_name(char *text, int match_type, char *quote_pointer);
-static char *dequote_file_name(char *text, char quote_char);
+#ifdef USE_FILENAME_QUOTING_FUNCTIONS
+static char *quote_file_name(char *fname, int match_type, char *quote_pointer);
+static char *dequote_file_name(char *fname, int quote_char);
 #endif
 
 
@@ -1128,7 +1143,36 @@ initialize_readline(void)
 	rl_readline_name = (char *) pset.progname;
 	rl_attempted_completion_function = psql_completion;
 
+#ifdef USE_FILENAME_QUOTING_FUNCTIONS
+	rl_filename_quoting_function = quote_file_name;
+	rl_filename_dequoting_function = dequote_file_name;
+#endif
+
 	rl_basic_word_break_characters = WORD_BREAKS;
+
+	/*
+	 * We should include '"' in rl_completer_quote_characters too, but that
+	 * will require some upgrades to how we handle quoted identifiers, so
+	 * that's for another day.
+	 */
+	rl_completer_quote_characters = "'";
+
+	/*
+	 * Set rl_filename_quote_characters to "all possible characters",
+	 * otherwise Readline will skip filename quoting if it thinks a filename
+	 * doesn't need quoting.  Readline actually interprets this as bytes, so
+	 * there are no encoding considerations here.
+	 */
+#ifdef HAVE_RL_FILENAME_QUOTE_CHARACTERS
+	{
+		unsigned char *fqc = (unsigned char *) pg_malloc(256);
+
+		for (int i = 0; i < 255; i++)
+			fqc[i] = (unsigned char) (i + 1);
+		fqc[255] = '\0';
+		rl_filename_quote_characters = (const char *) fqc;
+	}
+#endif
 
 	completion_max_records = 1000;
 
@@ -1336,7 +1380,7 @@ ends_with(const char *s, char c)
  * According to readline spec this gets passed the text entered so far and its
  * start and end positions in the readline buffer. The return value is some
  * partially obscure list format that can be generated by readline's
- * completion_matches() function, so we don't have to worry about it.
+ * rl_completion_matches() function, so we don't have to worry about it.
  */
 static char **
 psql_completion(const char *text, int start, int end)
@@ -1446,8 +1490,18 @@ psql_completion(const char *text, int start, int end)
 		NULL
 	};
 
-	(void) end;					/* "end" is not used */
+	/*
+	 * Temporary workaround for a bug in recent (2019) libedit: it incorrectly
+	 * de-escapes the input "text", causing us to fail to recognize backslash
+	 * commands.  So get the string to look at from rl_line_buffer instead.
+	 */
+	char	   *text_copy = pnstrdup(rl_line_buffer + start, end - start);
+	text = text_copy;
 
+	/* Remember last char of the given input word. */
+	completion_last_char = (end > start) ? text[end - start - 1] : '\0';
+
+	/* We usually want the append character to be a space. */
 #ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
 	rl_completion_append_character = ' ';
 #endif
@@ -1489,7 +1543,7 @@ psql_completion(const char *text, int start, int end)
 /* CREATE */
 	/* complete with something you can create */
 	else if (TailMatches("CREATE"))
-		matches = completion_matches(text, create_command_generator);
+		matches = rl_completion_matches(text, create_command_generator);
 
 	/* complete with something you can create or replace */
 	else if (TailMatches("CREATE", "OR", "REPLACE"))
@@ -1499,7 +1553,7 @@ psql_completion(const char *text, int start, int end)
 /* DROP, but not DROP embedded in other commands */
 	/* complete with something you can drop */
 	else if (Matches("DROP"))
-		matches = completion_matches(text, drop_command_generator);
+		matches = rl_completion_matches(text, drop_command_generator);
 
 /* ALTER */
 
@@ -1510,7 +1564,7 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER something */
 	else if (Matches("ALTER"))
-		matches = completion_matches(text, alter_command_generator);
+		matches = rl_completion_matches(text, alter_command_generator);
 	/* ALTER TABLE,INDEX,MATERIALIZED VIEW ALL IN TABLESPACE xxx */
 	else if (TailMatches("ALL", "IN", "TABLESPACE", MatchAny))
 		COMPLETE_WITH("SET TABLESPACE", "OWNED BY");
@@ -2008,7 +2062,7 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER TABLE ALTER [COLUMN] <foo> DROP */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ALTER", "COLUMN", MatchAny, "DROP") ||
 			 Matches("ALTER", "TABLE", MatchAny, "ALTER", MatchAny, "DROP"))
-		COMPLETE_WITH("DEFAULT", "IDENTITY", "NOT NULL");
+		COMPLETE_WITH("DEFAULT", "EXPRESSION", "IDENTITY", "NOT NULL");
 	else if (Matches("ALTER", "TABLE", MatchAny, "CLUSTER"))
 		COMPLETE_WITH("ON");
 	else if (Matches("ALTER", "TABLE", MatchAny, "CLUSTER", "ON"))
@@ -2258,20 +2312,26 @@ psql_completion(const char *text, int start, int end)
 			 Matches("COPY", "BINARY", MatchAny))
 		COMPLETE_WITH("FROM", "TO");
 	/* If we have COPY [BINARY] <sth> FROM|TO, complete with filename */
-	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO") ||
+	else if (Matches("COPY", MatchAny, "FROM|TO") ||
 			 Matches("COPY", "BINARY", MatchAny, "FROM|TO"))
 	{
 		completion_charp = "";
-		matches = completion_matches(text, complete_from_files);
+		completion_force_quote = true;	/* COPY requires quoted filename */
+		matches = rl_completion_matches(text, complete_from_files);
 	}
-
-	/* Handle COPY [BINARY] <sth> FROM|TO filename */
+	else if (Matches("\\copy", MatchAny, "FROM|TO"))
+	{
+		completion_charp = "";
+		completion_force_quote = false;
+		matches = rl_completion_matches(text, complete_from_files);
+	}
+	/* Offer options after COPY [BINARY] <sth> FROM|TO filename */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny) ||
 			 Matches("COPY", "BINARY", MatchAny, "FROM|TO", MatchAny))
 		COMPLETE_WITH("BINARY", "DELIMITER", "NULL", "CSV",
 					  "ENCODING");
 
-	/* Handle COPY [BINARY] <sth> FROM|TO filename CSV */
+	/* Offer options after COPY [BINARY] <sth> FROM|TO filename CSV */
 	else if (Matches("COPY|\\copy", MatchAny, "FROM|TO", MatchAny, "CSV") ||
 			 Matches("COPY", "BINARY", MatchAny, "FROM|TO", MatchAny, "CSV"))
 		COMPLETE_WITH("HEADER", "QUOTE", "ESCAPE", "FORCE QUOTE",
@@ -2484,7 +2544,11 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("CREATE", "RULE", MatchAny, "AS") ||
 			 Matches("CREATE", "OR", "REPLACE", "RULE", MatchAny, "AS"))
 		COMPLETE_WITH("ON");
-	/* Complete "CREATE [ OR REPLACE ] RULE <sth> AS ON" with SELECT|UPDATE|INSERT|DELETE */
+
+	/*
+	 * Complete "CREATE [ OR REPLACE ] RULE <sth> AS ON" with
+	 * SELECT|UPDATE|INSERT|DELETE
+	 */
 	else if (Matches("CREATE", "RULE", MatchAny, "AS", "ON") ||
 			 Matches("CREATE", "OR", "REPLACE", "RULE", MatchAny, "AS", "ON"))
 		COMPLETE_WITH("SELECT", "UPDATE", "INSERT", "DELETE");
@@ -3589,7 +3653,7 @@ psql_completion(const char *text, int start, int end)
 		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
 			COMPLETE_WITH("FULL", "FREEZE", "ANALYZE", "VERBOSE",
 						  "DISABLE_PAGE_SKIPPING", "SKIP_LOCKED",
-						  "INDEX_CLEANUP", "TRUNCATE");
+						  "INDEX_CLEANUP", "TRUNCATE", "PARALLEL");
 		else if (TailMatches("FULL|FREEZE|ANALYZE|VERBOSE|DISABLE_PAGE_SKIPPING|SKIP_LOCKED|INDEX_CLEANUP|TRUNCATE"))
 			COMPLETE_WITH("ON", "OFF");
 	}
@@ -3712,9 +3776,9 @@ psql_completion(const char *text, int start, int end)
 	else if (TailMatchesCS("\\h|\\help", MatchAny))
 	{
 		if (TailMatches("DROP"))
-			matches = completion_matches(text, drop_command_generator);
+			matches = rl_completion_matches(text, drop_command_generator);
 		else if (TailMatches("ALTER"))
-			matches = completion_matches(text, alter_command_generator);
+			matches = rl_completion_matches(text, alter_command_generator);
 
 		/*
 		 * CREATE is recognized by tail match elsewhere, so doesn't need to be
@@ -3813,7 +3877,8 @@ psql_completion(const char *text, int start, int end)
 						   "\\s|\\w|\\write|\\lo_import"))
 	{
 		completion_charp = "\\";
-		matches = completion_matches(text, complete_from_files);
+		completion_force_quote = false;
+		matches = rl_completion_matches(text, complete_from_files);
 	}
 
 	/*
@@ -3857,6 +3922,7 @@ psql_completion(const char *text, int start, int end)
 	/* free storage */
 	free(previous_words);
 	free(words_buffer);
+	free(text_copy);
 
 	/* Return our Grand List O' Matches */
 	return matches;
@@ -4378,13 +4444,56 @@ complete_from_variables(const char *text, const char *prefix, const char *suffix
  * This function wraps rl_filename_completion_function() to strip quotes from
  * the input before searching for matches and to quote any matches for which
  * the consuming command will require it.
+ *
+ * Caller must set completion_charp to a zero- or one-character string
+ * containing the escape character.  This is necessary since \copy has no
+ * escape character, but every other backslash command recognizes "\" as an
+ * escape character.
+ *
+ * Caller must also set completion_force_quote to indicate whether to force
+ * quotes around the result.  (The SQL COPY command requires that.)
  */
 static char *
 complete_from_files(const char *text, int state)
 {
+#ifdef USE_FILENAME_QUOTING_FUNCTIONS
+
+	/*
+	 * If we're using a version of Readline that supports filename quoting
+	 * hooks, rely on those, and invoke rl_filename_completion_function()
+	 * without messing with its arguments.  Readline does stuff internally
+	 * that does not work well at all if we try to handle dequoting here.
+	 * Instead, Readline will call quote_file_name() and dequote_file_name()
+	 * (see below) at appropriate times.
+	 *
+	 * ... or at least, mostly it will.  There are some paths involving
+	 * unmatched file names in which Readline never calls quote_file_name(),
+	 * and if left to its own devices it will incorrectly append a quote
+	 * anyway.  Set rl_completion_suppress_quote to prevent that.  If we do
+	 * get to quote_file_name(), we'll clear this again.  (Yes, this seems
+	 * like it's working around Readline bugs.)
+	 */
+#ifdef HAVE_RL_COMPLETION_SUPPRESS_QUOTE
+	rl_completion_suppress_quote = 1;
+#endif
+
+	/* If user typed a quote, force quoting (never remove user's quote) */
+	if (*text == '\'')
+		completion_force_quote = true;
+
+	return rl_filename_completion_function(text, state);
+#else
+
+	/*
+	 * Otherwise, we have to do the best we can.
+	 */
 	static const char *unquoted_text;
 	char	   *unquoted_match;
 	char	   *ret = NULL;
+
+	/* If user typed a quote, force quoting (never remove user's quote) */
+	if (*text == '\'')
+		completion_force_quote = true;
 
 	if (state == 0)
 	{
@@ -4399,25 +4508,43 @@ complete_from_files(const char *text, int state)
 		}
 	}
 
-	unquoted_match = filename_completion_function(unquoted_text, state);
+	unquoted_match = rl_filename_completion_function(unquoted_text, state);
 	if (unquoted_match)
 	{
-		/*
-		 * Caller sets completion_charp to a zero- or one-character string
-		 * containing the escape character.  This is necessary since \copy has
-		 * no escape character, but every other backslash command recognizes
-		 * "\" as an escape character.  Since we have only two callers, don't
-		 * bother providing a macro to simplify this.
-		 */
+		struct stat statbuf;
+		bool		is_dir = (stat(unquoted_match, &statbuf) == 0 &&
+							  S_ISDIR(statbuf.st_mode) != 0);
+
+		/* Re-quote the result, if needed. */
 		ret = quote_if_needed(unquoted_match, " \t\r\n\"`",
-							  '\'', *completion_charp, pset.encoding);
+							  '\'', *completion_charp,
+							  completion_force_quote,
+							  pset.encoding);
 		if (ret)
 			free(unquoted_match);
 		else
 			ret = unquoted_match;
+
+		/*
+		 * If it's a directory, replace trailing quote with a slash; this is
+		 * usually more convenient.  (If we didn't quote, leave this to
+		 * libedit.)
+		 */
+		if (*ret == '\'' && is_dir)
+		{
+			char	   *retend = ret + strlen(ret) - 1;
+
+			Assert(*retend == '\'');
+			*retend = '/';
+			/* Try to prevent libedit from adding a space, too */
+#ifdef HAVE_RL_COMPLETION_APPEND_CHARACTER
+			rl_completion_append_character = '\0';
+#endif
+		}
 	}
 
 	return ret;
+#endif							/* USE_FILENAME_QUOTING_FUNCTIONS */
 }
 
 
@@ -4669,46 +4796,110 @@ get_guctype(const char *varname)
 	return guctype;
 }
 
-#ifdef NOT_USED
+#ifdef USE_FILENAME_QUOTING_FUNCTIONS
 
 /*
- * Surround a string with single quotes. This works for both SQL and
- * psql internal. Currently disabled because it is reported not to
- * cooperate with certain versions of readline.
+ * Quote a filename according to SQL rules, returning a malloc'd string.
+ * completion_charp must point to escape character or '\0', and
+ * completion_force_quote must be set correctly, as per comments for
+ * complete_from_files().
  */
 static char *
-quote_file_name(char *text, int match_type, char *quote_pointer)
+quote_file_name(char *fname, int match_type, char *quote_pointer)
 {
 	char	   *s;
-	size_t		length;
+	struct stat statbuf;
 
-	(void) quote_pointer;		/* not used */
+	/* Quote if needed. */
+	s = quote_if_needed(fname, " \t\r\n\"`",
+						'\'', *completion_charp,
+						completion_force_quote,
+						pset.encoding);
+	if (!s)
+		s = pg_strdup(fname);
 
-	length = strlen(text) +(match_type == SINGLE_MATCH ? 3 : 2);
-	s = pg_malloc(length);
-	s[0] = '\'';
-	strcpy(s + 1, text);
-	if (match_type == SINGLE_MATCH)
-		s[length - 2] = '\'';
-	s[length - 1] = '\0';
+	/*
+	 * However, some of the time we have to strip the trailing quote from what
+	 * we send back.  Never strip the trailing quote if the user already typed
+	 * one; otherwise, suppress the trailing quote if we have multiple/no
+	 * matches (because we don't want to add a quote if the input is seemingly
+	 * unfinished), or if the input was already quoted (because Readline will
+	 * do arguably-buggy things otherwise), or if the file does not exist, or
+	 * if it's a directory.
+	 */
+	if (*s == '\'' &&
+		completion_last_char != '\'' &&
+		(match_type != SINGLE_MATCH ||
+		 (quote_pointer && *quote_pointer == '\'') ||
+		 stat(fname, &statbuf) != 0 ||
+		 S_ISDIR(statbuf.st_mode)))
+	{
+		char	   *send = s + strlen(s) - 1;
+
+		Assert(*send == '\'');
+		*send = '\0';
+	}
+
+	/*
+	 * And now we can let Readline do its thing with possibly adding a quote
+	 * on its own accord.  (This covers some additional cases beyond those
+	 * dealt with above.)
+	 */
+#ifdef HAVE_RL_COMPLETION_SUPPRESS_QUOTE
+	rl_completion_suppress_quote = 0;
+#endif
+
+	/*
+	 * If user typed a leading quote character other than single quote (i.e.,
+	 * double quote), zap it, so that we replace it with the correct single
+	 * quote.
+	 */
+	if (quote_pointer && *quote_pointer != '\'')
+		*quote_pointer = '\0';
+
 	return s;
 }
 
+/*
+ * Dequote a filename, if it's quoted.
+ * completion_charp must point to escape character or '\0', as per
+ * comments for complete_from_files().
+ */
 static char *
-dequote_file_name(char *text, char quote_char)
+dequote_file_name(char *fname, int quote_char)
 {
-	char	   *s;
-	size_t		length;
+	char	   *unquoted_fname;
 
-	if (!quote_char)
-		return pg_strdup(text);
+	/*
+	 * If quote_char is set, it's not included in "fname".  We have to add it
+	 * or strtokx will not interpret the string correctly (notably, it won't
+	 * recognize escapes).
+	 */
+	if (quote_char == '\'')
+	{
+		char	   *workspace = (char *) pg_malloc(strlen(fname) + 2);
 
-	length = strlen(text);
-	s = pg_malloc(length - 2 + 1);
-	strlcpy(s, text +1, length - 2 + 1);
+		workspace[0] = quote_char;
+		strcpy(workspace + 1, fname);
+		unquoted_fname = strtokx(workspace, "", NULL, "'", *completion_charp,
+								 false, true, pset.encoding);
+		free(workspace);
+	}
+	else
+		unquoted_fname = strtokx(fname, "", NULL, "'", *completion_charp,
+								 false, true, pset.encoding);
 
-	return s;
+	/* expect a NULL return for the empty string only */
+	if (!unquoted_fname)
+	{
+		Assert(*fname == '\0');
+		unquoted_fname = fname;
+	}
+
+	/* readline expects a malloc'd result that it is to free */
+	return pg_strdup(unquoted_fname);
 }
-#endif							/* NOT_USED */
+
+#endif							/* USE_FILENAME_QUOTING_FUNCTIONS */
 
 #endif							/* USE_READLINE */

@@ -3,7 +3,7 @@
  * basebackup.c
  *	  code for taking a base backup and streaming it to a standby
  *
- * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/basebackup.c
@@ -65,7 +65,6 @@ static int64 _tarWriteDir(const char *pathbuf, int basepathlen, struct stat *sta
 						  bool sizeonly);
 static void send_int8_string(StringInfoData *buf, int64 intval);
 static void SendBackupHeader(List *tablespaces);
-static void base_backup_cleanup(int code, Datum arg);
 static void perform_base_backup(basebackup_options *opt);
 static void parse_basebackup_options(List *options, basebackup_options *opt);
 static void SendXlogRecPtrResult(XLogRecPtr ptr, TimeLineID tli);
@@ -216,17 +215,6 @@ static const char *const noChecksumFiles[] = {
 	NULL,
 };
 
-
-/*
- * Called when ERROR or FATAL happens in perform_base_backup() after
- * we have started the backup - make sure we end it!
- */
-static void
-base_backup_cleanup(int code, Datum arg)
-{
-	do_pg_abort_backup();
-}
-
 /*
  * Actually do a base backup for the specified tablespaces.
  *
@@ -265,7 +253,7 @@ perform_base_backup(basebackup_options *opt)
 	 * do_pg_stop_backup() should be inside the error cleanup block!
 	 */
 
-	PG_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
+	PG_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 	{
 		ListCell   *lc;
 		tablespaceinfo *ti;
@@ -374,7 +362,7 @@ perform_base_backup(basebackup_options *opt)
 
 		endptr = do_pg_stop_backup(labelfile->data, !opt->nowait, &endtli);
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(base_backup_cleanup, (Datum) 0);
+	PG_END_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 
 
 	if (opt->includewal)
@@ -1303,7 +1291,7 @@ sendDir(const char *path, int basepathlen, bool sizeonly, List *tablespaces,
 
 			if (!sizeonly)
 				sent = sendFile(pathbuf, pathbuf + basepathlen + 1, &statbuf,
-								true, isDbDir ? pg_atoi(lastDir + 1, sizeof(Oid), 0) : InvalidOid);
+								true, isDbDir ? atooid(lastDir + 1) : InvalidOid);
 
 			if (sent || sizeonly)
 			{

@@ -14,19 +14,19 @@ set max_parallel_workers_per_gather=4;
 -- Parallel Append with partial-subplans
 explain (costs off)
   select round(avg(aa)), sum(aa) from a_star;
-                     QUERY PLAN                      
------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Finalize Aggregate
    ->  Gather
          Workers Planned: 3
          ->  Partial Aggregate
                ->  Parallel Append
-                     ->  Parallel Seq Scan on d_star
-                     ->  Parallel Seq Scan on f_star
-                     ->  Parallel Seq Scan on e_star
-                     ->  Parallel Seq Scan on b_star
-                     ->  Parallel Seq Scan on c_star
-                     ->  Parallel Seq Scan on a_star
+                     ->  Parallel Seq Scan on d_star a_star_4
+                     ->  Parallel Seq Scan on f_star a_star_6
+                     ->  Parallel Seq Scan on e_star a_star_5
+                     ->  Parallel Seq Scan on b_star a_star_2
+                     ->  Parallel Seq Scan on c_star a_star_3
+                     ->  Parallel Seq Scan on a_star a_star_1
 (11 rows)
 
 select round(avg(aa)), sum(aa) from a_star a1;
@@ -40,19 +40,19 @@ alter table c_star set (parallel_workers = 0);
 alter table d_star set (parallel_workers = 0);
 explain (costs off)
   select round(avg(aa)), sum(aa) from a_star;
-                     QUERY PLAN                      
------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Finalize Aggregate
    ->  Gather
          Workers Planned: 3
          ->  Partial Aggregate
                ->  Parallel Append
-                     ->  Seq Scan on d_star
-                     ->  Seq Scan on c_star
-                     ->  Parallel Seq Scan on f_star
-                     ->  Parallel Seq Scan on e_star
-                     ->  Parallel Seq Scan on b_star
-                     ->  Parallel Seq Scan on a_star
+                     ->  Seq Scan on d_star a_star_4
+                     ->  Seq Scan on c_star a_star_3
+                     ->  Parallel Seq Scan on f_star a_star_6
+                     ->  Parallel Seq Scan on e_star a_star_5
+                     ->  Parallel Seq Scan on b_star a_star_2
+                     ->  Parallel Seq Scan on a_star a_star_1
 (11 rows)
 
 select round(avg(aa)), sum(aa) from a_star a2;
@@ -68,19 +68,19 @@ alter table e_star set (parallel_workers = 0);
 alter table f_star set (parallel_workers = 0);
 explain (costs off)
   select round(avg(aa)), sum(aa) from a_star;
-                 QUERY PLAN                 
---------------------------------------------
+                     QUERY PLAN                      
+-----------------------------------------------------
  Finalize Aggregate
    ->  Gather
          Workers Planned: 3
          ->  Partial Aggregate
                ->  Parallel Append
-                     ->  Seq Scan on d_star
-                     ->  Seq Scan on f_star
-                     ->  Seq Scan on e_star
-                     ->  Seq Scan on b_star
-                     ->  Seq Scan on c_star
-                     ->  Seq Scan on a_star
+                     ->  Seq Scan on d_star a_star_4
+                     ->  Seq Scan on f_star a_star_6
+                     ->  Seq Scan on e_star a_star_5
+                     ->  Seq Scan on b_star a_star_2
+                     ->  Seq Scan on c_star a_star_3
+                     ->  Seq Scan on a_star a_star_1
 (11 rows)
 
 select round(avg(aa)), sum(aa) from a_star a3;
@@ -99,19 +99,19 @@ alter table f_star reset (parallel_workers);
 set enable_parallel_append to off;
 explain (costs off)
   select round(avg(aa)), sum(aa) from a_star;
-                     QUERY PLAN                      
------------------------------------------------------
+                          QUERY PLAN                          
+--------------------------------------------------------------
  Finalize Aggregate
    ->  Gather
          Workers Planned: 1
          ->  Partial Aggregate
                ->  Append
-                     ->  Parallel Seq Scan on a_star
-                     ->  Parallel Seq Scan on b_star
-                     ->  Parallel Seq Scan on c_star
-                     ->  Parallel Seq Scan on d_star
-                     ->  Parallel Seq Scan on e_star
-                     ->  Parallel Seq Scan on f_star
+                     ->  Parallel Seq Scan on a_star a_star_1
+                     ->  Parallel Seq Scan on b_star a_star_2
+                     ->  Parallel Seq Scan on c_star a_star_3
+                     ->  Parallel Seq Scan on d_star a_star_4
+                     ->  Parallel Seq Scan on e_star a_star_5
+                     ->  Parallel Seq Scan on f_star a_star_6
 (11 rows)
 
 select round(avg(aa)), sum(aa) from a_star a4;
@@ -145,15 +145,15 @@ explain (costs off)
    ->  Gather
          Workers Planned: 3
          ->  Parallel Append
-               ->  Parallel Seq Scan on part_pa_test_p1 pa2
-               ->  Parallel Seq Scan on part_pa_test_p2 pa2_1
+               ->  Parallel Seq Scan on part_pa_test_p1 pa2_1
+               ->  Parallel Seq Scan on part_pa_test_p2 pa2_2
    SubPlan 2
      ->  Result
    SubPlan 1
      ->  Append
-           ->  Seq Scan on part_pa_test_p1 pa1
+           ->  Seq Scan on part_pa_test_p1 pa1_1
                  Filter: (a = pa2.a)
-           ->  Seq Scan on part_pa_test_p2 pa1_1
+           ->  Seq Scan on part_pa_test_p2 pa1_2
                  Filter: (a = pa2.a)
 (14 rows)
 
@@ -455,9 +455,48 @@ select * from
   9000 | 3
 (3 rows)
 
-reset enable_material;
+-- test rescans for a Limit node with a parallel node beneath it.
 reset enable_seqscan;
+set enable_indexonlyscan to off;
+set enable_indexscan to off;
+alter table tenk1 set (parallel_workers = 0);
+alter table tenk2 set (parallel_workers = 1);
+explain (costs off)
+select count(*) from tenk1
+  left join (select tenk2.unique1 from tenk2 order by 1 limit 1000) ss
+  on tenk1.unique1 < ss.unique1 + 1
+  where tenk1.unique1 < 2;
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Aggregate
+   ->  Nested Loop Left Join
+         Join Filter: (tenk1.unique1 < (tenk2.unique1 + 1))
+         ->  Seq Scan on tenk1
+               Filter: (unique1 < 2)
+         ->  Limit
+               ->  Gather Merge
+                     Workers Planned: 1
+                     ->  Sort
+                           Sort Key: tenk2.unique1
+                           ->  Parallel Seq Scan on tenk2
+(11 rows)
+
+select count(*) from tenk1
+  left join (select tenk2.unique1 from tenk2 order by 1 limit 1000) ss
+  on tenk1.unique1 < ss.unique1 + 1
+  where tenk1.unique1 < 2;
+ count 
+-------
+  1999
+(1 row)
+
+--reset the value of workers for each table as it was before this test.
+alter table tenk1 set (parallel_workers = 4);
+alter table tenk2 reset (parallel_workers);
+reset enable_material;
 reset enable_bitmapscan;
+reset enable_indexonlyscan;
+reset enable_indexscan;
 -- test parallel bitmap heap scan.
 set enable_seqscan to off;
 set enable_indexscan to off;

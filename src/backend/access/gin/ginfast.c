@@ -7,7 +7,7 @@
  *	  transfer pending entries into the regular index structure.  This
  *	  wins because bulk insertion is much more efficient than retail.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -246,7 +246,7 @@ ginHeapTupleFastInsert(GinState *ginstate, GinTupleCollector *collector)
 	 * tree, so it conflicts with all serializable scans.  All scans acquire a
 	 * predicate lock on the metabuffer to represent that.
 	 */
-	CheckForSerializableConflictIn(index, NULL, metabuffer);
+	CheckForSerializableConflictIn(index, NULL, GIN_METAPAGE_BLKNO);
 
 	if (collector->sumsize + collector->ntuples * sizeof(ItemIdData) > GinListPageSize)
 	{

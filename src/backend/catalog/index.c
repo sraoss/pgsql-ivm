@@ -3,7 +3,7 @@
  * index.c
  *	  code to create and destroy POSTGRES index relations
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -313,6 +313,14 @@ ConstructTupleDescriptor(Relation heapRelation,
 			collationObjectId[i] : InvalidOid;
 
 		/*
+		 * Set the attribute name as specified by caller.
+		 */
+		if (colnames_item == NULL)	/* shouldn't happen */
+			elog(ERROR, "too few entries in colnames list");
+		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
+		colnames_item = lnext(indexColNames, colnames_item);
+
+		/*
 		 * For simple index columns, we copy some pg_attribute fields from the
 		 * parent relation.  For expressions we have to look at the expression
 		 * result.
@@ -329,7 +337,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 			from = TupleDescAttr(heapTupDesc,
 								 AttrNumberGetAttrOffset(atnum));
 
-			namecpy(&to->attname, &from->attname);
 			to->atttypid = from->atttypid;
 			to->attlen = from->attlen;
 			to->attndims = from->attndims;
@@ -389,14 +396,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 		 * later.
 		 */
 		to->attrelid = InvalidOid;
-
-		/*
-		 * Set the attribute name as specified by caller.
-		 */
-		if (colnames_item == NULL)	/* shouldn't happen */
-			elog(ERROR, "too few entries in colnames list");
-		namestrcpy(&to->attname, (const char *) lfirst(colnames_item));
-		colnames_item = lnext(indexColNames, colnames_item);
 
 		/*
 		 * Check the opclass and index AM to see if either provides a keytype
@@ -2019,6 +2018,15 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 	LOCKMODE	lockmode;
 
 	/*
+	 * A temporary relation uses a non-concurrent DROP.  Other backends can't
+	 * access a temporary relation, so there's no harm in grabbing a stronger
+	 * lock (see comments in RemoveRelations), and a non-concurrent DROP is
+	 * more efficient.
+	 */
+	Assert(get_rel_persistence(indexId) != RELPERSISTENCE_TEMP ||
+		   (!concurrent && !concurrent_lock_mode));
+
+	/*
 	 * To drop an index safely, we must grab exclusive lock on its parent
 	 * table.  Exclusive lock on the index alone is insufficient because
 	 * another backend might be about to execute a query on the parent table.
@@ -2325,6 +2333,56 @@ BuildIndexInfo(Relation index)
 	return ii;
 }
 
+/* ----------------
+ *		BuildDummyIndexInfo
+ *			Construct a dummy IndexInfo record for an open index
+ *
+ * This differs from the real BuildIndexInfo in that it will never run any
+ * user-defined code that might exist in index expressions or predicates.
+ * Instead of the real index expressions, we return null constants that have
+ * the right types/typmods/collations.  Predicates and exclusion clauses are
+ * just ignored.  This is sufficient for the purpose of truncating an index,
+ * since we will not need to actually evaluate the expressions or predicates;
+ * the only thing that's likely to be done with the data is construction of
+ * a tupdesc describing the index's rowtype.
+ * ----------------
+ */
+IndexInfo *
+BuildDummyIndexInfo(Relation index)
+{
+	IndexInfo  *ii;
+	Form_pg_index indexStruct = index->rd_index;
+	int			i;
+	int			numAtts;
+
+	/* check the number of keys, and copy attr numbers into the IndexInfo */
+	numAtts = indexStruct->indnatts;
+	if (numAtts < 1 || numAtts > INDEX_MAX_KEYS)
+		elog(ERROR, "invalid indnatts %d for index %u",
+			 numAtts, RelationGetRelid(index));
+
+	/*
+	 * Create the node, using dummy index expressions, and pretending there is
+	 * no predicate.
+	 */
+	ii = makeIndexInfo(indexStruct->indnatts,
+					   indexStruct->indnkeyatts,
+					   index->rd_rel->relam,
+					   RelationGetDummyIndexExpressions(index),
+					   NIL,
+					   indexStruct->indisunique,
+					   indexStruct->indisready,
+					   false);
+
+	/* fill in attribute numbers */
+	for (i = 0; i < numAtts; i++)
+		ii->ii_IndexAttrNumbers[i] = indexStruct->indkey.values[i];
+
+	/* We ignore the exclusion constraint if any */
+
+	return ii;
+}
+
 /*
  * CompareIndexInfo
  *		Return whether the properties of two indexes (in different tables)
@@ -2333,13 +2391,13 @@ BuildIndexInfo(Relation index)
  * Note: passing collations and opfamilies separately is a kludge.  Adding
  * them to IndexInfo may result in better coding here and elsewhere.
  *
- * Use convert_tuples_by_name_map(index2, index1) to build the attmap.
+ * Use build_attrmap_by_name(index2, index1) to build the attmap.
  */
 bool
 CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 				 Oid *collations1, Oid *collations2,
 				 Oid *opfamilies1, Oid *opfamilies2,
-				 AttrNumber *attmap, int maplen)
+				 AttrMap *attmap)
 {
 	int			i;
 
@@ -2366,12 +2424,12 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 	 */
 	for (i = 0; i < info1->ii_NumIndexAttrs; i++)
 	{
-		if (maplen < info2->ii_IndexAttrNumbers[i])
+		if (attmap->maplen < info2->ii_IndexAttrNumbers[i])
 			elog(ERROR, "incorrect attribute map");
 
 		/* ignore expressions at this stage */
 		if ((info1->ii_IndexAttrNumbers[i] != InvalidAttrNumber) &&
-			(attmap[info2->ii_IndexAttrNumbers[i] - 1] !=
+			(attmap->attnums[info2->ii_IndexAttrNumbers[i] - 1] !=
 			 info1->ii_IndexAttrNumbers[i]))
 			return false;
 
@@ -2397,7 +2455,7 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 		Node	   *mapped;
 
 		mapped = map_variable_attnos((Node *) info2->ii_Expressions,
-									 1, 0, attmap, maplen,
+									 1, 0, attmap,
 									 InvalidOid, &found_whole_row);
 		if (found_whole_row)
 		{
@@ -2421,7 +2479,7 @@ CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 		Node	   *mapped;
 
 		mapped = map_variable_attnos((Node *) info2->ii_Predicate,
-									 1, 0, attmap, maplen,
+									 1, 0, attmap,
 									 InvalidOid, &found_whole_row);
 		if (found_whole_row)
 		{

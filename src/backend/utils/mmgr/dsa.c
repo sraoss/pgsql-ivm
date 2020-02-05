@@ -39,7 +39,7 @@
  * empty and be returned to the free page manager, and whole segments can
  * become empty and be returned to the operating system.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -74,7 +74,7 @@
  * dsm.c's limits on total number of segments), or limiting the total size
  * an area can manage when using small pointers.
  */
-#define DSA_NUM_SEGMENTS_AT_EACH_SIZE 4
+#define DSA_NUM_SEGMENTS_AT_EACH_SIZE 2
 
 /*
  * The number of bits used to represent the offset part of a dsa_pointer.

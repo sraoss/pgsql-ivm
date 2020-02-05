@@ -3,7 +3,7 @@
  * postgres.c
  *	  POSTGRES C Backend Interface
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -48,6 +48,7 @@
 #include "libpq/pqformat.h"
 #include "libpq/pqsignal.h"
 #include "mb/pg_wchar.h"
+#include "mb/stringinfo_mb.h"
 #include "miscadmin.h"
 #include "nodes/print.h"
 #include "optimizer/optimizer.h"
@@ -57,6 +58,7 @@
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
+#include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
@@ -1613,6 +1615,8 @@ exec_bind_message(StringInfo input_message)
 	bool		save_log_statement_stats = log_statement_stats;
 	bool		snapshot_set = false;
 	char		msec_str[32];
+	ParamsErrorCbData params_data;
+	ErrorContextCallback params_errcxt;
 
 	/* Get the fixed part of the message */
 	portal_name = pq_getmsgstring(input_message);
@@ -1752,6 +1756,8 @@ exec_bind_message(StringInfo input_message)
 	 */
 	if (numParams > 0)
 	{
+		char	  **knownTextValues = NULL;	/* allocate on first use */
+
 		params = makeParamList(numParams);
 
 		for (int paramno = 0; paramno < numParams; paramno++)
@@ -1819,9 +1825,32 @@ exec_bind_message(StringInfo input_message)
 
 				pval = OidInputFunctionCall(typinput, pstring, typioparam, -1);
 
-				/* Free result of encoding conversion, if any */
-				if (pstring && pstring != pbuf.data)
-					pfree(pstring);
+				/*
+				 * Free result of encoding conversion, if any, and save a copy
+				 * for later when logging parameters.
+				 */
+				if (pstring)
+				{
+					if (log_parameters_on_error)
+					{
+						MemoryContext	oldcxt;
+
+						oldcxt = MemoryContextSwitchTo(MessageContext);
+						if (knownTextValues == NULL)
+							knownTextValues =
+								palloc0(numParams * sizeof(char *));
+						/*
+						 * Note: must copy at least two more full characters
+						 * than BuildParamLogString wants to see; otherwise it
+						 * might fail to include the ellipsis.
+						 */
+						knownTextValues[paramno] =
+							pnstrdup(pstring, 64 + 2 * MAX_MULTIBYTE_CHAR_LEN);
+						MemoryContextSwitchTo(oldcxt);
+					}
+					if (pstring != pbuf.data)
+						pfree(pstring);
+				}
 			}
 			else if (pformat == 1)	/* binary mode */
 			{
@@ -1871,12 +1900,29 @@ exec_bind_message(StringInfo input_message)
 			params->params[paramno].pflags = PARAM_FLAG_CONST;
 			params->params[paramno].ptype = ptype;
 		}
+
+		/*
+		 * Once all parameters have been received, prepare for printing them in
+		 * errors, if configured to do so.  (This is saved in the portal, so
+		 * that they'll appear when the query is executed later.)
+		 */
+		if (log_parameters_on_error)
+			params->paramValuesStr =
+				BuildParamLogString(params, knownTextValues, 64);
 	}
 	else
 		params = NULL;
 
 	/* Done storing stuff in portal's context */
 	MemoryContextSwitchTo(oldContext);
+
+	/* Set the error callback so that parameters are logged, as needed  */
+	params_data.portalName = portal->name;
+	params_data.params = params;
+	params_errcxt.previous = error_context_stack;
+	params_errcxt.callback = ParamsErrorCallback;
+	params_errcxt.arg = (void *) &params_data;
+	error_context_stack = &params_errcxt;
 
 	/* Get the result format codes */
 	numRFormats = pq_getmsgint(input_message, 2);
@@ -1922,6 +1968,12 @@ exec_bind_message(StringInfo input_message)
 	 * Apply the result format requests to the portal.
 	 */
 	PortalSetResultFormat(portal, numRFormats, rformats);
+
+	/*
+	 * Done binding; remove the parameters error callback.  Entries emitted
+	 * later determine independently whether to log the parameters or not.
+	 */
+	error_context_stack = error_context_stack->previous;
 
 	/*
 	 * Send BindComplete.
@@ -1979,6 +2031,8 @@ exec_execute_message(const char *portal_name, long max_rows)
 	bool		execute_is_fetch;
 	bool		was_logged = false;
 	char		msec_str[32];
+	ParamsErrorCbData params_data;
+	ErrorContextCallback params_errcxt;
 
 	/* Adjust destination to tell printtup.c what to do */
 	dest = whereToSendOutput;
@@ -2103,8 +2157,16 @@ exec_execute_message(const char *portal_name, long max_rows)
 	CHECK_FOR_INTERRUPTS();
 
 	/*
-	 * Okay to run the portal.
+	 * Okay to run the portal.  Set the error callback so that parameters are
+	 * logged.  The parameters must have been saved during the bind phase.
 	 */
+	params_data.portalName = portal->name;
+	params_data.params = portalParams;
+	params_errcxt.previous = error_context_stack;
+	params_errcxt.callback = ParamsErrorCallback;
+	params_errcxt.arg = (void *) &params_data;
+	error_context_stack = &params_errcxt;
+
 	if (max_rows <= 0)
 		max_rows = FETCH_ALL;
 
@@ -2117,6 +2179,9 @@ exec_execute_message(const char *portal_name, long max_rows)
 						  completionTag);
 
 	receiver->rDestroy(receiver);
+
+	/* Done executing; remove the params error callback */
+	error_context_stack = error_context_stack->previous;
 
 	if (completed)
 	{
@@ -2328,59 +2393,13 @@ errdetail_execute(List *raw_parsetree_list)
 static int
 errdetail_params(ParamListInfo params)
 {
-	/* We mustn't call user-defined I/O functions when in an aborted xact */
-	if (params && params->numParams > 0 && !IsAbortedTransactionBlockState())
+	if (params && params->numParams > 0)
 	{
-		StringInfoData param_str;
-		MemoryContext oldcontext;
+		char   *str;
 
-		/* This code doesn't support dynamic param lists */
-		Assert(params->paramFetch == NULL);
-
-		/* Make sure any trash is generated in MessageContext */
-		oldcontext = MemoryContextSwitchTo(MessageContext);
-
-		initStringInfo(&param_str);
-
-		for (int paramno = 0; paramno < params->numParams; paramno++)
-		{
-			ParamExternData *prm = &params->params[paramno];
-			Oid			typoutput;
-			bool		typisvarlena;
-			char	   *pstring;
-			char	   *p;
-
-			appendStringInfo(&param_str, "%s$%d = ",
-							 paramno > 0 ? ", " : "",
-							 paramno + 1);
-
-			if (prm->isnull || !OidIsValid(prm->ptype))
-			{
-				appendStringInfoString(&param_str, "NULL");
-				continue;
-			}
-
-			getTypeOutputInfo(prm->ptype, &typoutput, &typisvarlena);
-
-			pstring = OidOutputFunctionCall(typoutput, prm->value);
-
-			appendStringInfoCharMacro(&param_str, '\'');
-			for (p = pstring; *p; p++)
-			{
-				if (*p == '\'') /* double single quotes */
-					appendStringInfoCharMacro(&param_str, *p);
-				appendStringInfoCharMacro(&param_str, *p);
-			}
-			appendStringInfoCharMacro(&param_str, '\'');
-
-			pfree(pstring);
-		}
-
-		errdetail("parameters: %s", param_str.data);
-
-		pfree(param_str.data);
-
-		MemoryContextSwitchTo(oldcontext);
+		str = BuildParamLogString(params, NULL, 0);
+		if (str && str[0] != '\0')
+			errdetail("parameters: %s", str);
 	}
 
 	return 0;
@@ -2844,24 +2863,6 @@ FloatExceptionHandler(SIGNAL_ARGS)
 }
 
 /*
- * SIGHUP: set flag to re-read config file at next convenient time.
- *
- * Sets the ConfigReloadPending flag, which should be checked at convenient
- * places inside main loops. (Better than doing the reading in the signal
- * handler, ey?)
- */
-void
-PostgresSigHupHandler(SIGNAL_ARGS)
-{
-	int			save_errno = errno;
-
-	ConfigReloadPending = true;
-	SetLatch(MyLatch);
-
-	errno = save_errno;
-}
-
-/*
  * RecoveryConflictInterrupt: out-of-line portion of recovery conflict
  * handling following receipt of SIGUSR1. Designed to be similar to die()
  * and StatementCancelHandler(). Called only by a normal user backend
@@ -3178,6 +3179,9 @@ ProcessInterrupts(void)
 			IdleInTransactionSessionTimeoutPending = false;
 
 	}
+
+	if (ProcSignalBarrierPending)
+		ProcessProcSignalBarrier();
 
 	if (ParallelMessagePending)
 		HandleParallelMessages();
@@ -3809,8 +3813,7 @@ PostgresMain(int argc, char *argv[],
 		WalSndSignals();
 	else
 	{
-		pqsignal(SIGHUP, PostgresSigHupHandler);	/* set flag to read config
-													 * file */
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 		pqsignal(SIGINT, StatementCancelHandler);	/* cancel current query */
 		pqsignal(SIGTERM, die); /* cancel current query and exit */
 
@@ -4194,7 +4197,18 @@ PostgresMain(int argc, char *argv[],
 			}
 			else
 			{
+				/* Send out notify signals and transmit self-notifies */
 				ProcessCompletedNotifies();
+
+				/*
+				 * Also process incoming notifies, if any.  This is mostly to
+				 * ensure stable behavior in tests: if any notifies were
+				 * received during the just-finished transaction, they'll be
+				 * seen by the client before ReadyForQuery is.
+				 */
+				if (notifyInterruptPending)
+					ProcessNotifyInterrupt();
+
 				pgstat_report_stat(false);
 
 				set_ps_display("idle", false);

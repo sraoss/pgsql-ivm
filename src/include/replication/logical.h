@@ -2,18 +2,17 @@
  * logical.h
  *	   PostgreSQL logical decoding coordination
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
 #ifndef LOGICAL_H
 #define LOGICAL_H
 
-#include "replication/slot.h"
-
 #include "access/xlog.h"
 #include "access/xlogreader.h"
 #include "replication/output_plugin.h"
+#include "replication/slot.h"
 
 struct LogicalDecodingContext;
 

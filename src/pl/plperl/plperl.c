@@ -44,11 +44,10 @@
 #define TEXTDOMAIN PG_TEXTDOMAIN("plperl")
 
 /* perl stuff */
-#include "plperl.h"
-#include "plperl_helpers.h"
-
 /* string literal macros defining chunks of perl code */
 #include "perlchunks.h"
+#include "plperl.h"
+#include "plperl_helpers.h"
 /* defines PLPERL_SET_OPMASK */
 #include "plperl_opmask.h"
 
@@ -1632,11 +1631,8 @@ plperl_trigger_build_args(FunctionCallInfo fcinfo)
 	tdata = (TriggerData *) fcinfo->context;
 	tupdesc = tdata->tg_relation->rd_att;
 
-	relid = DatumGetCString(
-							DirectFunctionCall1(oidout,
-												ObjectIdGetDatum(tdata->tg_relation->rd_id)
-												)
-		);
+	relid = DatumGetCString(DirectFunctionCall1(oidout,
+												ObjectIdGetDatum(tdata->tg_relation->rd_id)));
 
 	hv_store_string(hv, "name", cstr2sv(tdata->tg_trigger->tgname));
 	hv_store_string(hv, "relid", cstr2sv(relid));
@@ -2148,8 +2144,6 @@ plperl_create_sub(plperl_proc_desc *prodesc, const char *s, Oid fn_oid)
 						prodesc->proname)));
 
 	prodesc->reference = subref;
-
-	return;
 }
 
 
@@ -2389,8 +2383,6 @@ plperl_call_perl_event_trigger_func(plperl_proc_desc *desc,
 	PUTBACK;
 	FREETMPS;
 	LEAVE;
-
-	return;
 }
 
 static Datum

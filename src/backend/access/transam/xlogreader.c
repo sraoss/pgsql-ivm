@@ -3,7 +3,7 @@
  * xlogreader.c
  *		Generic XLog reading facility
  *
- * Portions Copyright (c) 2013-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2013-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/access/transam/xlogreader.c
@@ -17,6 +17,8 @@
  */
 #include "postgres.h"
 
+#include <unistd.h>
+
 #include "access/transam.h"
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
@@ -27,6 +29,7 @@
 
 #ifndef FRONTEND
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "utils/memutils.h"
 #endif
 
@@ -208,7 +211,6 @@ WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 {
 	seg->ws_file = -1;
 	seg->ws_segno = 0;
-	seg->ws_off = 0;
 	seg->ws_tli = 0;
 
 	segcxt->ws_segsize = segsize;
@@ -217,10 +219,33 @@ WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 }
 
 /*
+ * Begin reading WAL at 'RecPtr'.
+ *
+ * 'RecPtr' should point to the beginnning of a valid WAL record.  Pointing at
+ * the beginning of a page is also OK, if there is a new record right after
+ * the page header, i.e. not a continuation.
+ *
+ * This does not make any attempt to read the WAL yet, and hence cannot fail.
+ * If the starting address is not correct, the first call to XLogReadRecord()
+ * will error out.
+ */
+void
+XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr)
+{
+	Assert(!XLogRecPtrIsInvalid(RecPtr));
+
+	ResetDecoder(state);
+
+	/* Begin at the passed-in record pointer. */
+	state->EndRecPtr = RecPtr;
+	state->ReadRecPtr = InvalidXLogRecPtr;
+}
+
+/*
  * Attempt to read an XLOG record.
  *
- * If RecPtr is valid, try to read a record at that position.  Otherwise
- * try to read a record just after the last one previously read.
+ * XLogBeginRead() or XLogFindNextRecord() must be called before the first call
+ * to XLogReadRecord().
  *
  * If the read_page callback fails to read the requested data, NULL is
  * returned.  The callback is expected to have reported the error; errormsg
@@ -233,8 +258,9 @@ WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
  * valid until the next call to XLogReadRecord.
  */
 XLogRecord *
-XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
+XLogReadRecord(XLogReaderState *state, char **errormsg)
 {
+	XLogRecPtr	RecPtr;
 	XLogRecord *record;
 	XLogRecPtr	targetPagePtr;
 	bool		randAccess;
@@ -258,19 +284,17 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 
 	ResetDecoder(state);
 
-	if (RecPtr == InvalidXLogRecPtr)
-	{
-		/* No explicit start point; read the record after the one we just read */
-		RecPtr = state->EndRecPtr;
+	RecPtr = state->EndRecPtr;
 
-		if (state->ReadRecPtr == InvalidXLogRecPtr)
-			randAccess = true;
+	if (state->ReadRecPtr != InvalidXLogRecPtr)
+	{
+		/* read the record after the one we just read */
 
 		/*
-		 * RecPtr is pointing to end+1 of the previous WAL record.  If we're
-		 * at a page boundary, no more records can fit on the current page. We
-		 * must skip over the page header, but we can't do that until we've
-		 * read in the page, since the header size is variable.
+		 * EndRecPtr is pointing to end+1 of the previous WAL record.  If
+		 * we're at a page boundary, no more records can fit on the current
+		 * page. We must skip over the page header, but we can't do that until
+		 * we've read in the page, since the header size is variable.
 		 */
 	}
 	else
@@ -278,8 +302,8 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 		/*
 		 * Caller supplied a position to start at.
 		 *
-		 * In this case, the passed-in record pointer should already be
-		 * pointing to a valid record starting position.
+		 * In this case, EndRecPtr should already be pointing to a valid
+		 * record starting position.
 		 */
 		Assert(XRecOffIsValid(RecPtr));
 		randAccess = true;
@@ -295,8 +319,7 @@ XLogReadRecord(XLogReaderState *state, XLogRecPtr RecPtr, char **errormsg)
 	 * byte to cover the whole record header, or at least the part of it that
 	 * fits on the same page.
 	 */
-	readOff = ReadPageInternal(state,
-							   targetPagePtr,
+	readOff = ReadPageInternal(state, targetPagePtr,
 							   Min(targetRecOff + SizeOfXLogRecord, XLOG_BLCKSZ));
 	if (readOff < 0)
 		goto err;
@@ -556,7 +579,7 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 
 	/* check whether we have all the requested data already */
 	if (targetSegNo == state->seg.ws_segno &&
-		targetPageOff == state->seg.ws_off && reqLen <= state->readLen)
+		targetPageOff == state->segoff && reqLen <= state->readLen)
 		return state->readLen;
 
 	/*
@@ -627,7 +650,7 @@ ReadPageInternal(XLogReaderState *state, XLogRecPtr pageptr, int reqLen)
 
 	/* update read state information */
 	state->seg.ws_segno = targetSegNo;
-	state->seg.ws_off = targetPageOff;
+	state->segoff = targetPageOff;
 	state->readLen = readLen;
 
 	return readLen;
@@ -644,7 +667,7 @@ static void
 XLogReaderInvalReadState(XLogReaderState *state)
 {
 	state->seg.ws_segno = 0;
-	state->seg.ws_off = 0;
+	state->segoff = 0;
 	state->readLen = 0;
 }
 
@@ -898,14 +921,17 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 /*
  * Find the first record with an lsn >= RecPtr.
  *
- * Useful for checking whether RecPtr is a valid xlog address for reading, and
- * to find the first valid address after some address when dumping records for
- * debugging purposes.
+ * This is different from XLogBeginRead() in that RecPtr doesn't need to point
+ * to a valid record boundary.  Useful for checking whether RecPtr is a valid
+ * xlog address for reading, and to find the first valid address after some
+ * address when dumping records for debugging purposes.
+ *
+ * This positions the reader, like XLogBeginRead(), so that the next call to
+ * XLogReadRecord() will read the next valid record.
  */
 XLogRecPtr
 XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr)
 {
-	XLogReaderState saved_state = *state;
 	XLogRecPtr	tmpRecPtr;
 	XLogRecPtr	found = InvalidXLogRecPtr;
 	XLogPageHeader header;
@@ -990,30 +1016,119 @@ XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr)
 	 * because either we're at the first record after the beginning of a page
 	 * or we just jumped over the remaining data of a continuation.
 	 */
-	while (XLogReadRecord(state, tmpRecPtr, &errormsg) != NULL)
+	XLogBeginRead(state, tmpRecPtr);
+	while (XLogReadRecord(state, &errormsg) != NULL)
 	{
-		/* continue after the record */
-		tmpRecPtr = InvalidXLogRecPtr;
-
 		/* past the record we've found, break out */
 		if (RecPtr <= state->ReadRecPtr)
 		{
+			/* Rewind the reader to the beginning of the last record. */
 			found = state->ReadRecPtr;
-			goto out;
+			XLogBeginRead(state, found);
+			return found;
 		}
 	}
 
 err:
-out:
-	/* Reset state to what we had before finding the record */
-	state->ReadRecPtr = saved_state.ReadRecPtr;
-	state->EndRecPtr = saved_state.EndRecPtr;
 	XLogReaderInvalReadState(state);
 
-	return found;
+	return InvalidXLogRecPtr;
 }
 
 #endif							/* FRONTEND */
+
+/*
+ * Read 'count' bytes into 'buf', starting at location 'startptr', from WAL
+ * fetched from timeline 'tli'.
+ *
+ * 'seg/segcxt' identify the last segment used.  'openSegment' is a callback
+ * to open the next segment, if necessary.
+ *
+ * Returns true if succeeded, false if an error occurs, in which case
+ * 'errinfo' receives error details.
+ *
+ * XXX probably this should be improved to suck data directly from the
+ * WAL buffers when possible.
+ */
+bool
+WALRead(char *buf, XLogRecPtr startptr, Size count, TimeLineID tli,
+		WALOpenSegment *seg, WALSegmentContext *segcxt,
+		WALSegmentOpen openSegment, WALReadError *errinfo)
+{
+	char	   *p;
+	XLogRecPtr	recptr;
+	Size		nbytes;
+
+	p = buf;
+	recptr = startptr;
+	nbytes = count;
+
+	while (nbytes > 0)
+	{
+		uint32		startoff;
+		int			segbytes;
+		int			readbytes;
+
+		startoff = XLogSegmentOffset(recptr, segcxt->ws_segsize);
+
+		/*
+		 * If the data we want is not in a segment we have open, close what we
+		 * have (if anything) and open the next one, using the caller's
+		 * provided openSegment callback.
+		 */
+		if (seg->ws_file < 0 ||
+			!XLByteInSeg(recptr, seg->ws_segno, segcxt->ws_segsize) ||
+			tli != seg->ws_tli)
+		{
+			XLogSegNo	nextSegNo;
+
+			if (seg->ws_file >= 0)
+				close(seg->ws_file);
+
+			XLByteToSeg(recptr, nextSegNo, segcxt->ws_segsize);
+			seg->ws_file = openSegment(nextSegNo, segcxt, &tli);
+
+			/* Update the current segment info. */
+			seg->ws_tli = tli;
+			seg->ws_segno = nextSegNo;
+		}
+
+		/* How many bytes are within this segment? */
+		if (nbytes > (segcxt->ws_segsize - startoff))
+			segbytes = segcxt->ws_segsize - startoff;
+		else
+			segbytes = nbytes;
+
+#ifndef FRONTEND
+		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
+#endif
+
+		/* Reset errno first; eases reporting non-errno-affecting errors */
+		errno = 0;
+		readbytes = pg_pread(seg->ws_file, p, segbytes, (off_t) startoff);
+
+#ifndef FRONTEND
+		pgstat_report_wait_end();
+#endif
+
+		if (readbytes <= 0)
+		{
+			errinfo->wre_errno = errno;
+			errinfo->wre_req = segbytes;
+			errinfo->wre_read = readbytes;
+			errinfo->wre_off = startoff;
+			errinfo->wre_seg = *seg;
+			return false;
+		}
+
+		/* Update state for read */
+		recptr += readbytes;
+		nbytes -= readbytes;
+		p += readbytes;
+	}
+
+	return true;
+}
 
 /* ----------------------------------------
  * Functions for decoding the data and block references in a record.

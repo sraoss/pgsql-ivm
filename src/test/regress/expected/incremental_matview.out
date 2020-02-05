@@ -12,7 +12,11 @@ INSERT INTO mv_base_b VALUES
   (2,102),
   (3,103),
   (4,104);
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) WITH NO DATA;
+SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
+ERROR:  materialized view "mv_ivm_1" has not been populated
+HINT:  Use the REFRESH MATERIALIZED VIEW command.
+REFRESH MATERIALIZED VIEW mv_ivm_1;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
  i | j  |  k  
 ---+----+-----
@@ -5186,6 +5190,9 @@ ERROR:  nested subquery is not supported by IVM
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 ERROR:  functions in IMMV must be marked IMMUTABLE
+-- LIMIT/OFFSET is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
+ERROR:  LIMIT/OFFSET clause is not supported with IVM
 -- base table has row level security
 DROP USER IF EXISTS ivm_admin;
 NOTICE:  role "ivm_admin" does not exist, skipping

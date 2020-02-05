@@ -3,7 +3,7 @@
  * pgstatfuncs.c
  *	  Functions for accessing the statistics collector data
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -459,8 +459,7 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -469,6 +468,8 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 	/* Translate command name into command type code. */
 	if (pg_strcasecmp(cmd, "VACUUM") == 0)
 		cmdtype = PROGRESS_COMMAND_VACUUM;
+	else if (pg_strcasecmp(cmd, "ANALYZE") == 0)
+		cmdtype = PROGRESS_COMMAND_ANALYZE;
 	else if (pg_strcasecmp(cmd, "CLUSTER") == 0)
 		cmdtype = PROGRESS_COMMAND_CLUSTER;
 	else if (pg_strcasecmp(cmd, "CREATE INDEX") == 0)
@@ -564,8 +565,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -726,7 +726,13 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			else
 				nulls[7] = true;
 
-			if (beentry->st_xact_start_timestamp != 0)
+			/*
+			 * Don't expose transaction time for walsenders; it confuses
+			 * monitoring, particularly because we don't keep the time up-to-
+			 * date.
+			 */
+			if (beentry->st_xact_start_timestamp != 0 &&
+				beentry->st_backendType != B_WAL_SENDER)
 				values[8] = TimestampTzGetDatum(beentry->st_xact_start_timestamp);
 			else
 				nulls[8] = true;
@@ -1495,8 +1501,7 @@ pg_stat_get_db_conflict_all(PG_FUNCTION_ARGS)
 	if ((dbentry = pgstat_fetch_stat_dbentry(dbid)) == NULL)
 		result = 0;
 	else
-		result = (int64) (
-						  dbentry->n_conflict_tablespace +
+		result = (int64) (dbentry->n_conflict_tablespace +
 						  dbentry->n_conflict_lock +
 						  dbentry->n_conflict_snapshot +
 						  dbentry->n_conflict_bufferpin +
@@ -1967,6 +1972,5 @@ pg_stat_get_archiver(PG_FUNCTION_ARGS)
 		values[6] = TimestampTzGetDatum(archiver_stats->stat_reset_timestamp);
 
 	/* Returns the record as Datum */
-	PG_RETURN_DATUM(HeapTupleGetDatum(
-									  heap_form_tuple(tupdesc, values, nulls)));
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
 }

@@ -3,7 +3,7 @@
  * test_decoding.c
  *		  example logical decoding output plugin
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/test_decoding/test_decoding.c
@@ -419,9 +419,7 @@ pg_decode_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 	appendStringInfoString(ctx->out, "table ");
 	appendStringInfoString(ctx->out,
-						   quote_qualified_identifier(
-													  get_namespace_name(
-																		 get_rel_namespace(RelationGetRelid(relation))),
+						   quote_qualified_identifier(get_namespace_name(get_rel_namespace(RelationGetRelid(relation))),
 													  class_form->relrewrite ?
 													  get_rel_name(class_form->relrewrite) :
 													  NameStr(class_form->relname)));

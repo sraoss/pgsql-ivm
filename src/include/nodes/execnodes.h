@@ -4,7 +4,7 @@
  *	  definitions for executor state nodes
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/execnodes.h
@@ -20,18 +20,17 @@
 #include "lib/pairingheap.h"
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
+#include "nodes/tidbitmap.h"
 #include "partitioning/partdefs.h"
+#include "storage/condition_variable.h"
 #include "utils/hsearch.h"
 #include "utils/queryenvironment.h"
 #include "utils/reltrigger.h"
 #include "utils/sharedtuplestore.h"
 #include "utils/snapshot.h"
 #include "utils/sortsupport.h"
-#include "utils/tuplestore.h"
 #include "utils/tuplesort.h"
-#include "nodes/tidbitmap.h"
-#include "storage/condition_variable.h"
-
+#include "utils/tuplestore.h"
 
 struct PlanState;				/* forward references in this file */
 struct PartitionRoutingInfo;
@@ -1172,7 +1171,6 @@ typedef struct ModifyTableState
 	List	  **mt_arowmarks;	/* per-subplan ExecAuxRowMark lists */
 	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
 	bool		fireBSTriggers; /* do we need to fire stmt triggers? */
-	List	   *mt_excludedtlist;	/* the excluded pseudo relation's tlist  */
 
 	/*
 	 * Slot for storing tuples in the root partitioned table's rowtype during
@@ -1236,8 +1234,6 @@ struct AppendState
  *		slots			current output tuple of each subplan
  *		heap			heap of active tuples
  *		initialized		true if we have fetched first tuple from each subplan
- *		noopscan		true if partition pruning proved that none of the
- *						mergeplans can contain a record to satisfy this query.
  *		prune_state		details required to allow partitions to be
  *						eliminated from the scan, or NULL if not possible.
  *		valid_subplans	for runtime pruning, valid mergeplans indexes to
@@ -1254,7 +1250,6 @@ typedef struct MergeAppendState
 	TupleTableSlot **ms_slots;	/* array of length ms_nplans */
 	struct binaryheap *ms_heap; /* binary heap of slot indices */
 	bool		ms_initialized; /* are subplans started? */
-	bool		ms_noopscan;
 	struct PartitionPruneState *ms_prune_state;
 	Bitmapset  *ms_valid_subplans;
 } MergeAppendState;
@@ -1675,7 +1670,8 @@ typedef struct FunctionScanState
  *
  *		rowcontext			per-expression-list context
  *		exprlists			array of expression lists being evaluated
- *		array_len			size of array
+ *		exprstatelists		array of expression state lists, for SubPlans only
+ *		array_len			size of above arrays
  *		curr_idx			current array index (0-based)
  *
  *	Note: ss.ps.ps_ExprContext is used to evaluate any qual or projection
@@ -1683,6 +1679,12 @@ typedef struct FunctionScanState
  *	rowcontext, in which to build the executor expression state for each
  *	Values sublist.  Resetting this context lets us get rid of expression
  *	state for each row, avoiding major memory leakage over a long values list.
+ *	However, that doesn't work for sublists containing SubPlans, because a
+ *	SubPlan has to be connected up to the outer plan tree to work properly.
+ *	Therefore, for only those sublists containing SubPlans, we do expression
+ *	state construction at executor start, and store those pointers in
+ *	exprstatelists[].  NULL entries in that array correspond to simple
+ *	subexpressions that are handled as described above.
  * ----------------
  */
 typedef struct ValuesScanState
@@ -1690,6 +1692,7 @@ typedef struct ValuesScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprContext *rowcontext;
 	List	  **exprlists;
+	List	  **exprstatelists;
 	int			array_len;
 	int			curr_idx;
 } ValuesScanState;
@@ -2249,7 +2252,7 @@ typedef struct HashInstrumentation
 	int			nbuckets_original;	/* planned number of buckets */
 	int			nbatch;			/* number of batches at end of execution */
 	int			nbatch_original;	/* planned number of batches */
-	size_t		space_peak;		/* speak memory usage in bytes */
+	size_t		space_peak;		/* peak memory usage in bytes */
 } HashInstrumentation;
 
 /* ----------------

@@ -4,7 +4,7 @@
  *	  insert routines for the postgres inverted index access method.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -216,7 +216,8 @@ ginEntryInsert(GinState *ginstate,
 			return;
 		}
 
-		CheckForSerializableConflictIn(ginstate->index, NULL, stack->buffer);
+		CheckForSerializableConflictIn(ginstate->index, NULL,
+									   BufferGetBlockNumber(stack->buffer));
 		/* modify an existing leaf entry */
 		itup = addItemPointersToLeafTuple(ginstate, itup,
 										  items, nitem, buildStats, stack->buffer);
@@ -225,7 +226,8 @@ ginEntryInsert(GinState *ginstate,
 	}
 	else
 	{
-		CheckForSerializableConflictIn(ginstate->index, NULL, stack->buffer);
+		CheckForSerializableConflictIn(ginstate->index, NULL,
+									   BufferGetBlockNumber(stack->buffer));
 		/* no match, so construct a new leaf entry */
 		itup = buildFreshLeafTuple(ginstate, attnum, key, category,
 								   items, nitem, buildStats, stack->buffer);

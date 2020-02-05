@@ -3,7 +3,7 @@
  * nbtinsert.c
  *	  Item insertion in Lehman and Yao btrees for Postgres.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -179,11 +179,6 @@ top:
 				PageGetMaxOffsetNumber(page) >= P_FIRSTDATAKEY(lpageop) &&
 				_bt_compare(rel, itup_key, page, P_FIRSTDATAKEY(lpageop)) > 0)
 			{
-				/*
-				 * The right-most block should never have an incomplete split.
-				 * But be paranoid and check for it anyway.
-				 */
-				Assert(!P_INCOMPLETE_SPLIT(lpageop));
 				fastpath = true;
 			}
 			else
@@ -290,7 +285,7 @@ top:
 		 * checkingunique and !heapkeyspace cases, but it's okay to use the
 		 * first page the value could be on (with scantid omitted) instead.
 		 */
-		CheckForSerializableConflictIn(rel, NULL, insertstate.buf);
+		CheckForSerializableConflictIn(rel, NULL, BufferGetBlockNumber(insertstate.buf));
 
 		/*
 		 * Do the insertion.  Note that insertstate contains cached binary
@@ -533,7 +528,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 * otherwise be masked by this unique constraint
 					 * violation.
 					 */
-					CheckForSerializableConflictIn(rel, NULL, insertstate->buf);
+					CheckForSerializableConflictIn(rel, NULL, BufferGetBlockNumber(insertstate->buf));
 
 					/*
 					 * This is a definite conflict.  Break the tuple down into
@@ -1807,7 +1802,7 @@ _bt_insert_parent(Relation rel,
 
 		/* form an index tuple that points at the new right page */
 		new_item = CopyIndexTuple(ritem);
-		BTreeInnerTupleSetDownLink(new_item, rbknum);
+		BTreeTupleSetDownLink(new_item, rbknum);
 
 		/*
 		 * Re-find and write lock the parent of buf.
@@ -1991,7 +1986,7 @@ _bt_getstackbuf(Relation rel, BTStack stack, BlockNumber child)
 				itemid = PageGetItemId(page, offnum);
 				item = (IndexTuple) PageGetItem(page, itemid);
 
-				if (BTreeInnerTupleGetDownLink(item) == child)
+				if (BTreeTupleGetDownLink(item) == child)
 				{
 					/* Return accurate pointer to where link is now */
 					stack->bts_blkno = blkno;
@@ -2007,7 +2002,7 @@ _bt_getstackbuf(Relation rel, BTStack stack, BlockNumber child)
 				itemid = PageGetItemId(page, offnum);
 				item = (IndexTuple) PageGetItem(page, itemid);
 
-				if (BTreeInnerTupleGetDownLink(item) == child)
+				if (BTreeTupleGetDownLink(item) == child)
 				{
 					/* Return accurate pointer to where link is now */
 					stack->bts_blkno = blkno;
@@ -2096,7 +2091,7 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 	left_item_sz = sizeof(IndexTupleData);
 	left_item = (IndexTuple) palloc(left_item_sz);
 	left_item->t_info = left_item_sz;
-	BTreeInnerTupleSetDownLink(left_item, lbkno);
+	BTreeTupleSetDownLink(left_item, lbkno);
 	BTreeTupleSetNAtts(left_item, 0);
 
 	/*
@@ -2107,7 +2102,7 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 	right_item_sz = ItemIdGetLength(itemid);
 	item = (IndexTuple) PageGetItem(lpage, itemid);
 	right_item = CopyIndexTuple(item);
-	BTreeInnerTupleSetDownLink(right_item, rbkno);
+	BTreeTupleSetDownLink(right_item, rbkno);
 
 	/* NO EREPORT(ERROR) from here till newroot op is logged */
 	START_CRIT_SECTION();

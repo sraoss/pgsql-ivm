@@ -6,7 +6,7 @@
  * See src/backend/utils/misc/README for more information.
  *
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  * Written by Peter Eisentraut <peter_e@gmx.net>.
  *
  * IDENTIFICATION
@@ -123,6 +123,7 @@ extern int	CommitSiblings;
 extern char *default_tablespace;
 extern char *temp_tablespaces;
 extern bool ignore_checksum_failure;
+extern bool ignore_invalid_pages;
 extern bool synchronize_seqscans;
 
 #ifdef TRACE_SYNCSCAN
@@ -204,6 +205,10 @@ static const char *show_log_file_mode(void);
 static const char *show_data_directory_mode(void);
 static bool check_backtrace_functions(char **newval, void **extra, GucSource source);
 static void assign_backtrace_functions(const char *newval, void *extra);
+static bool check_ssl_min_protocol_version(int *newval, void **extra,
+										   GucSource source);
+static bool check_ssl_max_protocol_version(int *newval, void **extra,
+										   GucSource source);
 static bool check_recovery_target_timeline(char **newval, void **extra, GucSource source);
 static void assign_recovery_target_timeline(const char *newval, void *extra);
 static bool check_recovery_target(char **newval, void **extra, GucSource source);
@@ -235,6 +240,9 @@ static const struct config_enum_entry bytea_output_options[] = {
 	{"hex", BYTEA_OUTPUT_HEX, false},
 	{NULL, 0, false}
 };
+
+StaticAssertDecl(lengthof(bytea_output_options) == (BYTEA_OUTPUT_HEX + 2),
+				 "array length mismatch");
 
 /*
  * We have different sets for client and server message level options because
@@ -281,12 +289,18 @@ static const struct config_enum_entry intervalstyle_options[] = {
 	{NULL, 0, false}
 };
 
+StaticAssertDecl(lengthof(intervalstyle_options) == (INTSTYLE_ISO_8601 + 2),
+				 "array length mismatch");
+
 static const struct config_enum_entry log_error_verbosity_options[] = {
 	{"terse", PGERROR_TERSE, false},
 	{"default", PGERROR_DEFAULT, false},
 	{"verbose", PGERROR_VERBOSE, false},
 	{NULL, 0, false}
 };
+
+StaticAssertDecl(lengthof(log_error_verbosity_options) == (PGERROR_VERBOSE + 2),
+				 "array length mismatch");
 
 static const struct config_enum_entry log_statement_options[] = {
 	{"none", LOGSTMT_NONE, false},
@@ -295,6 +309,9 @@ static const struct config_enum_entry log_statement_options[] = {
 	{"all", LOGSTMT_ALL, false},
 	{NULL, 0, false}
 };
+
+StaticAssertDecl(lengthof(log_statement_options) == (LOGSTMT_ALL + 2),
+				 "array length mismatch");
 
 static const struct config_enum_entry isolation_level_options[] = {
 	{"serializable", XACT_SERIALIZABLE, false},
@@ -310,6 +327,9 @@ static const struct config_enum_entry session_replication_role_options[] = {
 	{"local", SESSION_REPLICATION_ROLE_LOCAL, false},
 	{NULL, 0, false}
 };
+
+StaticAssertDecl(lengthof(session_replication_role_options) == (SESSION_REPLICATION_ROLE_LOCAL + 2),
+				 "array length mismatch");
 
 static const struct config_enum_entry syslog_facility_options[] = {
 #ifdef HAVE_SYSLOG
@@ -334,17 +354,26 @@ static const struct config_enum_entry track_function_options[] = {
 	{NULL, 0, false}
 };
 
+StaticAssertDecl(lengthof(track_function_options) == (TRACK_FUNC_ALL + 2),
+				 "array length mismatch");
+
 static const struct config_enum_entry xmlbinary_options[] = {
 	{"base64", XMLBINARY_BASE64, false},
 	{"hex", XMLBINARY_HEX, false},
 	{NULL, 0, false}
 };
 
+StaticAssertDecl(lengthof(xmlbinary_options) == (XMLBINARY_HEX + 2),
+				 "array length mismatch");
+
 static const struct config_enum_entry xmloption_options[] = {
 	{"content", XMLOPTION_CONTENT, false},
 	{"document", XMLOPTION_DOCUMENT, false},
 	{NULL, 0, false}
 };
+
+StaticAssertDecl(lengthof(xmloption_options) == (XMLOPTION_CONTENT + 2),
+				 "array length mismatch");
 
 /*
  * Although only "on", "off", and "safe_encoding" are documented, we
@@ -460,6 +489,9 @@ const struct config_enum_entry ssl_protocol_versions_info[] = {
 	{NULL, 0, false}
 };
 
+StaticAssertDecl(lengthof(ssl_protocol_versions_info) == (PG_TLS1_3_VERSION + 2),
+				 "array length mismatch");
+
 static struct config_enum_entry shared_memory_options[] = {
 #ifndef WIN32
 	{"sysv", SHMEM_TYPE_SYSV, false},
@@ -486,6 +518,7 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * GUC option variables that are exported from this module
  */
 bool		log_duration = false;
+bool		log_parameters_on_error = false;
 bool		Debug_print_plan = false;
 bool		Debug_print_parse = false;
 bool		Debug_print_rewritten = false;
@@ -609,6 +642,9 @@ const char *const GucContext_Names[] =
 	 /* PGC_USERSET */ "user"
 };
 
+StaticAssertDecl(lengthof(GucContext_Names) == (PGC_USERSET + 1),
+				 "array length mismatch");
+
 /*
  * Displayable names for source types (enum GucSource)
  *
@@ -631,6 +667,9 @@ const char *const GucSource_Names[] =
 	 /* PGC_S_TEST */ "test",
 	 /* PGC_S_SESSION */ "session"
 };
+
+StaticAssertDecl(lengthof(GucSource_Names) == (PGC_S_SESSION + 1),
+				 "array length mismatch");
 
 /*
  * Displayable names for the groupings defined in enum config_group
@@ -743,6 +782,9 @@ const char *const config_group_names[] =
 	NULL
 };
 
+StaticAssertDecl(lengthof(config_group_names) == (DEVELOPER_OPTIONS + 2),
+				 "array length mismatch");
+
 /*
  * Displayable names for GUC variable types (enum config_type)
  *
@@ -756,6 +798,9 @@ const char *const config_type_names[] =
 	 /* PGC_STRING */ "string",
 	 /* PGC_ENUM */ "enum"
 };
+
+StaticAssertDecl(lengthof(config_type_names) == (PGC_ENUM + 1),
+				 "array length mismatch");
 
 /*
  * Unit conversion tables.
@@ -1168,6 +1213,25 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
+		{"ignore_invalid_pages", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+			gettext_noop("Continues recovery after an invalid pages failure."),
+			gettext_noop("Detection of WAL records having references to "
+						 "invalid pages during recovery causes PostgreSQL to "
+						 "raise a PANIC-level error, aborting the recovery. "
+						 "Setting ignore_invalid_pages to true causes "
+						 "the system to ignore invalid page references "
+						 "in WAL records (but still report a warning), "
+						 "and continue recovery. This behavior may cause "
+						 "crashes, data loss, propagate or hide corruption, "
+						 "or other serious problems. Only has an effect "
+						 "during recovery or in standby mode."),
+			GUC_NOT_IN_SAMPLE
+		},
+		&ignore_invalid_pages,
+		false,
+		NULL, NULL, NULL
+	},
+	{
 		{"full_page_writes", PGC_SIGHUP, WAL_SETTINGS,
 			gettext_noop("Writes full pages to WAL when first modified after a checkpoint."),
 			gettext_noop("A page write in process during an operating system crash might be "
@@ -1297,6 +1361,15 @@ static struct config_bool ConfigureNamesBool[] =
 			NULL
 		},
 		&log_duration,
+		false,
+		NULL, NULL, NULL
+	},
+	{
+		{"log_parameters_on_error", PGC_SUSET, LOGGING_WHAT,
+			gettext_noop("Logs bind parameters of the logged statements where possible."),
+			NULL
+		},
+		&log_parameters_on_error,
 		false,
 		NULL, NULL, NULL
 	},
@@ -1777,7 +1850,7 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
-		{"allow_system_table_mods", PGC_POSTMASTER, DEVELOPER_OPTIONS,
+		{"allow_system_table_mods", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Allows modifications of the structure of system tables."),
 			NULL,
 			GUC_NOT_IN_SAMPLE
@@ -1956,6 +2029,15 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&data_sync_retry,
 		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"wal_receiver_create_temp_slot", PGC_SIGHUP, REPLICATION_STANDBY,
+			gettext_noop("Sets whether a WAL receiver should create a temporary replication slot if no permanent slot is configured."),
+		},
+		&wal_receiver_create_temp_slot,
+		true,
 		NULL, NULL, NULL
 	},
 
@@ -3200,7 +3282,7 @@ static struct config_int ConfigureNamesInt[] =
 			GUC_UNIT_BYTE
 		},
 		&pgstat_track_activity_query_size,
-		1024, 100, 102400,
+		1024, 100, 1048576,
 		NULL, NULL, NULL
 	},
 
@@ -4573,9 +4655,9 @@ static struct config_enum ConfigureNamesEnum[] =
 			GUC_SUPERUSER_ONLY
 		},
 		&ssl_min_protocol_version,
-		PG_TLS1_VERSION,
+		PG_TLS1_2_VERSION,
 		ssl_protocol_versions_info + 1, /* don't allow PG_TLS_ANY */
-		NULL, NULL, NULL
+		check_ssl_min_protocol_version, NULL, NULL
 	},
 
 	{
@@ -4587,7 +4669,7 @@ static struct config_enum ConfigureNamesEnum[] =
 		&ssl_max_protocol_version,
 		PG_TLS_ANY,
 		ssl_protocol_versions_info,
-		NULL, NULL, NULL
+		check_ssl_max_protocol_version, NULL, NULL
 	},
 
 	/* End-of-list marker */
@@ -4619,9 +4701,6 @@ static struct config_generic **guc_variables;
 
 /* Current number of variables contained in the vector */
 static int	num_guc_variables;
-
-/* Current number of variables marked with GUC_EXPLAIN */
-static int	num_guc_explain_variables;
 
 /* Vector capacity */
 static int	size_guc_variables;
@@ -4886,7 +4965,6 @@ build_guc_variables(void)
 {
 	int			size_vars;
 	int			num_vars = 0;
-	int			num_explain_vars = 0;
 	struct config_generic **guc_vars;
 	int			i;
 
@@ -4897,9 +4975,6 @@ build_guc_variables(void)
 		/* Rather than requiring vartype to be filled in by hand, do this: */
 		conf->gen.vartype = PGC_BOOL;
 		num_vars++;
-
-		if (conf->gen.flags & GUC_EXPLAIN)
-			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesInt[i].gen.name; i++)
@@ -4908,9 +4983,6 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_INT;
 		num_vars++;
-
-		if (conf->gen.flags & GUC_EXPLAIN)
-			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesReal[i].gen.name; i++)
@@ -4919,9 +4991,6 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_REAL;
 		num_vars++;
-
-		if (conf->gen.flags & GUC_EXPLAIN)
-			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesString[i].gen.name; i++)
@@ -4930,9 +4999,6 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_STRING;
 		num_vars++;
-
-		if (conf->gen.flags & GUC_EXPLAIN)
-			num_explain_vars++;
 	}
 
 	for (i = 0; ConfigureNamesEnum[i].gen.name; i++)
@@ -4941,9 +5007,6 @@ build_guc_variables(void)
 
 		conf->gen.vartype = PGC_ENUM;
 		num_vars++;
-
-		if (conf->gen.flags & GUC_EXPLAIN)
-			num_explain_vars++;
 	}
 
 	/*
@@ -4975,7 +5038,6 @@ build_guc_variables(void)
 		free(guc_variables);
 	guc_variables = guc_vars;
 	num_guc_variables = num_vars;
-	num_guc_explain_variables = num_explain_vars;
 	size_guc_variables = size_vars;
 	qsort((void *) guc_variables, num_guc_variables,
 		  sizeof(struct config_generic *), guc_var_compare);
@@ -7970,7 +8032,7 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to execute ALTER SYSTEM command"))));
+				 errmsg("must be superuser to execute ALTER SYSTEM command")));
 
 	/*
 	 * Extract statement arguments
@@ -8924,41 +8986,40 @@ ShowAllGUCConfig(DestReceiver *dest)
 }
 
 /*
- * Returns an array of modified GUC options to show in EXPLAIN. Only options
- * related to query planning (marked with GUC_EXPLAIN), with values different
- * from built-in defaults.
+ * Return an array of modified GUC options to show in EXPLAIN.
+ *
+ * We only report options related to query planning (marked with GUC_EXPLAIN),
+ * with values different from their built-in defaults.
  */
 struct config_generic **
 get_explain_guc_options(int *num)
 {
-	int			i;
 	struct config_generic **result;
 
 	*num = 0;
 
 	/*
-	 * Allocate enough space to fit all GUC_EXPLAIN options. We may not need
-	 * all the space, but there are fairly few such options so we don't waste
-	 * a lot of memory.
+	 * While only a fraction of all the GUC variables are marked GUC_EXPLAIN,
+	 * it doesn't seem worth dynamically resizing this array.
 	 */
-	result = palloc(sizeof(struct config_generic *) * num_guc_explain_variables);
+	result = palloc(sizeof(struct config_generic *) * num_guc_variables);
 
-	for (i = 0; i < num_guc_variables; i++)
+	for (int i = 0; i < num_guc_variables; i++)
 	{
 		bool		modified;
 		struct config_generic *conf = guc_variables[i];
 
-		/* return only options visible to the user */
+		/* return only parameters marked for inclusion in explain */
+		if (!(conf->flags & GUC_EXPLAIN))
+			continue;
+
+		/* return only options visible to the current user */
 		if ((conf->flags & GUC_NO_SHOW_ALL) ||
 			((conf->flags & GUC_SUPERUSER_ONLY) &&
 			 !is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_ALL_SETTINGS)))
 			continue;
 
-		/* only parameters explicitly marked for inclusion in explain */
-		if (!(conf->flags & GUC_EXPLAIN))
-			continue;
-
-		/* return only options that were modified (w.r.t. config file) */
+		/* return only options that are different from their boot values */
 		modified = false;
 
 		switch (conf->vartype)
@@ -9007,15 +9068,12 @@ get_explain_guc_options(int *num)
 				elog(ERROR, "unexpected GUC type: %d", conf->vartype);
 		}
 
-		/* skip GUC variables that match the built-in default */
 		if (!modified)
 			continue;
 
-		/* assign to the values array */
+		/* OK, report it */
 		result[*num] = conf;
 		*num = *num + 1;
-
-		Assert(*num <= num_guc_explain_variables);
 	}
 
 	return result;
@@ -9497,8 +9555,7 @@ show_all_file_settings(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Scan the config files using current context as workspace */
 	conf = ProcessConfigFileInternal(PGC_SIGHUP, false, DEBUG3);
@@ -11583,6 +11640,49 @@ static void
 assign_backtrace_functions(const char *newval, void *extra)
 {
 	backtrace_symbol_list = (char *) extra;
+}
+
+static bool
+check_ssl_min_protocol_version(int *newval, void **extra, GucSource source)
+{
+	int			new_ssl_min_protocol_version = *newval;
+
+	/* PG_TLS_ANY is not supported for the minimum bound */
+	Assert(new_ssl_min_protocol_version > PG_TLS_ANY);
+
+	if (ssl_max_protocol_version &&
+		new_ssl_min_protocol_version > ssl_max_protocol_version)
+	{
+		GUC_check_errhint("\"%s\" cannot be higher than \"%s\".",
+						  "ssl_min_protocol_version",
+						  "ssl_max_protocol_version");
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+check_ssl_max_protocol_version(int *newval, void **extra, GucSource source)
+{
+	int			new_ssl_max_protocol_version = *newval;
+
+	/* if PG_TLS_ANY, there is no need to check the bounds */
+	if (new_ssl_max_protocol_version == PG_TLS_ANY)
+		return true;
+
+	if (ssl_min_protocol_version &&
+		ssl_min_protocol_version > new_ssl_max_protocol_version)
+	{
+		GUC_check_errhint("\"%s\" cannot be lower than \"%s\".",
+						  "ssl_max_protocol_version",
+						  "ssl_min_protocol_version");
+		GUC_check_errcode(ERRCODE_INVALID_PARAMETER_VALUE);
+		return false;
+	}
+
+	return true;
 }
 
 static bool

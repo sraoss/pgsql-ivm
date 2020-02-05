@@ -3,7 +3,7 @@
  * extended_stats_internal.h
  *	  POSTGRES extended statistics internal declarations
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -14,9 +14,8 @@
 #ifndef EXTENDED_STATS_INTERNAL_H
 #define EXTENDED_STATS_INTERNAL_H
 
-#include "utils/sortsupport.h"
 #include "statistics/statistics.h"
-
+#include "utils/sortsupport.h"
 
 typedef struct
 {

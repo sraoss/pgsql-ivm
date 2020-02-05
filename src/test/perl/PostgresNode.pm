@@ -653,6 +653,9 @@ Restoring WAL segments from archives using restore_command can be enabled
 by passing the keyword parameter has_restoring => 1. This is disabled by
 default.
 
+If has_restoring is used, standby mode is used by default.  To use
+recovery mode instead, pass the keyword parameter standby => 0.
+
 The backup is copied, leaving the original unmodified. pg_hba.conf is
 unconditionally set to enable replication connections.
 
@@ -669,6 +672,7 @@ sub init_from_backup
 
 	$params{has_streaming} = 0 unless defined $params{has_streaming};
 	$params{has_restoring} = 0 unless defined $params{has_restoring};
+	$params{standby} = 1 unless defined $params{standby};
 
 	print
 	  "# Initializing node \"$node_name\" from backup \"$backup_name\" of node \"$root_name\"\n";
@@ -699,7 +703,7 @@ port = $port
 			"unix_socket_directories = '$host'");
 	}
 	$self->enable_streaming($root_node) if $params{has_streaming};
-	$self->enable_restoring($root_node) if $params{has_restoring};
+	$self->enable_restoring($root_node, $params{standby}) if $params{has_restoring};
 	return;
 }
 
@@ -939,7 +943,7 @@ primary_conninfo='$root_connstr'
 # Internal routine to enable archive recovery command on a standby node
 sub enable_restoring
 {
-	my ($self, $root_node) = @_;
+	my ($self, $root_node, $standby) = @_;
 	my $path = TestLib::perl2host($root_node->archive_dir);
 	my $name = $self->name;
 
@@ -961,7 +965,30 @@ sub enable_restoring
 		'postgresql.conf', qq(
 restore_command = '$copy_command'
 ));
-	$self->set_standby_mode();
+	if ($standby)
+	{
+		$self->set_standby_mode();
+	}
+	else
+	{
+		$self->set_recovery_mode();
+	}
+	return;
+}
+
+=pod
+
+=item $node->set_recovery_mode()
+
+Place recovery.signal file.
+
+=cut
+
+sub set_recovery_mode
+{
+	my ($self) = @_;
+
+	$self->append_conf('recovery.signal', '');
 	return;
 }
 
@@ -1530,6 +1557,73 @@ sub psql
 	{
 		return $ret;
 	}
+}
+
+=pod
+
+=item $node->interactive_psql($dbname, \$stdin, \$stdout, $timer, %params) => harness
+
+Invoke B<psql> on B<$dbname> and return an IPC::Run harness object,
+which the caller may use to send interactive input to B<psql>.
+The process's stdin is sourced from the $stdin scalar reference,
+and its stdout and stderr go to the $stdout scalar reference.
+ptys are used so that psql thinks it's being called interactively.
+
+The specified timer object is attached to the harness, as well.
+It's caller's responsibility to select the timeout length, and to
+restart the timer after each command if the timeout is per-command.
+
+psql is invoked in tuples-only unaligned mode with reading of B<.psqlrc>
+disabled.  That may be overridden by passing extra psql parameters.
+
+Dies on failure to invoke psql, or if psql fails to connect.
+Errors occurring later are the caller's problem.
+
+Be sure to "finish" the harness when done with it.
+
+The only extra parameter currently accepted is
+
+=over
+
+=item extra_params => ['--single-transaction']
+
+If given, it must be an array reference containing additional parameters to B<psql>.
+
+=back
+
+This requires IO::Pty in addition to IPC::Run.
+
+=cut
+
+sub interactive_psql
+{
+	my ($self, $dbname, $stdin, $stdout, $timer, %params) = @_;
+
+	my @psql_params = ('psql', '-XAt', '-d', $self->connstr($dbname));
+
+	push @psql_params, @{ $params{extra_params} }
+	  if defined $params{extra_params};
+
+	# Ensure there is no data waiting to be sent:
+	$$stdin = "" if ref($stdin);
+	# IPC::Run would otherwise append to existing contents:
+	$$stdout = "" if ref($stdout);
+
+	my $harness = IPC::Run::start \@psql_params,
+	  '<pty<', $stdin, '>pty>', $stdout, $timer;
+
+	# Pump until we see psql's help banner.  This ensures that callers
+	# won't write anything to the pty before it's ready, avoiding an
+	# implementation issue in IPC::Run.  Also, it means that psql
+	# connection failures are caught here, relieving callers of
+	# the need to handle those.  (Right now, we have no particularly
+	# good handling for errors anyway, but that might be added later.)
+	pump $harness
+	  until $$stdout =~ /Type "help" for help/ || $timer->is_expired;
+
+	die "psql startup timed out" if $timer->is_expired;
+
+	return $harness;
 }
 
 =pod

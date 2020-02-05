@@ -4,7 +4,7 @@
  *	  OpenSSL support
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -30,6 +30,7 @@
 #include "fe-auth.h"
 #include "fe-secure-common.h"
 #include "libpq-int.h"
+#include "common/openssl.h"
 
 #ifdef WIN32
 #include "win32.h"
@@ -70,6 +71,7 @@ static int	initialize_SSL(PGconn *conn);
 static PostgresPollingStatusType open_client_SSL(PGconn *);
 static char *SSLerrmessage(unsigned long ecode);
 static void SSLerrfree(char *buf);
+static int PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata);
 
 static int	my_sock_read(BIO *h, char *buf, int size);
 static int	my_sock_write(BIO *h, const char *buf, int size);
@@ -93,6 +95,8 @@ static long win32_ssl_create_mutex = 0;
 #endif
 #endif							/* ENABLE_THREAD_SAFETY */
 
+static PQsslKeyPassHook_type PQsslKeyPassHook = NULL;
+static int	ssl_protocol_version_to_openssl(const char *protocol);
 
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
@@ -202,8 +206,7 @@ rloop:
 				if (result_errno == EPIPE ||
 					result_errno == ECONNRESET)
 					printfPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext(
-													"server closed the connection unexpectedly\n"
+									  libpq_gettext("server closed the connection unexpectedly\n"
 													"\tThis probably means the server terminated abnormally\n"
 													"\tbefore or while processing the request.\n"));
 				else
@@ -310,8 +313,7 @@ pgtls_write(PGconn *conn, const void *ptr, size_t len)
 				result_errno = SOCK_ERRNO;
 				if (result_errno == EPIPE || result_errno == ECONNRESET)
 					printfPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext(
-													"server closed the connection unexpectedly\n"
+									  libpq_gettext("server closed the connection unexpectedly\n"
 													"\tThis probably means the server terminated abnormally\n"
 													"\tbefore or while processing the request.\n"));
 				else
@@ -574,10 +576,8 @@ pgtls_verify_peer_name_matches_certificate_guts(PGconn *conn,
 			if (cn_index >= 0)
 			{
 				(*names_examined)++;
-				rc = openssl_verify_peer_name_matches_certificate_name(
-																	   conn,
-																	   X509_NAME_ENTRY_get_data(
-																								X509_NAME_get_entry(subject_name, cn_index)),
+				rc = openssl_verify_peer_name_matches_certificate_name(conn,
+																	   X509_NAME_ENTRY_get_data(X509_NAME_get_entry(subject_name, cn_index)),
 																	   first_name);
 			}
 		}
@@ -818,8 +818,87 @@ initialize_SSL(PGconn *conn)
 		return -1;
 	}
 
+	/*
+	 * Delegate the client cert password prompt to the libpq wrapper
+	 * callback if any is defined.
+	 *
+	 * If the application hasn't installed its own and the sslpassword
+	 * parameter is non-null, we install ours now to make sure we
+	 * supply PGconn->sslpassword to OpenSSL instead of letting it
+	 * prompt on stdin.
+	 *
+	 * This will replace OpenSSL's default PEM_def_callback (which
+	 * prompts on stdin), but we're only setting it for this SSL
+	 * context so it's harmless.
+	 */
+	if (PQsslKeyPassHook
+		|| (conn->sslpassword && strlen(conn->sslpassword) > 0))
+	{
+		SSL_CTX_set_default_passwd_cb(SSL_context, PQssl_passwd_cb);
+		SSL_CTX_set_default_passwd_cb_userdata(SSL_context, conn);
+	}
+
 	/* Disable old protocol versions */
 	SSL_CTX_set_options(SSL_context, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3);
+
+	/* Set the minimum and maximum protocol versions if necessary */
+	if (conn->sslminprotocolversion &&
+		strlen(conn->sslminprotocolversion) != 0)
+	{
+		int			ssl_min_ver;
+
+		ssl_min_ver = ssl_protocol_version_to_openssl(conn->sslminprotocolversion);
+
+		if (ssl_min_ver == -1)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("invalid value \"%s\" for minimum version of SSL protocol\n"),
+							  conn->sslminprotocolversion);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+
+		if (!SSL_CTX_set_min_proto_version(SSL_context, ssl_min_ver))
+		{
+			char	   *err = SSLerrmessage(ERR_get_error());
+
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("could not set minimum version of SSL protocol: %s\n"),
+							  err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+	}
+
+	if (conn->sslmaxprotocolversion &&
+		strlen(conn->sslmaxprotocolversion) != 0)
+	{
+		int			ssl_max_ver;
+
+		ssl_max_ver = ssl_protocol_version_to_openssl(conn->sslmaxprotocolversion);
+
+		if (ssl_max_ver == -1)
+		{
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("invalid value \"%s\" for maximum version of SSL protocol\n"),
+							  conn->sslmaxprotocolversion);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+
+		if (!SSL_CTX_set_max_proto_version(SSL_context, ssl_max_ver))
+		{
+			char	   *err = SSLerrmessage(ERR_get_error());
+
+			printfPQExpBuffer(&conn->errorMessage,
+							  libpq_gettext("could not set maximum version of SSL protocol: %s\n"),
+							  err);
+			SSLerrfree(err);
+			SSL_CTX_free(SSL_context);
+			return -1;
+		}
+	}
 
 	/*
 	 * Disable OpenSSL's moving-write-buffer sanity check, because it causes
@@ -1123,11 +1202,29 @@ initialize_SSL(PGconn *conn)
 		{
 			char	   *err = SSLerrmessage(ERR_get_error());
 
-			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("could not load private key file \"%s\": %s\n"),
-							  fnbuf, err);
+			/*
+			 * We'll try to load the file in DER (binary ASN.1) format, and if
+			 * that fails too, report the original error. This could mask
+			 * issues where there's something wrong with a DER-format cert, but
+			 * we'd have to duplicate openssl's format detection to be smarter
+			 * than this. We can't just probe for a leading -----BEGIN because
+			 * PEM can have leading non-matching lines and blanks. OpenSSL
+			 * doesn't expose its get_name(...) and its PEM routines don't
+			 * differentiate between failure modes in enough detail to let us
+			 * tell the difference between "not PEM, try DER" and "wrong
+			 * password".
+			 */
+			if (SSL_use_PrivateKey_file(conn->ssl, fnbuf, SSL_FILETYPE_ASN1) != 1)
+			{
+				printfPQExpBuffer(&conn->errorMessage,
+								  libpq_gettext("could not load private key file \"%s\": %s\n"),
+								  fnbuf, err);
+				SSLerrfree(err);
+				return -1;
+			}
+
 			SSLerrfree(err);
-			return -1;
+
 		}
 	}
 
@@ -1152,24 +1249,12 @@ initialize_SSL(PGconn *conn)
 		SSL_set_verify(conn->ssl, SSL_VERIFY_PEER, verify_cb);
 
 	/*
-	 * Set compression option if the OpenSSL version used supports it (from
-	 * 1.0.0 on).
+	 * Set compression option if necessary.
 	 */
-#ifdef SSL_OP_NO_COMPRESSION
 	if (conn->sslcompression && conn->sslcompression[0] == '0')
 		SSL_set_options(conn->ssl, SSL_OP_NO_COMPRESSION);
-
-	/*
-	 * Mainline OpenSSL introduced SSL_clear_options() before
-	 * SSL_OP_NO_COMPRESSION, so this following #ifdef should not be
-	 * necessary, but some old NetBSD version have a locally modified libssl
-	 * that has SSL_OP_NO_COMPRESSION but not SSL_clear_options().
-	 */
-#ifdef HAVE_SSL_CLEAR_OPTIONS
 	else
 		SSL_clear_options(conn->ssl, SSL_OP_NO_COMPRESSION);
-#endif
-#endif
 
 	return 0;
 }
@@ -1242,9 +1327,7 @@ open_client_SSL(PGconn *conn)
 	conn->peer = SSL_get_peer_certificate(conn->ssl);
 	if (conn->peer == NULL)
 	{
-		char	   *err;
-
-		err = SSLerrmessage(ERR_get_error());
+		char	   *err = SSLerrmessage(ERR_get_error());
 
 		printfPQExpBuffer(&conn->errorMessage,
 						  libpq_gettext("certificate could not be obtained: %s\n"),
@@ -1579,4 +1662,89 @@ my_SSL_set_fd(PGconn *conn, int fd)
 	ret = 1;
 err:
 	return ret;
+}
+
+/*
+ * This is the default handler to return a client cert password from
+ * conn->sslpassword. Apps may install it explicitly if they want to
+ * prevent openssl from ever prompting on stdin.
+ */
+int
+PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn)
+{
+	if (conn->sslpassword)
+	{
+		if (strlen(conn->sslpassword) + 1 > size)
+			fprintf(stderr, libpq_gettext("WARNING: sslpassword truncated"));
+		strncpy(buf, conn->sslpassword, size);
+		buf[size-1] = '\0';
+		return strlen(buf);
+	}
+	else
+	{
+		buf[0] = '\0';
+		return 0;
+	}
+}
+
+PQsslKeyPassHook_type
+PQgetSSLKeyPassHook(void)
+{
+	return PQsslKeyPassHook;
+}
+
+void
+PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook)
+{
+	PQsslKeyPassHook = hook;
+}
+
+/*
+ * Supply a password to decrypt a client certificate.
+ *
+ * This must match OpenSSL type pem_passwd_cb.
+ */
+static int
+PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
+{
+	PGconn *conn = userdata;
+
+	if (PQsslKeyPassHook)
+		return PQsslKeyPassHook(buf, size, conn);
+	else
+		return PQdefaultSSLKeyPassHook(buf, size, conn);
+}
+
+/*
+ * Convert TLS protocol version string to OpenSSL values
+ *
+ * If a version is passed that is not supported by the current OpenSSL version,
+ * then we return -1. If a non-negative value is returned, subsequent code can
+ * assume it is working with a supported version.
+ *
+ * Note: this is rather similar to the backend routine in be-secure-openssl.c,
+ * so make sure to update both routines if changing this one.
+ */
+static int
+ssl_protocol_version_to_openssl(const char *protocol)
+{
+	if (pg_strcasecmp("TLSv1", protocol) == 0)
+		return TLS1_VERSION;
+
+#ifdef TLS1_1_VERSION
+	if (pg_strcasecmp("TLSv1.1", protocol) == 0)
+		return TLS1_1_VERSION;
+#endif
+
+#ifdef TLS1_2_VERSION
+	if (pg_strcasecmp("TLSv1.2", protocol) == 0)
+		return TLS1_2_VERSION;
+#endif
+
+#ifdef TLS1_3_VERSION
+	if (pg_strcasecmp("TLSv1.3", protocol) == 0)
+		return TLS1_3_VERSION;
+#endif
+
+	return -1;
 }

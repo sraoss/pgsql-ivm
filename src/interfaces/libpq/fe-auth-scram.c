@@ -3,7 +3,7 @@
  * fe-auth-scram.c
  *	   The front-end (client) implementation of SCRAM authentication.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -279,7 +279,6 @@ pg_fe_scram_exchange(void *opaq, char *input, int inputlen,
 error:
 	*done = true;
 	*success = false;
-	return;
 }
 
 /*

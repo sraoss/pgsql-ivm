@@ -13,7 +13,7 @@
  * come from different tuples. In theory, the standard scalar selectivity
  * functions could be used with the combined histogram.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -165,8 +165,7 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 				 * For an ordinary range, use subdiff function between upper
 				 * and lower bound values.
 				 */
-				length = DatumGetFloat8(FunctionCall2Coll(
-														  &typcache->rng_subdiff_finfo,
+				length = DatumGetFloat8(FunctionCall2Coll(&typcache->rng_subdiff_finfo,
 														  typcache->rng_collation,
 														  upper.val, lower.val));
 			}
@@ -246,8 +245,10 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 
 			for (i = 0; i < num_hist; i++)
 			{
-				bound_hist_values[i] = PointerGetDatum(range_serialize(
-																	   typcache, &lowers[pos], &uppers[pos], false));
+				bound_hist_values[i] = PointerGetDatum(range_serialize(typcache,
+																	   &lowers[pos],
+																	   &uppers[pos],
+																	   false));
 				pos += delta;
 				posfrac += deltafrac;
 				if (posfrac >= (num_hist - 1))
@@ -325,11 +326,7 @@ compute_range_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		stats->numvalues[slot_idx] = num_hist;
 		stats->statypid[slot_idx] = FLOAT8OID;
 		stats->statyplen[slot_idx] = sizeof(float8);
-#ifdef USE_FLOAT8_BYVAL
-		stats->statypbyval[slot_idx] = true;
-#else
-		stats->statypbyval[slot_idx] = false;
-#endif
+		stats->statypbyval[slot_idx] = FLOAT8PASSBYVAL;
 		stats->statypalign[slot_idx] = 'd';
 
 		/* Store the fraction of empty ranges */

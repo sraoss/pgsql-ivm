@@ -3,7 +3,7 @@
  * lockfuncs.c
  *		Functions for SQL access to various lock-manager capabilities.
  *
- * Copyright (c) 2002-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/utils/adt/lockfuncs.c
@@ -36,12 +36,18 @@ const char *const LockTagTypeNames[] = {
 	"advisory"
 };
 
+StaticAssertDecl(lengthof(LockTagTypeNames) == (LOCKTAG_ADVISORY + 1),
+				 "array length mismatch");
+
 /* This must match enum PredicateLockTargetType (predicate_internals.h) */
 static const char *const PredicateLockTagTypeNames[] = {
 	"relation",
 	"page",
 	"tuple"
 };
+
+StaticAssertDecl(lengthof(PredicateLockTagTypeNames) == (PREDLOCKTAG_TUPLE + 1),
+				 "array length mismatch");
 
 /* Working status for pg_lock_status */
 typedef struct

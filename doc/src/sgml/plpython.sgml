@@ -153,7 +153,7 @@
      <para>
       Daredevils, who want to build a Python-3-only operating system
       environment, can change the contents of
-      <link linkend="catalog-pg-pltemplate"><structname>pg_pltemplate</structname></link>
+      <literal>plpythonu</literal>'s extension control and script files
       to make <literal>plpythonu</literal> be equivalent
       to <literal>plpython3u</literal>, keeping in mind that this
       would make their installation incompatible with most of the rest
@@ -1227,7 +1227,7 @@ except spiexceptions.DivisionByZero:
     return "denominator cannot equal zero"
 except spiexceptions.UniqueViolation:
     return "already have that fraction"
-except plpy.SPIError, e:
+except plpy.SPIError as e:
     return "other error, SQLSTATE %s" % e.sqlstate
 else:
     return "fraction inserted"
@@ -1274,7 +1274,7 @@ CREATE FUNCTION transfer_funds() RETURNS void AS $$
 try:
     plpy.execute("UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'")
     plpy.execute("UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'")
-except plpy.SPIError, e:
+except plpy.SPIError as e:
     result = "error transferring funds: %s" % e.args
 else:
     result = "funds transferred correctly"
@@ -1306,7 +1306,7 @@ try:
     with plpy.subtransaction():
         plpy.execute("UPDATE accounts SET balance = balance - 100 WHERE account_name = 'joe'")
         plpy.execute("UPDATE accounts SET balance = balance + 100 WHERE account_name = 'mary'")
-except plpy.SPIError, e:
+except plpy.SPIError as e:
     result = "error transferring funds: %s" % e.args
 else:
     result = "funds transferred correctly"
@@ -1335,9 +1335,8 @@ $$ LANGUAGE plpythonu;
 
    <para>
     Context managers syntax using the <literal>with</literal> keyword
-    is available by default in Python 2.6.  If using PL/Python with an
-    older Python version, it is still possible to use explicit
-    subtransactions, although not as transparently.  You can call the
+    is available by default in Python 2.6.  For compatibility with
+    older Python versions, you can call the
     subtransaction manager's <literal>__enter__</literal> and
     <literal>__exit__</literal> functions using the
     <literal>enter</literal> and <literal>exit</literal> convenience
@@ -1357,7 +1356,7 @@ try:
         raise
     else:
         subxact.exit(None, None, None)
-except plpy.SPIError, e:
+except plpy.SPIError as e:
     result = "error transferring funds: %s" % e.args
 else:
     result = "funds transferred correctly"
@@ -1367,17 +1366,6 @@ plpy.execute(plan, [result])
 $$ LANGUAGE plpythonu;
 </programlisting>
    </para>
-
-   <note>
-    <para>
-     Although context managers were implemented in Python 2.5, to use
-     the <literal>with</literal> syntax in that version you need to
-     use a <ulink
-     url="https://docs.python.org/release/2.5/ref/future.html">future
-     statement</ulink>.  Because of implementation details, however,
-     you cannot use future statements in PL/Python functions.
-    </para>
-   </note>
   </sect2>
  </sect1>
 

@@ -3,7 +3,7 @@
 # parser generator for ecpg version 2
 # call with backend parser as stdin
 #
-# Copyright (c) 2007-2019, PostgreSQL Global Development Group
+# Copyright (c) 2007-2020, PostgreSQL Global Development Group
 #
 # Written by Mike Aubury <mike.aubury@aubit.com>
 #            Michael Meskes <meskes@postgresql.org>
@@ -218,8 +218,8 @@ sub main
 				if ($a eq 'IDENT' && $prior eq '%nonassoc')
 				{
 
-					# add two more tokens to the list
-					$str = $str . "\n%nonassoc CSTRING\n%nonassoc UIDENT";
+					# add more tokens to the list
+					$str = $str . "\n%nonassoc CSTRING";
 				}
 				$prior = $a;
 			}

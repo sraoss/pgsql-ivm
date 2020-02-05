@@ -13,7 +13,7 @@
  * we must return a tuples-processed count in the completionTag.  (We no
  * longer do that for CTAS ... WITH NO DATA, however.)
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -98,7 +98,6 @@ static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
@@ -254,7 +253,7 @@ create_ctas_nodata(List *tlist, IntoClause *into)
  * ExecCreateTableAs -- execute a CREATE TABLE AS command
  */
 ObjectAddress
-ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
+ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 				  ParamListInfo params, QueryEnvironment *queryEnv,
 				  char *completionTag)
 {
@@ -269,7 +268,6 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
-	Query	   *copied_query;
 
 	if (stmt->if_not_exists)
 	{
@@ -302,7 +300,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		ExecuteStmt *estmt = castNode(ExecuteStmt, query->utilityStmt);
 
 		Assert(!is_matview);	/* excluded by syntax */
-		ExecuteQuery(estmt, into, queryString, params, dest, completionTag);
+		ExecuteQuery(pstate, estmt, into, params, dest, completionTag);
 
 		/* get object address that intorel_startup saved for us */
 		address = ((DR_intorel *) dest)->reladdr;
@@ -324,6 +322,17 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		SetUserIdAndSecContext(save_userid,
 							   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 		save_nestlevel = NewGUCNestLevel();
+	}
+
+	if (is_matview && into->ivm)
+	{
+		check_ivm_restriction_context ctx = {false, false, false, NIL};
+
+		if(contain_mutable_functions((Node *)query))
+			ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
+
+		check_ivm_restriction_walker((Node *) query, &ctx, 0);
+		query = rewriteQueryForIMMV(query, into->colNames);
 	}
 
 	if (into->skipData)
@@ -351,205 +360,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		 * PREPARE.)
 		 */
 
-		copied_query = copyObject(query);
-		if (is_matview && into->ivm)
-		{
-			TargetEntry *tle;
-			Node *node;
-			ParseState *pstate = make_parsestate(NULL);
-			FuncCall *fn;
-			check_ivm_restriction_context ctx = {false, false, false, NIL};
-
-			pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
-
-			if(contain_mutable_functions((Node *)copied_query))
-				ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
-
-			check_ivm_restriction_walker((Node *) copied_query, &ctx, 0);
-
-			/*
-			 * If this query has EXISTS clause, rewrite query and
-			 * add __ivm_exists_count_X__ column.
-			 */
-			if (copied_query->hasSubLinks)
-			{
-				ListCell *lc;
-				RangeTblEntry *rte;
-
-				/* rewrite EXISTS sublink to LATERAL subquery */
-				rewrite_query_for_exists_subquery(copied_query);
-
-				/* Add count(*) using EXISTS clause */
-				foreach(lc, copied_query->rtable)
-				{
-					char *columnName;
-					Node *countCol = NULL;
-
-					rte = (RangeTblEntry *) lfirst(lc);
-					if (!rte->subquery || !rte->lateral)
-						continue;
-					pstate->p_rtable = copied_query->rtable;
-
-					columnName = getColumnNameStartWith(rte, "__ivm_exists");
-					if (columnName == NULL)
-						continue;
-					countCol = scanRTEForColumn(pstate, rte, columnName,-1, 0, NULL);
-
-					if (countCol != NULL)
-					{
-						tle = makeTargetEntry((Expr *) countCol,
-													list_length(copied_query->targetList) + 1,
-													pstrdup(columnName),
-													false);
-						copied_query->targetList = list_concat(copied_query->targetList, list_make1(tle));
-					}
-				}
-			}
-
-			/* group keys must be in targetlist */
-			if (copied_query->groupClause)
-			{
-				ListCell *lc;
-				foreach(lc, copied_query->groupClause)
-				{
-					SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
-					TargetEntry *tle = get_sortgroupclause_tle(scl, copied_query->targetList);
-
-					if (tle->resjunk)
-						elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
-				}
-			}
-			else if (!copied_query->hasAggs)
-				copied_query->groupClause = transformDistinctClause(NULL, &copied_query->targetList, copied_query->sortClause, false);
-
-			if (copied_query->hasAggs)
-			{
-				ListCell *lc;
-				List *agg_counts = NIL;
-				AttrNumber next_resno = list_length(copied_query->targetList) + 1;
-				Const	*dmy_arg = makeConst(INT4OID,
-											 -1,
-											 InvalidOid,
-											 sizeof(int32),
-											 Int32GetDatum(1),
-											 false,
-											 true); /* pass by value */
-
-				foreach(lc, copied_query->targetList)
-				{
-					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					TargetEntry *tle_count;
-					char *resname = (into->colNames == NIL ? tle->resname : strVal(list_nth(into->colNames, tle->resno-1)));
-
-
-					if (IsA(tle->expr, Aggref))
-					{
-						Aggref *aggref = (Aggref *) tle->expr;
-						const char *aggname = get_func_name(aggref->aggfnoid);
-
-						/* Check if this supports IVM */
-						if (!check_aggregate_supports_ivm(aggref->aggfnoid))
-							elog(ERROR, "aggregate function %s is not supported", aggname);
-
-						/*
-						 * For aggregate functions except to count, add count func with the same arg parameters.
-						 * Also, add sum func for agv.
-						 *
-						 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-						 * of adding new duplicated one.
-						 */
-						if (strcmp(aggname, "count") != 0)
-						{
-							fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-
-							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-							node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-							((Aggref *)node)->args = aggref->args;
-
-							tle_count = makeTargetEntry((Expr *) node,
-														next_resno,
-														pstrdup(makeObjectName("__ivm_count",resname, "_")),
-														false);
-							agg_counts = lappend(agg_counts, tle_count);
-							next_resno++;
-						}
-						if (strcmp(aggname, "avg") == 0)
-						{
-							List *dmy_args = NIL;
-							ListCell *lc;
-							foreach(lc, aggref->aggargtypes)
-							{
-								Oid		typeid = lfirst_oid(lc);
-								Type	type = typeidType(typeid);
-
-								Const *con = makeConst(typeid,
-													   -1,
-													   typeTypeCollation(type),
-													   typeLen(type),
-													   (Datum) 0,
-													   true,
-													   typeByVal(type));
-								dmy_args = lappend(dmy_args, con);
-								ReleaseSysCache(type);
-
-							}
-							fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
-
-							/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-							node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-							((Aggref *)node)->args = aggref->args;
-
-							tle_count = makeTargetEntry((Expr *) node,
-														next_resno,
-														pstrdup(makeObjectName("__ivm_sum",resname, "_")),
-														false);
-							agg_counts = lappend(agg_counts, tle_count);
-							next_resno++;
-						}
-
-					}
-				}
-				copied_query->targetList = list_concat(copied_query->targetList, agg_counts);
-
-			}
-
-			/* Add count(*) for counting algorithm */
-			fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-			fn->agg_star = true;
-
-			node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-			tle = makeTargetEntry((Expr *) node,
-									list_length(copied_query->targetList) + 1,
-									pstrdup("__ivm_count__"),
-									false);
-			copied_query->targetList = lappend(copied_query->targetList, tle);
-			copied_query->hasAggs = true;
-
-			/*
-			 * Add JSONB column for meta information related to outer joins.
-			 * Actually this is required only for delta tables, but we create
-			 * this here because delta tables are created using the schema
-			 * of the matview.
-			 */
-			if (ctx.has_outerjoin)
-			{
-				Const	*dmy_jsonb = makeConst(JSONBOID,
-											-1,
-											InvalidOid,
-											-1,
-											PointerGetDatum(NULL),
-											true,
-											false);
-				tle = makeTargetEntry((Expr *) dmy_jsonb,
-										list_length(copied_query->targetList) + 1,
-										pstrdup("__ivm_meta__"),
-										false);
-				copied_query->targetList = lappend(copied_query->targetList, tle);
-			}
-		}
-
-		rewritten = QueryRewrite(copied_query);
+		rewritten = QueryRewrite(copyObject(query));
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
 		if (list_length(rewritten) != 1)
@@ -573,7 +384,7 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 		UpdateActiveSnapshotCommandId();
 
 		/* Create a QueryDesc, redirecting output to our tuple receiver */
-		queryDesc = CreateQueryDesc(plan, queryString,
+		queryDesc = CreateQueryDesc(plan, pstate->p_sourcetext,
 									GetActiveSnapshot(), InvalidSnapshot,
 									dest, params, queryEnv, 0);
 
@@ -612,28 +423,252 @@ ExecCreateTableAs(CreateTableAsStmt *stmt, const char *queryString,
 
 		if (into->ivm)
 		{
-
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
 			Relids	relids = NULL;
 
-			copied_query = copyObject(query);
-			AcquireRewriteLocks(copied_query, true, false);
+			/*
+			 * Mark relisivm field, if it's a matview and into->ivm is true.
+			 */
+			SetMatViewIVMState(matviewRel, true);
 
-			CreateIvmTriggersOnBaseTables(copied_query, (Node *)copied_query->jointree, matviewOid, &relids);
-
+			if (!into->skipData)
+			{
+				CreateIvmTriggersOnBaseTables(query, (Node *)query->jointree, matviewOid, &relids);
+				bms_free(relids);
+			}
 			table_close(matviewRel, NoLock);
-
-			bms_free(relids);
 		}
 	}
 
 	return address;
 }
+
+/*
+ * rewriteQueryForIMMV -- rewrite view definition query for IMMV
+ */
+Query *
+rewriteQueryForIMMV(Query *query, List *colNames)
+{
+	Query *rewritten;
+
+	TargetEntry *tle;
+	Node *node;
+	ParseState *pstate = make_parsestate(NULL);
+	FuncCall *fn;
+	bool hasOuterJoins = false;
+
+	rewritten = copyObject(query);
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+	/*
+	 * If this query has EXISTS clause, rewrite query and
+	 * add __ivm_exists_count_X__ column.
+	 */
+	if (rewritten->hasSubLinks)
+	{
+		ListCell *lc;
+		RangeTblEntry *rte;
+		int varno = 0;
+
+		/* rewrite EXISTS sublink to LATERAL subquery */
+		rewrite_query_for_exists_subquery(rewritten);
+
+		/* Add count(*) using EXISTS clause */
+		foreach(lc, rewritten->rtable)
+		{
+			char *columnName;
+			int attnum;
+			Node *countCol = NULL;
+			varno++;
+
+			rte = (RangeTblEntry *) lfirst(lc);
+			if (!rte->subquery || !rte->lateral)
+				continue;
+			pstate->p_rtable = rewritten->rtable;
+
+			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
+			if (columnName == NULL)
+				continue;
+			countCol = (Node *)makeVar(varno ,attnum,
+						INT8OID, -1, InvalidOid, 0);
+
+
+			if (countCol != NULL)
+			{
+				tle = makeTargetEntry((Expr *) countCol,
+											list_length(rewritten->targetList) + 1,
+											pstrdup(columnName),
+											false);
+				rewritten->targetList = list_concat(rewritten->targetList, list_make1(tle));
+			}
+		}
+	}
+
+	/* group keys must be in targetlist */
+	if (rewritten->groupClause)
+	{
+		ListCell *lc;
+		foreach(lc, rewritten->groupClause)
+		{
+			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, rewritten->targetList);
+
+			if (tle->resjunk)
+				elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
+		}
+	}
+	else if (!rewritten->hasAggs)
+		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
+
+	if (rewritten->hasAggs)
+	{
+		ListCell *lc;
+		List *agg_counts = NIL;
+		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
+		Const	*dmy_arg = makeConst(INT4OID,
+									 -1,
+									 InvalidOid,
+									 sizeof(int32),
+									 Int32GetDatum(1),
+									 false,
+									 true); /* pass by value */
+
+		foreach(lc, rewritten->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			TargetEntry *tle_count;
+			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno-1)));
+
+
+			if (IsA(tle->expr, Aggref))
+			{
+				Aggref *aggref = (Aggref *) tle->expr;
+				const char *aggname = get_func_name(aggref->aggfnoid);
+
+				/* Check if this supports IVM */
+				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+					elog(ERROR, "aggregate function %s is not supported", aggname);
+
+				/*
+				 * For aggregate functions except to count, add count func with the same arg parameters.
+				 * Also, add sum func for agv.
+				 *
+				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+				 * of adding new duplicated one.
+				 */
+				if (strcmp(aggname, "count") != 0)
+				{
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_count",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+				if (strcmp(aggname, "avg") == 0)
+				{
+					List *dmy_args = NIL;
+					ListCell *lc;
+					foreach(lc, aggref->aggargtypes)
+					{
+						Oid		typeid = lfirst_oid(lc);
+						Type	type = typeidType(typeid);
+
+						Const *con = makeConst(typeid,
+											   -1,
+											   typeTypeCollation(type),
+											   typeLen(type),
+											   (Datum) 0,
+											   true,
+											   typeByVal(type));
+						dmy_args = lappend(dmy_args, con);
+						ReleaseSysCache(type);
+
+					}
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_sum",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+
+			}
+		}
+		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
+
+	}
+
+	/* Add count(*) for counting algorithm */
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn->agg_star = true;
+
+	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+	tle = makeTargetEntry((Expr *) node,
+							list_length(rewritten->targetList) + 1,
+							pstrdup("__ivm_count__"),
+							false);
+	rewritten->targetList = lappend(rewritten->targetList, tle);
+	rewritten->hasAggs = true;
+
+
+	/* join tree analysis for outer join */
+	{
+		ListCell   *lc;
+		foreach(lc, rewritten->rtable)
+		{
+			RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
+			if (rte->rtekind == RTE_JOIN && IS_OUTER_JOIN(rte->jointype))
+			{
+				hasOuterJoins = true;
+				break;
+			}
+		}
+	}
+
+	/*
+	 * Add JSONB column for meta information related to outer joins.
+	 * Actually this is required only for delta tables, but we create
+	 * this here because delta tables are created using the schema
+	 * of the matview.
+	 */
+	if (hasOuterJoins)
+	{
+		Const	*dmy_jsonb = makeConst(JSONBOID,
+									-1,
+									InvalidOid,
+									-1,
+									PointerGetDatum(NULL),
+									true,
+									false);
+		tle = makeTargetEntry((Expr *) dmy_jsonb,
+								list_length(rewritten->targetList) + 1,
+								pstrdup("__ivm_meta__"),
+								false);
+		rewritten->targetList = lappend(rewritten->targetList, tle);
+	}
+
+	return rewritten;
+}
+
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
-static void CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
+void
+CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
 {
 	if (jtnode == NULL)
 		return;
@@ -840,7 +875,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	if (check_enable_rls(intoRelationAddr.objectId, InvalidOid, false) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 (errmsg("policies not yet implemented for this command"))));
+				 errmsg("policies not yet implemented for this command")));
 
 	/*
 	 * Tentatively mark the target as populated, if it's a matview and we're
@@ -849,11 +884,6 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 	if (is_matview && !into->skipData)
 		SetMatViewPopulatedState(intoRelationDesc, true);
 
-	/*
-	 * Mark relisivm field, if it's a matview and into->ivm is true.
-	 */
-	if (is_matview && into->ivm)
-		SetMatViewIVMState(intoRelationDesc, true);
 	/*
 	 * Fill private fields of myState for use by later routines
 	 */
@@ -1004,7 +1034,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
 
-	recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+	recordDependencyOn(&address, &refaddr, DEPENDENCY_IMMV);
 
 	/* Make changes-so-far visible */
 	CommandCounterIncrement();
@@ -1037,6 +1067,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* There is a possibility that we don't need to return an error */
 				if (qry->sortClause != NIL)
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
+				if (qry->limitOffset != NULL || qry->limitCount != NULL)
+					ereport(ERROR, (errmsg("LIMIT/OFFSET clause is not supported with IVM")));
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 

@@ -3,7 +3,7 @@
  * matview.c
  *	  materialized view support
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -66,6 +66,9 @@
 #include "parser/parse_coerce.h"
 #include "catalog/pg_collation_d.h"
 #include "parser/parse_collate.h"
+#include "catalog/pg_depend.h"
+#include "catalog/pg_trigger.h"
+#include "utils/fmgroids.h"
 
 
 typedef struct
@@ -403,6 +406,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	int			save_sec_context;
 	int			save_nestlevel;
 	ObjectAddress address;
+	bool oldPopulated;
 
 	/* Determine strength of lock needed. */
 	concurrent = stmt->concurrent;
@@ -415,6 +419,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 										  lockmode, 0,
 										  RangeVarCallbackOwnsTable, NULL);
 	matviewRel = table_open(matviewOid, NoLock);
+	oldPopulated = RelationIsPopulated(matviewRel);
 
 	/* Make sure it is a materialized view. */
 	if (matviewRel->rd_rel->relkind != RELKIND_MATVIEW)
@@ -437,6 +442,12 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 
 	dataQuery = get_matview_query(matviewRel);
+
+	/* If use IMMV, need to rewrite matview query */
+	if (!stmt->skipData && RelationIsIVM(matviewRel))
+		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
+
+
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more
@@ -511,6 +522,52 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		relpersistence = matviewRel->rd_rel->relpersistence;
 	}
 
+	/* delete immv triggers */
+	if (RelationIsIVM(matviewRel) && stmt->skipData )
+	{
+		/* use deleted trigger */
+		Relation	depRel;
+		ScanKeyData key;
+		SysScanDesc scan;
+		HeapTuple	tup;
+		ObjectAddresses *immv_triggers;
+
+		immv_triggers = new_object_addresses();
+
+		/*
+		 * We save some cycles by opening pg_depend just once and passing the
+		 * Relation pointer down to all the recursive deletion steps.
+		 */
+		depRel = table_open(DependRelationId, RowExclusiveLock);
+
+		ScanKeyInit(&key,
+					Anum_pg_depend_refobjid,
+					BTEqualStrategyNumber, F_OIDEQ,
+					ObjectIdGetDatum(matviewOid));
+
+		scan = systable_beginscan(depRel, DependReferenceIndexId, true,
+								  NULL, 1, &key);
+		while ((tup = systable_getnext(scan)) != NULL)
+		{
+			ObjectAddress obj;
+			Form_pg_depend foundDep = (Form_pg_depend) GETSTRUCT(tup);
+
+			if (foundDep->deptype == DEPENDENCY_IMMV)
+			{
+				obj.classId = foundDep->classid;
+				obj.objectId = foundDep->objid;
+				obj.objectSubId = foundDep->refobjsubid;
+				add_exact_object_address(&obj, immv_triggers);
+			}
+		}
+		systable_endscan(scan);
+
+		performMultipleDeletions(immv_triggers, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
+
+		table_close(depRel, RowExclusiveLock);
+		free_object_addresses(immv_triggers);
+	}
+
 	/*
 	 * Create the transient table that will receive the regenerated data. Lock
 	 * it against access by any other process until commit (by which time it
@@ -563,6 +620,14 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		if (!stmt->skipData)
 			pgstat_count_heap_insert(matviewRel, processed);
 	}
+	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
+	{
+		Relids	relids = NULL;
+
+		CreateIvmTriggersOnBaseTables(dataQuery, (Node *)dataQuery->jointree, matviewOid, &relids);
+		bms_free(relids);
+	}
+
 
 	table_close(matviewRel, NoLock);
 
@@ -1523,7 +1588,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					querytree = rte->subquery;
 					if (rte->lateral)
 					{
-						count_colname = getColumnNameStartWith(rte, "__ivm_exists");
+						int attnum;
+						count_colname = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 						in_exists = true;
 					}
 				}
@@ -1677,6 +1743,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			Tuplestorestate *oldtable = (Tuplestorestate *) lfirst(lc2);
 			EphemeralNamedRelation enr =
 				palloc(sizeof(EphemeralNamedRelationData));
+			ParseNamespaceItem *nsitem;
 
 			enr->md.name = make_delta_enr_name("old", table->table_id, count);
 			enr->md.reliddesc = table->table_id;
@@ -1686,7 +1753,8 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			enr->reldata = oldtable;
 			register_ENR(queryEnv, enr);
 
-			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			rte = nsitem->p_rte;
 			/* if base table has RLS, set secuirty condition to enr*/
 			rte->securityQuals = get_securityQuals(table->table_id, query);
 
@@ -1702,6 +1770,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			Tuplestorestate *newtable = (Tuplestorestate *) lfirst(lc2);
 			EphemeralNamedRelation enr =
 				palloc(sizeof(EphemeralNamedRelationData));
+			ParseNamespaceItem *nsitem;
 
 			enr->md.name = make_delta_enr_name("new", table->table_id, count);
 			enr->md.reliddesc = table->table_id;
@@ -1711,7 +1780,8 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 			enr->reldata = newtable;
 			register_ENR(queryEnv, enr);
 
-			rte = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
+			rte = nsitem->p_rte;
 			/* if base table has RLS, set secuirty condition to enr*/
 			rte->securityQuals = get_securityQuals(table->table_id, query);
 
@@ -1894,6 +1964,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	TargetEntry *tle_count;
 	FuncCall *fn;
 	Node *node;
+	int varno = 0;
 	Const	*dmy_arg = makeConst(INT4OID,
 								 -1,
 								 InvalidOid,
@@ -1985,16 +2056,21 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	foreach(tbl_lc, query->rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *)lfirst(tbl_lc);
+		varno++;
 		if (rte->subquery)
 		{
 			char *columnName;
+			int attnum;
 
 			/* search ivm_exists_count_X__ column in RangeTblEntry */
 			pstate->p_rtable = query->rtable;
-			columnName = getColumnNameStartWith(rte, "__ivm_exists");
+			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 			if (columnName == NULL)
 				continue;
-			node = scanRTEForColumn(pstate,rte,columnName,-1, 0, NULL);
+
+			node = (Node *)makeVar(varno ,attnum,
+					INT8OID, -1, InvalidOid, 0);
+
 			if (node == NULL)
 				continue;
 			tle_count = makeTargetEntry((Expr *) node,
@@ -2083,6 +2159,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				RangeTblEntry *rte;
 				RangeTblRef *rtr;
 				Alias *alias;
+				Oid opId;
+				ParseNamespaceItem *nsitem;
 
 				TargetEntry *tle_count;
 				FuncCall *fn;
@@ -2124,7 +2202,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				/* add subquery in from clause */
 				alias = makeAlias(aliasName, NIL);
 				/* it means that LATERAL is enable if fourth argument is true */
-				rte = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+				nsitem = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+				rte = nsitem->p_rte;
 
 				query->rtable = lappend(query->rtable, rte);
 
@@ -2143,7 +2222,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				/*
 				 * it means using int84gt( '>' operator). it will be replaced to make_op().
 				 */
-				opexpr = make_opclause(419, BOOLOID, false,
+				opId = OpernameGetOprid(list_make1(makeString(">")), INT8OID, INT4OID);
+				opexpr = make_opclause(opId, BOOLOID, false,
 								(Expr *)fn_node,
 								(Expr *)makeConst(INT4OID, -1, InvalidOid, sizeof(int32), Int32GetDatum(0), false, true),
 								InvalidOid, InvalidOid);
@@ -4240,14 +4320,16 @@ clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new)
  * and return the first found one or NULL if not found.
  */
 char *
-getColumnNameStartWith(RangeTblEntry *rte, char *str)
+getColumnNameStartWith(RangeTblEntry *rte, char *str, int *attnum)
 {
 	char *colname;
 	ListCell *lc;
 	Alias *alias = rte->eref;
 
+	(*attnum) = 0;
 	foreach(lc, alias->colnames)
 	{
+		(*attnum)++;
 		if (strncmp(strVal(lfirst(lc)), str, strlen(str)) == 0)
 		{
 			colname = pstrdup(strVal(lfirst(lc)));

@@ -32,7 +32,7 @@
  * happen, it would tie up KnownAssignedXids indefinitely, so we protect
  * ourselves by pruning the array when a valid list of running XIDs arrives.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3046,14 +3046,14 @@ TerminateOtherDBBackends(Oid databaseId)
 				if (superuser_arg(proc->roleId) && !superuser())
 					ereport(ERROR,
 							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							 (errmsg("must be a superuser to terminate superuser process"))));
+							 errmsg("must be a superuser to terminate superuser process")));
 
 				/* Users can signal backends they have role membership in. */
 				if (!has_privs_of_role(GetUserId(), proc->roleId) &&
 					!has_privs_of_role(GetUserId(), DEFAULT_ROLE_SIGNAL_BACKENDID))
 					ereport(ERROR,
 							(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							 (errmsg("must be a member of the role whose process is being terminated or member of pg_signal_backend"))));
+							 errmsg("must be a member of the role whose process is being terminated or member of pg_signal_backend")));
 			}
 		}
 

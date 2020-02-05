@@ -46,7 +46,7 @@
  * exported rather than being "static" in this file.)
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1742,6 +1742,15 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 			 * anything.  Also, if transfn returned a pointer to a R/W
 			 * expanded object that is already a child of the aggcontext,
 			 * assume we can adopt that value without copying it.
+			 *
+			 * It's safe to compare newVal with pergroup->transValue without
+			 * regard for either being NULL, because ExecAggTransReparent()
+			 * takes care to set transValue to 0 when NULL. Otherwise we could
+			 * end up accidentally not reparenting, when the transValue has
+			 * the same numerical value as newValue, despite being NULL.  This
+			 * is a somewhat hot path, making it undesirable to instead solve
+			 * this with another branch for the common case of the transition
+			 * function returning its (modified) input argument.
 			 */
 			if (DatumGetPointer(newVal) != DatumGetPointer(pergroup->transValue))
 				newVal = ExecAggTransReparent(aggstate, pertrans,
@@ -2739,8 +2748,8 @@ ExecEvalArrayExpr(ExprState *state, ExprEvalStep *op)
 				if (ndims <= 0 || ndims > MAXDIM)
 					ereport(ERROR,
 							(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-							 errmsg("number of array dimensions (%d) exceeds " \
-									"the maximum allowed (%d)", ndims, MAXDIM)));
+							 errmsg("number of array dimensions (%d) exceeds the maximum allowed (%d)",
+									ndims, MAXDIM)));
 
 				elem_dims = (int *) palloc(elem_ndims * sizeof(int));
 				memcpy(elem_dims, ARR_DIMS(array), elem_ndims * sizeof(int));
@@ -3807,8 +3816,7 @@ ExecEvalXmlExpr(ExprState *state, ExprEvalStep *op)
 					return;
 				value = argvalue[0];
 
-				*op->resvalue = PointerGetDatum(
-												xmltotext_with_xmloption(DatumGetXmlP(value),
+				*op->resvalue = PointerGetDatum(xmltotext_with_xmloption(DatumGetXmlP(value),
 																		 xexpr->xmloption));
 				*op->resnull = false;
 			}
@@ -4165,8 +4173,7 @@ ExecAggInitGroup(AggState *aggstate, AggStatePerTrans pertrans, AggStatePerGroup
 	 * that the agg's input type is binary-compatible with its transtype, so
 	 * straight copy here is OK.)
 	 */
-	oldContext = MemoryContextSwitchTo(
-									   aggstate->curaggcontext->ecxt_per_tuple_memory);
+	oldContext = MemoryContextSwitchTo(aggstate->curaggcontext->ecxt_per_tuple_memory);
 	pergroup->transValue = datumCopy(fcinfo->args[1].value,
 									 pertrans->transtypeByVal,
 									 pertrans->transtypeLen);
@@ -4186,6 +4193,8 @@ ExecAggTransReparent(AggState *aggstate, AggStatePerTrans pertrans,
 					 Datum newValue, bool newValueIsNull,
 					 Datum oldValue, bool oldValueIsNull)
 {
+	Assert(newValue != oldValue);
+
 	if (!newValueIsNull)
 	{
 		MemoryContextSwitchTo(aggstate->curaggcontext->ecxt_per_tuple_memory);
@@ -4199,6 +4208,16 @@ ExecAggTransReparent(AggState *aggstate, AggStatePerTrans pertrans,
 								 pertrans->transtypeByVal,
 								 pertrans->transtypeLen);
 	}
+	else
+	{
+		/*
+		 * Ensure that AggStatePerGroup->transValue ends up being 0, so
+		 * callers can safely compare newValue/oldValue without having to
+		 * check their respective nullness.
+		 */
+		newValue = (Datum) 0;
+	}
+
 	if (!oldValueIsNull)
 	{
 		if (DatumIsReadWriteExpandedObject(oldValue,

@@ -4,7 +4,7 @@
  *	  Lightweight lock manager
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lwlock.h
@@ -18,9 +18,9 @@
 #error "lwlock.h may not be included from frontend code"
 #endif
 
+#include "port/atomics.h"
 #include "storage/proclist_types.h"
 #include "storage/s_lock.h"
-#include "port/atomics.h"
 
 struct PGPROC;
 

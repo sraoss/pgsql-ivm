@@ -37,7 +37,7 @@
  * record, wait for it to be replicated to the standby, and then exit.
  *
  *
- * Portions Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/walsender.c
@@ -66,6 +66,7 @@
 #include "miscadmin.h"
 #include "nodes/replnodes.h"
 #include "pgstat.h"
+#include "postmaster/interrupt.h"
 #include "replication/basebackup.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
@@ -190,7 +191,6 @@ static volatile sig_atomic_t got_STOPPING = false;
 static volatile sig_atomic_t replication_active = false;
 
 static LogicalDecodingContext *logical_decoding_ctx = NULL;
-static XLogRecPtr logical_startptr = InvalidXLogRecPtr;
 
 /* A sample associating a WAL location with the time it was written. */
 typedef struct
@@ -248,8 +248,9 @@ static void LagTrackerWrite(XLogRecPtr lsn, TimestampTz local_flush_time);
 static TimeOffset LagTrackerRead(int head, XLogRecPtr lsn, TimestampTz now);
 static bool TransactionIdInRecentPast(TransactionId xid, uint32 epoch);
 
+static int	WalSndSegmentOpen(XLogSegNo nextSegNo, WALSegmentContext *segcxt,
+							  TimeLineID *tli_p);
 static void UpdateSpillStats(LogicalDecodingContext *ctx);
-static void XLogRead(WALSegmentContext *segcxt, char *buf, XLogRecPtr startptr, Size count);
 
 
 /* Initialize walsender process before entering the main command loop */
@@ -562,7 +563,7 @@ StartReplication(StartReplicationCmd *cmd)
 		if (SlotIsLogical(MyReplicationSlot))
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-					 (errmsg("cannot use a logical replication slot for physical replication"))));
+					 errmsg("cannot use a logical replication slot for physical replication")));
 	}
 
 	/*
@@ -767,6 +768,8 @@ logical_read_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr, int req
 {
 	XLogRecPtr	flushptr;
 	int			count;
+	WALReadError errinfo;
+	XLogSegNo	segno;
 
 	XLogReadDetermineTimeline(state, targetPagePtr, reqLen);
 	sendTimeLineIsHistoric = (state->currTLI != ThisTimeLineID);
@@ -787,7 +790,27 @@ logical_read_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr, int req
 		count = flushptr - targetPagePtr;	/* part of the page available */
 
 	/* now actually read the data, we know it's there */
-	XLogRead(sendCxt, cur_page, targetPagePtr, XLOG_BLCKSZ);
+	if (!WALRead(cur_page,
+				 targetPagePtr,
+				 XLOG_BLCKSZ,
+				 sendSeg->ws_tli,	/* Pass the current TLI because only
+									 * WalSndSegmentOpen controls whether new
+									 * TLI is needed. */
+				 sendSeg,
+				 sendCxt,
+				 WalSndSegmentOpen,
+				 &errinfo))
+		WALReadRaiseError(&errinfo);
+
+	/*
+	 * After reading into the buffer, check that what we read was valid. We do
+	 * this after reading, because even though the segment was present when we
+	 * opened it, it might get recycled or removed while we read it. The
+	 * read() succeeds in that case, but the data we tried to read might
+	 * already have been overwritten with new WAL records.
+	 */
+	XLByteToSeg(targetPagePtr, segno, sendCxt->ws_segsize);
+	CheckXLogRemoved(segno, sendSeg->ws_tli);
 
 	return count;
 }
@@ -1106,9 +1129,9 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	pq_endmessage(&buf);
 	pq_flush();
 
-
 	/* Start reading WAL from the oldest required WAL. */
-	logical_startptr = MyReplicationSlot->data.restart_lsn;
+	XLogBeginRead(logical_decoding_ctx->reader,
+				  MyReplicationSlot->data.restart_lsn);
 
 	/*
 	 * Report the location after which we'll send out further commits as the
@@ -1476,8 +1499,8 @@ exec_replication_command(const char *cmd_string)
 	if (parse_rc != 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 (errmsg_internal("replication command parser returned %d",
-								  parse_rc))));
+				 errmsg_internal("replication command parser returned %d",
+								 parse_rc)));
 
 	cmd_node = replication_parse_result;
 
@@ -2278,7 +2301,6 @@ WalSndLoop(WalSndSendDataCallback send_data)
 									 WAIT_EVENT_WAL_SENDER_MAIN);
 		}
 	}
-	return;
 }
 
 /* Initialize a per-walsender data structure for this walsender process */
@@ -2360,189 +2382,75 @@ WalSndKill(int code, Datum arg)
 	SpinLockRelease(&walsnd->mutex);
 }
 
-/*
- * Read 'count' bytes from WAL into 'buf', starting at location 'startptr'
- *
- * XXX probably this should be improved to suck data directly from the
- * WAL buffers when possible.
- *
- * Will open, and keep open, one WAL segment stored in the global file
- * descriptor sendFile. This means if XLogRead is used once, there will
- * always be one descriptor left open until the process ends, but never
- * more than one.
- */
-static void
-XLogRead(WALSegmentContext *segcxt, char *buf, XLogRecPtr startptr, Size count)
+/* walsender's openSegment callback for WALRead */
+static int
+WalSndSegmentOpen(XLogSegNo nextSegNo, WALSegmentContext *segcxt,
+				  TimeLineID *tli_p)
 {
-	char	   *p;
-	XLogRecPtr	recptr;
-	Size		nbytes;
-	XLogSegNo	segno;
+	char		path[MAXPGPATH];
+	int			fd;
 
-retry:
-	p = buf;
-	recptr = startptr;
-	nbytes = count;
-
-	while (nbytes > 0)
+	/*-------
+	 * When reading from a historic timeline, and there is a timeline switch
+	 * within this segment, read from the WAL segment belonging to the new
+	 * timeline.
+	 *
+	 * For example, imagine that this server is currently on timeline 5, and
+	 * we're streaming timeline 4. The switch from timeline 4 to 5 happened at
+	 * 0/13002088. In pg_wal, we have these files:
+	 *
+	 * ...
+	 * 000000040000000000000012
+	 * 000000040000000000000013
+	 * 000000050000000000000013
+	 * 000000050000000000000014
+	 * ...
+	 *
+	 * In this situation, when requested to send the WAL from segment 0x13, on
+	 * timeline 4, we read the WAL from file 000000050000000000000013. Archive
+	 * recovery prefers files from newer timelines, so if the segment was
+	 * restored from the archive on this server, the file belonging to the old
+	 * timeline, 000000040000000000000013, might not exist. Their contents are
+	 * equal up to the switchpoint, because at a timeline switch, the used
+	 * portion of the old segment is copied to the new file.  -------
+	 */
+	*tli_p = sendTimeLine;
+	if (sendTimeLineIsHistoric)
 	{
-		uint32		startoff;
-		int			segbytes;
-		int			readbytes;
+		XLogSegNo	endSegNo;
 
-		startoff = XLogSegmentOffset(recptr, segcxt->ws_segsize);
-
-		if (sendSeg->ws_file < 0 ||
-			!XLByteInSeg(recptr, sendSeg->ws_segno, segcxt->ws_segsize))
-		{
-			char		path[MAXPGPATH];
-
-			/* Switch to another logfile segment */
-			if (sendSeg->ws_file >= 0)
-				close(sendSeg->ws_file);
-
-			XLByteToSeg(recptr, sendSeg->ws_segno, segcxt->ws_segsize);
-
-			/*-------
-			 * When reading from a historic timeline, and there is a timeline
-			 * switch within this segment, read from the WAL segment belonging
-			 * to the new timeline.
-			 *
-			 * For example, imagine that this server is currently on timeline
-			 * 5, and we're streaming timeline 4. The switch from timeline 4
-			 * to 5 happened at 0/13002088. In pg_wal, we have these files:
-			 *
-			 * ...
-			 * 000000040000000000000012
-			 * 000000040000000000000013
-			 * 000000050000000000000013
-			 * 000000050000000000000014
-			 * ...
-			 *
-			 * In this situation, when requested to send the WAL from
-			 * segment 0x13, on timeline 4, we read the WAL from file
-			 * 000000050000000000000013. Archive recovery prefers files from
-			 * newer timelines, so if the segment was restored from the
-			 * archive on this server, the file belonging to the old timeline,
-			 * 000000040000000000000013, might not exist. Their contents are
-			 * equal up to the switchpoint, because at a timeline switch, the
-			 * used portion of the old segment is copied to the new file.
-			 *-------
-			 */
-			sendSeg->ws_tli = sendTimeLine;
-			if (sendTimeLineIsHistoric)
-			{
-				XLogSegNo	endSegNo;
-
-				XLByteToSeg(sendTimeLineValidUpto, endSegNo, segcxt->ws_segsize);
-				if (sendSeg->ws_segno == endSegNo)
-					sendSeg->ws_tli = sendTimeLineNextTLI;
-			}
-
-			XLogFilePath(path, sendSeg->ws_tli, sendSeg->ws_segno, segcxt->ws_segsize);
-
-			sendSeg->ws_file = BasicOpenFile(path, O_RDONLY | PG_BINARY);
-			if (sendSeg->ws_file < 0)
-			{
-				/*
-				 * If the file is not found, assume it's because the standby
-				 * asked for a too old WAL segment that has already been
-				 * removed or recycled.
-				 */
-				if (errno == ENOENT)
-					ereport(ERROR,
-							(errcode_for_file_access(),
-							 errmsg("requested WAL segment %s has already been removed",
-									XLogFileNameP(sendSeg->ws_tli, sendSeg->ws_segno))));
-				else
-					ereport(ERROR,
-							(errcode_for_file_access(),
-							 errmsg("could not open file \"%s\": %m",
-									path)));
-			}
-			sendSeg->ws_off = 0;
-		}
-
-		/* Need to seek in the file? */
-		if (sendSeg->ws_off != startoff)
-		{
-			if (lseek(sendSeg->ws_file, (off_t) startoff, SEEK_SET) < 0)
-				ereport(ERROR,
-						(errcode_for_file_access(),
-						 errmsg("could not seek in log segment %s to offset %u: %m",
-								XLogFileNameP(sendSeg->ws_tli, sendSeg->ws_segno),
-								startoff)));
-			sendSeg->ws_off = startoff;
-		}
-
-		/* How many bytes are within this segment? */
-		if (nbytes > (segcxt->ws_segsize - startoff))
-			segbytes = segcxt->ws_segsize - startoff;
-		else
-			segbytes = nbytes;
-
-		pgstat_report_wait_start(WAIT_EVENT_WAL_READ);
-		readbytes = read(sendSeg->ws_file, p, segbytes);
-		pgstat_report_wait_end();
-		if (readbytes < 0)
-		{
-			ereport(ERROR,
-					(errcode_for_file_access(),
-					 errmsg("could not read from log segment %s, offset %u, length %zu: %m",
-							XLogFileNameP(sendSeg->ws_tli, sendSeg->ws_segno),
-							sendSeg->ws_off, (Size) segbytes)));
-		}
-		else if (readbytes == 0)
-		{
-			ereport(ERROR,
-					(errcode(ERRCODE_DATA_CORRUPTED),
-					 errmsg("could not read from log segment %s, offset %u: read %d of %zu",
-							XLogFileNameP(sendSeg->ws_tli, sendSeg->ws_segno),
-							sendSeg->ws_off, readbytes, (Size) segbytes)));
-		}
-
-		/* Update state for read */
-		recptr += readbytes;
-
-		sendSeg->ws_off += readbytes;
-		nbytes -= readbytes;
-		p += readbytes;
+		XLByteToSeg(sendTimeLineValidUpto, endSegNo, segcxt->ws_segsize);
+		if (sendSeg->ws_segno == endSegNo)
+			*tli_p = sendTimeLineNextTLI;
 	}
 
-	/*
-	 * After reading into the buffer, check that what we read was valid. We do
-	 * this after reading, because even though the segment was present when we
-	 * opened it, it might get recycled or removed while we read it. The
-	 * read() succeeds in that case, but the data we tried to read might
-	 * already have been overwritten with new WAL records.
-	 */
-	XLByteToSeg(startptr, segno, segcxt->ws_segsize);
-	CheckXLogRemoved(segno, ThisTimeLineID);
+	XLogFilePath(path, *tli_p, nextSegNo, segcxt->ws_segsize);
+	fd = BasicOpenFile(path, O_RDONLY | PG_BINARY);
+	if (fd >= 0)
+		return fd;
 
 	/*
-	 * During recovery, the currently-open WAL file might be replaced with the
-	 * file of the same name retrieved from archive. So we always need to
-	 * check what we read was valid after reading into the buffer. If it's
-	 * invalid, we try to open and read the file again.
+	 * If the file is not found, assume it's because the standby asked for a
+	 * too old WAL segment that has already been removed or recycled.
 	 */
-	if (am_cascading_walsender)
+	if (errno == ENOENT)
 	{
-		WalSnd	   *walsnd = MyWalSnd;
-		bool		reload;
+		char		xlogfname[MAXFNAMELEN];
+		int			save_errno = errno;
 
-		SpinLockAcquire(&walsnd->mutex);
-		reload = walsnd->needreload;
-		walsnd->needreload = false;
-		SpinLockRelease(&walsnd->mutex);
-
-		if (reload && sendSeg->ws_file >= 0)
-		{
-			close(sendSeg->ws_file);
-			sendSeg->ws_file = -1;
-
-			goto retry;
-		}
+		XLogFileName(xlogfname, *tli_p, nextSegNo, wal_segment_size);
+		errno = save_errno;
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("requested WAL segment %s has already been removed",
+						xlogfname)));
 	}
+	else
+		ereport(ERROR,
+				(errcode_for_file_access(),
+				 errmsg("could not open file \"%s\": %m",
+						path)));
+	return -1;					/* keep compiler quiet */
 }
 
 /*
@@ -2562,6 +2470,8 @@ XLogSendPhysical(void)
 	XLogRecPtr	startptr;
 	XLogRecPtr	endptr;
 	Size		nbytes;
+	XLogSegNo	segno;
+	WALReadError errinfo;
 
 	/* If requested switch the WAL sender to the stopping state. */
 	if (got_STOPPING)
@@ -2777,7 +2687,49 @@ XLogSendPhysical(void)
 	 * calls.
 	 */
 	enlargeStringInfo(&output_message, nbytes);
-	XLogRead(sendCxt, &output_message.data[output_message.len], startptr, nbytes);
+
+retry:
+	if (!WALRead(&output_message.data[output_message.len],
+				 startptr,
+				 nbytes,
+				 sendSeg->ws_tli,	/* Pass the current TLI because only
+									 * WalSndSegmentOpen controls whether new
+									 * TLI is needed. */
+				 sendSeg,
+				 sendCxt,
+				 WalSndSegmentOpen,
+				 &errinfo))
+		WALReadRaiseError(&errinfo);
+
+	/* See logical_read_xlog_page(). */
+	XLByteToSeg(startptr, segno, sendCxt->ws_segsize);
+	CheckXLogRemoved(segno, sendSeg->ws_tli);
+
+	/*
+	 * During recovery, the currently-open WAL file might be replaced with the
+	 * file of the same name retrieved from archive. So we always need to
+	 * check what we read was valid after reading into the buffer. If it's
+	 * invalid, we try to open and read the file again.
+	 */
+	if (am_cascading_walsender)
+	{
+		WalSnd	   *walsnd = MyWalSnd;
+		bool		reload;
+
+		SpinLockAcquire(&walsnd->mutex);
+		reload = walsnd->needreload;
+		walsnd->needreload = false;
+		SpinLockRelease(&walsnd->mutex);
+
+		if (reload && sendSeg->ws_file >= 0)
+		{
+			close(sendSeg->ws_file);
+			sendSeg->ws_file = -1;
+
+			goto retry;
+		}
+	}
+
 	output_message.len += nbytes;
 	output_message.data[output_message.len] = '\0';
 
@@ -2811,8 +2763,6 @@ XLogSendPhysical(void)
 				 (uint32) (sentPtr >> 32), (uint32) sentPtr);
 		set_ps_display(activitymsg, false);
 	}
-
-	return;
 }
 
 /*
@@ -2823,7 +2773,14 @@ XLogSendLogical(void)
 {
 	XLogRecord *record;
 	char	   *errm;
-	XLogRecPtr	flushPtr;
+
+	/*
+	 * We'll use the current flush point to determine whether we've caught up.
+	 * This variable is static in order to cache it across calls.  Caching is
+	 * helpful because GetFlushRecPtr() needs to acquire a heavily-contended
+	 * spinlock.
+	 */
+	static XLogRecPtr flushPtr = InvalidXLogRecPtr;
 
 	/*
 	 * Don't know whether we've caught up yet. We'll set WalSndCaughtUp to
@@ -2833,17 +2790,11 @@ XLogSendLogical(void)
 	 */
 	WalSndCaughtUp = false;
 
-	record = XLogReadRecord(logical_decoding_ctx->reader, logical_startptr, &errm);
-	logical_startptr = InvalidXLogRecPtr;
+	record = XLogReadRecord(logical_decoding_ctx->reader, &errm);
 
 	/* xlog record was invalid */
 	if (errm != NULL)
 		elog(ERROR, "%s", errm);
-
-	/*
-	 * We'll use the current flush point to determine whether we've caught up.
-	 */
-	flushPtr = GetFlushRecPtr();
 
 	if (record != NULL)
 	{
@@ -2857,7 +2808,16 @@ XLogSendLogical(void)
 		sentPtr = logical_decoding_ctx->reader->EndRecPtr;
 	}
 
-	/* Set flag if we're caught up. */
+	/*
+	 * If first time through in this session, initialize flushPtr.  Otherwise,
+	 * we only need to update flushPtr if EndRecPtr is past it.
+	 */
+	if (flushPtr == InvalidXLogRecPtr)
+		flushPtr = GetFlushRecPtr();
+	else if (logical_decoding_ctx->reader->EndRecPtr >= flushPtr)
+		flushPtr = GetFlushRecPtr();
+
+	/* If EndRecPtr is still past our flushPtr, it means we caught up. */
 	if (logical_decoding_ctx->reader->EndRecPtr >= flushPtr)
 		WalSndCaughtUp = true;
 
@@ -3019,8 +2979,7 @@ void
 WalSndSignals(void)
 {
 	/* Set up signal handlers */
-	pqsignal(SIGHUP, PostgresSigHupHandler);	/* set flag to read config
-												 * file */
+	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	pqsignal(SIGINT, StatementCancelHandler);	/* query cancel */
 	pqsignal(SIGTERM, die);		/* request shutdown */
 	pqsignal(SIGQUIT, quickdie);	/* hard crash time */
@@ -3246,8 +3205,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
-						"allowed in this context")));
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
@@ -3644,8 +3602,11 @@ UpdateSpillStats(LogicalDecodingContext *ctx)
 	MyWalSnd->spillCount = rb->spillCount;
 	MyWalSnd->spillBytes = rb->spillBytes;
 
-	elog(DEBUG2, "UpdateSpillStats: updating stats %p %ld %ld %ld",
-		 rb, rb->spillTxns, rb->spillCount, rb->spillBytes);
+	elog(DEBUG2, "UpdateSpillStats: updating stats %p %lld %lld %lld",
+		 rb,
+		 (long long) rb->spillTxns,
+		 (long long) rb->spillCount,
+		 (long long) rb->spillBytes);
 
 	SpinLockRelease(&MyWalSnd->mutex);
 }

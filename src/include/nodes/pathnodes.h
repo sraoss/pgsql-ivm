@@ -4,7 +4,7 @@
  *	  Definitions for planner's internal data structures, especially Paths.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/pathnodes.h
@@ -121,6 +121,8 @@ typedef struct PlannerGlobal
 	List	   *resultRelations;	/* "flat" list of integer RT indexes */
 
 	List	   *rootResultRelations;	/* "flat" list of integer RT indexes */
+
+	List	   *appendRelations;	/* "flat" list of AppendRelInfos */
 
 	List	   *relationOids;	/* OIDs of relations the plan depends on */
 
@@ -2151,17 +2153,13 @@ struct SpecialJoinInfo
  * "append relation" (essentially, a list of child RTEs), we build an
  * AppendRelInfo for each child RTE.  The list of AppendRelInfos indicates
  * which child RTEs must be included when expanding the parent, and each node
- * carries information needed to translate Vars referencing the parent into
- * Vars referencing that child.
+ * carries information needed to translate between columns of the parent and
+ * columns of the child.
  *
- * These structs are kept in the PlannerInfo node's append_rel_list.
- * Note that we just throw all the structs into one list, and scan the
- * whole list when desiring to expand any one parent.  We could have used
- * a more complex data structure (eg, one list per parent), but this would
- * be harder to update during operations such as pulling up subqueries,
- * and not really any easier to scan.  Considering that typical queries
- * will not have many different append parents, it doesn't seem worthwhile
- * to complicate things.
+ * These structs are kept in the PlannerInfo node's append_rel_list, with
+ * append_rel_array[] providing a convenient lookup method for the struct
+ * associated with a particular child relid (there can be only one, though
+ * parent rels may have many entries in append_rel_list).
  *
  * Note: after completion of the planner prep phase, any given RTE is an
  * append parent having entries in append_rel_list if and only if its
@@ -2217,6 +2215,15 @@ typedef struct AppendRelInfo
 	 * when copying into a subquery.
 	 */
 	List	   *translated_vars;	/* Expressions in the child's Vars */
+
+	/*
+	 * This array simplifies translations in the reverse direction, from
+	 * child's column numbers to parent's.  The entry at [ccolno - 1] is the
+	 * 1-based parent column number for child column ccolno, or zero if that
+	 * child column is dropped or doesn't exist in the parent.
+	 */
+	int			num_child_cols; /* length of array */
+	AttrNumber *parent_colnos;	/* array of parent attnos, or zeroes */
 
 	/*
 	 * We store the parent table's OID here for inheritance, or InvalidOid for

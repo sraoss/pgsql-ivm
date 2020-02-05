@@ -11,7 +11,7 @@
  * Transactions on Mathematical Software, Vol. 24, No. 4, December 1998,
  * pages 359-367.
  *
- * Copyright (c) 1998-2019, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/adt/numeric.c
@@ -521,6 +521,8 @@ static void mod_var(const NumericVar *var1, const NumericVar *var2,
 static void ceil_var(const NumericVar *var, NumericVar *result);
 static void floor_var(const NumericVar *var, NumericVar *result);
 
+static void gcd_var(const NumericVar *var1, const NumericVar *var2,
+					NumericVar *result);
 static void sqrt_var(const NumericVar *arg, NumericVar *result, int rscale);
 static void exp_var(const NumericVar *arg, NumericVar *result, int rscale);
 static int	estimate_ln_dweight(const NumericVar *var);
@@ -2839,6 +2841,107 @@ numeric_larger(PG_FUNCTION_ARGS)
  */
 
 /*
+ * numeric_gcd() -
+ *
+ *	Calculate the greatest common divisor of two numerics
+ */
+Datum
+numeric_gcd(PG_FUNCTION_ARGS)
+{
+	Numeric		num1 = PG_GETARG_NUMERIC(0);
+	Numeric		num2 = PG_GETARG_NUMERIC(1);
+	NumericVar	arg1;
+	NumericVar	arg2;
+	NumericVar	result;
+	Numeric		res;
+
+	/*
+	 * Handle NaN
+	 */
+	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
+		PG_RETURN_NUMERIC(make_result(&const_nan));
+
+	/*
+	 * Unpack the arguments
+	 */
+	init_var_from_num(num1, &arg1);
+	init_var_from_num(num2, &arg2);
+
+	init_var(&result);
+
+	/*
+	 * Find the GCD and return the result
+	 */
+	gcd_var(&arg1, &arg2, &result);
+
+	res = make_result(&result);
+
+	free_var(&result);
+
+	PG_RETURN_NUMERIC(res);
+}
+
+
+/*
+ * numeric_lcm() -
+ *
+ *	Calculate the least common multiple of two numerics
+ */
+Datum
+numeric_lcm(PG_FUNCTION_ARGS)
+{
+	Numeric		num1 = PG_GETARG_NUMERIC(0);
+	Numeric		num2 = PG_GETARG_NUMERIC(1);
+	NumericVar	arg1;
+	NumericVar	arg2;
+	NumericVar	result;
+	Numeric		res;
+
+	/*
+	 * Handle NaN
+	 */
+	if (NUMERIC_IS_NAN(num1) || NUMERIC_IS_NAN(num2))
+		PG_RETURN_NUMERIC(make_result(&const_nan));
+
+	/*
+	 * Unpack the arguments
+	 */
+	init_var_from_num(num1, &arg1);
+	init_var_from_num(num2, &arg2);
+
+	init_var(&result);
+
+	/*
+	 * Compute the result using lcm(x, y) = abs(x / gcd(x, y) * y), returning
+	 * zero if either input is zero.
+	 *
+	 * Note that the division is guaranteed to be exact, returning an integer
+	 * result, so the LCM is an integral multiple of both x and y.  A display
+	 * scale of Min(x.dscale, y.dscale) would be sufficient to represent it,
+	 * but as with other numeric functions, we choose to return a result whose
+	 * display scale is no smaller than either input.
+	 */
+	if (arg1.ndigits == 0 || arg2.ndigits == 0)
+		set_var_from_var(&const_zero, &result);
+	else
+	{
+		gcd_var(&arg1, &arg2, &result);
+		div_var(&arg1, &result, &result, 0, false);
+		mul_var(&arg2, &result, &result, arg2.dscale);
+		result.sign = NUMERIC_POS;
+	}
+
+	result.dscale = Max(arg1.dscale, arg2.dscale);
+
+	res = make_result(&result);
+
+	free_var(&result);
+
+	PG_RETURN_NUMERIC(res);
+}
+
+
+/*
  * numeric_fac()
  *
  * Compute factorial
@@ -3179,6 +3282,97 @@ numeric_scale(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(NUMERIC_DSCALE(num));
 }
 
+/*
+ * Calculate minimum scale for value.
+ */
+static int
+get_min_scale(NumericVar *var)
+{
+	int			min_scale;
+	int			last_digit_pos;
+
+	/*
+	 * Ordinarily, the input value will be "stripped" so that the last
+	 * NumericDigit is nonzero.  But we don't want to get into an infinite
+	 * loop if it isn't, so explicitly find the last nonzero digit.
+	 */
+	last_digit_pos = var->ndigits - 1;
+	while (last_digit_pos >= 0 &&
+		   var->digits[last_digit_pos] == 0)
+		last_digit_pos--;
+
+	if (last_digit_pos >= 0)
+	{
+		/* compute min_scale assuming that last ndigit has no zeroes */
+		min_scale = (last_digit_pos - var->weight) * DEC_DIGITS;
+
+		/*
+		 * We could get a negative result if there are no digits after the
+		 * decimal point.  In this case the min_scale must be zero.
+		 */
+		if (min_scale > 0)
+		{
+			/*
+			 * Reduce min_scale if trailing digit(s) in last NumericDigit are
+			 * zero.
+			 */
+			NumericDigit last_digit = var->digits[last_digit_pos];
+
+			while (last_digit % 10 == 0)
+			{
+				min_scale--;
+				last_digit /= 10;
+			}
+		}
+		else
+			min_scale = 0;
+	}
+	else
+		min_scale = 0;			/* result if input is zero */
+
+	return min_scale;
+}
+
+/*
+ * Returns minimum scale required to represent supplied value without loss.
+ */
+Datum
+numeric_min_scale(PG_FUNCTION_ARGS)
+{
+	Numeric		num = PG_GETARG_NUMERIC(0);
+	NumericVar	arg;
+	int			min_scale;
+
+	if (NUMERIC_IS_NAN(num))
+		PG_RETURN_NULL();
+
+	init_var_from_num(num, &arg);
+	min_scale = get_min_scale(&arg);
+	free_var(&arg);
+
+	PG_RETURN_INT32(min_scale);
+}
+
+/*
+ * Reduce scale of numeric value to represent supplied value without loss.
+ */
+Datum
+numeric_trim_scale(PG_FUNCTION_ARGS)
+{
+	Numeric		num = PG_GETARG_NUMERIC(0);
+	Numeric		res;
+	NumericVar	result;
+
+	if (NUMERIC_IS_NAN(num))
+		PG_RETURN_NUMERIC(make_result(&const_nan));
+
+	init_var_from_num(num, &result);
+	result.dscale = get_min_scale(&result);
+	res = make_result(&result);
+	free_var(&result);
+
+	PG_RETURN_NUMERIC(res);
+}
 
 
 /* ----------------------------------------------------------------------
@@ -7945,6 +8139,74 @@ floor_var(const NumericVar *var, NumericVar *result)
 
 	set_var_from_var(&tmp, result);
 	free_var(&tmp);
+}
+
+
+/*
+ * gcd_var() -
+ *
+ *	Calculate the greatest common divisor of two numerics at variable level
+ */
+static void
+gcd_var(const NumericVar *var1, const NumericVar *var2, NumericVar *result)
+{
+	int			res_dscale;
+	int			cmp;
+	NumericVar	tmp_arg;
+	NumericVar	mod;
+
+	res_dscale = Max(var1->dscale, var2->dscale);
+
+	/*
+	 * Arrange for var1 to be the number with the greater absolute value.
+	 *
+	 * This would happen automatically in the loop below, but avoids an
+	 * expensive modulo operation.
+	 */
+	cmp = cmp_abs(var1, var2);
+	if (cmp < 0)
+	{
+		const NumericVar *tmp = var1;
+
+		var1 = var2;
+		var2 = tmp;
+	}
+
+	/*
+	 * Also avoid the taking the modulo if the inputs have the same absolute
+	 * value, or if the smaller input is zero.
+	 */
+	if (cmp == 0 || var2->ndigits == 0)
+	{
+		set_var_from_var(var1, result);
+		result->sign = NUMERIC_POS;
+		result->dscale = res_dscale;
+		return;
+	}
+
+	init_var(&tmp_arg);
+	init_var(&mod);
+
+	/* Use the Euclidean algorithm to find the GCD */
+	set_var_from_var(var1, &tmp_arg);
+	set_var_from_var(var2, result);
+
+	for (;;)
+	{
+		/* this loop can take a while, so allow it to be interrupted */
+		CHECK_FOR_INTERRUPTS();
+
+		mod_var(&tmp_arg, result, &mod);
+		if (mod.ndigits == 0)
+			break;
+		set_var_from_var(result, &tmp_arg);
+		set_var_from_var(&mod, result);
+	}
+	result->sign = NUMERIC_POS;
+	result->dscale = res_dscale;
+
+	free_var(&tmp_arg);
+	free_var(&mod);
 }
 
 

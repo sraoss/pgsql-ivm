@@ -4,7 +4,7 @@
  *	  pg_dump is a utility for dumping out a postgres database
  *	  into a script file.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	pg_dump will read the system catalogs in a database and dump out a
@@ -11396,9 +11396,9 @@ dumpProcLang(Archive *fout, ProcLangInfo *plang)
 	}
 
 	/*
-	 * If the functions are dumpable then emit a traditional CREATE LANGUAGE
-	 * with parameters.  Otherwise, we'll write a parameterless command, which
-	 * will rely on data from pg_pltemplate.
+	 * If the functions are dumpable then emit a complete CREATE LANGUAGE with
+	 * parameters.  Otherwise, we'll write a parameterless command, which will
+	 * be interpreted as CREATE EXTENSION.
 	 */
 	useParams = (funcInfo != NULL &&
 				 (inlineInfo != NULL || !OidIsValid(plang->laninline)) &&
@@ -11431,11 +11431,11 @@ dumpProcLang(Archive *fout, ProcLangInfo *plang)
 		/*
 		 * If not dumping parameters, then use CREATE OR REPLACE so that the
 		 * command will not fail if the language is preinstalled in the target
-		 * database.  We restrict the use of REPLACE to this case so as to
-		 * eliminate the risk of replacing a language with incompatible
-		 * parameter settings: this command will only succeed at all if there
-		 * is a pg_pltemplate entry, and if there is one, the existing entry
-		 * must match it too.
+		 * database.
+		 *
+		 * Modern servers will interpret this as CREATE EXTENSION IF NOT
+		 * EXISTS; perhaps we should emit that instead?  But it might just add
+		 * confusion.
 		 */
 		appendPQExpBuffer(defqry, "CREATE OR REPLACE PROCEDURAL LANGUAGE %s",
 						  qlanname);
@@ -15416,8 +15416,6 @@ dumpTable(Archive *fout, TableInfo *tbinfo)
 	}
 
 	free(namecopy);
-
-	return;
 }
 
 /*

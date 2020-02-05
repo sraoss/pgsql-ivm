@@ -518,6 +518,20 @@ select val.x
   ) as val(x)
 where s.i < 10 and (select val.x) < 110;
 
+-- another variant of that (bug #16213)
+explain (verbose, costs off)
+select * from
+(values
+  (3 not in (select * from (values (1), (2)) ss1)),
+  (false)
+) ss;
+
+select * from
+(values
+  (3 not in (select * from (values (1), (2)) ss1)),
+  (false)
+) ss;
+
 --
 -- Check sane behavior with nested IN SubLinks
 --
@@ -631,8 +645,6 @@ begin
         select * from (select pk,c2 from sq_limit order by c1,pk) as x limit 3
     loop
         ln := regexp_replace(ln, 'Memory: \S*',  'Memory: xxx');
-        -- this case might occur if force_parallel_mode is on:
-        ln := regexp_replace(ln, 'Worker 0:  Sort Method',  'Sort Method');
         return next ln;
     end loop;
 end;

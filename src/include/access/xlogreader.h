@@ -3,7 +3,7 @@
  * xlogreader.h
  *		Definitions for the generic XLog reading facility
  *
- * Portions Copyright (c) 2013-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2013-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/include/access/xlogreader.h
@@ -13,7 +13,9 @@
  *		how to use the XLogReader infrastructure.
  *
  *		The basic idea is to allocate an XLogReaderState via
- *		XLogReaderAllocate(), and call XLogReadRecord() until it returns NULL.
+ *		XLogReaderAllocate(), position the reader to the first record with
+ *		XLogBeginRead() or XLogFindNextRecord(), and call XLogReadRecord()
+ *		until it returns NULL.
  *
  *		After reading a record with XLogReadRecord(), it's decomposed into
  *		the per-block and main data parts, and the parts can be accessed
@@ -36,7 +38,6 @@ typedef struct WALOpenSegment
 {
 	int			ws_file;		/* segment file descriptor */
 	XLogSegNo	ws_segno;		/* segment number */
-	uint32		ws_off;			/* offset in the segment */
 	TimeLineID	ws_tli;			/* timeline ID of the currently open file */
 } WALOpenSegment;
 
@@ -127,7 +128,8 @@ struct XLogReaderState
 
 	/*
 	 * Start and end point of last record read.  EndRecPtr is also used as the
-	 * position to read next, if XLogReadRecord receives an invalid recptr.
+	 * position to read next.  Calling XLogBeginRead() sets EndRecPtr to the
+	 * starting position and ReadRecPtr to invalid.
 	 */
 	XLogRecPtr	ReadRecPtr;		/* start of last record read */
 	XLogRecPtr	EndRecPtr;		/* end+1 of last record read */
@@ -168,6 +170,7 @@ struct XLogReaderState
 	/* last read XLOG position for data currently in readBuf */
 	WALSegmentContext segcxt;
 	WALOpenSegment seg;
+	uint32		segoff;
 
 	/*
 	 * beginning of prior page read, and its TLI.  Doesn't necessarily
@@ -217,21 +220,60 @@ extern XLogReaderState *XLogReaderAllocate(int wal_segment_size,
 /* Free an XLogReader */
 extern void XLogReaderFree(XLogReaderState *state);
 
+/*
+ * Callback to open the specified WAL segment for reading.  Returns a valid
+ * file descriptor when the file was opened successfully.
+ *
+ * "nextSegNo" is the number of the segment to be opened.
+ *
+ * "segcxt" is additional information about the segment.
+ *
+ * "tli_p" is an input/output argument. XLogRead() uses it to pass the
+ * timeline in which the new segment should be found, but the callback can use
+ * it to return the TLI that it actually opened.
+ *
+ * BasicOpenFile() is the preferred way to open the segment file in backend
+ * code, whereas open(2) should be used in frontend.
+ */
+typedef int (*WALSegmentOpen) (XLogSegNo nextSegNo, WALSegmentContext *segcxt,
+							   TimeLineID *tli_p);
+
 /* Initialize supporting structures */
 extern void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
 							   int segsize, const char *waldir);
 
+/* Position the XLogReader to given record */
+extern void XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr);
+#ifdef FRONTEND
+extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr);
+#endif							/* FRONTEND */
+
 /* Read the next XLog record. Returns NULL on end-of-WAL or failure */
 extern struct XLogRecord *XLogReadRecord(XLogReaderState *state,
-										 XLogRecPtr recptr, char **errormsg);
+										 char **errormsg);
 
 /* Validate a page */
 extern bool XLogReaderValidatePageHeader(XLogReaderState *state,
 										 XLogRecPtr recptr, char *phdr);
 
-#ifdef FRONTEND
-extern XLogRecPtr XLogFindNextRecord(XLogReaderState *state, XLogRecPtr RecPtr);
-#endif							/* FRONTEND */
+/*
+ * Error information from WALRead that both backend and frontend caller can
+ * process.  Currently only errors from pg_pread can be reported.
+ */
+typedef struct WALReadError
+{
+	int			wre_errno;		/* errno set by the last pg_pread() */
+	int			wre_off;		/* Offset we tried to read from. */
+	int			wre_req;		/* Bytes requested to be read. */
+	int			wre_read;		/* Bytes read by the last read(). */
+	WALOpenSegment wre_seg;		/* Segment we tried to read from. */
+} WALReadError;
+
+extern bool WALRead(char *buf, XLogRecPtr startptr, Size count,
+					TimeLineID tli, WALOpenSegment *seg,
+					WALSegmentContext *segcxt, WALSegmentOpen openSegment,
+					WALReadError *errinfo);
+
 /* Functions for decoding an XLogRecord */
 
 extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,

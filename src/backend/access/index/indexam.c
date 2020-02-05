@@ -3,7 +3,7 @@
  * indexam.c
  *	  general index access method routines
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -180,8 +180,8 @@ index_insert(Relation indexRelation,
 
 	if (!(indexRelation->rd_indam->ampredlocks))
 		CheckForSerializableConflictIn(indexRelation,
-									   (HeapTuple) NULL,
-									   InvalidBuffer);
+									   (ItemPointer) NULL,
+									   InvalidBlockNumber);
 
 	return indexRelation->rd_indam->aminsert(indexRelation, values, isnull,
 											 heap_t_ctid, heapRelation,

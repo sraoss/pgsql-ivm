@@ -2,7 +2,7 @@
  * test_ddl_deparse.c
  *		Support functions for the test_ddl_deparse module
  *
- * Copyright (c) 2014-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/test/modules/test_ddl_deparse/test_ddl_deparse.c
@@ -161,9 +161,6 @@ get_altertable_subcmdtypes(PG_FUNCTION_ARGS)
 				break;
 			case AT_ValidateConstraintRecurse:
 				strtype = "VALIDATE CONSTRAINT (and recurse)";
-				break;
-			case AT_ProcessedConstraint:
-				strtype = "ADD (processed) CONSTRAINT";
 				break;
 			case AT_AddIndexConstraint:
 				strtype = "ADD CONSTRAINT (using index)";

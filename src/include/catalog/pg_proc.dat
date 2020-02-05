@@ -3,7 +3,7 @@
 # pg_proc.dat
 #    Initial contents of the pg_proc system catalog.
 #
-# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/include/catalog/pg_proc.dat
@@ -1817,6 +1817,20 @@
 { oid => '947', descr => 'modulus',
   proname => 'mod', prorettype => 'int8', proargtypes => 'int8 int8',
   prosrc => 'int8mod' },
+
+{ oid => '8463', descr => 'greatest common divisor',
+  proname => 'gcd', prorettype => 'int4', proargtypes => 'int4 int4',
+  prosrc => 'int4gcd' },
+{ oid => '8464', descr => 'greatest common divisor',
+  proname => 'gcd', prorettype => 'int8', proargtypes => 'int8 int8',
+  prosrc => 'int8gcd' },
+
+{ oid => '8465', descr => 'least common multiple',
+  proname => 'lcm', prorettype => 'int4', proargtypes => 'int4 int4',
+  prosrc => 'int4lcm' },
+{ oid => '8466', descr => 'least common multiple',
+  proname => 'lcm', prorettype => 'int8', proargtypes => 'int8 int8',
+  prosrc => 'int8lcm' },
 
 { oid => '944', descr => 'convert text to char',
   proname => 'char', prorettype => 'char', proargtypes => 'text',
@@ -4218,6 +4232,12 @@
 { oid => '1729',
   proname => 'numeric_mod', prorettype => 'numeric',
   proargtypes => 'numeric numeric', prosrc => 'numeric_mod' },
+{ oid => '8467', descr => 'greatest common divisor',
+  proname => 'gcd', prorettype => 'numeric', proargtypes => 'numeric numeric',
+  prosrc => 'numeric_gcd' },
+{ oid => '8468', descr => 'least common multiple',
+  proname => 'lcm', prorettype => 'numeric', proargtypes => 'numeric numeric',
+  prosrc => 'numeric_lcm' },
 { oid => '1730', descr => 'square root',
   proname => 'sqrt', prorettype => 'numeric', proargtypes => 'numeric',
   prosrc => 'numeric_sqrt' },
@@ -4254,6 +4274,13 @@
 { oid => '3281', descr => 'number of decimal digits in the fractional part',
   proname => 'scale', prorettype => 'int4', proargtypes => 'numeric',
   prosrc => 'numeric_scale' },
+{ oid => '8389', descr => 'minimum scale needed to represent the value',
+  proname => 'min_scale', prorettype => 'int4', proargtypes => 'numeric',
+  prosrc => 'numeric_min_scale' },
+{ oid => '8390',
+  descr => 'numeric with minimum scale needed to represent the value',
+  proname => 'trim_scale', prorettype => 'numeric', proargtypes => 'numeric',
+  prosrc => 'numeric_trim_scale' },
 { oid => '1740', descr => 'convert int4 to numeric',
   proname => 'numeric', prorettype => 'numeric', proargtypes => 'int4',
   prosrc => 'int4_numeric' },
@@ -7653,8 +7680,17 @@
 { oid => '3296',
   descr => 'get the fraction of the asynchronous notification queue currently in use',
   proname => 'pg_notification_queue_usage', provolatile => 'v',
-  prorettype => 'float8', proargtypes => '',
+  proparallel => 'r', prorettype => 'float8', proargtypes => '',
   prosrc => 'pg_notification_queue_usage' },
+
+# shared memory usage
+{ oid => '8613',
+  descr => 'allocations from the main shared memory segment',
+  proname => 'pg_get_shmem_allocations', 'prorows' => 50, 'proretset' => 't',
+  provolatile => 'v', 'prorettype' => 'record', 'proargtypes' => '',
+  proallargtypes => '{text,int8,int8,int8}', proargmodes => '{o,o,o,o}',
+  proargnames => '{name,off,size,allocated_size}',
+  prosrc => 'pg_get_shmem_allocations' },
 
 # non-persistent series generator
 { oid => '1066', descr => 'non-persistent series generator',
@@ -9289,6 +9325,9 @@
 { oid => '3304',
   proname => 'jsonb_delete_path', prorettype => 'jsonb',
   proargtypes => 'jsonb _text', prosrc => 'jsonb_delete_path' },
+{ oid => '8945', descr => 'Set part of a jsonb, handle NULL value',
+  proname => 'jsonb_set_lax', prorettype => 'jsonb', proisstrict => 'f',
+  proargtypes => 'jsonb _text jsonb bool text', prosrc => 'jsonb_set_lax' },
 { oid => '3305', descr => 'Set part of a jsonb',
   proname => 'jsonb_set', prorettype => 'jsonb',
   proargtypes => 'jsonb _text jsonb bool', prosrc => 'jsonb_set' },
@@ -9333,14 +9372,13 @@
   proargtypes => 'jsonb jsonpath jsonb bool', prosrc => 'jsonb_path_match' },
 
 { oid => '1177', descr => 'jsonpath exists test with timezone',
-  proname => 'jsonb_path_exists_tz', provolatile => 's',
-  prorettype => 'bool', proargtypes => 'jsonb jsonpath jsonb bool',
+  proname => 'jsonb_path_exists_tz', provolatile => 's', prorettype => 'bool',
+  proargtypes => 'jsonb jsonpath jsonb bool',
   prosrc => 'jsonb_path_exists_tz' },
 { oid => '1179', descr => 'jsonpath query with timezone',
-  proname => 'jsonb_path_query_tz', provolatile => 's',
-  prorows => '1000', proretset => 't',
-  prorettype => 'jsonb', proargtypes => 'jsonb jsonpath jsonb bool',
-  prosrc => 'jsonb_path_query_tz' },
+  proname => 'jsonb_path_query_tz', prorows => '1000', proretset => 't',
+  provolatile => 's', prorettype => 'jsonb',
+  proargtypes => 'jsonb jsonpath jsonb bool', prosrc => 'jsonb_path_query_tz' },
 { oid => '1180', descr => 'jsonpath query wrapped into array with timezone',
   proname => 'jsonb_path_query_array_tz', provolatile => 's',
   prorettype => 'jsonb', proargtypes => 'jsonb jsonpath jsonb bool',
@@ -9350,9 +9388,8 @@
   prorettype => 'jsonb', proargtypes => 'jsonb jsonpath jsonb bool',
   prosrc => 'jsonb_path_query_first_tz' },
 { oid => '2030', descr => 'jsonpath match with timezone',
-  proname => 'jsonb_path_match_tz', provolatile => 's',
-  prorettype => 'bool', proargtypes => 'jsonb jsonpath jsonb bool',
-  prosrc => 'jsonb_path_match_tz' },
+  proname => 'jsonb_path_match_tz', provolatile => 's', prorettype => 'bool',
+  proargtypes => 'jsonb jsonpath jsonb bool', prosrc => 'jsonb_path_match_tz' },
 
 { oid => '4010', descr => 'implementation of @? operator',
   proname => 'jsonb_path_exists_opr', prorettype => 'bool',
@@ -9459,9 +9496,9 @@
   proname => 'pg_available_extension_versions', procost => '10',
   prorows => '100', proretset => 't', provolatile => 's',
   prorettype => 'record', proargtypes => '',
-  proallargtypes => '{name,text,bool,bool,name,_name,text}',
-  proargmodes => '{o,o,o,o,o,o,o}',
-  proargnames => '{name,version,superuser,relocatable,schema,requires,comment}',
+  proallargtypes => '{name,text,bool,bool,bool,name,_name,text}',
+  proargmodes => '{o,o,o,o,o,o,o,o}',
+  proargnames => '{name,version,superuser,trusted,relocatable,schema,requires,comment}',
   prosrc => 'pg_available_extension_versions' },
 { oid => '3084', descr => 'list an extension\'s version update paths',
   proname => 'pg_extension_update_paths', procost => '10', prorows => '100',

@@ -4,7 +4,7 @@
  *	  page utilities routines for the postgres inverted index access method.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -89,7 +89,7 @@ ginFindLeafPage(GinBtree btree, bool searchMode,
 	stack->predictNumber = 1;
 
 	if (rootConflictCheck)
-		CheckForSerializableConflictIn(btree->index, NULL, stack->buffer);
+		CheckForSerializableConflictIn(btree->index, NULL, btree->rootBlkno);
 
 	for (;;)
 	{

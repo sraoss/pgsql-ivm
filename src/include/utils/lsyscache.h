@@ -3,7 +3,7 @@
  * lsyscache.h
  *	  Convenience routines for common queries in the system catalog cache.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/lsyscache.h
@@ -180,6 +180,7 @@ extern void free_attstatsslot(AttStatsSlot *sslot);
 extern char *get_namespace_name(Oid nspid);
 extern char *get_namespace_name_or_temp(Oid nspid);
 extern Oid	get_range_subtype(Oid rangeOid);
+extern Oid	get_range_collation(Oid rangeOid);
 extern Oid	get_index_column_opclass(Oid index_oid, int attno);
 
 #define type_is_array(typid)  (get_element_type(typid) != InvalidOid)

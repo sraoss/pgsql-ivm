@@ -3,7 +3,7 @@
  * jsonb_util.c
  *	  converting between Jsonb and JsonbValues, and iterating.
  *
- * Copyright (c) 2014-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -15,11 +15,12 @@
 
 #include "catalog/pg_collation.h"
 #include "catalog/pg_type.h"
+#include "common/jsonapi.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/hashutils.h"
-#include "utils/jsonapi.h"
+#include "utils/json.h"
 #include "utils/jsonb.h"
 #include "utils/memutils.h"
 #include "utils/varlena.h"

@@ -3,7 +3,7 @@
  * llvmjit_expr.c
  *	  JIT compile expressions.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -20,7 +20,6 @@
 
 #include "access/htup_details.h"
 #include "access/nbtree.h"
-#include "access/tupconvert.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_type.h"
 #include "executor/execExpr.h"

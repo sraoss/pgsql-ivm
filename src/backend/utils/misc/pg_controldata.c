@@ -5,7 +5,7 @@
  * Routines to expose the contents of the control data file via
  * a set of SQL functions.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -199,8 +199,7 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 	values[16] = TransactionIdGetDatum(ControlFile->checkPointCopy.newestCommitTsXid);
 	nulls[16] = false;
 
-	values[17] = TimestampTzGetDatum(
-									 time_t_to_timestamptz(ControlFile->checkPointCopy.time));
+	values[17] = TimestampTzGetDatum(time_t_to_timestamptz(ControlFile->checkPointCopy.time));
 	nulls[17] = false;
 
 	htup = heap_form_tuple(tupdesc, values, nulls);
@@ -275,7 +274,7 @@ pg_control_init(PG_FUNCTION_ARGS)
 	 * Construct a tuple descriptor for the result row.  This must match this
 	 * function's pg_proc entry!
 	 */
-	tupdesc = CreateTemplateTupleDesc(12);
+	tupdesc = CreateTemplateTupleDesc(11);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "max_data_alignment",
 					   INT4OID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "database_block_size",

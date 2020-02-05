@@ -3,7 +3,7 @@
  * heapam_handler.c
  *	  heap table access method code
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2037,6 +2037,15 @@ heapam_relation_needs_toast_table(Relation rel)
 	return (tuple_length > TOAST_TUPLE_THRESHOLD);
 }
 
+/*
+ * TOAST tables for heap relations are just heap relations.
+ */
+static Oid
+heapam_relation_toast_am(Relation rel)
+{
+	return rel->rd_rel->relam;
+}
+
 
 /* ------------------------------------------------------------------------
  * Planner related callbacks for the heap AM
@@ -2162,10 +2171,11 @@ heapam_scan_bitmap_next_block(TableScanDesc scan,
 			if (valid)
 			{
 				hscan->rs_vistuples[ntup++] = offnum;
-				PredicateLockTuple(scan->rs_rd, &loctup, snapshot);
+				PredicateLockTID(scan->rs_rd, &loctup.t_self, snapshot,
+								 HeapTupleHeaderGetXmin(loctup.t_data));
 			}
-			CheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
-											buffer, snapshot);
+			HeapCheckForSerializableConflictOut(valid, scan->rs_rd, &loctup,
+												buffer, snapshot);
 		}
 	}
 
@@ -2352,8 +2362,8 @@ heapam_scan_sample_next_tuple(TableScanDesc scan, SampleScanState *scanstate,
 
 			/* in pagemode, heapgetpage did this for us */
 			if (!pagemode)
-				CheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
-												hscan->rs_cbuf, scan->rs_snapshot);
+				HeapCheckForSerializableConflictOut(visible, scan->rs_rd, tuple,
+													hscan->rs_cbuf, scan->rs_snapshot);
 
 			/* Try next tuple from same page. */
 			if (!visible)
@@ -2535,6 +2545,8 @@ static const TableAmRoutine heapam_methods = {
 
 	.relation_size = table_block_relation_size,
 	.relation_needs_toast_table = heapam_relation_needs_toast_table,
+	.relation_toast_am = heapam_relation_toast_am,
+	.relation_fetch_toast_slice = heap_fetch_toast_slice,
 
 	.relation_estimate_size = heapam_estimate_rel_size,
 

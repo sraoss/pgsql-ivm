@@ -3,7 +3,7 @@
  * trigger.c
  *	  PostgreSQL TRIGGERs support code.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -565,7 +565,7 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 	if (!whenClause && stmt->whenClause)
 	{
 		ParseState *pstate;
-		RangeTblEntry *rte;
+		ParseNamespaceItem *nsitem;
 		List	   *varList;
 		ListCell   *lc;
 
@@ -574,20 +574,20 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 		pstate->p_sourcetext = queryString;
 
 		/*
-		 * Set up RTEs for OLD and NEW references.
+		 * Set up nsitems for OLD and NEW references.
 		 *
 		 * 'OLD' must always have varno equal to 1 and 'NEW' equal to 2.
 		 */
-		rte = addRangeTableEntryForRelation(pstate, rel,
-											AccessShareLock,
-											makeAlias("old", NIL),
-											false, false);
-		addRTEtoQuery(pstate, rte, false, true, true);
-		rte = addRangeTableEntryForRelation(pstate, rel,
-											AccessShareLock,
-											makeAlias("new", NIL),
-											false, false);
-		addRTEtoQuery(pstate, rte, false, true, true);
+		nsitem = addRangeTableEntryForRelation(pstate, rel,
+											   AccessShareLock,
+											   makeAlias("old", NIL),
+											   false, false);
+		addNSItemToQuery(pstate, nsitem, false, true, true);
+		nsitem = addRangeTableEntryForRelation(pstate, rel,
+											   AccessShareLock,
+											   makeAlias("new", NIL),
+											   false, false);
+		addNSItemToQuery(pstate, nsitem, false, true, true);
 
 		/* Transform expression.  Copy to be sure we don't modify original */
 		whenClause = transformWhereClause(pstate,
@@ -1144,7 +1144,6 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 			CreateTrigStmt *childStmt;
 			Relation	childTbl;
 			Node	   *qual;
-			bool		found_whole_row;
 
 			childTbl = table_open(partdesc->oids[i], ShareRowExclusiveLock);
 
@@ -1177,16 +1176,10 @@ CreateTrigger(CreateTrigStmt *stmt, const char *queryString,
 			qual = copyObject(whenClause);
 			qual = (Node *)
 				map_partition_varattnos((List *) qual, PRS2_OLD_VARNO,
-										childTbl, rel,
-										&found_whole_row);
-			if (found_whole_row)
-				elog(ERROR, "unexpected whole-row reference found in trigger WHEN clause");
+										childTbl, rel);
 			qual = (Node *)
 				map_partition_varattnos((List *) qual, PRS2_NEW_VARNO,
-										childTbl, rel,
-										&found_whole_row);
-			if (found_whole_row)
-				elog(ERROR, "unexpected whole-row reference found in trigger WHEN clause");
+										childTbl, rel);
 
 			CreateTrigger(childStmt, queryString,
 						  partdesc->oids[i], refRelOid,
@@ -3033,8 +3026,8 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 		/*
 		 * In READ COMMITTED isolation level it's possible that target tuple
 		 * was changed due to concurrent update.  In that case we have a raw
-		 * subplan output tuple in newSlot, and need to run it through the
-		 * junk filter to produce an insertable tuple.
+		 * subplan output tuple in epqslot_candidate, and need to run it
+		 * through the junk filter to produce an insertable tuple.
 		 *
 		 * Caution: more than likely, the passed-in slot is the same as the
 		 * junkfilter's output slot, so we are clobbering the original value
@@ -4257,12 +4250,17 @@ AfterTriggerExecute(EState *estate,
 			LocTriggerData.tg_trigtuple =
 				ExecFetchSlotHeapTuple(trig_tuple_slot1, true, &should_free_trig);
 
-			LocTriggerData.tg_newslot = trig_tuple_slot2;
-			LocTriggerData.tg_newtuple =
-				((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
-				 TRIGGER_EVENT_UPDATE) ?
-				ExecFetchSlotHeapTuple(trig_tuple_slot2, true, &should_free_new) : NULL;
-
+			if ((evtshared->ats_event & TRIGGER_EVENT_OPMASK) ==
+				TRIGGER_EVENT_UPDATE)
+			{
+				LocTriggerData.tg_newslot = trig_tuple_slot2;
+				LocTriggerData.tg_newtuple =
+					ExecFetchSlotHeapTuple(trig_tuple_slot2, true, &should_free_new);
+			}
+			else
+			{
+				LocTriggerData.tg_newtuple = NULL;
+			}
 			break;
 
 		default:
@@ -4357,10 +4355,14 @@ AfterTriggerExecute(EState *estate,
 	if (should_free_new)
 		heap_freetuple(LocTriggerData.tg_newtuple);
 
-	if (LocTriggerData.tg_trigslot)
-		ExecClearTuple(LocTriggerData.tg_trigslot);
-	if (LocTriggerData.tg_newslot)
-		ExecClearTuple(LocTriggerData.tg_newslot);
+	/* don't clear slots' contents if foreign table */
+	if (trig_tuple_slot1 == NULL)
+	{
+		if (LocTriggerData.tg_trigslot)
+			ExecClearTuple(LocTriggerData.tg_trigslot);
+		if (LocTriggerData.tg_newslot)
+			ExecClearTuple(LocTriggerData.tg_newslot);
+	}
 
 	/*
 	 * If doing EXPLAIN ANALYZE, stop charging time to this trigger, and count
@@ -4514,13 +4516,14 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 					trigdesc = rInfo->ri_TrigDesc;
 					finfo = rInfo->ri_TrigFunctions;
 					instr = rInfo->ri_TrigInstrument;
+					if (slot1 != NULL)
+					{
+						ExecDropSingleTupleTableSlot(slot1);
+						ExecDropSingleTupleTableSlot(slot2);
+						slot1 = slot2 = NULL;
+					}
 					if (rel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
 					{
-						if (slot1 != NULL)
-						{
-							ExecDropSingleTupleTableSlot(slot1);
-							ExecDropSingleTupleTableSlot(slot2);
-						}
 						slot1 = MakeSingleTupleTableSlot(rel->rd_att,
 														 &TTSOpsMinimalTuple);
 						slot2 = MakeSingleTupleTableSlot(rel->rd_att,

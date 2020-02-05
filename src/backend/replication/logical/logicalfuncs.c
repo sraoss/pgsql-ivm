@@ -6,7 +6,7 @@
  *	   logical replication slots via SQL.
  *
  *
- * Copyright (c) 2012-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logicalfuncs.c
@@ -90,8 +90,7 @@ LogicalOutputWrite(LogicalDecodingContext *ctx, XLogRecPtr lsn, TransactionId xi
 							   false));
 
 	/* ick, but cstring_to_text_with_len works for bytea perfectly fine */
-	values[2] = PointerGetDatum(
-								cstring_to_text_with_len(ctx->out->data, ctx->out->len));
+	values[2] = PointerGetDatum(cstring_to_text_with_len(ctx->out->data, ctx->out->len));
 
 	tuplestore_putvalues(p->tupstore, p->tupdesc, values, nulls);
 	p->returned_rows++;
@@ -103,7 +102,7 @@ check_permissions(void)
 	if (!superuser() && !has_rolreplication(GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser or replication role to use replication slots"))));
+				 errmsg("must be superuser or replication role to use replication slots")));
 }
 
 int
@@ -127,7 +126,6 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 	MemoryContext per_query_ctx;
 	MemoryContext oldcontext;
 	XLogRecPtr	end_of_wal;
-	XLogRecPtr	startptr;
 	LogicalDecodingContext *ctx;
 	ResourceOwner old_resowner = CurrentResourceOwner;
 	ArrayType  *arr;
@@ -269,27 +267,20 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 		 * xacts that committed after the slot's confirmed_flush can be
 		 * accumulated into reorder buffers.
 		 */
-		startptr = MyReplicationSlot->data.restart_lsn;
+		XLogBeginRead(ctx->reader, MyReplicationSlot->data.restart_lsn);
 
 		/* invalidate non-timetravel entries */
 		InvalidateSystemCaches();
 
 		/* Decode until we run out of records */
-		while ((startptr != InvalidXLogRecPtr && startptr < end_of_wal) ||
-			   (ctx->reader->EndRecPtr != InvalidXLogRecPtr && ctx->reader->EndRecPtr < end_of_wal))
+		while (ctx->reader->EndRecPtr < end_of_wal)
 		{
 			XLogRecord *record;
 			char	   *errm = NULL;
 
-			record = XLogReadRecord(ctx->reader, startptr, &errm);
+			record = XLogReadRecord(ctx->reader, &errm);
 			if (errm)
 				elog(ERROR, "%s", errm);
-
-			/*
-			 * Now that we've set up the xlog reader state, subsequent calls
-			 * pass InvalidXLogRecPtr to say "continue from last record"
-			 */
-			startptr = InvalidXLogRecPtr;
 
 			/*
 			 * The {begin_txn,change,commit_txn}_wrapper callbacks above will

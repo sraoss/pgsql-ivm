@@ -3,7 +3,7 @@
  * proto.c
  *		logical replication protocol functions
  *
- * Copyright (c) 2015-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/replication/logical/proto.c
@@ -142,10 +142,6 @@ void
 logicalrep_write_insert(StringInfo out, Relation rel, HeapTuple newtuple)
 {
 	pq_sendbyte(out, 'I');		/* action INSERT */
-
-	Assert(rel->rd_rel->relreplident == REPLICA_IDENTITY_DEFAULT ||
-		   rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL ||
-		   rel->rd_rel->relreplident == REPLICA_IDENTITY_INDEX);
 
 	/* use Oid as relation identifier */
 	pq_sendint32(out, RelationGetRelid(rel));

@@ -4,7 +4,7 @@
  *	  POSTGRES heap tuple header definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/htup_details.h
@@ -15,9 +15,9 @@
 #define HTUP_DETAILS_H
 
 #include "access/htup.h"
+#include "access/transam.h"
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
-#include "access/transam.h"
 #include "storage/bufpage.h"
 
 /*

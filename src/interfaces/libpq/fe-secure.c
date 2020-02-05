@@ -6,7 +6,7 @@
  *	  message integrity and endpoint authentication.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -264,8 +264,7 @@ pqsecure_raw_read(PGconn *conn, void *ptr, size_t len)
 #ifdef ECONNRESET
 			case ECONNRESET:
 				printfPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext(
-												"server closed the connection unexpectedly\n"
+								  libpq_gettext("server closed the connection unexpectedly\n"
 												"\tThis probably means the server terminated abnormally\n"
 												"\tbefore or while processing the request.\n"));
 				break;
@@ -381,8 +380,7 @@ retry_masked:
 			case ECONNRESET:
 #endif
 				printfPQExpBuffer(&conn->errorMessage,
-								  libpq_gettext(
-												"server closed the connection unexpectedly\n"
+								  libpq_gettext("server closed the connection unexpectedly\n"
 												"\tThis probably means the server terminated abnormally\n"
 												"\tbefore or while processing the request.\n"));
 				break;
@@ -431,6 +429,24 @@ PQsslAttributeNames(PGconn *conn)
 	static const char *const result[] = {NULL};
 
 	return result;
+}
+
+PQsslKeyPassHook_type
+PQgetSSLKeyPassHook(void)
+{
+	return NULL;
+}
+
+void
+PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook)
+{
+	return;
+}
+
+int
+PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn)
+{
+	return 0;
 }
 #endif							/* USE_SSL */
 

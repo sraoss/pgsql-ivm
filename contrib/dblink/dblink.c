@@ -9,7 +9,7 @@
  * Shridhar Daithankar <shridhar_daithankar@persistent.co.in>
  *
  * contrib/dblink/dblink.c
- * Copyright (c) 2001-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2020, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -905,8 +905,7 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 			if (!is_sql_cmd)
 				nestlevel = applyRemoteGucs(conn);
 
-			oldcontext = MemoryContextSwitchTo(
-											   rsinfo->econtext->ecxt_per_query_memory);
+			oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
 			tupstore = tuplestore_begin_heap(true, false, work_mem);
 			rsinfo->setResult = tupstore;
 			rsinfo->setDesc = tupdesc;
@@ -1027,8 +1026,7 @@ materializeQueryResult(FunctionCallInfo fcinfo,
 							   TEXTOID, -1, 0);
 			attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-			oldcontext = MemoryContextSwitchTo(
-											   rsinfo->econtext->ecxt_per_query_memory);
+			oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
 			tupstore = tuplestore_begin_heap(true, false, work_mem);
 			rsinfo->setResult = tupstore;
 			rsinfo->setDesc = tupdesc;
@@ -1639,8 +1637,7 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 	if (src_nitems != pknumatts)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
-				 errmsg("source key array length must match number of key " \
-						"attributes")));
+				 errmsg("source key array length must match number of key attributes")));
 
 	/*
 	 * Target array is made up of key values that will be used to build the
@@ -1654,8 +1651,7 @@ dblink_build_sql_insert(PG_FUNCTION_ARGS)
 	if (tgt_nitems != pknumatts)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
-				 errmsg("target key array length must match number of key " \
-						"attributes")));
+				 errmsg("target key array length must match number of key attributes")));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.
@@ -1727,8 +1723,7 @@ dblink_build_sql_delete(PG_FUNCTION_ARGS)
 	if (tgt_nitems != pknumatts)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
-				 errmsg("target key array length must match number of key " \
-						"attributes")));
+				 errmsg("target key array length must match number of key attributes")));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.
@@ -1807,8 +1802,7 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 	if (src_nitems != pknumatts)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
-				 errmsg("source key array length must match number of key " \
-						"attributes")));
+				 errmsg("source key array length must match number of key attributes")));
 
 	/*
 	 * Target array is made up of key values that will be used to build the
@@ -1822,8 +1816,7 @@ dblink_build_sql_update(PG_FUNCTION_ARGS)
 	if (tgt_nitems != pknumatts)
 		ereport(ERROR,
 				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
-				 errmsg("target key array length must match number of key " \
-						"attributes")));
+				 errmsg("target key array length must match number of key attributes")));
 
 	/*
 	 * Prep work is finally done. Go get the SQL string.

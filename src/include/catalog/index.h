@@ -4,7 +4,7 @@
  *	  prototypes for catalog/index.c.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/index.h
@@ -106,10 +106,12 @@ extern void index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode);
 
 extern IndexInfo *BuildIndexInfo(Relation index);
 
+extern IndexInfo *BuildDummyIndexInfo(Relation index);
+
 extern bool CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
 							 Oid *collations1, Oid *collations2,
 							 Oid *opfamilies1, Oid *opfamilies2,
-							 AttrNumber *attmap, int maplen);
+							 AttrMap *attmap);
 
 extern void BuildSpeculativeIndexInfo(Relation index, IndexInfo *ii);
 

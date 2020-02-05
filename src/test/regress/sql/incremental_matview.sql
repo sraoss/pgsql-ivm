@@ -13,8 +13,9 @@ INSERT INTO mv_base_b VALUES
   (3,103),
   (4,104);
 
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i);
-
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) WITH NO DATA;
+SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
+REFRESH MATERIALIZED VIEW mv_ivm_1;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 -- immediaite maintenance
 BEGIN;
@@ -1454,6 +1455,9 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm11 AS SELECT a.i,a.j FROM mv_base_a 
 
 -- contain mutable functions
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
+
+-- LIMIT/OFFSET is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
 
 -- base table has row level security
 DROP USER IF EXISTS ivm_admin;

@@ -3,7 +3,7 @@
  * blutils.c
  *		Bloom index utilities.
  *
- * Portions Copyright (c) 2016-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2016-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1990-1993, Regents of the University of California
  *
  * IDENTIFICATION
@@ -18,6 +18,7 @@
 #include "access/reloptions.h"
 #include "bloom.h"
 #include "catalog/index.h"
+#include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/freespace.h"
@@ -121,6 +122,9 @@ blhandler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks = false;
 	amroutine->amcanparallel = false;
 	amroutine->amcaninclude = false;
+	amroutine->amusemaintenanceworkmem = false;
+	amroutine->amparallelvacuumoptions =
+		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP;
 	amroutine->amkeytype = InvalidOid;
 
 	amroutine->ambuild = blbuild;

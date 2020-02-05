@@ -3,7 +3,7 @@
  *
  * repl_gram.y				- Parser for the replication commands
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -333,7 +333,7 @@ timeline_history:
 					if ($2 <= 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
-								 (errmsg("invalid timeline %u", $2))));
+								 errmsg("invalid timeline %u", $2)));
 
 					cmd = makeNode(TimeLineHistoryCmd);
 					cmd->timeline = $2;
@@ -365,7 +365,7 @@ opt_timeline:
 					if ($2 <= 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
-								 (errmsg("invalid timeline %u", $2))));
+								 errmsg("invalid timeline %u", $2)));
 					$$ = $2;
 				}
 				| /* EMPTY */			{ $$ = 0; }

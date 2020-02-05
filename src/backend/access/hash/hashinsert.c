@@ -3,7 +3,7 @@
  * hashinsert.c
  *	  Item insertion in hash tables for Postgres.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -88,7 +88,7 @@ restart_insert:
 										  &usedmetap);
 	Assert(usedmetap != NULL);
 
-	CheckForSerializableConflictIn(rel, NULL, buf);
+	CheckForSerializableConflictIn(rel, NULL, BufferGetBlockNumber(buf));
 
 	/* remember the primary bucket buffer to release the pin on it at end. */
 	bucket_buf = buf;

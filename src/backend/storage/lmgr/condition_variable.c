@@ -8,7 +8,7 @@
  *	  interrupted, unlike LWLock waits.  Condition variables are safe
  *	  to use within dynamic shared memory segments.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/storage/lmgr/condition_variable.c
@@ -92,12 +92,6 @@ ConditionVariablePrepareToSleep(ConditionVariable *cv)
 
 	/* Record the condition variable on which we will sleep. */
 	cv_sleep_target = cv;
-
-	/*
-	 * Reset my latch before adding myself to the queue, to ensure that we
-	 * don't miss a wakeup that occurs immediately.
-	 */
-	ResetLatch(MyLatch);
 
 	/* Add myself to the wait queue. */
 	SpinLockAcquire(&cv->mutex);

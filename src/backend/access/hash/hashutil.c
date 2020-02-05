@@ -3,7 +3,7 @@
  * hashutil.c
  *	  Utility code for Postgres hash implementation.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -289,7 +289,14 @@ _hash_checkpage(Relation rel, Buffer buf, int flags)
 bytea *
 hashoptions(Datum reloptions, bool validate)
 {
-	return default_reloptions(reloptions, validate, RELOPT_KIND_HASH);
+	static const relopt_parse_elt tab[] = {
+		{"fillfactor", RELOPT_TYPE_INT, offsetof(HashOptions, fillfactor)},
+	};
+
+	return (bytea *) build_reloptions(reloptions, validate,
+									  RELOPT_KIND_HASH,
+									  sizeof(HashOptions),
+									  tab, lengthof(tab));
 }
 
 /*

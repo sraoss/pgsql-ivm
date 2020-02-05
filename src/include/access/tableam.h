@@ -4,7 +4,7 @@
  *	  POSTGRES table access method definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/tableam.h
@@ -580,6 +580,24 @@ typedef struct TableAmRoutine
 	 * return false.
 	 */
 	bool		(*relation_needs_toast_table) (Relation rel);
+
+	/*
+	 * This callback should return the OID of the table AM that implements
+	 * TOAST tables for this AM.  If the relation_needs_toast_table callback
+	 * always returns false, this callback is not required.
+	 */
+	Oid		    (*relation_toast_am) (Relation rel);
+
+	/*
+	 * This callback is invoked when detoasting a value stored in a toast
+	 * table implemented by this AM.  See table_relation_fetch_toast_slice()
+	 * for more details.
+	 */
+	void		(*relation_fetch_toast_slice) (Relation toastrel, Oid valueid,
+											   int32 attrsize,
+											   int32 sliceoffset,
+											   int32 slicelength,
+											   struct varlena *result);
 
 
 	/* ------------------------------------------------------------------------
@@ -1601,6 +1619,50 @@ static inline bool
 table_relation_needs_toast_table(Relation rel)
 {
 	return rel->rd_tableam->relation_needs_toast_table(rel);
+}
+
+/*
+ * Return the OID of the AM that should be used to implement the TOAST table
+ * for this relation.
+ */
+static inline Oid
+table_relation_toast_am(Relation rel)
+{
+	return rel->rd_tableam->relation_toast_am(rel);
+}
+
+/*
+ * Fetch all or part of a TOAST value from a TOAST table.
+ *
+ * If this AM is never used to implement a TOAST table, then this callback
+ * is not needed. But, if toasted values are ever stored in a table of this
+ * type, then you will need this callback.
+ *
+ * toastrel is the relation in which the toasted value is stored.
+ *
+ * valueid identifes which toast value is to be fetched. For the heap,
+ * this corresponds to the values stored in the chunk_id column.
+ *
+ * attrsize is the total size of the toast value to be fetched.
+ *
+ * sliceoffset is the offset within the toast value of the first byte that
+ * should be fetched.
+ *
+ * slicelength is the number of bytes from the toast value that should be
+ * fetched.
+ *
+ * result is caller-allocated space into which the fetched bytes should be
+ * stored.
+ */
+static inline void
+table_relation_fetch_toast_slice(Relation toastrel, Oid valueid,
+								 int32 attrsize, int32 sliceoffset,
+								 int32 slicelength, struct varlena *result)
+{
+	toastrel->rd_tableam->relation_fetch_toast_slice(toastrel, valueid,
+													 attrsize,
+													 sliceoffset, slicelength,
+													 result);
 }
 
 

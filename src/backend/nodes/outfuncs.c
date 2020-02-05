@@ -3,7 +3,7 @@
  * outfuncs.c
  *	  Output functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -310,6 +310,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_NODE_FIELD(rtable);
 	WRITE_NODE_FIELD(resultRelations);
 	WRITE_NODE_FIELD(rootResultRelations);
+	WRITE_NODE_FIELD(appendRelations);
 	WRITE_NODE_FIELD(subplans);
 	WRITE_BITMAPSET_FIELD(rewindPlanIDs);
 	WRITE_NODE_FIELD(rowMarks);
@@ -431,6 +432,7 @@ _outAppend(StringInfo str, const Append *node)
 
 	_outPlanInfo(str, (const Plan *) node);
 
+	WRITE_BITMAPSET_FIELD(apprelids);
 	WRITE_NODE_FIELD(appendplans);
 	WRITE_INT_FIELD(first_partial_plan);
 	WRITE_NODE_FIELD(part_prune_info);
@@ -443,6 +445,7 @@ _outMergeAppend(StringInfo str, const MergeAppend *node)
 
 	_outPlanInfo(str, (const Plan *) node);
 
+	WRITE_BITMAPSET_FIELD(apprelids);
 	WRITE_NODE_FIELD(mergeplans);
 	WRITE_INT_FIELD(numCols);
 	WRITE_ATTRNUMBER_ARRAY(sortColIdx, node->numCols);
@@ -1071,8 +1074,8 @@ _outVar(StringInfo str, const Var *node)
 	WRITE_INT_FIELD(vartypmod);
 	WRITE_OID_FIELD(varcollid);
 	WRITE_UINT_FIELD(varlevelsup);
-	WRITE_UINT_FIELD(varnoold);
-	WRITE_INT_FIELD(varoattno);
+	WRITE_UINT_FIELD(varnosyn);
+	WRITE_INT_FIELD(varattnosyn);
 	WRITE_LOCATION_FIELD(location);
 }
 
@@ -2167,6 +2170,7 @@ _outPlannerGlobal(StringInfo str, const PlannerGlobal *node)
 	WRITE_NODE_FIELD(finalrowmarks);
 	WRITE_NODE_FIELD(resultRelations);
 	WRITE_NODE_FIELD(rootResultRelations);
+	WRITE_NODE_FIELD(appendRelations);
 	WRITE_NODE_FIELD(relationOids);
 	WRITE_NODE_FIELD(invalItems);
 	WRITE_NODE_FIELD(paramExecTypes);
@@ -2509,6 +2513,8 @@ _outAppendRelInfo(StringInfo str, const AppendRelInfo *node)
 	WRITE_OID_FIELD(parent_reltype);
 	WRITE_OID_FIELD(child_reltype);
 	WRITE_NODE_FIELD(translated_vars);
+	WRITE_INT_FIELD(num_child_cols);
+	WRITE_ATTRNUMBER_ARRAY(parent_colnos, node->num_child_cols);
 	WRITE_OID_FIELD(parent_reloid);
 }
 
@@ -3066,7 +3072,10 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			break;
 		case RTE_JOIN:
 			WRITE_ENUM_FIELD(jointype, JoinType);
+			WRITE_INT_FIELD(joinmergedcols);
 			WRITE_NODE_FIELD(joinaliasvars);
+			WRITE_NODE_FIELD(joinleftcols);
+			WRITE_NODE_FIELD(joinrightcols);
 			break;
 		case RTE_FUNCTION:
 			WRITE_NODE_FIELD(functions);

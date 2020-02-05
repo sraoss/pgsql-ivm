@@ -23,7 +23,7 @@ m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.6
 Untested combinations of 'autoconf' and PostgreSQL versions are not
 recommended.  You can remove the check from 'configure.in' but it is then
 your responsibility whether the result works or not.])])
-AC_COPYRIGHT([Copyright (c) 1996-2019, PostgreSQL Global Development Group])
+AC_COPYRIGHT([Copyright (c) 1996-2020, PostgreSQL Global Development Group])
 AC_CONFIG_SRCDIR([src/backend/access/common/heaptuple.c])
 AC_CONFIG_AUX_DIR(config)
 AC_PREFIX_DEFAULT(/usr/local/pgsql)
@@ -59,7 +59,7 @@ PGAC_ARG_REQ(with, template, [NAME], [override operating system template],
 
 case $host_os in
      aix*) template=aix ;;
-  cygwin*) template=cygwin ;;
+  cygwin*|msys*) template=cygwin ;;
   darwin*) template=darwin ;;
 dragonfly*) template=netbsd ;;
  freebsd*) template=freebsd ;;
@@ -875,6 +875,7 @@ if test "$PORTNAME" = "win32"; then
     with_readline=no
   fi
 fi
+AC_SUBST(with_readline)
 
 
 #
@@ -1186,7 +1187,8 @@ if test "$with_openssl" = yes ; then
      AC_SEARCH_LIBS(CRYPTO_new_ex_data, [eay32 crypto], [], [AC_MSG_ERROR([library 'eay32' or 'crypto' is required for OpenSSL])])
      AC_SEARCH_LIBS(SSL_new, [ssleay32 ssl], [], [AC_MSG_ERROR([library 'ssleay32' or 'ssl' is required for OpenSSL])])
   fi
-  AC_CHECK_FUNCS([SSL_clear_options SSL_get_current_compression X509_get_signature_nid])
+  # Function introduced in OpenSSL 1.0.2.
+  AC_CHECK_FUNCS([X509_get_signature_nid])
   # Functions introduced in OpenSSL 1.1.0. We used to check for
   # OPENSSL_VERSION_NUMBER, but that didn't work with 1.1.0, because LibreSSL
   # defines OPENSSL_VERSION_NUMBER to claim version 2.0.0, even though it
@@ -1728,6 +1730,7 @@ AC_REPLACE_FUNCS(m4_normalize([
 	explicit_bzero
 	fls
 	getopt
+	getpeereid
 	getrusage
 	inet_aton
 	mkdtemp
@@ -1742,32 +1745,26 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strtof
 ]))
 
-case $host_os in
+if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
 	# have a broken strtof(), so substitute the same replacement
 	# code we use with VS2013. That's not a perfect fix, since
 	# (unlike with VS2013) it doesn't avoid double-rounding, but
 	# we have no better options. To get that, though, we have to
 	# force the file to be compiled despite HAVE_STRTOF.
-	mingw*|cygwin*)
-		AC_LIBOBJ([strtof])
-		AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
-	;;
-esac
+	AC_LIBOBJ([strtof])
+	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
+fi
 
 case $host_os in
-
         # Windows uses a specialised env handler
-        # and doesn't need a replacement getpeereid because it doesn't use
-        # Unix sockets.
         mingw*)
                 AC_DEFINE(HAVE_UNSETENV, 1, [Define to 1 because replacement version used.])
-                AC_DEFINE(HAVE_GETPEEREID, 1, [Define to 1 because function not required.])
                 ac_cv_func_unsetenv=yes
-                ac_cv_func_getpeereid=yes;;
+                ;;
         *)
-                AC_REPLACE_FUNCS([unsetenv getpeereid])
-		;;
+                AC_REPLACE_FUNCS([unsetenv])
+                ;;
 esac
 
 # System's version of getaddrinfo(), if any, may be used only if we found
@@ -1877,7 +1874,7 @@ fi
 LIBS="$LIBS_including_readline"
 
 if test "$with_readline" = yes; then
-  PGAC_VAR_RL_COMPLETION_APPEND_CHARACTER
+  PGAC_READLINE_VARIABLES
   AC_CHECK_FUNCS([rl_completion_matches rl_filename_completion_function rl_reset_screen_size])
   AC_CHECK_FUNCS([append_history history_truncate_file])
 fi
@@ -1940,29 +1937,6 @@ PGAC_C_BUILTIN_OP_OVERFLOW
 AC_CHECK_SIZEOF([void *])
 AC_CHECK_SIZEOF([size_t])
 AC_CHECK_SIZEOF([long])
-
-# Decide whether float8 is passed by value.
-# Note: this setting also controls int8 and related types such as timestamp.
-# If sizeof(Datum) >= 8, this is user-selectable, enabled by default.
-# If not, trying to select it is an error.
-AC_MSG_CHECKING([whether to build with float8 passed by value])
-if test $ac_cv_sizeof_void_p -ge 8 ; then
-  PGAC_ARG_BOOL(enable, float8-byval, yes, [disable float8 passed by value])
-else
-  PGAC_ARG_BOOL(enable, float8-byval, no, [disable float8 passed by value])
-  if test "$enable_float8_byval" = yes ; then
-    AC_MSG_ERROR([--enable-float8-byval is not supported on 32-bit platforms.])
-  fi
-fi
-if test "$enable_float8_byval" = yes ; then
-  AC_DEFINE([USE_FLOAT8_BYVAL], 1,
-            [Define to 1 if you want float8, int8, etc values to be passed by value. (--enable-float8-byval)])
-  float8passbyval=true
-else
-  float8passbyval=false
-fi
-AC_MSG_RESULT([$enable_float8_byval])
-AC_DEFINE_UNQUOTED([FLOAT8PASSBYVAL], [$float8passbyval], [float8, int8, and related values are passed by value if 'true', by reference if 'false'])
 
 # Determine memory alignment requirements for the basic C data types.
 

@@ -3,7 +3,7 @@
  * timestamp.c
  *	  Functions for the built-in SQL types "timestamp" and "interval".
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -4373,6 +4373,7 @@ date2isoweek(int year, int mon, int mday)
 /* date2isoyear()
  *
  *	Returns ISO 8601 year number.
+ *	Note: zero or negative results follow the year-zero-exists convention.
  */
 int
 date2isoyear(int year, int mon, int mday)
@@ -4647,24 +4648,19 @@ timestamp_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
+				/* Adjust BC years */
+				if (result <= 0)
+					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
-				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
-				if (timestamp2tm(timestamp, NULL, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -4851,24 +4847,19 @@ timestamptz_part(PG_FUNCTION_ARGS)
 
 			case DTK_ISOYEAR:
 				result = date2isoyear(tm->tm_year, tm->tm_mon, tm->tm_mday);
+				/* Adjust BC years */
+				if (result <= 0)
+					result -= 1;
 				break;
 
 			case DTK_DOW:
 			case DTK_ISODOW:
-				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = j2day(date2j(tm->tm_year, tm->tm_mon, tm->tm_mday));
 				if (val == DTK_ISODOW && result == 0)
 					result = 7;
 				break;
 
 			case DTK_DOY:
-				if (timestamp2tm(timestamp, &tz, tm, &fsec, NULL, NULL) != 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
-							 errmsg("timestamp out of range")));
 				result = (date2j(tm->tm_year, tm->tm_mon, tm->tm_mday)
 						  - date2j(tm->tm_year, 1, 1) + 1);
 				break;
@@ -5468,8 +5459,7 @@ generate_series_timestamp(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestamp(
-										  DirectFunctionCall2(timestamp_pl_interval,
+		fctx->current = DatumGetTimestamp(DirectFunctionCall2(timestamp_pl_interval,
 															  TimestampGetDatum(fctx->current),
 															  PointerGetDatum(&fctx->step)));
 
@@ -5549,8 +5539,7 @@ generate_series_timestamptz(PG_FUNCTION_ARGS)
 		timestamp_cmp_internal(result, fctx->finish) >= 0)
 	{
 		/* increment current in preparation for next iteration */
-		fctx->current = DatumGetTimestampTz(
-											DirectFunctionCall2(timestamptz_pl_interval,
+		fctx->current = DatumGetTimestampTz(DirectFunctionCall2(timestamptz_pl_interval,
 																TimestampTzGetDatum(fctx->current),
 																PointerGetDatum(&fctx->step)));
 

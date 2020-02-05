@@ -3,7 +3,7 @@
  * explain.c
  *	  Explain query execution plans
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  * IDENTIFICATION
@@ -57,6 +57,8 @@ static void ExplainOneQuery(Query *query, int cursorOptions,
 							IntoClause *into, ExplainState *es,
 							const char *queryString, ParamListInfo params,
 							QueryEnvironment *queryEnv);
+static void ExplainPrintJIT(ExplainState *es, int jit_flags,
+							JitInstrumentation *ji);
 static void report_triggers(ResultRelInfo *rInfo, bool show_relname,
 							ExplainState *es);
 static double elapsed_time(instr_time *starttime);
@@ -123,11 +125,20 @@ static void ExplainSubPlans(List *plans, List *ancestors,
 							const char *relationship, ExplainState *es);
 static void ExplainCustomChildren(CustomScanState *css,
 								  List *ancestors, ExplainState *es);
+static ExplainWorkersState *ExplainCreateWorkersState(int num_workers);
+static void ExplainOpenWorker(int n, ExplainState *es);
+static void ExplainCloseWorker(int n, ExplainState *es);
+static void ExplainFlushWorkersState(ExplainState *es);
 static void ExplainProperty(const char *qlabel, const char *unit,
 							const char *value, bool numeric, ExplainState *es);
+static void ExplainOpenSetAsideGroup(const char *objtype, const char *labelname,
+									 bool labeled, int depth, ExplainState *es);
+static void ExplainSaveGroup(ExplainState *es, int depth, int *state_save);
+static void ExplainRestoreGroup(ExplainState *es, int depth, int *state_save);
 static void ExplainDummyGroup(const char *objtype, const char *labelname,
 							  ExplainState *es);
 static void ExplainXMLTag(const char *tagname, int flags, ExplainState *es);
+static void ExplainIndentText(ExplainState *es);
 static void ExplainJSONLineEnding(ExplainState *es);
 static void ExplainYAMLLineStarting(ExplainState *es);
 static void escape_yaml(StringInfo buf, const char *str);
@@ -139,9 +150,8 @@ static void escape_yaml(StringInfo buf, const char *str);
  *	  execute an EXPLAIN command
  */
 void
-ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
-			 ParamListInfo params, QueryEnvironment *queryEnv,
-			 DestReceiver *dest)
+ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
+			 ParamListInfo params, DestReceiver *dest)
 {
 	ExplainState *es = NewExplainState();
 	TupOutputState *tstate;
@@ -254,7 +264,7 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt, const char *queryString,
 		{
 			ExplainOneQuery(lfirst_node(Query, l),
 							CURSOR_OPT_PARALLEL_OK, NULL, es,
-							queryString, params, queryEnv);
+							pstate->p_sourcetext, params, pstate->p_queryEnv);
 
 			/* Separate plans with an appropriate separator */
 			if (lnext(rewritten, l) != NULL)
@@ -616,17 +626,11 @@ ExplainPrintSettings(ExplainState *es)
 	/* request an array of relevant settings */
 	gucs = get_explain_guc_options(&num);
 
-	/* also bail out of there are no options */
-	if (!num)
-		return;
-
 	if (es->format != EXPLAIN_FORMAT_TEXT)
 	{
-		int			i;
-
 		ExplainOpenGroup("Settings", "Settings", true, es);
 
-		for (i = 0; i < num; i++)
+		for (int i = 0; i < num; i++)
 		{
 			char	   *setting;
 			struct config_generic *conf = gucs[i];
@@ -640,12 +644,15 @@ ExplainPrintSettings(ExplainState *es)
 	}
 	else
 	{
-		int			i;
 		StringInfoData str;
+
+		/* In TEXT mode, print nothing if there are no options */
+		if (num <= 0)
+			return;
 
 		initStringInfo(&str);
 
-		for (i = 0; i < num; i++)
+		for (int i = 0; i < num; i++)
 		{
 			char	   *setting;
 			struct config_generic *conf = gucs[i];
@@ -661,8 +668,7 @@ ExplainPrintSettings(ExplainState *es)
 				appendStringInfo(&str, "%s = NULL", conf->name);
 		}
 
-		if (num > 0)
-			ExplainPropertyText("Settings", str.data, es);
+		ExplainPropertyText("Settings", str.data, es);
 	}
 }
 
@@ -689,19 +695,25 @@ ExplainPrintPlan(ExplainState *es, QueryDesc *queryDesc)
 	es->rtable = queryDesc->plannedstmt->rtable;
 	ExplainPreScanNode(queryDesc->planstate, &rels_used);
 	es->rtable_names = select_rtable_names_for_explain(es->rtable, rels_used);
-	es->deparse_cxt = deparse_context_for_plan_rtable(es->rtable,
-													  es->rtable_names);
+	es->deparse_cxt = deparse_context_for_plan_tree(queryDesc->plannedstmt,
+													es->rtable_names);
 	es->printed_subplans = NULL;
 
 	/*
 	 * Sometimes we mark a Gather node as "invisible", which means that it's
-	 * not displayed in EXPLAIN output.  The purpose of this is to allow
+	 * not to be displayed in EXPLAIN output.  The purpose of this is to allow
 	 * running regression tests with force_parallel_mode=regress to get the
 	 * same results as running the same tests with force_parallel_mode=off.
+	 * Such marking is currently only supported on a Gather at the top of the
+	 * plan.  We skip that node, and we must also hide per-worker detail data
+	 * further down in the plan tree.
 	 */
 	ps = queryDesc->planstate;
 	if (IsA(ps, GatherState) &&((Gather *) ps->plan)->invisible)
+	{
 		ps = outerPlanState(ps);
+		es->hide_workers = true;
+	}
 	ExplainNode(ps, NIL, NULL, NULL, es);
 
 	/*
@@ -785,22 +797,17 @@ ExplainPrintJITSummary(ExplainState *es, QueryDesc *queryDesc)
 	if (queryDesc->estate->es_jit_worker_instr)
 		InstrJitAgg(&ji, queryDesc->estate->es_jit_worker_instr);
 
-	ExplainPrintJIT(es, queryDesc->estate->es_jit_flags, &ji, -1);
+	ExplainPrintJIT(es, queryDesc->estate->es_jit_flags, &ji);
 }
 
 /*
  * ExplainPrintJIT -
  *	  Append information about JITing to es->str.
- *
- * Can be used to print the JIT instrumentation of the backend (worker_num =
- * -1) or that of a specific worker (worker_num = ...).
  */
-void
-ExplainPrintJIT(ExplainState *es, int jit_flags,
-				JitInstrumentation *ji, int worker_num)
+static void
+ExplainPrintJIT(ExplainState *es, int jit_flags, JitInstrumentation *ji)
 {
 	instr_time	total_time;
-	bool		for_workers = (worker_num >= 0);
 
 	/* don't print information if no JITing happened */
 	if (!ji || ji->created_functions == 0)
@@ -818,16 +825,13 @@ ExplainPrintJIT(ExplainState *es, int jit_flags,
 	/* for higher density, open code the text output format */
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
-		appendStringInfoSpaces(es->str, es->indent * 2);
-		if (for_workers)
-			appendStringInfo(es->str, "JIT for worker %u:\n", worker_num);
-		else
-			appendStringInfoString(es->str, "JIT:\n");
-		es->indent += 1;
+		ExplainIndentText(es);
+		appendStringInfoString(es->str, "JIT:\n");
+		es->indent++;
 
 		ExplainPropertyInteger("Functions", NULL, ji->created_functions, es);
 
-		appendStringInfoSpaces(es->str, es->indent * 2);
+		ExplainIndentText(es);
 		appendStringInfo(es->str, "Options: %s %s, %s %s, %s %s, %s %s\n",
 						 "Inlining", jit_flags & PGJIT_INLINE ? "true" : "false",
 						 "Optimization", jit_flags & PGJIT_OPT3 ? "true" : "false",
@@ -836,7 +840,7 @@ ExplainPrintJIT(ExplainState *es, int jit_flags,
 
 		if (es->analyze && es->timing)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str,
 							 "Timing: %s %.3f ms, %s %.3f ms, %s %.3f ms, %s %.3f ms, %s %.3f ms\n",
 							 "Generation", 1000.0 * INSTR_TIME_GET_DOUBLE(ji->generation_counter),
@@ -846,11 +850,10 @@ ExplainPrintJIT(ExplainState *es, int jit_flags,
 							 "Total", 1000.0 * INSTR_TIME_GET_DOUBLE(total_time));
 		}
 
-		es->indent -= 1;
+		es->indent--;
 	}
 	else
 	{
-		ExplainPropertyInteger("Worker Number", NULL, worker_num, es);
 		ExplainPropertyInteger("Functions", NULL, ji->created_functions, es);
 
 		ExplainOpenGroup("Options", "Options", true, es);
@@ -1034,6 +1037,14 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
 				*rels_used = bms_add_member(*rels_used,
 											((ModifyTable *) plan)->exclRelRTI);
 			break;
+		case T_Append:
+			*rels_used = bms_add_members(*rels_used,
+										 ((Append *) plan)->apprelids);
+			break;
+		case T_MergeAppend:
+			*rels_used = bms_add_members(*rels_used,
+										 ((MergeAppend *) plan)->apprelids);
+			break;
 		default:
 			break;
 	}
@@ -1049,17 +1060,18 @@ ExplainPreScanNode(PlanState *planstate, Bitmapset **rels_used)
  * We need to work from a PlanState node, not just a Plan node, in order to
  * get at the instrumentation data (if any) as well as the list of subplans.
  *
- * ancestors is a list of parent PlanState nodes, most-closely-nested first.
- * These are needed in order to interpret PARAM_EXEC Params.
+ * ancestors is a list of parent Plan and SubPlan nodes, most-closely-nested
+ * first.  These are needed in order to interpret PARAM_EXEC Params.
  *
  * relationship describes the relationship of this plan node to its parent
  * (eg, "Outer", "Inner"); it can be null at top level.  plan_name is an
  * optional name to be attached to the node.
  *
  * In text format, es->indent is controlled in this function since we only
- * want it to change at plan-node boundaries.  In non-text formats, es->indent
- * corresponds to the nesting depth of logical output groups, and therefore
- * is controlled by ExplainOpenGroup/ExplainCloseGroup.
+ * want it to change at plan-node boundaries (but a few subroutines will
+ * transiently increment it).  In non-text formats, es->indent corresponds
+ * to the nesting depth of logical output groups, and therefore is controlled
+ * by ExplainOpenGroup/ExplainCloseGroup.
  */
 static void
 ExplainNode(PlanState *planstate, List *ancestors,
@@ -1073,9 +1085,20 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	const char *partialmode = NULL;
 	const char *operation = NULL;
 	const char *custom_name = NULL;
+	ExplainWorkersState *save_workers_state = es->workers_state;
 	int			save_indent = es->indent;
 	bool		haschildren;
 
+	/*
+	 * Prepare per-worker output buffers, if needed.  We'll append the data in
+	 * these to the main output string further down.
+	 */
+	if (planstate->worker_instrument && es->analyze && !es->hide_workers)
+		es->workers_state = ExplainCreateWorkersState(planstate->worker_instrument->num_workers);
+	else
+		es->workers_state = NULL;
+
+	/* Identify plan node type, and print generic details */
 	switch (nodeTag(plan))
 	{
 		case T_Result:
@@ -1307,13 +1330,13 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	{
 		if (plan_name)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str, "%s\n", plan_name);
 			es->indent++;
 		}
 		if (es->indent)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfoString(es->str, "->  ");
 			es->indent += 2;
 		}
@@ -1557,6 +1580,56 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 		appendStringInfoChar(es->str, '\n');
 
+	/* prepare per-worker general execution details */
+	if (es->workers_state && es->verbose)
+	{
+		WorkerInstrumentation *w = planstate->worker_instrument;
+
+		for (int n = 0; n < w->num_workers; n++)
+		{
+			Instrumentation *instrument = &w->instrument[n];
+			double		nloops = instrument->nloops;
+			double		startup_ms;
+			double		total_ms;
+			double		rows;
+
+			if (nloops <= 0)
+				continue;
+			startup_ms = 1000.0 * instrument->startup / nloops;
+			total_ms = 1000.0 * instrument->total / nloops;
+			rows = instrument->ntuples / nloops;
+
+			ExplainOpenWorker(n, es);
+
+			if (es->format == EXPLAIN_FORMAT_TEXT)
+			{
+				ExplainIndentText(es);
+				if (es->timing)
+					appendStringInfo(es->str,
+									 "actual time=%.3f..%.3f rows=%.0f loops=%.0f\n",
+									 startup_ms, total_ms, rows, nloops);
+				else
+					appendStringInfo(es->str,
+									 "actual rows=%.0f loops=%.0f\n",
+									 rows, nloops);
+			}
+			else
+			{
+				if (es->timing)
+				{
+					ExplainPropertyFloat("Actual Startup Time", "ms",
+										 startup_ms, 3, es);
+					ExplainPropertyFloat("Actual Total Time", "ms",
+										 total_ms, 3, es);
+				}
+				ExplainPropertyFloat("Actual Rows", NULL, rows, 0, es);
+				ExplainPropertyFloat("Actual Loops", NULL, nloops, 0, es);
+			}
+
+			ExplainCloseWorker(n, es);
+		}
+	}
+
 	/* target list */
 	if (es->verbose)
 		show_plan_tlist(planstate, ancestors, es);
@@ -1665,24 +1738,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 					nworkers = ((GatherState *) planstate)->nworkers_launched;
 					ExplainPropertyInteger("Workers Launched", NULL,
 										   nworkers, es);
-				}
-
-				/*
-				 * Print per-worker Jit instrumentation. Use same conditions
-				 * as for the leader's JIT instrumentation, see comment there.
-				 */
-				if (es->costs && es->verbose &&
-					outerPlanState(planstate)->worker_jit_instrument)
-				{
-					PlanState  *child = outerPlanState(planstate);
-					int			n;
-					SharedJitInstrumentation *w = child->worker_jit_instrument;
-
-					for (n = 0; n < w->num_workers; ++n)
-					{
-						ExplainPrintJIT(es, child->state->es_jit_flags,
-										&w->jit_instr[n], n);
-					}
 				}
 
 				if (gather->single_copy || es->format != EXPLAIN_FORMAT_TEXT)
@@ -1864,78 +1919,53 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			break;
 	}
 
+	/*
+	 * Prepare per-worker JIT instrumentation.  As with the overall JIT
+	 * summary, this is printed only if printing costs is enabled.
+	 */
+	if (es->workers_state && es->costs && es->verbose)
+	{
+		SharedJitInstrumentation *w = planstate->worker_jit_instrument;
+
+		if (w)
+		{
+			for (int n = 0; n < w->num_workers; n++)
+			{
+				ExplainOpenWorker(n, es);
+				ExplainPrintJIT(es, planstate->state->es_jit_flags,
+								&w->jit_instr[n]);
+				ExplainCloseWorker(n, es);
+			}
+		}
+	}
+
 	/* Show buffer usage */
 	if (es->buffers && planstate->instrument)
 		show_buffer_usage(es, &planstate->instrument->bufusage);
 
-	/* Show worker detail */
-	if (es->analyze && es->verbose && planstate->worker_instrument)
+	/* Prepare per-worker buffer usage */
+	if (es->workers_state && es->buffers && es->verbose)
 	{
 		WorkerInstrumentation *w = planstate->worker_instrument;
-		bool		opened_group = false;
-		int			n;
 
-		for (n = 0; n < w->num_workers; ++n)
+		for (int n = 0; n < w->num_workers; n++)
 		{
 			Instrumentation *instrument = &w->instrument[n];
 			double		nloops = instrument->nloops;
-			double		startup_ms;
-			double		total_ms;
-			double		rows;
 
 			if (nloops <= 0)
 				continue;
-			startup_ms = 1000.0 * instrument->startup / nloops;
-			total_ms = 1000.0 * instrument->total / nloops;
-			rows = instrument->ntuples / nloops;
 
-			if (es->format == EXPLAIN_FORMAT_TEXT)
-			{
-				appendStringInfoSpaces(es->str, es->indent * 2);
-				appendStringInfo(es->str, "Worker %d: ", n);
-				if (es->timing)
-					appendStringInfo(es->str,
-									 "actual time=%.3f..%.3f rows=%.0f loops=%.0f\n",
-									 startup_ms, total_ms, rows, nloops);
-				else
-					appendStringInfo(es->str,
-									 "actual rows=%.0f loops=%.0f\n",
-									 rows, nloops);
-				es->indent++;
-				if (es->buffers)
-					show_buffer_usage(es, &instrument->bufusage);
-				es->indent--;
-			}
-			else
-			{
-				if (!opened_group)
-				{
-					ExplainOpenGroup("Workers", "Workers", false, es);
-					opened_group = true;
-				}
-				ExplainOpenGroup("Worker", NULL, true, es);
-				ExplainPropertyInteger("Worker Number", NULL, n, es);
-
-				if (es->timing)
-				{
-					ExplainPropertyFloat("Actual Startup Time", "ms",
-										 startup_ms, 3, es);
-					ExplainPropertyFloat("Actual Total Time", "ms",
-										 total_ms, 3, es);
-				}
-				ExplainPropertyFloat("Actual Rows", NULL, rows, 0, es);
-				ExplainPropertyFloat("Actual Loops", NULL, nloops, 0, es);
-
-				if (es->buffers)
-					show_buffer_usage(es, &instrument->bufusage);
-
-				ExplainCloseGroup("Worker", NULL, true, es);
-			}
+			ExplainOpenWorker(n, es);
+			show_buffer_usage(es, &instrument->bufusage);
+			ExplainCloseWorker(n, es);
 		}
-
-		if (opened_group)
-			ExplainCloseGroup("Workers", "Workers", false, es);
 	}
+
+	/* Show per-worker details for this plan node, then pop that stack */
+	if (es->workers_state)
+		ExplainFlushWorkersState(es);
+	es->workers_state = save_workers_state;
 
 	/* Get ready to display the child plans */
 	haschildren = planstate->initPlan ||
@@ -1953,8 +1983,8 @@ ExplainNode(PlanState *planstate, List *ancestors,
 	if (haschildren)
 	{
 		ExplainOpenGroup("Plans", "Plans", false, es);
-		/* Pass current PlanState as head of ancestors list for children */
-		ancestors = lcons(planstate, ancestors);
+		/* Pass current Plan as head of ancestors list for children */
+		ancestors = lcons(plan, ancestors);
 	}
 
 	/* initPlan-s */
@@ -2075,9 +2105,9 @@ show_plan_tlist(PlanState *planstate, List *ancestors, ExplainState *es)
 		return;
 
 	/* Set up deparsing context */
-	context = set_deparse_context_planstate(es->deparse_cxt,
-											(Node *) planstate,
-											ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   plan,
+									   ancestors);
 	useprefix = list_length(es->rtable) > 1;
 
 	/* Deparse each result column (we now include resjunk ones) */
@@ -2106,9 +2136,9 @@ show_expression(Node *node, const char *qlabel,
 	char	   *exprstr;
 
 	/* Set up deparsing context */
-	context = set_deparse_context_planstate(es->deparse_cxt,
-											(Node *) planstate,
-											ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   planstate->plan,
+									   ancestors);
 
 	/* Deparse the expression */
 	exprstr = deparse_expression(node, context, useprefix, false);
@@ -2209,7 +2239,7 @@ show_agg_keys(AggState *astate, List *ancestors,
 	if (plan->numCols > 0 || plan->groupingSets)
 	{
 		/* The key columns refer to the tlist of the child plan */
-		ancestors = lcons(astate, ancestors);
+		ancestors = lcons(plan, ancestors);
 
 		if (plan->groupingSets)
 			show_grouping_sets(outerPlanState(astate), plan, ancestors, es);
@@ -2232,9 +2262,9 @@ show_grouping_sets(PlanState *planstate, Agg *agg,
 	ListCell   *lc;
 
 	/* Set up deparsing context */
-	context = set_deparse_context_planstate(es->deparse_cxt,
-											(Node *) planstate,
-											ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   planstate->plan,
+									   ancestors);
 	useprefix = (list_length(es->rtable) > 1 || es->verbose);
 
 	ExplainOpenGroup("Grouping Sets", "Grouping Sets", false, es);
@@ -2339,7 +2369,7 @@ show_group_keys(GroupState *gstate, List *ancestors,
 	Group	   *plan = (Group *) gstate->ss.ps.plan;
 
 	/* The key columns refer to the tlist of the child plan */
-	ancestors = lcons(gstate, ancestors);
+	ancestors = lcons(plan, ancestors);
 	show_sort_group_keys(outerPlanState(gstate), "Group Key",
 						 plan->numCols, plan->grpColIdx,
 						 NULL, NULL, NULL,
@@ -2371,9 +2401,9 @@ show_sort_group_keys(PlanState *planstate, const char *qlabel,
 	initStringInfo(&sortkeybuf);
 
 	/* Set up deparsing context */
-	context = set_deparse_context_planstate(es->deparse_cxt,
-											(Node *) planstate,
-											ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   plan,
+									   ancestors);
 	useprefix = (list_length(es->rtable) > 1 || es->verbose);
 
 	for (keyno = 0; keyno < nkeys; keyno++)
@@ -2479,9 +2509,9 @@ show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 	ListCell   *lc;
 
 	/* Set up deparsing context */
-	context = set_deparse_context_planstate(es->deparse_cxt,
-											(Node *) planstate,
-											ancestors);
+	context = set_deparse_context_plan(es->deparse_cxt,
+									   planstate->plan,
+									   ancestors);
 	useprefix = list_length(es->rtable) > 1;
 
 	/* Get the tablesample method name */
@@ -2507,7 +2537,7 @@ show_tablesample(TableSampleClause *tsc, PlanState *planstate,
 	{
 		bool		first = true;
 
-		appendStringInfoSpaces(es->str, es->indent * 2);
+		ExplainIndentText(es);
 		appendStringInfo(es->str, "Sampling: %s (", method_name);
 		foreach(lc, params)
 		{
@@ -2554,7 +2584,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str, "Sort Method: %s  %s: %ldkB\n",
 							 sortMethod, spaceType, spaceUsed);
 		}
@@ -2566,10 +2596,18 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 		}
 	}
 
+	/*
+	 * You might think we should just skip this stanza entirely when
+	 * es->hide_workers is true, but then we'd get no sort-method output at
+	 * all.  We have to make it look like worker 0's data is top-level data.
+	 * This is easily done by just skipping the OpenWorker/CloseWorker calls.
+	 * Currently, we don't worry about the possibility that there are multiple
+	 * workers in such a case; if there are, duplicate output fields will be
+	 * emitted.
+	 */
 	if (sortstate->shared_info != NULL)
 	{
 		int			n;
-		bool		opened_group = false;
 
 		for (n = 0; n < sortstate->shared_info->num_workers; n++)
 		{
@@ -2585,30 +2623,26 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			spaceType = tuplesort_space_type_name(sinstrument->spaceType);
 			spaceUsed = sinstrument->spaceUsed;
 
+			if (es->workers_state)
+				ExplainOpenWorker(n, es);
+
 			if (es->format == EXPLAIN_FORMAT_TEXT)
 			{
-				appendStringInfoSpaces(es->str, es->indent * 2);
+				ExplainIndentText(es);
 				appendStringInfo(es->str,
-								 "Worker %d:  Sort Method: %s  %s: %ldkB\n",
-								 n, sortMethod, spaceType, spaceUsed);
+								 "Sort Method: %s  %s: %ldkB\n",
+								 sortMethod, spaceType, spaceUsed);
 			}
 			else
 			{
-				if (!opened_group)
-				{
-					ExplainOpenGroup("Workers", "Workers", false, es);
-					opened_group = true;
-				}
-				ExplainOpenGroup("Worker", NULL, true, es);
-				ExplainPropertyInteger("Worker Number", NULL, n, es);
 				ExplainPropertyText("Sort Method", sortMethod, es);
 				ExplainPropertyInteger("Sort Space Used", "kB", spaceUsed, es);
 				ExplainPropertyText("Sort Space Type", spaceType, es);
-				ExplainCloseGroup("Worker", NULL, true, es);
 			}
+
+			if (es->workers_state)
+				ExplainCloseWorker(n, es);
 		}
-		if (opened_group)
-			ExplainCloseGroup("Workers", "Workers", false, es);
 	}
 }
 
@@ -2695,7 +2729,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 		else if (hinstrument.nbatch_original != hinstrument.nbatch ||
 				 hinstrument.nbuckets_original != hinstrument.nbuckets)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str,
 							 "Buckets: %d (originally %d)  Batches: %d (originally %d)  Memory Usage: %ldkB\n",
 							 hinstrument.nbuckets,
@@ -2706,7 +2740,7 @@ show_hash_info(HashState *hashstate, ExplainState *es)
 		}
 		else
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str,
 							 "Buckets: %d  Batches: %d  Memory Usage: %ldkB\n",
 							 hinstrument.nbuckets, hinstrument.nbatch,
@@ -2732,7 +2766,7 @@ show_tidbitmap_info(BitmapHeapScanState *planstate, ExplainState *es)
 	{
 		if (planstate->exact_pages > 0 || planstate->lossy_pages > 0)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfoString(es->str, "Heap Blocks:");
 			if (planstate->exact_pages > 0)
 				appendStringInfo(es->str, " exact=%ld", planstate->exact_pages);
@@ -2868,7 +2902,7 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 		/* Show only positive counter values. */
 		if (has_shared || has_local || has_temp)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfoString(es->str, "Buffers:");
 
 			if (has_shared)
@@ -2923,7 +2957,7 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 		/* As above, show only positive counter values. */
 		if (has_timing)
 		{
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfoString(es->str, "I/O Timings:");
 			if (!INSTR_TIME_IS_ZERO(usage->blk_read_time))
 				appendStringInfo(es->str, " read=%0.3f",
@@ -3211,7 +3245,7 @@ show_modifytable_info(ModifyTableState *mtstate, List *ancestors,
 			 */
 			if (es->format == EXPLAIN_FORMAT_TEXT)
 			{
-				appendStringInfoSpaces(es->str, es->indent * 2);
+				ExplainIndentText(es);
 				appendStringInfoString(es->str,
 									   fdwroutine ? foperation : operation);
 			}
@@ -3344,7 +3378,7 @@ ExplainMemberNodes(PlanState **planstates, int nsubnodes, int nplans,
  * Explain a list of SubPlans (or initPlans, which also use SubPlan nodes).
  *
  * The ancestors list should already contain the immediate parent of these
- * SubPlanStates.
+ * SubPlans.
  */
 static void
 ExplainSubPlans(List *plans, List *ancestors,
@@ -3372,8 +3406,17 @@ ExplainSubPlans(List *plans, List *ancestors,
 		es->printed_subplans = bms_add_member(es->printed_subplans,
 											  sp->plan_id);
 
+		/*
+		 * Treat the SubPlan node as an ancestor of the plan node(s) within
+		 * it, so that ruleutils.c can find the referents of subplan
+		 * parameters.
+		 */
+		ancestors = lcons(sp, ancestors);
+
 		ExplainNode(sps->planstate, ancestors,
 					relationship, sp->plan_name, es);
+
+		ancestors = list_delete_first(ancestors);
 	}
 }
 
@@ -3392,6 +3435,158 @@ ExplainCustomChildren(CustomScanState *css, List *ancestors, ExplainState *es)
 }
 
 /*
+ * Create a per-plan-node workspace for collecting per-worker data.
+ *
+ * Output related to each worker will be temporarily "set aside" into a
+ * separate buffer, which we'll merge into the main output stream once
+ * we've processed all data for the plan node.  This makes it feasible to
+ * generate a coherent sub-group of fields for each worker, even though the
+ * code that produces the fields is in several different places in this file.
+ * Formatting of such a set-aside field group is managed by
+ * ExplainOpenSetAsideGroup and ExplainSaveGroup/ExplainRestoreGroup.
+ */
+static ExplainWorkersState *
+ExplainCreateWorkersState(int num_workers)
+{
+	ExplainWorkersState *wstate;
+
+	wstate = (ExplainWorkersState *) palloc(sizeof(ExplainWorkersState));
+	wstate->num_workers = num_workers;
+	wstate->worker_inited = (bool *) palloc0(num_workers * sizeof(bool));
+	wstate->worker_str = (StringInfoData *)
+		palloc0(num_workers * sizeof(StringInfoData));
+	wstate->worker_state_save = (int *) palloc(num_workers * sizeof(int));
+	return wstate;
+}
+
+/*
+ * Begin or resume output into the set-aside group for worker N.
+ */
+static void
+ExplainOpenWorker(int n, ExplainState *es)
+{
+	ExplainWorkersState *wstate = es->workers_state;
+
+	Assert(wstate);
+	Assert(n >= 0 && n < wstate->num_workers);
+
+	/* Save prior output buffer pointer */
+	wstate->prev_str = es->str;
+
+	if (!wstate->worker_inited[n])
+	{
+		/* First time through, so create the buffer for this worker */
+		initStringInfo(&wstate->worker_str[n]);
+		es->str = &wstate->worker_str[n];
+
+		/*
+		 * Push suitable initial formatting state for this worker's field
+		 * group.  We allow one extra logical nesting level, since this group
+		 * will eventually be wrapped in an outer "Workers" group.
+		 */
+		ExplainOpenSetAsideGroup("Worker", NULL, true, 2, es);
+
+		/*
+		 * In non-TEXT formats we always emit a "Worker Number" field, even if
+		 * there's no other data for this worker.
+		 */
+		if (es->format != EXPLAIN_FORMAT_TEXT)
+			ExplainPropertyInteger("Worker Number", NULL, n, es);
+
+		wstate->worker_inited[n] = true;
+	}
+	else
+	{
+		/* Resuming output for a worker we've already emitted some data for */
+		es->str = &wstate->worker_str[n];
+
+		/* Restore formatting state saved by last ExplainCloseWorker() */
+		ExplainRestoreGroup(es, 2, &wstate->worker_state_save[n]);
+	}
+
+	/*
+	 * In TEXT format, prefix the first output line for this worker with
+	 * "Worker N:".  Then, any additional lines should be indented one more
+	 * stop than the "Worker N" line is.
+	 */
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		if (es->str->len == 0)
+		{
+			ExplainIndentText(es);
+			appendStringInfo(es->str, "Worker %d:  ", n);
+		}
+
+		es->indent++;
+	}
+}
+
+/*
+ * End output for worker N --- must pair with previous ExplainOpenWorker call
+ */
+static void
+ExplainCloseWorker(int n, ExplainState *es)
+{
+	ExplainWorkersState *wstate = es->workers_state;
+
+	Assert(wstate);
+	Assert(n >= 0 && n < wstate->num_workers);
+	Assert(wstate->worker_inited[n]);
+
+	/*
+	 * Save formatting state in case we do another ExplainOpenWorker(), then
+	 * pop the formatting stack.
+	 */
+	ExplainSaveGroup(es, 2, &wstate->worker_state_save[n]);
+
+	/*
+	 * In TEXT format, if we didn't actually produce any output line(s) then
+	 * truncate off the partial line emitted by ExplainOpenWorker.  (This is
+	 * to avoid bogus output if, say, show_buffer_usage chooses not to print
+	 * anything for the worker.)  Also fix up the indent level.
+	 */
+	if (es->format == EXPLAIN_FORMAT_TEXT)
+	{
+		while (es->str->len > 0 && es->str->data[es->str->len - 1] != '\n')
+			es->str->data[--(es->str->len)] = '\0';
+
+		es->indent--;
+	}
+
+	/* Restore prior output buffer pointer */
+	es->str = wstate->prev_str;
+}
+
+/*
+ * Print per-worker info for current node, then free the ExplainWorkersState.
+ */
+static void
+ExplainFlushWorkersState(ExplainState *es)
+{
+	ExplainWorkersState *wstate = es->workers_state;
+
+	ExplainOpenGroup("Workers", "Workers", false, es);
+	for (int i = 0; i < wstate->num_workers; i++)
+	{
+		if (wstate->worker_inited[i])
+		{
+			/* This must match previous ExplainOpenSetAsideGroup call */
+			ExplainOpenGroup("Worker", NULL, true, es);
+			appendStringInfoString(es->str, wstate->worker_str[i].data);
+			ExplainCloseGroup("Worker", NULL, true, es);
+
+			pfree(wstate->worker_str[i].data);
+		}
+	}
+	ExplainCloseGroup("Workers", "Workers", false, es);
+
+	pfree(wstate->worker_inited);
+	pfree(wstate->worker_str);
+	pfree(wstate->worker_state_save);
+	pfree(wstate);
+}
+
+/*
  * Explain a property, such as sort keys or targets, that takes the form of
  * a list of unlabeled items.  "data" is a list of C strings.
  */
@@ -3404,7 +3599,7 @@ ExplainPropertyList(const char *qlabel, List *data, ExplainState *es)
 	switch (es->format)
 	{
 		case EXPLAIN_FORMAT_TEXT:
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			appendStringInfo(es->str, "%s: ", qlabel);
 			foreach(lc, data)
 			{
@@ -3525,7 +3720,7 @@ ExplainProperty(const char *qlabel, const char *unit, const char *value,
 	switch (es->format)
 	{
 		case EXPLAIN_FORMAT_TEXT:
-			appendStringInfoSpaces(es->str, es->indent * 2);
+			ExplainIndentText(es);
 			if (unit)
 				appendStringInfo(es->str, "%s: %s %s\n", qlabel, value, unit);
 			else
@@ -3717,6 +3912,117 @@ ExplainCloseGroup(const char *objtype, const char *labelname,
 }
 
 /*
+ * Open a group of related objects, without emitting actual data.
+ *
+ * Prepare the formatting state as though we were beginning a group with
+ * the identified properties, but don't actually emit anything.  Output
+ * subsequent to this call can be redirected into a separate output buffer,
+ * and then eventually appended to the main output buffer after doing a
+ * regular ExplainOpenGroup call (with the same parameters).
+ *
+ * The extra "depth" parameter is the new group's depth compared to current.
+ * It could be more than one, in case the eventual output will be enclosed
+ * in additional nesting group levels.  We assume we don't need to track
+ * formatting state for those levels while preparing this group's output.
+ *
+ * There is no ExplainCloseSetAsideGroup --- in current usage, we always
+ * pop this state with ExplainSaveGroup.
+ */
+static void
+ExplainOpenSetAsideGroup(const char *objtype, const char *labelname,
+						 bool labeled, int depth, ExplainState *es)
+{
+	switch (es->format)
+	{
+		case EXPLAIN_FORMAT_TEXT:
+			/* nothing to do */
+			break;
+
+		case EXPLAIN_FORMAT_XML:
+			es->indent += depth;
+			break;
+
+		case EXPLAIN_FORMAT_JSON:
+			es->grouping_stack = lcons_int(0, es->grouping_stack);
+			es->indent += depth;
+			break;
+
+		case EXPLAIN_FORMAT_YAML:
+			if (labelname)
+				es->grouping_stack = lcons_int(1, es->grouping_stack);
+			else
+				es->grouping_stack = lcons_int(0, es->grouping_stack);
+			es->indent += depth;
+			break;
+	}
+}
+
+/*
+ * Pop one level of grouping state, allowing for a re-push later.
+ *
+ * This is typically used after ExplainOpenSetAsideGroup; pass the
+ * same "depth" used for that.
+ *
+ * This should not emit any output.  If state needs to be saved,
+ * save it at *state_save.  Currently, an integer save area is sufficient
+ * for all formats, but we might need to revisit that someday.
+ */
+static void
+ExplainSaveGroup(ExplainState *es, int depth, int *state_save)
+{
+	switch (es->format)
+	{
+		case EXPLAIN_FORMAT_TEXT:
+			/* nothing to do */
+			break;
+
+		case EXPLAIN_FORMAT_XML:
+			es->indent -= depth;
+			break;
+
+		case EXPLAIN_FORMAT_JSON:
+			es->indent -= depth;
+			*state_save = linitial_int(es->grouping_stack);
+			es->grouping_stack = list_delete_first(es->grouping_stack);
+			break;
+
+		case EXPLAIN_FORMAT_YAML:
+			es->indent -= depth;
+			*state_save = linitial_int(es->grouping_stack);
+			es->grouping_stack = list_delete_first(es->grouping_stack);
+			break;
+	}
+}
+
+/*
+ * Re-push one level of grouping state, undoing the effects of ExplainSaveGroup.
+ */
+static void
+ExplainRestoreGroup(ExplainState *es, int depth, int *state_save)
+{
+	switch (es->format)
+	{
+		case EXPLAIN_FORMAT_TEXT:
+			/* nothing to do */
+			break;
+
+		case EXPLAIN_FORMAT_XML:
+			es->indent += depth;
+			break;
+
+		case EXPLAIN_FORMAT_JSON:
+			es->grouping_stack = lcons_int(*state_save, es->grouping_stack);
+			es->indent += depth;
+			break;
+
+		case EXPLAIN_FORMAT_YAML:
+			es->grouping_stack = lcons_int(*state_save, es->grouping_stack);
+			es->indent += depth;
+			break;
+	}
+}
+
+/*
  * Emit a "dummy" group that never has any members.
  *
  * objtype is the type of the group object, labelname is its label within
@@ -3875,6 +4181,21 @@ ExplainXMLTag(const char *tagname, int flags, ExplainState *es)
 	appendStringInfoCharMacro(es->str, '>');
 	if ((flags & X_NOWHITESPACE) == 0)
 		appendStringInfoCharMacro(es->str, '\n');
+}
+
+/*
+ * Indent a text-format line.
+ *
+ * We indent by two spaces per indentation level.  However, when emitting
+ * data for a parallel worker there might already be data on the current line
+ * (cf. ExplainOpenWorker); in that case, don't indent any more.
+ */
+static void
+ExplainIndentText(ExplainState *es)
+{
+	Assert(es->format == EXPLAIN_FORMAT_TEXT);
+	if (es->str->len == 0 || es->str->data[es->str->len - 1] == '\n')
+		appendStringInfoSpaces(es->str, es->indent * 2);
 }
 
 /*

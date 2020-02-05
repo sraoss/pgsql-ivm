@@ -3,7 +3,7 @@
  * execParallel.c
  *	  Support routines for parallel execution.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * This file contains routines that are intended to support setting up,
@@ -181,6 +181,8 @@ ExecSerializePlan(Plan *plan, EState *estate)
 	pstmt->planTree = plan;
 	pstmt->rtable = estate->es_range_table;
 	pstmt->resultRelations = NIL;
+	pstmt->rootResultRelations = NIL;
+	pstmt->appendRelations = NIL;
 
 	/*
 	 * Transfer only parallel-safe subplans, leaving a NULL "hole" in the list

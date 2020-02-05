@@ -1,17 +1,16 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/command.h
  */
 #ifndef COMMAND_H
 #define COMMAND_H
 
+#include "fe_utils/conditional.h"
 #include "fe_utils/print.h"
 #include "fe_utils/psqlscan.h"
-#include "fe_utils/conditional.h"
-
 
 typedef enum _backslashResult
 {

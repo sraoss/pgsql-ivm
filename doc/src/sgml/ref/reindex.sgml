@@ -21,7 +21,11 @@ PostgreSQL documentation
 
  <refsynopsisdiv>
 <synopsis>
-REINDEX [ ( VERBOSE ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURRENTLY ] <replaceable class="parameter">name</replaceable>
+REINDEX [ ( <replaceable class="parameter">option</replaceable> [, ...] ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURRENTLY ] <replaceable class="parameter">name</replaceable>
+
+<phrase>where <replaceable class="parameter">option</replaceable> can be one of:</phrase>
+
+    VERBOSE
 </synopsis>
  </refsynopsisdiv>
 
@@ -161,6 +165,11 @@ REINDEX [ ( VERBOSE ) ] { INDEX | TABLE | SCHEMA | DATABASE | SYSTEM } [ CONCURR
       There are several caveats to be aware of when using this option
       &mdash; see <xref linkend="sql-reindex-concurrently"
       endterm="sql-reindex-concurrently-title"/>.
+     </para>
+     <para>
+      For temporary tables, <command>REINDEX</command> is always
+      non-concurrent, as no other session can access them, and
+      non-concurrent reindex is cheaper.
      </para>
     </listitem>
    </varlistentry>

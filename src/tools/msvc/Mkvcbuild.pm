@@ -94,7 +94,7 @@ sub mkvcbuild
 	$solution = CreateSolution($vsVersion, $config);
 
 	our @pgportfiles = qw(
-	  chklocale.c explicit_bzero.c fls.c fseeko.c getrusage.c inet_aton.c random.c
+	  chklocale.c explicit_bzero.c fls.c fseeko.c getpeereid.c getrusage.c inet_aton.c random.c
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c dlopen.c getopt.c getopt_long.c
@@ -120,15 +120,17 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
-	  base64.c config_info.c controldata_utils.c d2s.c exec.c f2s.c file_perm.c ip.c
+	  base64.c config_info.c controldata_utils.c d2s.c encnames.c exec.c
+	  f2s.c file_perm.c ip.c jsonapi.c
 	  keywords.c kwlookup.c link-canary.c md5.c
 	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c stringinfo.c unicode_norm.c username.c
-	  wait_error.c);
+	  wait_error.c wchar.c);
 
 	if ($solution->{options}->{openssl})
 	{
 		push(@pgcommonallfiles, 'sha2_openssl.c');
+		push(@pgcommonallfiles, 'protocol_openssl.c');
 	}
 	else
 	{
@@ -142,7 +144,7 @@ sub mkvcbuild
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 
 	our @pgfeutilsfiles = qw(
-	  conditional.c mbprint.c print.c psqlscan.l psqlscan.c
+	  cancel.c conditional.c mbprint.c print.c psqlscan.l psqlscan.c
 	  simple_list.c string_utils.c recovery_gen.c);
 
 	$libpgport = $solution->AddProject('libpgport', 'lib', 'misc');
@@ -250,8 +252,6 @@ sub mkvcbuild
 	$libpq->AddLibrary('ws2_32.lib');
 	$libpq->AddLibrary('wldap32.lib') if ($solution->{options}->{ldap});
 	$libpq->UseDef('src/interfaces/libpq/libpqdll.def');
-	$libpq->ReplaceFile('src/interfaces/libpq/libpqrc.c',
-		'src/interfaces/libpq/libpq.rc');
 	$libpq->AddReference($libpgcommon, $libpgport);
 
 	# The OBJS scraper doesn't know about ifdefs, so remove appropriate files
@@ -302,7 +302,7 @@ sub mkvcbuild
 	$libecpgcompat->AddIncludeDir('src/interfaces/ecpg/include');
 	$libecpgcompat->AddIncludeDir('src/interfaces/libpq');
 	$libecpgcompat->UseDef('src/interfaces/ecpg/compatlib/compatlib.def');
-	$libecpgcompat->AddReference($pgtypes, $libecpg, $libpgport);
+	$libecpgcompat->AddReference($pgtypes, $libecpg, $libpgport, $libpgcommon);
 
 	my $ecpg = $solution->AddProject('ecpg', 'exe', 'interfaces',
 		'src/interfaces/ecpg/preproc');

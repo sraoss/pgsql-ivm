@@ -3,7 +3,7 @@
  * wparser.c
  *		Standard interface to word parser
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -16,11 +16,12 @@
 #include "catalog/namespace.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
+#include "common/jsonapi.h"
 #include "funcapi.h"
 #include "tsearch/ts_cache.h"
 #include "tsearch/ts_utils.h"
 #include "utils/builtins.h"
-#include "utils/jsonapi.h"
+#include "utils/jsonfuncs.h"
 #include "utils/varlena.h"
 
 /******sql-level interface******/

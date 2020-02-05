@@ -4,7 +4,7 @@
  *	  POSTGRES heap access method definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/heapam.h
@@ -23,7 +23,9 @@
 #include "nodes/lockoptions.h"
 #include "nodes/primnodes.h"
 #include "storage/bufpage.h"
+#include "storage/dsm.h"
 #include "storage/lockdefs.h"
+#include "storage/shm_toc.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
@@ -193,6 +195,7 @@ extern Size SyncScanShmemSize(void);
 struct VacuumParams;
 extern void heap_vacuum_rel(Relation onerel,
 							struct VacuumParams *params, BufferAccessStrategy bstrategy);
+extern void parallel_vacuum_main(dsm_segment *seg, shm_toc *toc);
 
 /* in heap/heapam_visibility.c */
 extern bool HeapTupleSatisfiesVisibility(HeapTuple stup, Snapshot snapshot,
@@ -217,5 +220,7 @@ extern bool ResolveCminCmaxDuringDecoding(struct HTAB *tuplecid_data,
 										  HeapTuple htup,
 										  Buffer buffer,
 										  CommandId *cmin, CommandId *cmax);
+extern void HeapCheckForSerializableConflictOut(bool valid, Relation relation, HeapTuple tuple,
+												Buffer buffer, Snapshot snapshot);
 
 #endif							/* HEAPAM_H */

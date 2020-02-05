@@ -4,7 +4,7 @@
  *	  Search code for postgres btrees.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -142,7 +142,7 @@ _bt_search(Relation rel, BTScanInsert key, Buffer *bufP, int access,
 		offnum = _bt_binsrch(rel, key, *bufP);
 		itemid = PageGetItemId(page, offnum);
 		itup = (IndexTuple) PageGetItem(page, itemid);
-		blkno = BTreeInnerTupleGetDownLink(itup);
+		blkno = BTreeTupleGetDownLink(itup);
 		par_blkno = BufferGetBlockNumber(*bufP);
 
 		/*
@@ -2120,7 +2120,7 @@ _bt_get_endpoint(Relation rel, uint32 level, bool rightmost,
 			offnum = P_FIRSTDATAKEY(opaque);
 
 		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
-		blkno = BTreeInnerTupleGetDownLink(itup);
+		blkno = BTreeTupleGetDownLink(itup);
 
 		buf = _bt_relandgetbuf(rel, buf, blkno, BT_READ);
 		page = BufferGetPage(buf);
