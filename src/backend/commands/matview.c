@@ -4361,6 +4361,7 @@ get_securityQuals(Oid relId,Query *query)
 {
 	ParseState *pstate;
 	Relation rel;
+	ParseNamespaceItem *nsitem;
 	RangeTblEntry *rte;
 	List *securityQuals;
 	List *withCheckOptions;
@@ -4371,7 +4372,8 @@ get_securityQuals(Oid relId,Query *query)
 	pstate = make_parsestate(NULL);
 
 	rel = table_open(relId, NoLock);
-	rte = addRangeTableEntryForRelation(pstate, rel, AccessShareLock, NULL, false, false);
+	nsitem = addRangeTableEntryForRelation(pstate, rel, AccessShareLock, NULL, false, false);
+	rte = nsitem->p_rte;
 
 	get_row_security_policies(query, rte, 1,
 							  &securityQuals, &withCheckOptions,
