@@ -47,6 +47,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
@@ -544,10 +545,6 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			{
 				Aggref *aggref = (Aggref *) tle->expr;
 				const char *aggname = get_func_name(aggref->aggfnoid);
-
-				/* Check if this supports IVM */
-				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
-					elog(ERROR, "aggregate function %s is not supported", aggname);
 
 				/*
 				 * For aggregate functions except to count, add count func with the same arg parameters.
@@ -1251,8 +1248,18 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
 				break;
 			}
-		case T_SubPlan:
 		case T_Aggref:
+			{
+				/* Check if this supports IVM */
+				Aggref *aggref = (Aggref *) node;
+				const char *aggname = format_procedure(aggref->aggfnoid);
+				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+					ereport(ERROR, (
+							errmsg("aggregate function %s is not supported", aggname),
+							errhint("IVM supports only built-in aggregate functions.")));
+				break;
+			}
+		case T_SubPlan:
 		case T_GroupingFunc:
 		case T_WindowFunc:
 		case T_FuncExpr:
