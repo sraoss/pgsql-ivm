@@ -46,6 +46,7 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
+#include "utils/typcache.h"
 
 #include "utils/regproc.h"
 #include "nodes/makefuncs.h"
@@ -277,6 +278,8 @@ static void insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 static void delete_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 					   Relation matviewRel, const char *deltaname_new);
 static void truncate_view_delta(Oid delta_oid);
+static void generate_equal(StringInfo querybuf, Oid opttype,
+			   const char *leftop, const char *rightop);
 
 static void mv_InitHashTables(void);
 static SPIPlanPtr mv_FetchPreparedPlan(MV_QueryKey *key);
@@ -2889,7 +2892,7 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 		 * tuple in a view.
 		 */
 		if (!query->hasAggs)
-			keys = lappend(keys, resname);
+			keys = lappend(keys, attr);
 
 		/* For views with aggregates, we need to build SET clause for updating aggregate
 		 * values. */
@@ -2940,9 +2943,8 @@ apply_delta(Oid matviewOid, Oid tempOid_new, Oid tempOid_old, Query *query,
 			SortGroupClause *sgcl = (SortGroupClause *) lfirst(lc);
 			TargetEntry		*tle = get_sortgroupclause_tle(sgcl, query->targetList);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
-			char *resname = NameStr(attr->attname);
 
-			keys = lappend(keys, resname);
+			keys = lappend(keys, attr);
 		}
 	}
 
@@ -3432,7 +3434,8 @@ build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_n
 	{
 		foreach (lc, keys)
 		{
-			char *resname = (char *) lfirst(lc);
+			Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+			char   *resname = NameStr(attr->attname);
 			appendStringInfo(&returning_keys, "%s", quote_qualified_identifier("mv", resname));
 			if (lnext(keys, lc))
 				appendStringInfo(&returning_keys, ", ");
@@ -3482,11 +3485,17 @@ get_matching_condition_string(List *keys)
 	initStringInfo(&match_cond);
 	foreach (lc, keys)
 	{
-		char *resname = (char *) lfirst(lc);
+		Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+		char   *resname = NameStr(attr->attname);
+		char   *mv_resname = quote_qualified_identifier("mv", resname);
+		char   *diff_resname = quote_qualified_identifier("diff", resname);
+		Oid		typid = attr->atttypid;
+
 		/* Considering NULL values, we can not use simple = operator. */
-		appendStringInfo(&match_cond, "(%s OPERATOR(pg_catalog.=) %s OR (%s IS NULL AND %s IS NULL))",
-			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname),
-			quote_qualified_identifier("mv", resname), quote_qualified_identifier("diff", resname));
+		appendStringInfo(&match_cond, "(");
+		generate_equal(&match_cond, typid, mv_resname, diff_resname);
+		appendStringInfo(&match_cond, " OR (%s IS NULL AND %s IS NULL))",
+						 mv_resname, diff_resname);
 
 		if (lnext(keys, lc))
 			appendStringInfo(&match_cond, " AND ");
@@ -3515,7 +3524,8 @@ get_returning_string(List *minmax_list, List *is_min_list, List *keys)
 	appendStringInfo(&returning, "RETURNING mv.ctid AS tid, (%s) AS recalc", recalc_cond);
 	foreach (lc, keys)
 	{
-		char *resname = (char *) lfirst(lc);
+		Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+		char *resname = NameStr(attr->attname);
 		appendStringInfo(&returning, ", %s", quote_qualified_identifier("mv", resname));
 	}
 
@@ -3574,7 +3584,10 @@ get_select_for_recalc_string(List *keys)
 
 	appendStringInfo(&qry, "SELECT tid");
 	foreach (lc, keys)
-		appendStringInfo(&qry, ", %s", (char *) lfirst(lc));
+	{
+		Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+		appendStringInfo(&qry, ", %s", NameStr(attr->attname));
+	}
 
 	appendStringInfo(&qry, " FROM updt WHERE recalc");
 
@@ -3738,15 +3751,21 @@ get_plan_for_recalc(Oid matviewOid, List *namelist, List *keys, Oid *keyTypes)
 
 		if (keys)
 		{
-			int i = 1;
+			int		i = 1;
+			char	paramname[16];
 
 			appendStringInfo(&str, " WHERE (");
 			foreach (lc, keys)
 			{
-				char *resname = (char *) lfirst(lc);
+				Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+				char   *resname = NameStr(attr->attname);
+				Oid		typid = attr->atttypid;
 
-				appendStringInfo(&str, "(%s OPERATOR(pg_catalog.=) $%d OR (%s IS NULL AND $%d IS NULL))",
-					resname, i, resname, i);
+				sprintf(paramname, "$%d", i);
+				appendStringInfo(&str, "(");
+				generate_equal(&str, typid, resname, paramname);
+				appendStringInfo(&str, " OR (%s IS NULL AND %s IS NULL))",
+								 resname, paramname);
 
 				if (lnext(keys, lc))
 					appendStringInfoString(&str, " AND ");
@@ -3870,7 +3889,10 @@ insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc1);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
-			char *resname = NameStr(attr->attname);
+			char   *resname = NameStr(attr->attname);
+			char   *mv_resname = quote_qualified_identifier("mv", resname);
+			char   *diff_resname = quote_qualified_identifier("diff", resname);
+			Oid		typid = attr->atttypid;
 			Relids	tle_relids;
 
 			i++;
@@ -3898,7 +3920,8 @@ insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 				if (IsA(tle->expr, Var) &&
 					list_member(graph->vars_in_quals, (Var*) tle->expr))
 				{
-					appendStringInfo(&exists_cond, "%s mv.%s OPERATOR(pg_catalog.=) diff.%s ",sep, resname, resname);
+					appendStringInfo(&exists_cond, " %s ", sep);
+					generate_equal(&exists_cond, typid,  mv_resname, diff_resname);
 					sep = "AND";
 				}
 			}
@@ -4063,6 +4086,31 @@ delete_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 		if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 			elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	}
+}
+
+/*
+ * generate_equals
+ *
+ * Generate an equality clause using given operands' default equality
+ * operator.
+ */
+static void
+generate_equal(StringInfo querybuf, Oid opttype,
+			   const char *leftop, const char *rightop)
+{
+	TypeCacheEntry *typentry;
+
+	typentry = lookup_type_cache(opttype, TYPECACHE_EQ_OPR);
+	if (!OidIsValid(typentry->eq_opr))
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_FUNCTION),
+				 errmsg("could not identify an equality operator for type %s",
+						format_type_be(opttype))));
+
+	generate_operator_clause(querybuf,
+							 leftop, opttype,
+							 typentry->eq_opr,
+							 rightop, opttype);
 }
 
 /*

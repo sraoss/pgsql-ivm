@@ -1408,6 +1408,53 @@ DROP VIEW v;
 
 ROLLBACK;
 
+-- IMMV containing user defined type
+BEGIN;
+
+CREATE TYPE mytype;
+CREATE FUNCTION mytype_in(cstring)
+ RETURNS mytype AS 'int4in'
+ LANGUAGE INTERNAL STRICT IMMUTABLE;
+CREATE FUNCTION mytype_out(mytype)
+ RETURNS cstring AS 'int4out'
+ LANGUAGE INTERNAL STRICT IMMUTABLE;
+CREATE TYPE mytype (
+ LIKE = int4,
+ INPUT = mytype_in,
+ OUTPUT = mytype_out
+);
+
+CREATE FUNCTION mytype_eq(mytype, mytype)
+ RETURNS bool AS 'int4eq'
+ LANGUAGE INTERNAL STRICT IMMUTABLE;
+CREATE FUNCTION mytype_lt(mytype, mytype)
+ RETURNS bool AS 'int4lt'
+ LANGUAGE INTERNAL STRICT IMMUTABLE;
+CREATE FUNCTION mytype_cmp(mytype, mytype)
+ RETURNS integer AS 'btint4cmp'
+ LANGUAGE INTERNAL STRICT IMMUTABLE;
+
+CREATE OPERATOR = (
+ leftarg = mytype, rightarg = mytype,
+ procedure = mytype_eq);
+CREATE OPERATOR < (
+ leftarg = mytype, rightarg = mytype,
+ procedure = mytype_lt);
+
+CREATE OPERATOR CLASS mytype_ops
+ DEFAULT FOR TYPE mytype USING btree AS
+ OPERATOR        1       <,
+ OPERATOR        3       = ,
+ FUNCTION		1		mytype_cmp(mytype,mytype);
+
+CREATE TABLE t_mytype (x mytype);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_mytype AS
+ SELECT * FROM t_mytype;
+INSERT INTO t_mytype VALUES ('1'::mytype);
+SELECT * FROM mv_mytype;
+
+ROLLBACK;
+
 -- outer join view's targetlist must contain vars in the join conditions
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i,j,k FROM mv_base_a a LEFT JOIN mv_base_b b USING(i);
