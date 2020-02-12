@@ -70,6 +70,16 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
  4 | 40 | 104
 (4 rows)
 
+-- rename of IVM columns
+ALTER MATERIALIZED VIEW mv_ivm_1 RENAME COLUMN __ivm_count__ TO xxx;
+ERROR:  IVM column can not be renamed
+-- unique index on IVM columns
+CREATE UNIQUE INDEX ON mv_ivm_1(__ivm_count__);
+ERROR:  unique index creation on IVM columns is not supported
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__));
+ERROR:  unique index creation on IVM columns is not supported
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__ + 1));
+ERROR:  unique index creation on IVM columns is not supported
 -- result of materliazied view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
