@@ -1360,7 +1360,7 @@ Time: 16386.245 ms (00:16.386)
 <sect3>
 <title>Subqueries</title>
 <para>
-    Currently, correlated subqueries using <literal>EXISTS</literal> and simple
+    Currently, subqueries using <literal>EXISTS</literal> and simple
      subqueries in <literal>FROM</literal> clause are supported.
 </para>
 

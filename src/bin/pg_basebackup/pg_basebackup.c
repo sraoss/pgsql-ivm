@@ -1022,7 +1022,20 @@ ReceiveTarFile(PGconn *conn, PGresult *res, int rownum)
 #ifdef HAVE_LIBZ
 			if (compresslevel != 0)
 			{
-				state.ztarfile = gzdopen(dup(fileno(stdout)), "wb");
+				int		fd = dup(fileno(stdout));
+				if (fd < 0)
+				{
+					pg_log_error("could not duplicate stdout: %m");
+					exit(1);
+				}
+
+				state.ztarfile = gzdopen(fd, "wb");
+				if (state.ztarfile == NULL)
+				{
+					pg_log_error("could not open output file: %m");
+					exit(1);
+				}
+
 				if (gzsetparams(state.ztarfile, compresslevel,
 								Z_DEFAULT_STRATEGY) != Z_OK)
 				{
@@ -2076,22 +2089,6 @@ main(int argc, char **argv)
 			exit(0);
 		}
 	}
-
-	/*
-	 * Don't allow pg_basebackup to be run as root, to avoid creating files in
-	 * the data directory with ownership rights incompatible with the
-	 * postmaster.
-	 */
-#ifndef WIN32
-	if (geteuid() == 0)			/* 0 is root's uid */
-	{
-		pg_log_error("cannot be run as root");
-		fprintf(stderr,
-				_("Please log in (using, e.g., \"su\") as the (unprivileged) user that will\n"
-				  "own the server process.\n"));
-		exit(1);
-	}
-#endif
 
 	atexit(cleanup_directories_atexit);
 
