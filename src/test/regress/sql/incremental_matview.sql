@@ -1517,10 +1517,17 @@ CREATE TABLE rls_tbl(id int, data text, owner name);
 INSERT INTO rls_tbl VALUES
   (1,'foo','ivm_user'),
   (2,'bar','postgres');
+CREATE TABLE num_tbl(id int, num text);
+INSERT INTO num_tbl VALUES
+  (1,'one'),
+  (2,'two'),
+  (3,'three'),
+  (4,'four');
 CREATE POLICY rls_tbl_policy ON rls_tbl FOR SELECT TO PUBLIC USING(owner = current_user);
 CREATE POLICY rls_tbl_policy2 ON rls_tbl FOR INSERT TO PUBLIC WITH CHECK(current_user LIKE 'ivm_%');
 ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
 GRANT ALL on rls_tbl TO PUBLIC;
+GRANT ALL on num_tbl TO PUBLIC;
 
 SET SESSION AUTHORIZATION ivm_user;
 
@@ -1530,9 +1537,18 @@ INSERT INTO rls_tbl VALUES
   (3,'baz','ivm_user'),
   (4,'qux','postgres');
 SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num_tbl USING(id);
 
 RESET SESSION AUTHORIZATION;
+
+WITH 
+ x AS (UPDATE rls_tbl SET data = data || '_2' where id in (3,4)),
+ y AS (UPDATE num_tbl SET num = num || '_2' where id in (3,4))
+SELECT;
+SELECT * FROM ivm_rls2 ORDER BY 1,2,3;
+
 DROP TABLE rls_tbl CASCADE;
+DROP TABLE num_tbl CASCADE;
 DROP USER ivm_user;
 DROP USER ivm_admin;
 

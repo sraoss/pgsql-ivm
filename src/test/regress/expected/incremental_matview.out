@@ -5252,10 +5252,17 @@ CREATE TABLE rls_tbl(id int, data text, owner name);
 INSERT INTO rls_tbl VALUES
   (1,'foo','ivm_user'),
   (2,'bar','postgres');
+CREATE TABLE num_tbl(id int, num text);
+INSERT INTO num_tbl VALUES
+  (1,'one'),
+  (2,'two'),
+  (3,'three'),
+  (4,'four');
 CREATE POLICY rls_tbl_policy ON rls_tbl FOR SELECT TO PUBLIC USING(owner = current_user);
 CREATE POLICY rls_tbl_policy2 ON rls_tbl FOR INSERT TO PUBLIC WITH CHECK(current_user LIKE 'ivm_%');
 ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
 GRANT ALL on rls_tbl TO PUBLIC;
+GRANT ALL on num_tbl TO PUBLIC;
 SET SESSION AUTHORIZATION ivm_user;
 CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls AS SELECT * FROM rls_tbl;
 SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
@@ -5274,9 +5281,27 @@ SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
   3 | baz  | ivm_user
 (2 rows)
 
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num_tbl USING(id);
 RESET SESSION AUTHORIZATION;
+WITH 
+ x AS (UPDATE rls_tbl SET data = data || '_2' where id in (3,4)),
+ y AS (UPDATE num_tbl SET num = num || '_2' where id in (3,4))
+SELECT;
+--
+(1 row)
+
+SELECT * FROM ivm_rls2 ORDER BY 1,2,3;
+ id | data  |  owner   |   num   
+----+-------+----------+---------
+  1 | foo   | ivm_user | one
+  3 | baz_2 | ivm_user | three_2
+(2 rows)
+
 DROP TABLE rls_tbl CASCADE;
-NOTICE:  drop cascades to materialized view ivm_rls
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to materialized view ivm_rls
+drop cascades to materialized view ivm_rls2
+DROP TABLE num_tbl CASCADE;
 DROP USER ivm_user;
 DROP USER ivm_admin;
 DROP TABLE mv_base_b CASCADE;
