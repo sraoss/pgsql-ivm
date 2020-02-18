@@ -157,6 +157,10 @@ typedef enum
 	IVM_SUB
 } IvmOp;
 
+/* ENR name for materialized view delta */
+#define NEW_DELTA_ENRNAME "new_delta"
+#define OLD_DELTA_ENRNAME "old_delta"
+
 /*
  * TermEffect
  *
@@ -2966,13 +2970,13 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 	{
 		EphemeralNamedRelation enr = palloc(sizeof(EphemeralNamedRelationData));
 		int rc;
-		char *qry = build_query_for_apply_old_delta(matviewname, "old_delta",
+		char *qry = build_query_for_apply_old_delta(matviewname, OLD_DELTA_ENRNAME,
 													keys, aggs_list_buf, aggs_set_old,
 													minmax_list, is_min_list,
 													count_colname);
 
 		/* convert tuplestores to ENR, and register for SPI */
-		enr->md.name = pstrdup("old_delta");
+		enr->md.name = pstrdup(OLD_DELTA_ENRNAME);
 		enr->md.reliddesc = matviewOid;
 		enr->md.tupdesc = NULL;
 		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
@@ -2996,7 +3000,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 
 		/* Insert dangling tuple for outer join views */
 		if (graph && !query->hasAggs)
-			insert_dangling_tuples(graph, query, matviewRel, "old_delta");
+			insert_dangling_tuples(graph, query, matviewRel, OLD_DELTA_ENRNAME);
 
 	}
 	/* For tuple insertion */
@@ -3004,11 +3008,11 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 	{
 		EphemeralNamedRelation enr = palloc(sizeof(EphemeralNamedRelationData));
 		int rc;
-		char *qry = build_query_for_apply_new_delta(matviewname, "new_delta",
+		char *qry = build_query_for_apply_new_delta(matviewname, NEW_DELTA_ENRNAME,
 													keys, aggs_set_new, count_colname);
 
 		/* convert tuplestores to ENR, and register for SPI */
-		enr->md.name = pstrdup("new_delta");
+		enr->md.name = pstrdup(NEW_DELTA_ENRNAME);
 		enr->md.reliddesc = matviewOid;
 		enr->md.tupdesc = NULL;
 		enr->md.enrtype = ENR_NAMED_TUPLESTORE;
@@ -3025,7 +3029,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 
 		/* Delete dangling tuple for outer join views */
 		if (graph && !query->hasAggs)
-			delete_dangling_tuples(graph, query, matviewRel, "new_delta");
+			delete_dangling_tuples(graph, query, matviewRel, NEW_DELTA_ENRNAME);
 	}
 
 	/* We're done maintaining the materialized view. */
