@@ -28,6 +28,14 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 ROLLBACK;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 
+-- rename of IVM columns
+ALTER MATERIALIZED VIEW mv_ivm_1 RENAME COLUMN __ivm_count__ TO xxx;
+
+-- unique index on IVM columns
+CREATE UNIQUE INDEX ON mv_ivm_1(__ivm_count__);
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__));
+CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__ + 1));
+
 -- result of materliazied view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
@@ -1505,6 +1513,52 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHER
 
 -- LIMIT/OFFSET is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
+
+-- base table has row level security
+DROP USER IF EXISTS ivm_admin;
+DROP USER IF EXISTS ivm_user;
+CREATE USER ivm_admin;
+CREATE USER ivm_user;
+SET SESSION AUTHORIZATION ivm_admin;
+
+CREATE TABLE rls_tbl(id int, data text, owner name);
+INSERT INTO rls_tbl VALUES
+  (1,'foo','ivm_user'),
+  (2,'bar','postgres');
+CREATE TABLE num_tbl(id int, num text);
+INSERT INTO num_tbl VALUES
+  (1,'one'),
+  (2,'two'),
+  (3,'three'),
+  (4,'four');
+CREATE POLICY rls_tbl_policy ON rls_tbl FOR SELECT TO PUBLIC USING(owner = current_user);
+CREATE POLICY rls_tbl_policy2 ON rls_tbl FOR INSERT TO PUBLIC WITH CHECK(current_user LIKE 'ivm_%');
+ALTER TABLE rls_tbl ENABLE ROW LEVEL SECURITY;
+GRANT ALL on rls_tbl TO PUBLIC;
+GRANT ALL on num_tbl TO PUBLIC;
+
+SET SESSION AUTHORIZATION ivm_user;
+
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls AS SELECT * FROM rls_tbl;
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+INSERT INTO rls_tbl VALUES
+  (3,'baz','ivm_user'),
+  (4,'qux','postgres');
+SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
+CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num_tbl USING(id);
+
+RESET SESSION AUTHORIZATION;
+
+WITH 
+ x AS (UPDATE rls_tbl SET data = data || '_2' where id in (3,4)),
+ y AS (UPDATE num_tbl SET num = num || '_2' where id in (3,4))
+SELECT;
+SELECT * FROM ivm_rls2 ORDER BY 1,2,3;
+
+DROP TABLE rls_tbl CASCADE;
+DROP TABLE num_tbl CASCADE;
+DROP USER ivm_user;
+DROP USER ivm_admin;
 
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;
