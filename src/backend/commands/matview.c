@@ -61,6 +61,7 @@
 #include "optimizer/optimizer.h"
 #include "commands/defrem.h"
 #include "rewrite/rewriteManip.h"
+#include "rewrite/rowsecurity.h"
 #include "nodes/pathnodes.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
@@ -287,7 +288,7 @@ static void mv_HashPreparedPlan(MV_QueryKey *key, SPIPlanPtr plan);
 static void mv_BuildQueryKey(MV_QueryKey *key, Oid matview_id, int32 query_type);
 static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
 static void clean_up_IVM_temptable(Oid tempOid_old, Oid tempOid_new);
-
+static List *get_securityQuals(Oid relId, int rt_index, Query *query);
 
 /*
  * SetMatViewPopulatedState
@@ -1492,6 +1493,17 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	 */
 	CheckTableNotInUse(matviewRel, "refresh a materialized view incrementally");
 
+	/*
+	 * Switch to the owner's userid, so that any functions are run as that
+	 * user.  Also arrange to make GUC variable changes local to this command.
+	 * Don't lock it down too tight to create a temporary table just yet.  We
+	 * will switch modes when we are about to execute user code.
+	 */
+	relowner = matviewRel->rd_rel->relowner;
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+	save_nestlevel = NewGUCNestLevel();
 
 	/* join tree analysis for outer join */
 	foreach(lc, query->rtable)
@@ -1522,18 +1534,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 												  pstate, NIL);
 	/* Rewrite for counting algorithm and aggregates functions */
 	rewritten = rewrite_query_for_counting_and_aggregates(rewritten, pstate);
-
-	/*
-	 * Switch to the owner's userid, so that any functions are run as that
-	 * user.  Also arrange to make GUC variable changes local to this command.
-	 * Don't lock it down too tight to create a temporary table just yet.  We
-	 * will switch modes when we are about to execute user code.
-	 */
-	relowner = matviewRel->rd_rel->relowner;
-	GetUserIdAndSecContext(&save_userid, &save_sec_context);
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-	save_nestlevel = NewGUCNestLevel();
 
 	/* Create temporary tables to store view deltas */
 	tableSpace = GetDefaultTablespace(RELPERSISTENCE_TEMP, false);
@@ -1757,6 +1757,9 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 
 			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
 			rte = nsitem->p_rte;
+			/* if base table has RLS, set secuirty condition to enr */
+			rte->securityQuals = get_securityQuals(table->table_id, list_length(query->rtable) + 1, query);
+
 			query->rtable = lappend(query->rtable, rte);
 			table->old_rtes = lappend(table->old_rtes, rte);
 
@@ -1781,6 +1784,9 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 
 			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
 			rte = nsitem->p_rte;
+			/* if base table has RLS, set secuirty condition to enr*/
+			rte->securityQuals = get_securityQuals(table->table_id, list_length(query->rtable) + 1, query);
+
 			query->rtable = lappend(query->rtable, rte);
 			table->new_rtes = lappend(table->new_rtes, rte);
 
@@ -1843,6 +1849,27 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 	raw = (RawStmt*)linitial(raw_parser(str.data));
 	sub = transformStmt(pstate, raw->stmt);
 
+	/* If this query has setOperations, RTEs in rtables has a subquery which contains ENR */
+	if (sub->setOperations != NULL)
+	{
+		ListCell *lc;
+
+		/* add securityQuals for tuplestores */
+		foreach (lc, sub->rtable)
+		{
+			RangeTblEntry *rte;
+			RangeTblEntry *sub_rte;
+
+			rte = (RangeTblEntry *)lfirst(lc);
+			Assert(rte->subquery != NULL);
+
+			sub_rte = (RangeTblEntry *)linitial(rte->subquery->rtable);
+			if (sub_rte->rtekind == RTE_NAMEDTUPLESTORE)
+				/* rt_index is always 1, bacause subquery has enr_rte only */
+				sub_rte->securityQuals = get_securityQuals(sub_rte->relid, 1, sub);
+		}
+	}
+
 	/* save the original RTE */
 	table->original_rte = copyObject(rte);
 
@@ -1900,6 +1927,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	RawStmt *raw;
 	Query *sub;
 	int	i;
+	RangeTblEntry *enr_rte;
 
 	/* Create a ParseState for rewriting the view definition query */
 	pstate = make_parsestate(NULL);
@@ -1941,6 +1969,10 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	rte->insertedCols = NULL;
 	rte->updatedCols = NULL;
 	rte->extraUpdatedCols = NULL;
+	/* if base table has RLS, set secuirty condition to enr*/
+	enr_rte = (RangeTblEntry *)linitial(sub->rtable);
+	/* rt_index is always 1, bacause subquery has enr_rte only */
+	enr_rte->securityQuals = get_securityQuals(relid, 1, sub);
 
 	return rte;
 }
@@ -4385,4 +4417,47 @@ bool
 isIvmColumn(const char *s)
 {
 	return (strncmp(s, "__ivm_", 6) == 0);
+}
+
+/*
+ * get_securityQuals
+ *
+ * Get row security policy on a relation.
+ * This is used by IVM for copying RLS from base table to enr.
+ */
+static List *
+get_securityQuals(Oid relId, int rt_index, Query *query)
+{
+	ParseState *pstate;
+	Relation rel;
+	ParseNamespaceItem *nsitem;
+	RangeTblEntry *rte;
+	List *securityQuals;
+	List *withCheckOptions;
+	bool  hasRowSecurity;
+	bool  hasSubLinks;
+
+	securityQuals = NIL;
+	pstate = make_parsestate(NULL);
+
+	rel = table_open(relId, NoLock);
+	nsitem = addRangeTableEntryForRelation(pstate, rel, AccessShareLock, NULL, false, false);
+	rte = nsitem->p_rte;
+
+	get_row_security_policies(query, rte, rt_index,
+							  &securityQuals, &withCheckOptions,
+							  &hasRowSecurity, &hasSubLinks);
+
+	/*
+	 * Make sure the query is marked correctly if row level security
+	 * applies, or if the new quals had sublinks.
+	 */
+	if (hasRowSecurity)
+		query->hasRowSecurity = true;
+	if (hasSubLinks)
+		query->hasSubLinks = true;
+
+	table_close(rel, NoLock);
+
+	return securityQuals;
 }
