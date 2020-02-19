@@ -1813,7 +1813,6 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 	ParseState *pstate;
 	char *relname;
 	int i;
-	ListCell *lc;
 
 	pstate = make_parsestate(NULL);
 	pstate->p_queryEnv = queryEnv;
@@ -1850,14 +1849,21 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 	raw = (RawStmt*)linitial(raw_parser(str.data));
 	sub = transformStmt(pstate, raw->stmt);
 
-	/* add securityQuals for tuplestores */
-	foreach(lc, sub->rtable)
+	/* If this query has setOperations, RTEs in rtables has a subquery which contains ENR */
+	if (sub->setOperations != NULL)
 	{
-		RangeTblEntry *rte = (RangeTblEntry *)lfirst(lc);
-		/* if contain UNION ALL clauses, rte has a subquey */
-		if (rte->subquery)
+		ListCell *lc;
+
+		/* add securityQuals for tuplestores */
+		foreach (lc, sub->rtable)
 		{
-			RangeTblEntry * sub_rte = (RangeTblEntry *)linitial(rte->subquery->rtable);
+			RangeTblEntry *rte;
+			RangeTblEntry *sub_rte;
+
+			rte = (RangeTblEntry *)lfirst(lc);
+			Assert(rte->subquery != NULL);
+
+			sub_rte = (RangeTblEntry *)linitial(rte->subquery->rtable);
 			if (sub_rte->rtekind == RTE_NAMEDTUPLESTORE)
 				/* rt_index is always 1, bacause subquery has enr_rte only */
 				sub_rte->securityQuals = get_securityQuals(sub_rte->relid, 1, sub);
@@ -4441,7 +4447,6 @@ get_securityQuals(Oid relId, int rt_index, Query *query)
 	get_row_security_policies(query, rte, rt_index,
 							  &securityQuals, &withCheckOptions,
 							  &hasRowSecurity, &hasSubLinks);
-	rte->securityQuals = list_concat(securityQuals, rte->securityQuals);
 
 	/*
 	 * Make sure the query is marked correctly if row level security
