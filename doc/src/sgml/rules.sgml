@@ -1528,6 +1528,18 @@ postgres=# EXPLAIN SELECT * FROM m1;
 </para>
 </sect2>
 
+<sect2>
+<title>Row Level Security</title>
+<para>
+    If some base table have row level security policy, rows that are not invisible
+    for the materialized view are excluded from the result. In addition, such rows
+    are excluded also when views are incrementally maintained. However, if a new
+    policy is defined  or policies are changed after materialized view definition,
+    the new policy will not applied to the view contents. To apply the new policy,
+    you need to refresh materialized views.
+</para>
+</sect2>
+
 </sect1>
 
 <sect1 id="rules-update">
