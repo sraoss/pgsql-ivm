@@ -1162,7 +1162,7 @@ postgres=# SELECt * FROM m; -- automatically updated
  4
 (4 rows)
 </programlisting>
-    <acronym>IMMV</acronym>s have hidden columns which are added
+    <acronym>IMMV</acronym>s can have hidden columns which are added
     automatically when a materialized view is created. Their name start
     with <literal>__ivm_</literal> and they contains information required
     for maintaining <acronym>IMMV</acronym>. Such columns are not visible
@@ -1529,35 +1529,22 @@ Time: 16386.245 ms (00:16.386)
 </sect2>
 
 <sect2>
-<title><literal>DISTINCT</literal> and Tuple Duplicate</title>
+<title><literal>DISTINCT</literal></title>
 
 <para>
     <productname>PostgreSQL</productname> supports <acronym>IMMV</acronym> with
-     tuple duplicate or <literal>DISTINCT</literal>.  For example, suppose a
-     <acronym>IMMV</acronym> defined with <literal>DISTINCT</literal> on a base
-     table containing duplicated tuples.  When tuples are deleted from the base
-     table, a tuple in the view is deleted if and only when the multiplicity of the
-     tuple becomes zero.  Moreover, when tuples are inserted into the base table,
-     a tuple is inserted into the view only if the same tuple doesn't exist in it.
+    <literal>DISTINCT</literal>.  For example, suppose a <acronym>IMMV</acronym>
+    defined with <literal>DISTINCT</literal> on a base table containing duplicated
+    tuples.  When tuples are deleted from the base table, a tuple in the view is
+    deleted if and only when the multiplicity of the tuple becomes zero.  Moreover,
+    when tuples are inserted into the base table, a tuple is inserted into the
+    view only if the same tuple doesn't exist in it.
 </para>
 
 <para>
-    Physically, <acronym>IMMV</acronym> contains tuples after eliminating
-    duplicates, and the multiplicity of each tuple is stored in a hidden column
-    named <literal>__ivm_count__</literal>.  When <acronym>IMMV</acronym> without
-    <literal>DISTINCT</literal> is accessed via <literal>SELECT</literal> statement,
-    this is replaced with a subquery which uses <function>generate_series</function>
-    function to return tuples of the actual number.  We can see this internal
-    behaviour in <command>EXPLAIN</command> results, for example as below:
-<programlisting>
-postgres=# EXPLAIN SELECT * FROM m1;
-                                  QUERY PLAN
-------------------------------------------------------------------------------
- Nested Loop  (cost=0.00..61.03 rows=3000 width=2)
-   ->  Seq Scan on m1 mv  (cost=0.00..1.03 rows=3 width=10)
-   ->  Function Scan on generate_series  (cost=0.00..10.00 rows=1000 width=0)
-(3 rows)
-</programlisting>
+    Physically, <acronym>IMMV</acronym> defined with <literal>DISTINCT</literal>
+    contains tuples after eliminating duplicates, and multiplicity of each tuple
+    is stored in a hidden column named <literal>__ivm_count__</literal>. 
 </para>
 </sect2>
 
