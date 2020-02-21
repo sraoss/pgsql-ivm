@@ -1505,13 +1505,12 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/*
 	 * Switch to the owner's userid, so that any functions are run as that
 	 * user.  Also arrange to make GUC variable changes local to this command.
-	 * Don't lock it down too tight to create a temporary table just yet.  We
-	 * will switch modes when we are about to execute user code.
+	 * We will switch modes when we are about to execute user code.
 	 */
 	relowner = matviewRel->rd_rel->relowner;
 	GetUserIdAndSecContext(&save_userid, &save_sec_context);
 	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 	save_nestlevel = NewGUCNestLevel();
 
 	/* join tree analysis for outer join */
@@ -1570,12 +1569,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 									false);
 		MemoryContextSwitchTo(oldcxt);
 	}
-
-	/*
-	 * Now lock down security-restricted operations.
-	 */
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
 
 	/* for all modified tables */
 	foreach(lc, entry->tables)
