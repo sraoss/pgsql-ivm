@@ -2554,6 +2554,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 			/*
 			 * If the relids in the qual are not included, this term can not exist
 			 * because this qual references NULL values.
+			 * XXX: we assume that the qual is null-rejecting.
 			 */
 			if (!bms_is_subset(qual_relids, term->relids))
 			{
@@ -2575,7 +2576,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 
 			/*
 			 * If the relids in qual are included term1 or term2, the new term joining
-			 * these two term will survive under the condition that the qual is strict.
+			 * these terms will survive under the condition that the qual is null-rejecting.
 			 * Otherwise, the new term can not exist because the qual references NULL
 			 * values.
 			 */
@@ -3923,7 +3924,6 @@ insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 		char *sep = "";
 		char *sep2 = "";
 		int		i;
-
 
 		if (term->effect != IVM_INDIRECT_EFFECT)
 			continue;
