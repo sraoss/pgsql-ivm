@@ -29,12 +29,16 @@ ROLLBACK;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 
 -- rename of IVM columns
-ALTER MATERIALIZED VIEW mv_ivm_1 RENAME COLUMN __ivm_count__ TO xxx;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_rename AS SELECT DISTINCT * FROM mv_base_a;
+ALTER MATERIALIZED VIEW mv_ivm_rename RENAME COLUMN __ivm_count__ TO xxx;
+DROP MATERIALIZED VIEW mv_ivm_rename;
 
 -- unique index on IVM columns
-CREATE UNIQUE INDEX ON mv_ivm_1(__ivm_count__);
-CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__));
-CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__ + 1));
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_unique AS SELECT DISTINCT * FROM mv_base_a;
+CREATE UNIQUE INDEX ON mv_ivm_unique(__ivm_count__);
+CREATE UNIQUE INDEX ON mv_ivm_unique((__ivm_count__));
+CREATE UNIQUE INDEX ON mv_ivm_unique((__ivm_count__ + 1));
+DROP MATERIALIZED VIEW mv_ivm_unique;
 
 -- some query syntax
 BEGIN;
@@ -186,36 +190,39 @@ ROLLBACK;
 -- support subquery for using EXISTS()
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+SELECT *,  __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
 INSERT INTO mv_base_a VALUES(1,10),(6,60),(3,30),(3,300);
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
 INSERT INTO mv_base_b VALUES(1,101);
 INSERT INTO mv_base_b VALUES(1,111);
 INSERT INTO mv_base_b VALUES(2,102);
 INSERT INTO mv_base_b VALUES(6,106);
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
 UPDATE mv_base_a SET i = 1 WHERE j =60;
 UPDATE mv_base_b SET i = 10  WHERE k = 101;
 UPDATE mv_base_b SET k = 1002 WHERE k = 102;
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
 DELETE FROM mv_base_a WHERE (i,j) = (1,60);
 DELETE FROM mv_base_b WHERE i = 2;
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
 ROLLBACK;
 
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery2 AS SELECT a.i, a.j FROM mv_base_a a WHERE i >= 3 AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery3 AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i + 100 = b.k);
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
-SELECT *,__ivm_count__, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery4 AS SELECT DISTINCT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i + 100 = b.k);
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery4 ORDER BY i, j;
 
 INSERT INTO mv_base_b VALUES(1,101);
 UPDATE mv_base_b SET k = 200  WHERE i = 2;
 INSERT INTO mv_base_a VALUES(1,10);
 INSERT INTO mv_base_a VALUES(3,30);
 INSERT INTO mv_base_b VALUES(3,300);
-SELECT *,__ivm_count__, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
-SELECT *,__ivm_count__, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
+SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery4 ORDER BY i, j;
 ROLLBACK;
 -- support simple subquery in FROM cluase
 BEGIN;
@@ -307,6 +314,73 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
    FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SAVEPOINT p1;
+
+INSERT INTO r VALUES (1),(2),(3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO r VALUES (4),(5);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO s VALUES (1,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO s VALUES (2,3);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+INSERT INTO t VALUES (1),(2);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+INSERT INTO t VALUES (3),(4);
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM r WHERE i=1;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM r WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM s WHERE i=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM s WHERE i=4;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DELETE FROM t WHERE j=2;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+DELETE FROM t WHERE j=3;
+SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+DROP MATERIALIZED VIEW mv;
+DROP VIEW v;
+
+-- 3-way outer join (full & full) with DISTINCT
+CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
+ SELECT DISTINCT r.i, s.i, s.j, t.j
+   FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
+CREATE VIEW v(r, si, sj, t) AS
+ SELECT DISTINCT r.i, s.i, s.j, t.j
    FROM r FULL JOIN s ON r.i=s.i FULL JOIN t ON s.j=t.j;
 SELECT * FROM mv ORDER BY r, si, sj, t;
 SAVEPOINT p1;

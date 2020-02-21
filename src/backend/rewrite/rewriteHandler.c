@@ -41,10 +41,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/guc.h"
 
-#include "parser/parser.h"
-#include "commands/matview.h"
 
 /* We use a list of these to detect recursion in RewriteQuery */
 typedef struct rewrite_event
@@ -1601,59 +1598,6 @@ ApplyRetrieveRule(Query *parsetree,
 	if (rule->qual != NULL)
 		elog(ERROR, "cannot handle qualified ON SELECT rule");
 
-	if (RelationIsIVM(relation))
-	{
-		rule_action = copyObject(linitial(rule->actions));
-
-		if (!rule_action->distinctClause && !rule_action->groupClause && !rule_action->hasAggs)
-		{
-			StringInfoData str;
-			StringInfoData ivm_columns;
-			RawStmt *raw;
-			Query *sub;
-			ListCell   *lc;
-
-			if (rule_action->hasDistinctOn)
-				elog(ERROR, "DISTINCT ON is not supported in IVM");
-
-			initStringInfo(&ivm_columns);
-			rte = rt_fetch(rt_index, parsetree->rtable);
-			foreach(lc, rte->eref->colnames)
-			{
-				if (isIvmColumn((strVal(lfirst(lc)))))
-					appendStringInfo(&ivm_columns, ", %s", strVal(lfirst(lc)));
-			}
-
-			initStringInfo(&str);
-			appendStringInfo(&str, "SELECT mv.* %s FROM %s mv, generate_series(1, mv.__ivm_count__)",
-						ivm_columns.data, quote_qualified_identifier(get_namespace_name(RelationGetNamespace(relation)),
-													RelationGetRelationName(relation)));
-
-			raw = (RawStmt*)linitial(raw_parser(str.data));
-			sub = transformStmt(make_parsestate(NULL),raw->stmt);
-
-
-			rte->rtekind = RTE_SUBQUERY;
-			rte->subquery = sub;
-			rte->security_barrier = relation->rd_options ? ((ViewOptions *)relation->rd_options)->security_barrier : false;
-			/* Clear fields that should not be set in a subquery RTE */
-			rte->relid = InvalidOid;
-			rte->relkind = 0;
-			rte->rellockmode = 0;
-			rte->tablesample = NULL;
-			rte->inh = false;			/* must not be set for a subquery */
-
-			rte->requiredPerms = 0;		/* no permission check on subquery itself */
-			rte->checkAsUser = InvalidOid;
-			rte->selectedCols = NULL;
-			rte->insertedCols = NULL;
-			rte->updatedCols = NULL;
-			rte->extraUpdatedCols = NULL;
-		}
-
-		return parsetree;
-	}
-
 	if (rt_index == parsetree->resultRelation)
 	{
 		/*
@@ -1963,8 +1907,7 @@ fireRIRrules(Query *parsetree, List *activeRIRs)
 		 * In that case this test would need to be postponed till after we've
 		 * opened the rel, so that we could check its state.
 		 */
-		if (rte->relkind == RELKIND_MATVIEW &&
-			(!rte->relisivm || MatViewIncrementalMaintenanceIsEnabled() || parsetree->commandType != CMD_SELECT))
+		if (rte->relkind == RELKIND_MATVIEW)
 			continue;
 
 		/*
