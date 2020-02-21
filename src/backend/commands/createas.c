@@ -1143,7 +1143,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
 
-					if (list_length(where_quals_vars) > list_length(nonnullable_vars))
+					if (list_length(list_difference(where_quals_vars, nonnullable_vars)) > 0)
 						ereport(ERROR, (errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
 
 					if (contain_nonstrict_functions((Node *) qry->targetList))
