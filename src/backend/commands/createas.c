@@ -67,6 +67,7 @@
 
 #include "optimizer/clauses.h"
 #include "utils/fmgroids.h"
+#include "catalog/pg_inherits.h"
 
 typedef struct
 {
@@ -695,8 +696,8 @@ CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *
 
 			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, relids);
 		}
-		else
-			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
+//		else
+//			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
 	}
 	else if (IsA(jtnode, FromExpr))
 	{
@@ -1066,6 +1067,25 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
 				if (qry->limitOffset != NULL || qry->limitCount != NULL)
 					ereport(ERROR, (errmsg("LIMIT/OFFSET clause is not supported with IVM")));
+				if (qry->hasDistinctOn)
+					ereport(ERROR, (errmsg("DISTINCT ON is not supported with IVM")));
+				if (qry->hasWindowFuncs)
+					ereport(ERROR, (errmsg("window function is not supported with IVM")));
+				if (qry->groupingSets != NIL)
+					ereport(ERROR, (errmsg("GROUPING SETS, ROLLUP, or CUBE clauses are not supported with IVM")));
+				if (qry->setOperations != NULL)
+					ereport(ERROR, (errmsg("UNION/INTERSECT/EXCEPT query are not supported with IVM")));
+				if (list_length(qry->targetList) == 0)
+					ereport(ERROR, (errmsg("empty target list is not allowed with IVM")));
+				if (qry->rowMarks != NIL)
+					ereport(ERROR, (errmsg("FOR UPDATE/SHARE clause is not supported with IVM")));
+
+				/* subquery restrictions */
+				if (depth > 0 && qry->distinctClause != NIL)
+					ereport(ERROR, (errmsg("DISTINCT cluase in nested query are not supported with IVM")));
+				if (depth > 0 && list_length(qry->rtable) > 1)
+					ereport(ERROR, (errmsg("multiple tables contained in nested query are not supported with IVM")));
+
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
@@ -1075,9 +1095,15 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->rtable)
 				{
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+					if (rte->tablesample != NULL)
+						ereport(ERROR, (errmsg("TABLESAMPLE parameter is not supported with IVM")));
+					if (rte->relkind == RELKIND_RELATION && has_subclass(rte->relid))
+						ereport(ERROR, (errmsg("inheritance parent is not supported with IVM")));
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
 						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
+
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
 						if (ctx->has_outerjoin)
@@ -1095,6 +1121,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
+					ereport(LOG, (errmsg("IMMV column name %s", tle->resname)));
+					if (isIvmColumn(tle->resname))
+							ereport(ERROR, (errmsg("IMMV cannot contain column name %s", tle->resname)));
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 
@@ -1253,6 +1282,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* Check if this supports IVM */
 				Aggref *aggref = (Aggref *) node;
 				const char *aggname = format_procedure(aggref->aggfnoid);
+
+				if (aggref->aggfilter != NULL)
+					ereport(ERROR, (errmsg("aggregate function with FILTER clause is not supported")));
+
+				if (aggref->aggdistinct != NULL)
+					ereport(ERROR, (errmsg("aggregate function with DISTINCT arguments is not supported")));
+
+				if (aggref->aggorder != NULL)
+					ereport(ERROR, (errmsg("aggregate function with ORDER clause is not supported")));
+
 				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
 					ereport(ERROR, (
 							errmsg("aggregate function %s is not supported", aggname),
