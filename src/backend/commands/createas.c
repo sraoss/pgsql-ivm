@@ -1255,8 +1255,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				const char *aggname = format_procedure(aggref->aggfnoid);
 				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
 					ereport(ERROR, (
-							errmsg("aggregate function %s is not supported", aggname),
-							errhint("IVM supports only built-in aggregate functions.")));
+							errmsg("aggregate function %s is not supported", aggname)));
 				break;
 			}
 		case T_SubPlan:
