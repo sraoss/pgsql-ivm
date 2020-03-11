@@ -5262,12 +5262,12 @@ ERROR:  LIMIT/OFFSET clause is not supported with IVM
 -- DISTINCT ON is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm14 AS SELECT DISTINCT ON(i) i, j FROM mv_base_a;
 ERROR:  DISTINCT ON is not supported with IVM
--- TABLESAMPLE parameter is not supported
+-- TABLESAMPLE clause is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm15 AS SELECT i, j FROM mv_base_a TABLESAMPLE SYSTEM(50);
-ERROR:  TABLESAMPLE parameter is not supported with IVM
--- window function is not supported
+ERROR:  TABLESAMPLE clause is not supported with IVM
+-- window functions are not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm16 AS SELECT i, j FROM (SELECT *, cume_dist() OVER (ORDER BY i) AS rank FROM mv_base_a) AS t;
-ERROR:  window function is not supported with IVM
+ERROR:  window functions are not supported with IVM
 -- aggregate function with some options is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm17 AS SELECT COUNT(*) FILTER(WHERE i < 3) FROM mv_base_a;
 ERROR:  aggregate function with FILTER clause is not supported
@@ -5276,7 +5276,7 @@ ERROR:  aggregate function with DISTINCT arguments is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm19 AS SELECT array_agg(j ORDER BY i DESC) FROM mv_base_a;
 ERROR:  aggregate function with ORDER clause is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm20 AS SELECT i,SUM(j) FROM mv_base_a GROUP BY GROUPING SETS((i),());
-ERROR:  GROUPING SETS, ROLLUP, or CUBE clauses are not supported with IVM
+ERROR:  GROUPING SETS, ROLLUP, or CUBE clauses is not supported with IVM
 -- inheritance parent is not supported with IVM"
 BEGIN;
 CREATE TABLE parent (i int, v int);
@@ -5284,9 +5284,9 @@ CREATE TABLE child_a(options text) INHERITS(parent);
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm21 AS SELECT * FROM parent;
 ERROR:  inheritance parent is not supported with IVM
 ROLLBACK;
--- UNION clause is not supported
+-- UNION statement is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm22 AS SELECT i,j FROM mv_base_a UNION ALL SELECT i,k FROM mv_base_b;;
-ERROR:  UNION/INTERSECT/EXCEPT query are not supported with IVM
+ERROR:  UNION/INTERSECT/EXCEPT statements are not supported with IVM
 -- DISTINCT cluase in nested query are not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm23 AS SELECT * FROM (SELECT DISTINCT i,j FROM mv_base_a) AS tmp;
 ERROR:  DISTINCT cluase in nested query are not supported with IVM

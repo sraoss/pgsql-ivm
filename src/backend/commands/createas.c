@@ -696,8 +696,6 @@ CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *
 
 			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, relids);
 		}
-//		else
-//			elog(ERROR, "unsupported RTE kind: %d", (int) rte->rtekind);
 	}
 	else if (IsA(jtnode, FromExpr))
 	{
@@ -1070,11 +1068,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (qry->hasDistinctOn)
 					ereport(ERROR, (errmsg("DISTINCT ON is not supported with IVM")));
 				if (qry->hasWindowFuncs)
-					ereport(ERROR, (errmsg("window function is not supported with IVM")));
+					ereport(ERROR, (errmsg("window functions are not supported with IVM")));
 				if (qry->groupingSets != NIL)
-					ereport(ERROR, (errmsg("GROUPING SETS, ROLLUP, or CUBE clauses are not supported with IVM")));
+					ereport(ERROR, (errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported with IVM")));
 				if (qry->setOperations != NULL)
-					ereport(ERROR, (errmsg("UNION/INTERSECT/EXCEPT query are not supported with IVM")));
+					ereport(ERROR, (errmsg("UNION/INTERSECT/EXCEPT statements are not supported with IVM")));
 				if (list_length(qry->targetList) == 0)
 					ereport(ERROR, (errmsg("empty target list is not allowed with IVM")));
 				if (qry->rowMarks != NIL)
@@ -1097,8 +1095,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
 
 					if (rte->tablesample != NULL)
-						ereport(ERROR, (errmsg("TABLESAMPLE parameter is not supported with IVM")));
-					if (rte->relkind == RELKIND_RELATION && has_subclass(rte->relid))
+						ereport(ERROR, (errmsg("TABLESAMPLE clause is not supported with IVM")));
+					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, AccessShareLock) != NIL)
 						ereport(ERROR, (errmsg("inheritance parent is not supported with IVM")));
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
@@ -1121,7 +1119,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					ereport(LOG, (errmsg("IMMV column name %s", tle->resname)));
 					if (isIvmColumn(tle->resname))
 							ereport(ERROR, (errmsg("IMMV cannot contain column name %s", tle->resname)));
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);

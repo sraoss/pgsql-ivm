@@ -1527,10 +1527,10 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMI
 -- DISTINCT ON is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm14 AS SELECT DISTINCT ON(i) i, j FROM mv_base_a;
 
--- TABLESAMPLE parameter is not supported
+-- TABLESAMPLE clause is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm15 AS SELECT i, j FROM mv_base_a TABLESAMPLE SYSTEM(50);
 
--- window function is not supported
+-- window functions are not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm16 AS SELECT i, j FROM (SELECT *, cume_dist() OVER (ORDER BY i) AS rank FROM mv_base_a) AS t;
 
 -- aggregate function with some options is not supported
@@ -1546,7 +1546,7 @@ CREATE TABLE child_a(options text) INHERITS(parent);
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm21 AS SELECT * FROM parent;
 ROLLBACK;
 
--- UNION clause is not supported
+-- UNION statement is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm22 AS SELECT i,j FROM mv_base_a UNION ALL SELECT i,k FROM mv_base_b;;
 
 -- DISTINCT cluase in nested query are not supported
