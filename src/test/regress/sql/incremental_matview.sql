@@ -222,6 +222,18 @@ SELECT * FROM mv_ivm_subquery ORDER BY i,j;
 
 ROLLBACK;
 
+-- support join subquery in FROM cluase
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_join_subquery AS SELECT i, j, k FROM ( SELECT i, a.j, b.k FROM mv_base_b b INNER JOIN mv_base_a a USING(i)) tmp;
+WITH
+ ai AS (INSERT INTO mv_base_a VALUES (1,11),(2,22) RETURNING 0),
+ bi AS (INSERT INTO mv_base_b VALUES (1,111),(3,133) RETURNING 0),
+ bd AS (DELETE FROM mv_base_b WHERE i = 4 RETURNING 0)
+SELECT;
+SELECT * FROM mv_ivm_join_subquery ORDER BY i,j,k;
+
+ROLLBACK;
+
 -- views including NULL
 BEGIN;
 CREATE TABLE t (i int, v int);
@@ -1551,9 +1563,6 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm22 AS SELECT i,j FROM mv_base_a UNIO
 
 -- DISTINCT cluase in nested query are not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm23 AS SELECT * FROM (SELECT DISTINCT i,j FROM mv_base_a) AS tmp;
-
--- multiple tables contained in nested query are not supported
-CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm24 AS SELECT * FROM (SELECT i,j,k FROM mv_base_a INNER JOIN mv_base_b USING(i)) AS tmp;
 
 -- empty target list is not allowed with IVM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm25 AS SELECT FROM mv_base_a;
