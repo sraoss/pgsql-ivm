@@ -36,6 +36,16 @@ CREATE UNIQUE INDEX ON mv_ivm_1(__ivm_count__);
 CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__));
 CREATE UNIQUE INDEX ON mv_ivm_1((__ivm_count__ + 1));
 
+-- some query syntax
+BEGIN;
+CREATE FUNCTION ivm_func() RETURNS int LANGUAGE 'sql'
+       AS 'SELECT 1' IMMUTABLE;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_func AS SELECT * FROM ivm_func();
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_no_tbl AS SELECT 1;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values2 AS SELECT * FROM (values(1)) AS tmp;
+ROLLBACK;
+
 -- result of materliazied view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
@@ -1513,6 +1523,47 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHER
 
 -- LIMIT/OFFSET is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm13 AS SELECT i,j FROM mv_base_a LIMIT 10 OFFSET 5;
+
+-- DISTINCT ON is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm14 AS SELECT DISTINCT ON(i) i, j FROM mv_base_a;
+
+-- TABLESAMPLE clause is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm15 AS SELECT i, j FROM mv_base_a TABLESAMPLE SYSTEM(50);
+
+-- window functions are not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm16 AS SELECT i, j FROM (SELECT *, cume_dist() OVER (ORDER BY i) AS rank FROM mv_base_a) AS t;
+
+-- aggregate function with some options is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm17 AS SELECT COUNT(*) FILTER(WHERE i < 3) FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm18 AS SELECT COUNT(DISTINCT i)  FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm19 AS SELECT array_agg(j ORDER BY i DESC) FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm20 AS SELECT i,SUM(j) FROM mv_base_a GROUP BY GROUPING SETS((i),());
+
+-- inheritance parent is not supported with IVM"
+BEGIN;
+CREATE TABLE parent (i int, v int);
+CREATE TABLE child_a(options text) INHERITS(parent);
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm21 AS SELECT * FROM parent;
+ROLLBACK;
+
+-- UNION statement is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm22 AS SELECT i,j FROM mv_base_a UNION ALL SELECT i,k FROM mv_base_b;;
+
+-- DISTINCT cluase in nested query are not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm23 AS SELECT * FROM (SELECT DISTINCT i,j FROM mv_base_a) AS tmp;
+
+-- multiple tables contained in nested query are not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm24 AS SELECT * FROM (SELECT i,j,k FROM mv_base_a INNER JOIN mv_base_b USING(i)) AS tmp;
+
+-- empty target list is not allowed with IVM
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm25 AS SELECT FROM mv_base_a;
+
+-- FOR UPDATE/SHARE is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm26 AS SELECT i,j FROM mv_base_a FOR UPDATE;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm27 AS SELECT * FROM (SELECT i,j FROM mv_base_a FOR UPDATE) AS tmp;
+
+-- tartget list cannot contain ivm clumn that start with '__ivm'
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FROM mv_base_a;
 
 -- base table has row level security
 DROP USER IF EXISTS ivm_admin;

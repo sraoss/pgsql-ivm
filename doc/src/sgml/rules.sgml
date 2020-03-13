@@ -1410,6 +1410,18 @@ Time: 16386.245 ms (00:16.386)
         </para>
         </listitem>
 
+        <listitem>
+        <para>
+            <literal>DISTINCT</literal> cannot be contained in a subquery.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Join is not allowed in a subquery.
+        </para>
+        </listitem>
+
     </itemizedlist>
     </para>
     </sect4>
@@ -1450,6 +1462,54 @@ Time: 16386.245 ms (00:16.386)
         <listitem>
           <para>
             <acronym>IMMV</acronym> cannot contain non-immutable functions.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            UNION/INTERSECT/EXCEPT clause cannnot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            DISTINCT ON clause cannot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            TABLESAMPLE parameter cannot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            inheritance parent table cannnot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            <literal>GROUPING SETS</literal> and <literal>FILTER</literal> clauses cannot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            FOR UPDATE/SHARE cannot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            inheritance parent table cannnot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            targetlist cannot contain hidden columns which name start with <literal>__ivm_</literal>.
           </para>
         </listitem>
 
