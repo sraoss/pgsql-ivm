@@ -1058,10 +1058,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* if contained CTE, return error */
 				if (qry->cteList != NIL)
 					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+
 				if (qry->havingQual != NULL)
 					ereport(ERROR, (errmsg(" HAVING clause is not supported with IVM")));
-				/* There is a possibility that we don't need to return an error */
-				if (qry->sortClause != NIL)
+				if (qry->sortClause != NIL)	/* There is a possibility that we don't need to return an error */
 					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
 				if (qry->limitOffset != NULL || qry->limitCount != NULL)
 					ereport(ERROR, (errmsg("LIMIT/OFFSET clause is not supported with IVM")));
@@ -1093,7 +1093,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 					if (rte->tablesample != NULL)
 						ereport(ERROR, (errmsg("TABLESAMPLE clause is not supported with IVM")));
-					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, AccessShareLock) != NIL)
+					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
 						ereport(ERROR, (errmsg("inheritance parent is not supported with IVM")));
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
@@ -1288,8 +1288,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
 					ereport(ERROR, (
-							errmsg("aggregate function %s is not supported", aggname),
-							errhint("IVM supports only built-in aggregate functions.")));
+							errmsg("aggregate function %s is not supported", aggname)));
 				break;
 			}
 		case T_SubPlan:
