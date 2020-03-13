@@ -1710,7 +1710,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 
 		/* if rte contains subquery, search recursively */
 		if (r->rtekind == RTE_SUBQUERY)
-			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(rte_path, i));
+			rewrite_query_for_preupdate_state(r->subquery, tables, xid, cid, pstate, lappend_int(list_copy(rte_path), i));
 		else
 		{
 			ListCell *lc2;
@@ -1724,7 +1724,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 				if (r->relid == table->table_id)
 				{
 					lfirst(lc) = get_prestate_rte(r, table, xid, cid, pstate->p_queryEnv);
-					table->rte_paths = lappend(table->rte_paths, lappend_int(rte_path, i));
+					table->rte_paths = lappend(table->rte_paths, lappend_int(list_copy(rte_path), i));
 					break;
 				}
 			}
