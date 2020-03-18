@@ -1418,7 +1418,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
         <para>
-            Join is not allowed in a subquery.
+            subqueres containing table join are only allowed in FROM clause.
         </para>
         </listitem>
 
@@ -1498,12 +1498,6 @@ Time: 16386.245 ms (00:16.386)
         <listitem>
           <para>
             FOR UPDATE/SHARE cannot be used.
-          </para>
-        </listitem>
-
-        <listitem>
-          <para>
-            inheritance parent table cannnot be used.
           </para>
         </listitem>
 

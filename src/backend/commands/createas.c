@@ -1081,9 +1081,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* subquery restrictions */
 				if (depth > 0 && qry->distinctClause != NIL)
 					ereport(ERROR, (errmsg("DISTINCT cluase in nested query are not supported with IVM")));
-				if (depth > 0 && list_length(qry->rtable) > 1)
-					ereport(ERROR, (errmsg("multiple tables contained in nested query are not supported with IVM")));
-
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
 
