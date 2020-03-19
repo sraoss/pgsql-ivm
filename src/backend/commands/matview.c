@@ -264,13 +264,13 @@ static char *get_operation_string(IvmOp op, const char *col, const char *arg1, c
 					 const char* count_col, const char *castType);
 static char *get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
 						  const char* count_col);
-static char *build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_old,
-								List *keys, StringInfo aggs_list, StringInfo aggs_set,
-								List *minmax_list, List *is_min_list,
-								const char *count_colname);
-static char *build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_new,
-								List *keys, StringInfo aggs_set,
-								const char* count_colname);
+static uint64 apply_old_delta(const char *matviewname, const char *deltaname_old,
+				List *keys, StringInfo aggs_list, StringInfo aggs_set,
+				List *minmax_list, List *is_min_list,
+				const char *count_colname, SPITupleTable **tuptable_recalc);
+static void apply_new_delta(const char *matviewname, const char* deltaname_new,
+				List *keys, StringInfo aggs_set,
+				const char* count_colname);
 static char *get_matching_condition_string(List *keys);
 static char *get_returning_string(List *minmax_list, List *is_min_list, List *keys);
 static char *get_minmax_recalc_condition_string(List *minmax_list, List *is_min_list);
@@ -2997,11 +2997,9 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 	if (old_tuplestores && tuplestore_tuple_count(old_tuplestores) > 0)
 	{
 		EphemeralNamedRelation enr = palloc(sizeof(EphemeralNamedRelationData));
-		int rc;
-		char *qry = build_query_for_apply_old_delta(matviewname, OLD_DELTA_ENRNAME,
-													keys, aggs_list_buf, aggs_set_old,
-													minmax_list, is_min_list,
-													count_colname);
+		SPITupleTable  *tuptable_recalc;
+		uint64			n_processed;
+		int				rc;
 
 		/* convert tuplestores to ENR, and register for SPI */
 		enr->md.name = pstrdup(OLD_DELTA_ENRNAME);
@@ -3015,16 +3013,18 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 		if (rc != SPI_OK_REL_REGISTER)
 			elog(ERROR, "SPI_register failed");
 
-		/* execute apply query */
-		if (SPI_exec(qry, 0) != SPI_OK_SELECT)
-			elog(ERROR, "SPI_exec failed: %s", qry);
+		/* apply old delta and get rows to be recalculated */
+		n_processed = apply_old_delta(matviewname, OLD_DELTA_ENRNAME,
+									  keys, aggs_list_buf, aggs_set_old,
+									  minmax_list, is_min_list,
+									  count_colname, &tuptable_recalc);
 
 		/*
 		 * If we have min or max, we migth have to recalculate aggregate values from base tables
 		 * on some tuples. TIDs and keys such tuples are returned as a result of the above query.
 		 */
-		if (minmax_list && SPI_processed > 0)
-			recalc_and_set_values(SPI_tuptable, SPI_processed, minmax_list, keys, matviewRel);
+		if (tuptable_recalc && n_processed > 0)
+			recalc_and_set_values(tuptable_recalc, n_processed, minmax_list, keys, matviewRel);
 
 		/* Insert dangling tuple for outer join views */
 		if (graph && !query->hasAggs)
@@ -3036,8 +3036,6 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 	{
 		EphemeralNamedRelation enr = palloc(sizeof(EphemeralNamedRelationData));
 		int rc;
-		char *qry = build_query_for_apply_new_delta(matviewname, NEW_DELTA_ENRNAME,
-													keys, aggs_set_new, count_colname);
 
 		/* convert tuplestores to ENR, and register for SPI */
 		enr->md.name = pstrdup(NEW_DELTA_ENRNAME);
@@ -3051,9 +3049,9 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 		if (rc != SPI_OK_REL_REGISTER)
 			elog(ERROR, "SPI_register failed");
 
-		/* execute apply query */
-		if (SPI_exec(qry, 0) != SPI_OK_INSERT)
-			elog(ERROR, "SPI_exec failed: %s", qry);
+		/* apply new delta */
+		apply_new_delta(matviewname, NEW_DELTA_ENRNAME,
+						keys, aggs_set_new, count_colname);
 
 		/* Delete dangling tuple for outer join views */
 		if (graph && !query->hasAggs)
@@ -3381,9 +3379,9 @@ get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
 
 
 /*
- * build_query_for_apply_old_delta
+ * apply_old_delta
  *
- * Build and return a query for applying a delta table given by deltname_old
+ * Execute a query for applying a delta table given by deltname_old
  * which contains tuples to be deleted from to a materialized view given by
  * matviewname.
  *
@@ -3396,18 +3394,21 @@ get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
  * min/max aggregates and a list of boolean which represents which entries in
  * minmax_list is min. These are necessary to check if we need to recalculate
  * min or max aggregate values. In this case, this query returns TID and keys
- * of tuples which need to be recalculated.
+ * of tuples which need to be recalculated.  This result is stored in tuptables
+ * and the number of rows is returned.
+ *
  */
-static char *
-build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_old,
-								List *keys, StringInfo aggs_list, StringInfo aggs_set,
-								List *minmax_list, List *is_min_list,
-								const char *count_colname)
+static uint64
+apply_old_delta(const char *matviewname, const char *deltaname_old,
+				List *keys, StringInfo aggs_list, StringInfo aggs_set,
+				List *minmax_list, List *is_min_list,
+				const char *count_colname, SPITupleTable **tuptable_recalc)
 {
 	StringInfoData	querybuf;
-	char	*match_cond;
-	char	*updt_returning = "";
-	char	*select_for_recalc = "SELECT";
+	char   *match_cond;
+	char   *updt_returning = "";
+	char   *select_for_recalc = "SELECT";
+	bool	agg_without_groupby = (list_length(keys) == 0);
 
 	/* build WHERE condition for searching tuples to be deleted */
 	match_cond = get_matching_condition_string(keys);
@@ -3424,10 +3425,11 @@ build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_o
 
 	/* Search for matching tuples from the view and update or delete if found. */
 	initStringInfo(&querybuf);
+
 	appendStringInfo(&querybuf,
 					"WITH t AS ("			/* collecting tid of target tuples in the view */
 						"SELECT diff.%s, "			/* count column */
-								"(diff.%s OPERATOR(pg_catalog.=) mv.%s) AS for_dlt, "
+								"(diff.%s OPERATOR(pg_catalog.=) mv.%s AND %s) AS for_dlt, "
 								"mv.ctid "
 								"%s "				/* aggregate columns */
 						"FROM %s AS mv, %s AS diff "
@@ -3442,7 +3444,7 @@ build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_o
 						"WHERE mv.ctid OPERATOR(pg_catalog.=) t.ctid AND for_dlt"
 					") %s",							/* SELECT returning which tuples need to be recalculated */
 					count_colname,
-					count_colname, count_colname,
+					count_colname, count_colname, (agg_without_groupby ? "false" : "true"),
 					(aggs_list != NULL ? aggs_list->data : ""),
 					matviewname, deltaname_old,
 					match_cond,
@@ -3451,13 +3453,28 @@ build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_o
 					updt_returning,
 					matviewname,
 					select_for_recalc);
-	return querybuf.data;
+
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+
+	if (minmax_list)
+	{
+		if (tuptable_recalc)
+			*tuptable_recalc = SPI_tuptable;
+		return SPI_processed;
+	}
+	else
+	{
+		if (tuptable_recalc)
+			*tuptable_recalc = NULL;
+		return 0;
+	}
 }
 
 /*
- * build_query_for_apply_new_delta
+ * apply_new_delta
  *
- * Build and return a query for applying a delta table given by deltname_new
+ * Execute a query for applying a delta table given by deltname_new
  * which contains tuples to be inserted into a materialized view given by
  * matviewname.
  *
@@ -3465,10 +3482,10 @@ build_query_for_apply_old_delta(const char *matviewname, const char *deltaname_o
  * list to identify a tuple in the view. If the view has aggregates, this
  * requires strings representing SET clause for updating aggregate values.
  */
-static char *
-build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_new,
-								List *keys, StringInfo aggs_set,
-								const char* count_colname)
+static void
+apply_new_delta(const char *matviewname, const char* deltaname_new,
+				List *keys, StringInfo aggs_set,
+				const char* count_colname)
 {
 	StringInfoData	querybuf;
 	StringInfoData	returning_keys;
@@ -3514,7 +3531,9 @@ build_query_for_apply_new_delta(const char *matviewname, const char* deltaname_n
 					matviewname,
 					deltaname_new,
 					match_cond);
-	return querybuf.data;
+
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 }
 
 /*
@@ -3557,7 +3576,7 @@ get_matching_condition_string(List *keys)
 /*
  * get_returning_string
  *
- * Build a string for RETURNING clause used in build_query_for_apply_old_delta.
+ * Build a string for RETURNING clause used in apply_old_delta.
  */
 static char *
 get_returning_string(List *minmax_list, List *is_min_list, List *keys)
@@ -3622,7 +3641,7 @@ get_minmax_recalc_condition_string(List *minmax_list, List *is_min_list)
  *
  * Build a query to return tid and keys of tuples which need
  * recalculation. This is used as the result of the query
- * built by build_query_for_apply_old_delta.
+ * built by apply_old_delta.
  */
 static char *
 get_select_for_recalc_string(List *keys)
