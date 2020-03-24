@@ -58,9 +58,9 @@ SELECT * FROM mv_ivm_duplicate ORDER BY 1;
 SELECT * FROM mv_ivm_distinct ORDER BY 1;
 ROLLBACK;
 
--- support SUM(), COUNT() and AVG() aggregation function
+-- support SUM(), COUNT() and AVG() aggregate functions
 BEGIN;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j), COUNT(i),AVG(j)  FROM mv_base_a GROUP BY i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j), COUNT(i), AVG(j) FROM mv_base_a GROUP BY i;
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3,4;
 INSERT INTO mv_base_a VALUES(2,100);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3,4;
@@ -70,19 +70,21 @@ DELETE FROM mv_base_a WHERE (i,j) = (2,200);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3,4;
 ROLLBACK;
 
--- support COUNT(*) aggregation function
+-- support COUNT(*) aggregate function
 BEGIN;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j),COUNT(*)  FROM mv_base_a GROUP BY i;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j), COUNT(*) FROM mv_base_a GROUP BY i;
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
 INSERT INTO mv_base_a VALUES(2,100);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
 ROLLBACK;
 
--- support having only aggregation function without GROUP clause
+-- support aggregate functions without GROUP clause
 BEGIN;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j)FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j), COUNT(j), AVG(j) FROM mv_base_a;
 SELECT * FROM mv_ivm_group ORDER BY 1;
-INSERT INTO mv_base_a VALUES(6,20);
+INSERT INTO mv_base_a VALUES(6,60);
+SELECT * FROM mv_ivm_group ORDER BY 1;
+DELETE FROM mv_base_a;
 SELECT * FROM mv_ivm_group ORDER BY 1;
 ROLLBACK;
 
@@ -101,7 +103,7 @@ DELETE FROM mv_base_a WHERE (i,j) = (2,30);
 SELECT * FROM mv_ivm_avg_bug ORDER BY 1,2,3;
 ROLLBACK;
 
--- support MIN(), MAX() aggregation functions
+-- support MIN(), MAX() aggregate functions
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT i, MIN(j), MAX(j)  FROM mv_base_a GROUP BY i;
 SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
@@ -116,7 +118,7 @@ DELETE FROM mv_base_a WHERE (i,j) IN ((1,10), (2,21), (3,32));
 SELECT * FROM mv_ivm_min_max ORDER BY 1,2,3;
 ROLLBACK;
 
--- support MIN(), MAX() aggregation functions without GROUP clause
+-- support MIN(), MAX() aggregate functions without GROUP clause
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT MIN(j), MAX(j)  FROM mv_base_a;
 SELECT * FROM mv_ivm_min_max;
@@ -124,6 +126,8 @@ INSERT INTO mv_base_a VALUES
   (0,0), (6,60), (7,70);
 SELECT * FROM mv_ivm_min_max;
 DELETE FROM mv_base_a WHERE (i,j) IN ((0,0), (7,70));
+SELECT * FROM mv_ivm_min_max;
+DELETE FROM mv_base_a;
 SELECT * FROM mv_ivm_min_max;
 ROLLBACK;
 
