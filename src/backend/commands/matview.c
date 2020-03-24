@@ -264,10 +264,11 @@ static char *get_operation_string(IvmOp op, const char *col, const char *arg1, c
 					 const char* count_col, const char *castType);
 static char *get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
 						  const char* count_col);
-static uint64 apply_old_delta(const char *matviewname, const char *deltaname_old,
+static void apply_old_delta(const char *matviewname, const char *deltaname_old,
 				List *keys, StringInfo aggs_list, StringInfo aggs_set,
 				List *minmax_list, List *is_min_list,
-				const char *count_colname, SPITupleTable **tuptable_recalc);
+				const char *count_colname,
+				SPITupleTable **tuptable_recalc, uint64 *num_recalc);
 static void apply_new_delta(const char *matviewname, const char* deltaname_new,
 				List *keys, StringInfo aggs_set,
 				const char* count_colname);
@@ -2998,7 +2999,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 	{
 		EphemeralNamedRelation enr = palloc(sizeof(EphemeralNamedRelationData));
 		SPITupleTable  *tuptable_recalc;
-		uint64			n_processed;
+		uint64			num_recalc;
 		int				rc;
 
 		/* convert tuplestores to ENR, and register for SPI */
@@ -3014,17 +3015,17 @@ apply_delta(Oid matviewOid, Tuplestorestate *new_tuplestores, Tuplestorestate *o
 			elog(ERROR, "SPI_register failed");
 
 		/* apply old delta and get rows to be recalculated */
-		n_processed = apply_old_delta(matviewname, OLD_DELTA_ENRNAME,
-									  keys, aggs_list_buf, aggs_set_old,
-									  minmax_list, is_min_list,
-									  count_colname, &tuptable_recalc);
+		apply_old_delta(matviewname, OLD_DELTA_ENRNAME,
+						keys, aggs_list_buf, aggs_set_old,
+						minmax_list, is_min_list,
+						count_colname, &tuptable_recalc, &num_recalc);
 
 		/*
 		 * If we have min or max, we migth have to recalculate aggregate values from base tables
 		 * on some tuples. TIDs and keys such tuples are returned as a result of the above query.
 		 */
-		if (tuptable_recalc && n_processed > 0)
-			recalc_and_set_values(tuptable_recalc, n_processed, minmax_list, keys, matviewRel);
+		if (minmax_list && tuptable_recalc)
+			recalc_and_set_values(tuptable_recalc, num_recalc, minmax_list, keys, matviewRel);
 
 		/* Insert dangling tuple for outer join views */
 		if (graph && !query->hasAggs)
@@ -3394,21 +3395,25 @@ get_null_condition_string(IvmOp op, const char *arg1, const char *arg2,
  * min/max aggregates and a list of boolean which represents which entries in
  * minmax_list is min. These are necessary to check if we need to recalculate
  * min or max aggregate values. In this case, this query returns TID and keys
- * of tuples which need to be recalculated.  This result is stored in tuptables
- * and the number of rows is returned.
+ * of tuples which need to be recalculated.  This result and the number of rows
+ * are stored in tuptables and num_recalc repectedly.
  *
  */
-static uint64
+static void
 apply_old_delta(const char *matviewname, const char *deltaname_old,
 				List *keys, StringInfo aggs_list, StringInfo aggs_set,
 				List *minmax_list, List *is_min_list,
-				const char *count_colname, SPITupleTable **tuptable_recalc)
+				const char *count_colname,
+				SPITupleTable **tuptable_recalc, uint64 *num_recalc)
 {
 	StringInfoData	querybuf;
 	char   *match_cond;
 	char   *updt_returning = "";
 	char   *select_for_recalc = "SELECT";
 	bool	agg_without_groupby = (list_length(keys) == 0);
+
+	Assert(tuptable_recalce != NULL);
+	Assert(num_recalc != NULL);
 
 	/* build WHERE condition for searching tuples to be deleted */
 	match_cond = get_matching_condition_string(keys);
@@ -3457,14 +3462,18 @@ apply_old_delta(const char *matviewname, const char *deltaname_old,
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
-	Assert(tuptable_recalce != NULL);
 
+	/* Return tuples to be recalculated. */
 	if (minmax_list)
+	{
 		*tuptable_recalc = SPI_tuptable;
+		*num_recalc = SPI_processed;
+	}
 	else
+	{
 		*tuptable_recalc = NULL;
-
-	return (minmax_list ? SPI_processed : 0);
+		*num_recalc = 0;
+	}
 }
 
 /*
