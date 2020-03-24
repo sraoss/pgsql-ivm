@@ -3457,18 +3457,14 @@ apply_old_delta(const char *matviewname, const char *deltaname_old,
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 
+	Assert(tuptable_recalce != NULL);
+
 	if (minmax_list)
-	{
-		if (tuptable_recalc)
-			*tuptable_recalc = SPI_tuptable;
-		return SPI_processed;
-	}
+		*tuptable_recalc = SPI_tuptable;
 	else
-	{
-		if (tuptable_recalc)
-			*tuptable_recalc = NULL;
-		return 0;
-	}
+		*tuptable_recalc = NULL;
+
+	return (minmax_list ? SPI_processed : 0);
 }
 
 /*
