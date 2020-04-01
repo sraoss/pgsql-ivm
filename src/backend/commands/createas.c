@@ -333,7 +333,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		if(contain_mutable_functions((Node *)query))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("functions in IMMV must be marked IMMUTABLE")));
+					 errmsg("mutable function is not supported on incrementally maintainable materialized view"),
+					 errhint("functions must be marked IMMUTABLE")));
 
 		check_ivm_restriction_walker((Node *) query, &ctx, 0);
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -520,7 +521,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			if (tle->resjunk)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("GROUP BY expression must appear in select list for incremental materialized views")));
+						 errmsg("GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view")));
 		}
 	}
 	else if (!rewritten->hasAggs)
@@ -1063,53 +1064,53 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (qry->cteList != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported with IVM")));
+							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg(" HAVING clause is not supported with IVM")));
+							 errmsg(" HAVING clause is not supported on incrementally maintainable materialized view")));
 				if (qry->sortClause != NIL)	/* There is a possibility that we don't need to return an error */
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("ORDER BY clause is not supported with IVM")));
+							 errmsg("ORDER BY clause is not supported on incrementally maintainable materialized view")));
 				if (qry->limitOffset != NULL || qry->limitCount != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("LIMIT/OFFSET clause is not supported with IVM")));
+							 errmsg("LIMIT/OFFSET clause is not supported on incrementally maintainable materialized view")));
 				if (qry->hasDistinctOn)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DISTINCT ON is not supported with IVM")));
+							 errmsg("DISTINCT ON is not supported on incrementally maintainable materialized view")));
 				if (qry->hasWindowFuncs)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("window functions are not supported with IVM")));
+							 errmsg("window functions are not supported on incrementally maintainable materialized view")));
 				if (qry->groupingSets != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported with IVM")));
+							 errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported on incrementally maintainable materialized view")));
 				if (qry->setOperations != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("UNION/INTERSECT/EXCEPT statements are not supported with IVM")));
+							 errmsg("UNION/INTERSECT/EXCEPT statements are not supported on incrementally maintainable materialized view")));
 				if (list_length(qry->targetList) == 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("empty target list is not allowed with IVM")));
+							 errmsg("empty target list is not supported on incrementally maintainable materialized view")));
 				if (qry->rowMarks != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("FOR UPDATE/SHARE clause is not supported with IVM")));
+							 errmsg("FOR UPDATE/SHARE clause is not supported on incrementally maintainable materialized view")));
 
 				/* subquery restrictions */
 				if (depth > 0 && qry->distinctClause != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DISTINCT cluase in nested query are not supported with IVM")));
+							 errmsg("DISTINCT cluase in nested query are not supported on incrementally maintainable materialized view")));
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("aggregate functions in nested query are not supported with IVM")));
+							 errmsg("aggregate functions in nested query are not supported on incrementally maintainable materialized view")));
 
 				ctx->has_agg = qry->hasAggs;
 
@@ -1121,23 +1122,24 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					if (rte->tablesample != NULL)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("TABLESAMPLE clause is not supported with IVM")));
+								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
 					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("inheritance parent is not supported with IVM")));
+									 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
+									 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
 
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
 						if (ctx->has_outerjoin)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("subquery is not supported with IVM together with outer join")));
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("subquery is not supported with outer join")));
 
 						ctx->has_subquery = true;
 						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
@@ -1154,7 +1156,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					if (isIvmColumn(tle->resname))
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("IMMV cannot contain column name %s", tle->resname)));
+									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 
@@ -1173,7 +1175,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						if (!is_equijoin_condition(op))
 								ereport(ERROR,
 										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-										 errmsg("Only simple equijoin is supported for IVM with outer join")));
+										 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+										 errhint("Only simple equijoin is supported with outer join")));
 
 						op = (OpExpr *) flatten_join_alias_vars(qry, (Node *) op);
 						qual_vars = list_concat(qual_vars, pull_vars_of_level((Node *) op, 0));
@@ -1202,7 +1205,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						if (!found)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("targetlist must contain vars in the join condition with outer join")));
 					}
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
@@ -1210,12 +1214,14 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					if (list_length(list_difference(where_quals_vars, nonnullable_vars)) > 0)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
+								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+								 errhint("WHERE cannot contain non null-rejecting predicates with outer join")));
 
 					if (contain_nonstrict_functions((Node *) qry->targetList))
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("targetlist cannot contain non strict functions with outer join")));
 				}
 
 				break;
@@ -1228,11 +1234,13 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					if (ctx->has_subquery)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("subquery is not supported with IVM together with outer join")));
+								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+								 errhint("subquery is not supported with outer join")));
 					if (ctx->has_agg)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("aggregate is not supported with IVM together with outer join")));
+								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+								 errhint("aggregate is not supported with outer join")));
 
 					ctx->has_outerjoin = true;
 					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
@@ -1263,7 +1271,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (variable->varattno < 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("system column is not supported with IVM")));
+							 errmsg("system column is not supported on incrementally maintainable materialized view")));
 			}
 			break;
 		case T_BoolExpr:
@@ -1316,15 +1324,17 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("WHERE clause only support subquery with EXISTS clause")));
 				if (depth > 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("nested subquery is not supported by IVM")));
+							 errmsg("nested subquery is not supported on incrementally maintainable materialized view")));
 				if (ctx->has_outerjoin)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("subquery is not supported by IVM together with outer join")));
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("subquery with outer join is not supported")));
 				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
 				break;
 			}
@@ -1337,22 +1347,22 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (aggref->aggfilter != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("aggregate function with FILTER clause is not supported")));
+							 errmsg("aggregate function with FILTER clause is not supported on incrementally maintainable materialized view")));
 
 				if (aggref->aggdistinct != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("aggregate function with DISTINCT arguments is not supported")));
+							 errmsg("aggregate function with DISTINCT arguments is not supported on incrementally maintainable materialized view")));
 
 				if (aggref->aggorder != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("aggregate function with ORDER clause is not supported")));
+							 errmsg("aggregate function with ORDER clause is not supported on incrementally maintainable materialized view")));
 
 				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("aggregate function %s is not supported", aggname)));
+							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
 				break;
 			}
 		case T_SubPlan:

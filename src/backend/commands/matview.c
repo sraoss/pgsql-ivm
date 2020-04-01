@@ -2191,7 +2191,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 						if (checkExprHasSubLink(node))
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("OR or NOT conditions and EXISTS condition are used together with IVM")));
+							 		 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("OR or NOT conditions and EXISTS condition are not used together")));
 						break;
 				}
 				break;
@@ -2218,14 +2219,15 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("WHERE clause only support subquery with EXISTS clause")));
 
 				subselect = (Query *)sublink->subselect;
 				/* raise ERROR if it is CTE */
 				if (subselect->cteList)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported with IVM")));
+							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
 
 				pstate = make_parsestate(NULL);
 				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
@@ -2295,7 +2297,10 @@ rewrite_query_for_exists_subquery(Query *query)
 {
 	int count = 0;
 	if (query->hasAggs)
-		elog(ERROR, "aggregate function and EXISTS condition are not supported at the same time");
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+				 errhint("aggregate function and EXISTS condition are not supported at the same time")));
 
 	return rewrite_exists_subquery_walker(query, (Node *)query, &count);
 }
