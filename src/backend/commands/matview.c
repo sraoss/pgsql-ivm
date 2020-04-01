@@ -2189,7 +2189,9 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 					case OR_EXPR:
 					case NOT_EXPR:
 						if (checkExprHasSubLink(node))
-							ereport(ERROR, (errmsg("OR or NOT conditions and EXISTS condition are used together with IVM")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("OR or NOT conditions and EXISTS condition are used together with IVM")));
 						break;
 				}
 				break;
@@ -2214,12 +2216,16 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				SubLink *sublink = (SubLink *)node;
 				/* raise ERROR if not has exist clause */
 				if (sublink->subLinkType != EXISTS_SUBLINK)
-					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
 
 				subselect = (Query *)sublink->subselect;
 				/* raise ERROR if it is CTE */
 				if (subselect->cteList)
-					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CTE is not supported with IVM")));
 
 				pstate = make_parsestate(NULL);
 				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;

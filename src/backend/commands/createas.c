@@ -331,7 +331,9 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		check_ivm_restriction_context ctx = {false, false, false, NIL};
 
 		if(contain_mutable_functions((Node *)query))
-			ereport(ERROR, (errmsg("functions in IMMV must be marked IMMUTABLE")));
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("functions in IMMV must be marked IMMUTABLE")));
 
 		check_ivm_restriction_walker((Node *) query, &ctx, 0);
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -516,7 +518,9 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			TargetEntry *tle = get_sortgroupclause_tle(scl, rewritten->targetList);
 
 			if (tle->resjunk)
-				elog(ERROR, "GROUP BY expression must appear in select list for incremental materialized views");
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("GROUP BY expression must appear in select list for incremental materialized views")));
 		}
 	}
 	else if (!rewritten->hasAggs)
@@ -1057,32 +1061,55 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				ListCell   *lc;
 				/* if contained CTE, return error */
 				if (qry->cteList != NIL)
-					ereport(ERROR, (errmsg("CTE is not supported with IVM")));
-
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CTE is not supported with IVM")));
 				if (qry->havingQual != NULL)
-					ereport(ERROR, (errmsg(" HAVING clause is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg(" HAVING clause is not supported with IVM")));
 				if (qry->sortClause != NIL)	/* There is a possibility that we don't need to return an error */
-					ereport(ERROR, (errmsg("ORDER BY clause is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("ORDER BY clause is not supported with IVM")));
 				if (qry->limitOffset != NULL || qry->limitCount != NULL)
-					ereport(ERROR, (errmsg("LIMIT/OFFSET clause is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("LIMIT/OFFSET clause is not supported with IVM")));
 				if (qry->hasDistinctOn)
-					ereport(ERROR, (errmsg("DISTINCT ON is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("DISTINCT ON is not supported with IVM")));
 				if (qry->hasWindowFuncs)
-					ereport(ERROR, (errmsg("window functions are not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("window functions are not supported with IVM")));
 				if (qry->groupingSets != NIL)
-					ereport(ERROR, (errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported with IVM")));
 				if (qry->setOperations != NULL)
-					ereport(ERROR, (errmsg("UNION/INTERSECT/EXCEPT statements are not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("UNION/INTERSECT/EXCEPT statements are not supported with IVM")));
 				if (list_length(qry->targetList) == 0)
-					ereport(ERROR, (errmsg("empty target list is not allowed with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("empty target list is not allowed with IVM")));
 				if (qry->rowMarks != NIL)
-					ereport(ERROR, (errmsg("FOR UPDATE/SHARE clause is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("FOR UPDATE/SHARE clause is not supported with IVM")));
 
 				/* subquery restrictions */
 				if (depth > 0 && qry->distinctClause != NIL)
-					ereport(ERROR, (errmsg("DISTINCT cluase in nested query are not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("DISTINCT cluase in nested query are not supported with IVM")));
 				if (depth > 0 && qry->hasAggs)
-					ereport(ERROR, (errmsg("aggregate functions in nested query are not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate functions in nested query are not supported with IVM")));
 
 				ctx->has_agg = qry->hasAggs;
 
@@ -1092,17 +1119,25 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
 
 					if (rte->tablesample != NULL)
-						ereport(ERROR, (errmsg("TABLESAMPLE clause is not supported with IVM")));
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("TABLESAMPLE clause is not supported with IVM")));
 					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
-						ereport(ERROR, (errmsg("inheritance parent is not supported with IVM")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("inheritance parent is not supported with IVM")));
 					if (rte->relkind == RELKIND_VIEW ||
 							rte->relkind == RELKIND_MATVIEW)
-						ereport(ERROR, (errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("VIEW or MATERIALIZED VIEW is not supported with IVM")));
 
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
 						if (ctx->has_outerjoin)
-							ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("subquery is not supported with IVM together with outer join")));
 
 						ctx->has_subquery = true;
 						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
@@ -1117,7 +1152,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
 					if (isIvmColumn(tle->resname))
-							ereport(ERROR, (errmsg("IMMV cannot contain column name %s", tle->resname)));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("IMMV cannot contain column name %s", tle->resname)));
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 
@@ -1134,7 +1171,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						OpExpr	*op = (OpExpr *) lfirst(lc);
 
 						if (!is_equijoin_condition(op))
-							ereport(ERROR, (errmsg("Only simple equijoin is supported for IVM with outer join")));
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("Only simple equijoin is supported for IVM with outer join")));
 
 						op = (OpExpr *) flatten_join_alias_vars(qry, (Node *) op);
 						qual_vars = list_concat(qual_vars, pull_vars_of_level((Node *) op, 0));
@@ -1161,16 +1200,22 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							}
 						}
 						if (!found)
-							ereport(ERROR, (errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("targetlist must contain vars in the join condition for IVM with outer join")));
 					}
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
 
 					if (list_length(list_difference(where_quals_vars, nonnullable_vars)) > 0)
-						ereport(ERROR, (errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("WHERE cannot contain non null-rejecting predicates for IVM with outer join")));
 
 					if (contain_nonstrict_functions((Node *) qry->targetList))
-						ereport(ERROR, (errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("targetlist cannot contain non strict functions for IVM with outer join")));
 				}
 
 				break;
@@ -1181,9 +1226,13 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (IS_OUTER_JOIN(joinexpr->jointype))
 				{
 					if (ctx->has_subquery)
-						ereport(ERROR, (errmsg("subquery is not supported with IVM together with outer join")));
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("subquery is not supported with IVM together with outer join")));
 					if (ctx->has_agg)
-						ereport(ERROR, (errmsg("aggregate is not supported with IVM together with outer join")));
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("aggregate is not supported with IVM together with outer join")));
 
 					ctx->has_outerjoin = true;
 					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
@@ -1212,7 +1261,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* if system column, return error */
 				Var	*variable = (Var *) node;
 				if (variable->varattno < 0)
-					ereport(ERROR, (errmsg("system column is not supported with IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("system column is not supported with IVM")));
 			}
 			break;
 		case T_BoolExpr:
@@ -1263,11 +1314,17 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				/* Now, EXISTS clause is supported only */
 				SubLink	*sublink = (SubLink *) node;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
-					ereport(ERROR, (errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("subquery in WHERE is not supported by IVM, except for EXISTS clause")));
 				if (depth > 0)
-					ereport(ERROR, (errmsg("nested subquery is not supported by IVM")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("nested subquery is not supported by IVM")));
 				if (ctx->has_outerjoin)
-					ereport(ERROR, (errmsg("subquery is not supported by IVM together with outer join")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("subquery is not supported by IVM together with outer join")));
 				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
 				break;
 			}
@@ -1278,17 +1335,24 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				const char *aggname = format_procedure(aggref->aggfnoid);
 
 				if (aggref->aggfilter != NULL)
-					ereport(ERROR, (errmsg("aggregate function with FILTER clause is not supported")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with FILTER clause is not supported")));
 
 				if (aggref->aggdistinct != NULL)
-					ereport(ERROR, (errmsg("aggregate function with DISTINCT arguments is not supported")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with DISTINCT arguments is not supported")));
 
 				if (aggref->aggorder != NULL)
-					ereport(ERROR, (errmsg("aggregate function with ORDER clause is not supported")));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with ORDER clause is not supported")));
 
 				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
-					ereport(ERROR, (
-							errmsg("aggregate function %s is not supported", aggname)));
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function %s is not supported", aggname)));
 				break;
 			}
 		case T_SubPlan:
