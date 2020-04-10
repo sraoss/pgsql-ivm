@@ -2226,7 +2226,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 						if (checkExprHasSubLink(node))
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 		 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
 									 errhint("OR or NOT conditions and EXISTS condition are not used together")));
 						break;
 				}
