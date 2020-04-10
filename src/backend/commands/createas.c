@@ -461,7 +461,6 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	Node *node;
 	ParseState *pstate = make_parsestate(NULL);
 	FuncCall *fn;
-	bool hasOuterJoins = false;
 
 	rewritten = copyObject(query);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
@@ -524,8 +523,9 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 						 errmsg("GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view")));
 		}
 	}
-	else if (!rewritten->hasAggs)
+	else if (!rewritten->hasAggs && rewritten->distinctClause)
 		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
+
 
 	if (rewritten->hasAggs)
 	{
@@ -615,53 +615,19 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	}
 
 	/* Add count(*) for counting algorithm */
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
-	fn->agg_star = true;
-
-	node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
-	tle = makeTargetEntry((Expr *) node,
-							list_length(rewritten->targetList) + 1,
-							pstrdup("__ivm_count__"),
-							false);
-	rewritten->targetList = lappend(rewritten->targetList, tle);
-	rewritten->hasAggs = true;
-
-
-	/* join tree analysis for outer join */
+	if (rewritten->distinctClause || rewritten->hasAggs)
 	{
-		ListCell   *lc;
-		foreach(lc, rewritten->rtable)
-		{
-			RangeTblEntry *rte = lfirst_node(RangeTblEntry, lc);
-			if (rte->rtekind == RTE_JOIN && IS_OUTER_JOIN(rte->jointype))
-			{
-				hasOuterJoins = true;
-				break;
-			}
-		}
-	}
+		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+		fn->agg_star = true;
 
-	/*
-	 * Add JSONB column for meta information related to outer joins.
-	 * Actually this is required only for delta tables, but we create
-	 * this here because delta tables are created using the schema
-	 * of the matview.
-	 */
-	if (hasOuterJoins)
-	{
-		Const	*dmy_jsonb = makeConst(JSONBOID,
-									-1,
-									InvalidOid,
-									-1,
-									PointerGetDatum(NULL),
-									true,
-									false);
-		tle = makeTargetEntry((Expr *) dmy_jsonb,
+		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+		tle = makeTargetEntry((Expr *) node,
 								list_length(rewritten->targetList) + 1,
-								pstrdup("__ivm_meta__"),
+								pstrdup("__ivm_count__"),
 								false);
 		rewritten->targetList = lappend(rewritten->targetList, tle);
+		rewritten->hasAggs = true;
 	}
 
 	return rewritten;
