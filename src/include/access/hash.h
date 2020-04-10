@@ -21,10 +21,10 @@
 #include "access/itup.h"
 #include "access/sdir.h"
 #include "catalog/pg_am_d.h"
+#include "common/hashfn.h"
 #include "lib/stringinfo.h"
 #include "storage/bufmgr.h"
 #include "storage/lockdefs.h"
-#include "utils/hashutils.h"
 #include "utils/hsearch.h"
 #include "utils/relcache.h"
 
@@ -352,7 +352,8 @@ typedef struct HashOptions
  */
 #define HASHSTANDARD_PROC		1
 #define HASHEXTENDED_PROC		2
-#define HASHNProcs				2
+#define HASHOPTIONS_PROC		3
+#define HASHNProcs				3
 
 
 /* public routines */

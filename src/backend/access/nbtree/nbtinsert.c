@@ -29,8 +29,7 @@
 #define BTREE_FASTPATH_MIN_LEVEL	2
 
 
-static Buffer _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf);
-
+static BTStack _bt_search_insert(Relation rel, BTInsertState insertstate);
 static TransactionId _bt_check_unique(Relation rel, BTInsertState insertstate,
 									  Relation heapRel,
 									  IndexUniqueCheck checkUnique, bool *is_unique,
@@ -46,13 +45,17 @@ static void _bt_insertonpg(Relation rel, BTScanInsert itup_key,
 						   Buffer cbuf,
 						   BTStack stack,
 						   IndexTuple itup,
+						   Size itemsz,
 						   OffsetNumber newitemoff,
+						   int postingoff,
 						   bool split_only_page);
 static Buffer _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf,
 						Buffer cbuf, OffsetNumber newitemoff, Size newitemsz,
-						IndexTuple newitem);
+						IndexTuple newitem, IndexTuple orignewitem,
+						IndexTuple nposting, uint16 postingoff);
 static void _bt_insert_parent(Relation rel, Buffer buf, Buffer rbuf,
 							  BTStack stack, bool is_root, bool is_only);
+static Buffer _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf);
 static bool _bt_pgaddtup(Page page, Size itemsize, IndexTuple itup,
 						 OffsetNumber itup_off);
 static void _bt_vacuum_one_page(Relation rel, Buffer buffer, Relation heapRel);
@@ -82,9 +85,7 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 	bool		is_unique = false;
 	BTInsertStateData insertstate;
 	BTScanInsert itup_key;
-	BTStack		stack = NULL;
-	Buffer		buf;
-	bool		fastpath;
+	BTStack		stack;
 	bool		checkingunique = (checkUnique != UNIQUE_CHECK_NO);
 
 	/* we need an insertion scan key to do our search, so build one */
@@ -117,109 +118,50 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 
 	/*
 	 * Fill in the BTInsertState working area, to track the current page and
-	 * position within the page to insert on
+	 * position within the page to insert on.
+	 *
+	 * Note that itemsz is passed down to lower level code that deals with
+	 * inserting the item.  It must be MAXALIGN()'d.  This ensures that space
+	 * accounting code consistently considers the alignment overhead that we
+	 * expect PageAddItem() will add later.  (Actually, index_form_tuple() is
+	 * already conservative about alignment, but we don't rely on that from
+	 * this distance.  Besides, preserving the "true" tuple size in index
+	 * tuple headers for the benefit of nbtsplitloc.c might happen someday.
+	 * Note that heapam does not MAXALIGN() each heap tuple's lp_len field.)
 	 */
 	insertstate.itup = itup;
-	/* PageAddItem will MAXALIGN(), but be consistent */
 	insertstate.itemsz = MAXALIGN(IndexTupleSize(itup));
 	insertstate.itup_key = itup_key;
 	insertstate.bounds_valid = false;
 	insertstate.buf = InvalidBuffer;
+	insertstate.postingoff = 0;
+
+search:
 
 	/*
-	 * It's very common to have an index on an auto-incremented or
-	 * monotonically increasing value. In such cases, every insertion happens
-	 * towards the end of the index. We try to optimize that case by caching
-	 * the right-most leaf of the index. If our cached block is still the
-	 * rightmost leaf, has enough free space to accommodate a new entry and
-	 * the insertion key is strictly greater than the first key in this page,
-	 * then we can safely conclude that the new key will be inserted in the
-	 * cached block. So we simply search within the cached block and insert
-	 * the key at the appropriate location. We call it a fastpath.
-	 *
-	 * Testing has revealed, though, that the fastpath can result in increased
-	 * contention on the exclusive-lock on the rightmost leaf page. So we
-	 * conditionally check if the lock is available. If it's not available
-	 * then we simply abandon the fastpath and take the regular path. This
-	 * makes sense because unavailability of the lock also signals that some
-	 * other backend might be concurrently inserting into the page, thus
-	 * reducing our chances to finding an insertion place in this page.
+	 * Find and lock the leaf page that the tuple should be added to by
+	 * searching from the root page.  insertstate.buf will hold a buffer that
+	 * is locked in exclusive mode afterwards.
 	 */
-top:
-	fastpath = false;
-	if (RelationGetTargetBlock(rel) != InvalidBlockNumber)
-	{
-		Page		page;
-		BTPageOpaque lpageop;
-
-		/*
-		 * Conditionally acquire exclusive lock on the buffer before doing any
-		 * checks. If we don't get the lock, we simply follow slowpath. If we
-		 * do get the lock, this ensures that the index state cannot change,
-		 * as far as the rightmost part of the index is concerned.
-		 */
-		buf = ReadBuffer(rel, RelationGetTargetBlock(rel));
-
-		if (ConditionalLockBuffer(buf))
-		{
-			_bt_checkpage(rel, buf);
-
-			page = BufferGetPage(buf);
-
-			lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
-
-			/*
-			 * Check if the page is still the rightmost leaf page, has enough
-			 * free space to accommodate the new tuple, and the insertion scan
-			 * key is strictly greater than the first key on the page.
-			 */
-			if (P_ISLEAF(lpageop) && P_RIGHTMOST(lpageop) &&
-				!P_IGNORE(lpageop) &&
-				(PageGetFreeSpace(page) > insertstate.itemsz) &&
-				PageGetMaxOffsetNumber(page) >= P_FIRSTDATAKEY(lpageop) &&
-				_bt_compare(rel, itup_key, page, P_FIRSTDATAKEY(lpageop)) > 0)
-			{
-				fastpath = true;
-			}
-			else
-			{
-				_bt_relbuf(rel, buf);
-
-				/*
-				 * Something did not work out. Just forget about the cached
-				 * block and follow the normal path. It might be set again if
-				 * the conditions are favourable.
-				 */
-				RelationSetTargetBlock(rel, InvalidBlockNumber);
-			}
-		}
-		else
-		{
-			ReleaseBuffer(buf);
-
-			/*
-			 * If someone's holding a lock, it's likely to change anyway, so
-			 * don't try again until we get an updated rightmost leaf.
-			 */
-			RelationSetTargetBlock(rel, InvalidBlockNumber);
-		}
-	}
-
-	if (!fastpath)
-	{
-		/*
-		 * Find the first page containing this key.  Buffer returned by
-		 * _bt_search() is locked in exclusive mode.
-		 */
-		stack = _bt_search(rel, itup_key, &buf, BT_WRITE, NULL);
-	}
-
-	insertstate.buf = buf;
-	buf = InvalidBuffer;		/* insertstate.buf now owns the buffer */
+	stack = _bt_search_insert(rel, &insertstate);
 
 	/*
-	 * If we're not allowing duplicates, make sure the key isn't already in
-	 * the index.
+	 * checkingunique inserts are not allowed to go ahead when two tuples with
+	 * equal key attribute values would be visible to new MVCC snapshots once
+	 * the xact commits.  Check for conflicts in the locked page/buffer (if
+	 * needed) here.
+	 *
+	 * It might be necessary to check a page to the right in _bt_check_unique,
+	 * though that should be very rare.  In practice the first page the value
+	 * could be on (with scantid omitted) is almost always also the only page
+	 * that a matching tuple might be found on.  This is due to the behavior
+	 * of _bt_findsplitloc with duplicate tuples -- a group of duplicates can
+	 * only be allowed to cross a page boundary when there is no candidate
+	 * leaf page split point that avoids it.  Also, _bt_check_unique can use
+	 * the leaf page high key to determine that there will be no duplicates on
+	 * the right sibling without actually visiting it (it uses the high key in
+	 * cases where the new item happens to belong at the far right of the leaf
+	 * page).
 	 *
 	 * NOTE: obviously, _bt_check_unique can only detect keys that are already
 	 * in the index; so it cannot defend against concurrent insertions of the
@@ -233,7 +175,7 @@ top:
 	 * insertion.  (This requires some care in _bt_findinsertloc.)
 	 *
 	 * If we must wait for another xact, we release the lock while waiting,
-	 * and then must start over completely.
+	 * and then must perform a new search.
 	 *
 	 * For a partial uniqueness check, we don't wait for the other xact. Just
 	 * let the tuple in and return false for possibly non-unique, or true for
@@ -247,7 +189,7 @@ top:
 		xwait = _bt_check_unique(rel, &insertstate, heapRel, checkUnique,
 								 &is_unique, &speculativeToken);
 
-		if (TransactionIdIsValid(xwait))
+		if (unlikely(TransactionIdIsValid(xwait)))
 		{
 			/* Have to wait for the other guy ... */
 			_bt_relbuf(rel, insertstate.buf);
@@ -266,7 +208,7 @@ top:
 			/* start over... */
 			if (stack)
 				_bt_freestack(stack);
-			goto top;
+			goto search;
 		}
 
 		/* Uniqueness is established -- restore heap tid as scantid */
@@ -295,7 +237,8 @@ top:
 		newitemoff = _bt_findinsertloc(rel, &insertstate, checkingunique,
 									   stack, heapRel);
 		_bt_insertonpg(rel, itup_key, insertstate.buf, InvalidBuffer, stack,
-					   itup, newitemoff, false);
+					   itup, insertstate.itemsz, newitemoff,
+					   insertstate.postingoff, false);
 	}
 	else
 	{
@@ -309,6 +252,112 @@ top:
 	pfree(itup_key);
 
 	return is_unique;
+}
+
+/*
+ *	_bt_search_insert() -- _bt_search() wrapper for inserts
+ *
+ * Search the tree for a particular scankey, or more precisely for the first
+ * leaf page it could be on.  Try to make use of the fastpath optimization's
+ * rightmost leaf page cache before actually searching the tree from the root
+ * page, though.
+ *
+ * Return value is a stack of parent-page pointers (though see notes about
+ * fastpath optimization and page splits below).  insertstate->buf is set to
+ * the address of the leaf-page buffer, which is write-locked and pinned in
+ * all cases (if necessary by creating a new empty root page for caller).
+ *
+ * The fastpath optimization avoids most of the work of searching the tree
+ * repeatedly when a single backend inserts successive new tuples on the
+ * rightmost leaf page of an index.  A backend cache of the rightmost leaf
+ * page is maintained within _bt_insertonpg(), and used here.  The cache is
+ * invalidated here when an insert of a non-pivot tuple must take place on a
+ * non-rightmost leaf page.
+ *
+ * The optimization helps with indexes on an auto-incremented field.  It also
+ * helps with indexes on datetime columns, as well as indexes with lots of
+ * NULL values.  (NULLs usually get inserted in the rightmost page for single
+ * column indexes, since they usually get treated as coming after everything
+ * else in the key space.  Individual NULL tuples will generally be placed on
+ * the rightmost leaf page due to the influence of the heap TID column.)
+ *
+ * Note that we avoid applying the optimization when there is insufficient
+ * space on the rightmost page to fit caller's new item.  This is necessary
+ * because we'll need to return a real descent stack when a page split is
+ * expected (actually, caller can cope with a leaf page split that uses a NULL
+ * stack, but that's very slow and so must be avoided).  Note also that the
+ * fastpath optimization acquires the lock on the page conditionally as a way
+ * of reducing extra contention when there are concurrent insertions into the
+ * rightmost page (we give up if we'd have to wait for the lock).  We assume
+ * that it isn't useful to apply the optimization when there is contention,
+ * since each per-backend cache won't stay valid for long.
+ */
+static BTStack
+_bt_search_insert(Relation rel, BTInsertState insertstate)
+{
+	Assert(insertstate->buf == InvalidBuffer);
+	Assert(!insertstate->bounds_valid);
+	Assert(insertstate->postingoff == 0);
+
+	if (RelationGetTargetBlock(rel) != InvalidBlockNumber)
+	{
+		/* Simulate a _bt_getbuf() call with conditional locking */
+		insertstate->buf = ReadBuffer(rel, RelationGetTargetBlock(rel));
+		if (ConditionalLockBuffer(insertstate->buf))
+		{
+			Page		page;
+			BTPageOpaque lpageop;
+
+			_bt_checkpage(rel, insertstate->buf);
+			page = BufferGetPage(insertstate->buf);
+			lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
+
+			/*
+			 * Check if the page is still the rightmost leaf page and has
+			 * enough free space to accommodate the new tuple.  Also check
+			 * that the insertion scan key is strictly greater than the first
+			 * non-pivot tuple on the page.  (Note that we expect itup_key's
+			 * scantid to be unset when our caller is a checkingunique
+			 * inserter.)
+			 */
+			if (P_RIGHTMOST(lpageop) &&
+				P_ISLEAF(lpageop) &&
+				!P_IGNORE(lpageop) &&
+				PageGetFreeSpace(page) > insertstate->itemsz &&
+				PageGetMaxOffsetNumber(page) >= P_HIKEY &&
+				_bt_compare(rel, insertstate->itup_key, page, P_HIKEY) > 0)
+			{
+				/*
+				 * Caller can use the fastpath optimization because cached
+				 * block is still rightmost leaf page, which can fit caller's
+				 * new tuple without splitting.  Keep block in local cache for
+				 * next insert, and have caller use NULL stack.
+				 *
+				 * Note that _bt_insert_parent() has an assertion that catches
+				 * leaf page splits that somehow follow from a fastpath insert
+				 * (it should only be passed a NULL stack when it must deal
+				 * with a concurrent root page split, and never because a NULL
+				 * stack was returned here).
+				 */
+				return NULL;
+			}
+
+			/* Page unsuitable for caller, drop lock and pin */
+			_bt_relbuf(rel, insertstate->buf);
+		}
+		else
+		{
+			/* Lock unavailable, drop pin */
+			ReleaseBuffer(insertstate->buf);
+		}
+
+		/* Forget block, since cache doesn't appear to be useful */
+		RelationSetTargetBlock(rel, InvalidBlockNumber);
+	}
+
+	/* Cannot use optimization -- descend tree, return proper descent stack */
+	return _bt_search(rel, insertstate->itup_key, &insertstate->buf, BT_WRITE,
+					  NULL);
 }
 
 /*
@@ -340,6 +389,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				 uint32 *speculativeToken)
 {
 	IndexTuple	itup = insertstate->itup;
+	IndexTuple	curitup;
+	ItemId		curitemid;
 	BTScanInsert itup_key = insertstate->itup_key;
 	SnapshotData SnapshotDirty;
 	OffsetNumber offset;
@@ -348,6 +399,9 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	BTPageOpaque opaque;
 	Buffer		nbuf = InvalidBuffer;
 	bool		found = false;
+	bool		inposting = false;
+	bool		prevalldead = true;
+	int			curposti = 0;
 
 	/* Assume unique until we find a duplicate */
 	*is_unique = true;
@@ -375,13 +429,21 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 	Assert(itup_key->scantid == NULL);
 	for (;;)
 	{
-		ItemId		curitemid;
-		IndexTuple	curitup;
-		BlockNumber nblkno;
-
 		/*
-		 * make sure the offset points to an actual item before trying to
-		 * examine it...
+		 * Each iteration of the loop processes one heap TID, not one index
+		 * tuple.  Current offset number for page isn't usually advanced on
+		 * iterations that process heap TIDs from posting list tuples.
+		 *
+		 * "inposting" state is set when _inside_ a posting list --- not when
+		 * we're at the start (or end) of a posting list.  We advance curposti
+		 * at the end of the iteration when inside a posting list tuple.  In
+		 * general, every loop iteration either advances the page offset or
+		 * advances curposti --- an iteration that handles the rightmost/max
+		 * heap TID in a posting list finally advances the page offset (and
+		 * unsets "inposting").
+		 *
+		 * Make sure the offset points to an actual index tuple before trying
+		 * to examine it...
 		 */
 		if (offset <= maxoff)
 		{
@@ -406,31 +468,60 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 				break;
 			}
 
-			curitemid = PageGetItemId(page, offset);
-
 			/*
-			 * We can skip items that are marked killed.
+			 * We can skip items that are already marked killed.
 			 *
 			 * In the presence of heavy update activity an index may contain
 			 * many killed items with the same key; running _bt_compare() on
 			 * each killed item gets expensive.  Just advance over killed
 			 * items as quickly as we can.  We only apply _bt_compare() when
-			 * we get to a non-killed item.  Even those comparisons could be
-			 * avoided (in the common case where there is only one page to
-			 * visit) by reusing bounds, but just skipping dead items is fast
-			 * enough.
+			 * we get to a non-killed item.  We could reuse the bounds to
+			 * avoid _bt_compare() calls for known equal tuples, but it
+			 * doesn't seem worth it.  Workloads with heavy update activity
+			 * tend to have many deduplication passes, so we'll often avoid
+			 * most of those comparisons, too (we call _bt_compare() when the
+			 * posting list tuple is initially encountered, though not when
+			 * processing later TIDs from the same tuple).
 			 */
-			if (!ItemIdIsDead(curitemid))
+			if (!inposting)
+				curitemid = PageGetItemId(page, offset);
+			if (inposting || !ItemIdIsDead(curitemid))
 			{
 				ItemPointerData htid;
-				bool		all_dead;
+				bool		all_dead = false;
 
-				if (_bt_compare(rel, itup_key, page, offset) != 0)
-					break;		/* we're past all the equal tuples */
+				if (!inposting)
+				{
+					/* Plain tuple, or first TID in posting list tuple */
+					if (_bt_compare(rel, itup_key, page, offset) != 0)
+						break;	/* we're past all the equal tuples */
 
-				/* okay, we gotta fetch the heap tuple ... */
-				curitup = (IndexTuple) PageGetItem(page, curitemid);
-				htid = curitup->t_tid;
+					/* Advanced curitup */
+					curitup = (IndexTuple) PageGetItem(page, curitemid);
+					Assert(!BTreeTupleIsPivot(curitup));
+				}
+
+				/* okay, we gotta fetch the heap tuple using htid ... */
+				if (!BTreeTupleIsPosting(curitup))
+				{
+					/* ... htid is from simple non-pivot tuple */
+					Assert(!inposting);
+					htid = curitup->t_tid;
+				}
+				else if (!inposting)
+				{
+					/* ... htid is first TID in new posting list */
+					inposting = true;
+					prevalldead = true;
+					curposti = 0;
+					htid = *BTreeTupleGetPostingN(curitup, 0);
+				}
+				else
+				{
+					/* ... htid is second or subsequent TID in posting list */
+					Assert(curposti > 0);
+					htid = *BTreeTupleGetPostingN(curitup, curposti);
+				}
 
 				/*
 				 * If we are doing a recheck, we expect to find the tuple we
@@ -506,8 +597,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					 * not part of this chain because it had a different index
 					 * entry.
 					 */
-					htid = itup->t_tid;
-					if (table_index_fetch_tuple_check(heapRel, &htid,
+					if (table_index_fetch_tuple_check(heapRel, &itup->t_tid,
 													  SnapshotSelf, NULL))
 					{
 						/* Normal case --- it's still live */
@@ -565,12 +655,14 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 													RelationGetRelationName(rel))));
 					}
 				}
-				else if (all_dead)
+				else if (all_dead && (!inposting ||
+									  (prevalldead &&
+									   curposti == BTreeTupleGetNPosting(curitup) - 1)))
 				{
 					/*
-					 * The conflicting tuple (or whole HOT chain) is dead to
-					 * everyone, so we may as well mark the index entry
-					 * killed.
+					 * The conflicting tuple (or all HOT chains pointed to by
+					 * all posting list TIDs) is dead to everyone, so mark the
+					 * index entry killed.
 					 */
 					ItemIdMarkDead(curitemid);
 					opaque->btpo_flags |= BTP_HAS_GARBAGE;
@@ -584,14 +676,29 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					else
 						MarkBufferDirtyHint(insertstate->buf, true);
 				}
+
+				/*
+				 * Remember if posting list tuple has even a single HOT chain
+				 * whose members are not all dead
+				 */
+				if (!all_dead && inposting)
+					prevalldead = false;
 			}
 		}
 
-		/*
-		 * Advance to next tuple to continue checking.
-		 */
-		if (offset < maxoff)
+		if (inposting && curposti < BTreeTupleGetNPosting(curitup) - 1)
+		{
+			/* Advance to next TID in same posting list */
+			curposti++;
+			continue;
+		}
+		else if (offset < maxoff)
+		{
+			/* Advance to next tuple */
+			curposti = 0;
+			inposting = false;
 			offset = OffsetNumberNext(offset);
+		}
 		else
 		{
 			int			highkeycmp;
@@ -606,7 +713,8 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 			/* Advance to next non-dead page --- there must be one */
 			for (;;)
 			{
-				nblkno = opaque->btpo_next;
+				BlockNumber nblkno = opaque->btpo_next;
+
 				nbuf = _bt_relandgetbuf(rel, nbuf, nblkno, BT_READ);
 				page = BufferGetPage(nbuf);
 				opaque = (BTPageOpaque) PageGetSpecialPointer(page);
@@ -616,6 +724,9 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					elog(ERROR, "fell off the end of index \"%s\"",
 						 RelationGetRelationName(rel));
 			}
+			/* Will also advance to next tuple */
+			curposti = 0;
+			inposting = false;
 			maxoff = PageGetMaxOffsetNumber(page);
 			offset = P_FIRSTDATAKEY(opaque);
 			/* Don't invalidate binary search bounds */
@@ -684,6 +795,7 @@ _bt_findinsertloc(Relation rel,
 	BTScanInsert itup_key = insertstate->itup_key;
 	Page		page = BufferGetPage(insertstate->buf);
 	BTPageOpaque lpageop;
+	OffsetNumber newitemoff;
 
 	lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
 
@@ -696,9 +808,13 @@ _bt_findinsertloc(Relation rel,
 	Assert(!insertstate->bounds_valid || checkingunique);
 	Assert(!itup_key->heapkeyspace || itup_key->scantid != NULL);
 	Assert(itup_key->heapkeyspace || itup_key->scantid == NULL);
+	Assert(!itup_key->allequalimage || itup_key->heapkeyspace);
 
 	if (itup_key->heapkeyspace)
 	{
+		/* Keep track of whether checkingunique duplicate seen */
+		bool		uniquedup = false;
+
 		/*
 		 * If we're inserting into a unique index, we may have to walk right
 		 * through leaf pages to find the one leaf page that we must insert on
@@ -715,6 +831,13 @@ _bt_findinsertloc(Relation rel,
 		 */
 		if (checkingunique)
 		{
+			if (insertstate->low < insertstate->stricthigh)
+			{
+				/* Encountered a duplicate in _bt_check_unique() */
+				Assert(insertstate->bounds_valid);
+				uniquedup = true;
+			}
+
 			for (;;)
 			{
 				/*
@@ -741,18 +864,43 @@ _bt_findinsertloc(Relation rel,
 				/* Update local state after stepping right */
 				page = BufferGetPage(insertstate->buf);
 				lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
+				/* Assume duplicates (if checkingunique) */
+				uniquedup = true;
 			}
 		}
 
 		/*
 		 * If the target page is full, see if we can obtain enough space by
-		 * erasing LP_DEAD items
+		 * erasing LP_DEAD items.  If that fails to free enough space, see if
+		 * we can avoid a page split by performing a deduplication pass over
+		 * the page.
+		 *
+		 * We only perform a deduplication pass for a checkingunique caller
+		 * when the incoming item is a duplicate of an existing item on the
+		 * leaf page.  This heuristic avoids wasting cycles -- we only expect
+		 * to benefit from deduplicating a unique index page when most or all
+		 * recently added items are duplicates.  See nbtree/README.
 		 */
-		if (PageGetFreeSpace(page) < insertstate->itemsz &&
-			P_HAS_GARBAGE(lpageop))
+		if (PageGetFreeSpace(page) < insertstate->itemsz)
 		{
-			_bt_vacuum_one_page(rel, insertstate->buf, heapRel);
-			insertstate->bounds_valid = false;
+			if (P_HAS_GARBAGE(lpageop))
+			{
+				_bt_vacuum_one_page(rel, insertstate->buf, heapRel);
+				insertstate->bounds_valid = false;
+
+				/* Might as well assume duplicates (if checkingunique) */
+				uniquedup = true;
+			}
+
+			if (itup_key->allequalimage && BTGetDeduplicateItems(rel) &&
+				(!checkingunique || uniquedup) &&
+				PageGetFreeSpace(page) < insertstate->itemsz)
+			{
+				_bt_dedup_one_page(rel, insertstate->buf, heapRel,
+								   insertstate->itup, insertstate->itemsz,
+								   checkingunique);
+				insertstate->bounds_valid = false;
+			}
 		}
 	}
 	else
@@ -834,7 +982,30 @@ _bt_findinsertloc(Relation rel,
 	Assert(P_RIGHTMOST(lpageop) ||
 		   _bt_compare(rel, itup_key, page, P_HIKEY) <= 0);
 
-	return _bt_binsrch_insert(rel, insertstate);
+	newitemoff = _bt_binsrch_insert(rel, insertstate);
+
+	if (insertstate->postingoff == -1)
+	{
+		/*
+		 * There is an overlapping posting list tuple with its LP_DEAD bit
+		 * set.  We don't want to unnecessarily unset its LP_DEAD bit while
+		 * performing a posting list split, so delete all LP_DEAD items early.
+		 * This is the only case where LP_DEAD deletes happen even though
+		 * there is space for newitem on the page.
+		 */
+		_bt_vacuum_one_page(rel, insertstate->buf, heapRel);
+
+		/*
+		 * Do new binary search.  New insert location cannot overlap with any
+		 * posting list now.
+		 */
+		insertstate->bounds_valid = false;
+		insertstate->postingoff = 0;
+		newitemoff = _bt_binsrch_insert(rel, insertstate);
+		Assert(insertstate->postingoff == 0);
+	}
+
+	return newitemoff;
 }
 
 /*
@@ -900,10 +1071,12 @@ _bt_stepright(Relation rel, BTInsertState insertstate, BTStack stack)
  *
  *		This recursive procedure does the following things:
  *
+ *			+  if postingoff != 0, splits existing posting list tuple
+ *			   (since it overlaps with new 'itup' tuple).
  *			+  if necessary, splits the target page, using 'itup_key' for
  *			   suffix truncation on leaf pages (caller passes NULL for
  *			   non-leaf pages).
- *			+  inserts the tuple.
+ *			+  inserts the new tuple (might be split from posting list).
  *			+  if the page was split, pops the parent stack, and finds the
  *			   right place to insert the new child pointer (by walking
  *			   right using information stored in the parent stack).
@@ -930,12 +1103,16 @@ _bt_insertonpg(Relation rel,
 			   Buffer cbuf,
 			   BTStack stack,
 			   IndexTuple itup,
+			   Size itemsz,
 			   OffsetNumber newitemoff,
+			   int postingoff,
 			   bool split_only_page)
 {
 	Page		page;
 	BTPageOpaque lpageop;
-	Size		itemsz;
+	IndexTuple	oposting = NULL;
+	IndexTuple	origitup = NULL;
+	IndexTuple	nposting = NULL;
 
 	page = BufferGetPage(buf);
 	lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
@@ -949,15 +1126,49 @@ _bt_insertonpg(Relation rel,
 	Assert(P_ISLEAF(lpageop) ||
 		   BTreeTupleGetNAtts(itup, rel) <=
 		   IndexRelationGetNumberOfKeyAttributes(rel));
+	Assert(!BTreeTupleIsPosting(itup));
+	Assert(MAXALIGN(IndexTupleSize(itup)) == itemsz);
+
+	/*
+	 * Every internal page should have exactly one negative infinity item at
+	 * all times.  Only _bt_split() and _bt_newroot() should add items that
+	 * become negative infinity items through truncation, since they're the
+	 * only routines that allocate new internal pages.
+	 */
+	Assert(P_ISLEAF(lpageop) || newitemoff > P_FIRSTDATAKEY(lpageop));
 
 	/* The caller should've finished any incomplete splits already. */
 	if (P_INCOMPLETE_SPLIT(lpageop))
 		elog(ERROR, "cannot insert to incompletely split page %u",
 			 BufferGetBlockNumber(buf));
 
-	itemsz = IndexTupleSize(itup);
-	itemsz = MAXALIGN(itemsz);	/* be safe, PageAddItem will do this but we
-								 * need to be consistent */
+	/*
+	 * Do we need to split an existing posting list item?
+	 */
+	if (postingoff != 0)
+	{
+		ItemId		itemid = PageGetItemId(page, newitemoff);
+
+		/*
+		 * The new tuple is a duplicate with a heap TID that falls inside the
+		 * range of an existing posting list tuple on a leaf page.  Prepare to
+		 * split an existing posting list.  Overwriting the posting list with
+		 * its post-split version is treated as an extra step in either the
+		 * insert or page split critical section.
+		 */
+		Assert(P_ISLEAF(lpageop) && !ItemIdIsDead(itemid));
+		Assert(itup_key->heapkeyspace && itup_key->allequalimage);
+		oposting = (IndexTuple) PageGetItem(page, itemid);
+
+		/* use a mutable copy of itup as our itup from here on */
+		origitup = itup;
+		itup = CopyIndexTuple(origitup);
+		nposting = _bt_swap_posting(itup, oposting, postingoff);
+		/* itup now contains rightmost/max TID from oposting */
+
+		/* Alter offset so that newitem goes after posting list */
+		newitemoff = OffsetNumberNext(newitemoff);
+	}
 
 	/*
 	 * Do we need to split the page to fit the item on it?
@@ -972,26 +1183,9 @@ _bt_insertonpg(Relation rel,
 		bool		is_only = P_LEFTMOST(lpageop) && P_RIGHTMOST(lpageop);
 		Buffer		rbuf;
 
-		/*
-		 * If we're here then a pagesplit is needed. We should never reach
-		 * here if we're using the fastpath since we should have checked for
-		 * all the required conditions, including the fact that this page has
-		 * enough freespace. Note that this routine can in theory deal with
-		 * the situation where a NULL stack pointer is passed (that's what
-		 * would happen if the fastpath is taken). But that path is much
-		 * slower, defeating the very purpose of the optimization.  The
-		 * following assertion should protect us from any future code changes
-		 * that invalidate those assumptions.
-		 *
-		 * Note that whenever we fail to take the fastpath, we clear the
-		 * cached block. Checking for a valid cached block at this point is
-		 * enough to decide whether we're in a fastpath or not.
-		 */
-		Assert(!(P_ISLEAF(lpageop) &&
-				 BlockNumberIsValid(RelationGetTargetBlock(rel))));
-
 		/* split the buffer into left and right halves */
-		rbuf = _bt_split(rel, itup_key, buf, cbuf, newitemoff, itemsz, itup);
+		rbuf = _bt_split(rel, itup_key, buf, cbuf, newitemoff, itemsz, itup,
+						 origitup, nposting, postingoff);
 		PredicateLockPageSplit(rel,
 							   BufferGetBlockNumber(buf),
 							   BufferGetBlockNumber(rbuf));
@@ -1018,15 +1212,12 @@ _bt_insertonpg(Relation rel,
 	}
 	else
 	{
+		bool		isleaf = P_ISLEAF(lpageop);
+		bool		isrightmost = P_RIGHTMOST(lpageop);
 		Buffer		metabuf = InvalidBuffer;
 		Page		metapg = NULL;
 		BTMetaPageData *metad = NULL;
-		OffsetNumber itup_off;
-		BlockNumber itup_blkno;
-		BlockNumber cachedBlock = InvalidBlockNumber;
-
-		itup_off = newitemoff;
-		itup_blkno = BufferGetBlockNumber(buf);
+		BlockNumber blockcache;
 
 		/*
 		 * If we are doing this insert because we split a page that was the
@@ -1037,7 +1228,8 @@ _bt_insertonpg(Relation rel,
 		 */
 		if (split_only_page)
 		{
-			Assert(!P_ISLEAF(lpageop));
+			Assert(!isleaf);
+			Assert(BufferIsValid(cbuf));
 
 			metabuf = _bt_getbuf(rel, BTREE_METAPAGE, BT_WRITE);
 			metapg = BufferGetPage(metabuf);
@@ -1051,24 +1243,16 @@ _bt_insertonpg(Relation rel,
 			}
 		}
 
-		/*
-		 * Every internal page should have exactly one negative infinity item
-		 * at all times.  Only _bt_split() and _bt_newroot() should add items
-		 * that become negative infinity items through truncation, since
-		 * they're the only routines that allocate new internal pages.  Do not
-		 * allow a retail insertion of a new item at the negative infinity
-		 * offset.
-		 */
-		if (!P_ISLEAF(lpageop) && newitemoff == P_FIRSTDATAKEY(lpageop))
-			elog(ERROR, "cannot insert second negative infinity item in block %u of index \"%s\"",
-				 itup_blkno, RelationGetRelationName(rel));
-
 		/* Do the update.  No ereport(ERROR) until changes are logged */
 		START_CRIT_SECTION();
 
-		if (!_bt_pgaddtup(page, itemsz, itup, newitemoff))
+		if (postingoff != 0)
+			memcpy(oposting, nposting, MAXALIGN(IndexTupleSize(nposting)));
+
+		if (PageAddItem(page, (Item) itup, itemsz, newitemoff, false,
+						false) == InvalidOffsetNumber)
 			elog(PANIC, "failed to add new item to block %u in index \"%s\"",
-				 itup_blkno, RelationGetRelationName(rel));
+				 BufferGetBlockNumber(buf), RelationGetRelationName(rel));
 
 		MarkBufferDirty(buf);
 
@@ -1077,7 +1261,7 @@ _bt_insertonpg(Relation rel,
 			/* upgrade meta-page if needed */
 			if (metad->btm_version < BTREE_NOVAC_VERSION)
 				_bt_upgrademetapage(metapg);
-			metad->btm_fastroot = itup_blkno;
+			metad->btm_fastroot = BufferGetBlockNumber(buf);
 			metad->btm_fastlevel = lpageop->btpo.level;
 			MarkBufferDirty(metabuf);
 		}
@@ -1093,15 +1277,6 @@ _bt_insertonpg(Relation rel,
 			MarkBufferDirty(cbuf);
 		}
 
-		/*
-		 * Cache the block information if we just inserted into the rightmost
-		 * leaf page of the index and it's not the root page.  For very small
-		 * index where root is also the leaf, there is no point trying for any
-		 * optimization.
-		 */
-		if (P_RIGHTMOST(lpageop) && P_ISLEAF(lpageop) && !P_ISROOT(lpageop))
-			cachedBlock = BufferGetBlockNumber(buf);
-
 		/* XLOG stuff */
 		if (RelationNeedsWAL(rel))
 		{
@@ -1110,13 +1285,24 @@ _bt_insertonpg(Relation rel,
 			uint8		xlinfo;
 			XLogRecPtr	recptr;
 
-			xlrec.offnum = itup_off;
+			xlrec.offnum = newitemoff;
 
 			XLogBeginInsert();
 			XLogRegisterData((char *) &xlrec, SizeOfBtreeInsert);
 
-			if (P_ISLEAF(lpageop))
+			if (isleaf && postingoff == 0)
+			{
+				/* Simple leaf insert */
 				xlinfo = XLOG_BTREE_INSERT_LEAF;
+			}
+			else if (postingoff != 0)
+			{
+				/*
+				 * Leaf insert with posting list split.  Must include
+				 * postingoff field before newitem/orignewitem.
+				 */
+				xlinfo = XLOG_BTREE_INSERT_POST;
+			}
 			else
 			{
 				/*
@@ -1139,6 +1325,7 @@ _bt_insertonpg(Relation rel,
 				xlmeta.oldest_btpo_xact = metad->btm_oldest_btpo_xact;
 				xlmeta.last_cleanup_num_heap_tuples =
 					metad->btm_last_cleanup_num_heap_tuples;
+				xlmeta.allequalimage = metad->btm_allequalimage;
 
 				XLogRegisterBuffer(2, metabuf, REGBUF_WILL_INIT | REGBUF_STANDARD);
 				XLogRegisterBufData(2, (char *) &xlmeta, sizeof(xl_btree_metadata));
@@ -1147,47 +1334,75 @@ _bt_insertonpg(Relation rel,
 			}
 
 			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-			XLogRegisterBufData(0, (char *) itup, IndexTupleSize(itup));
+			if (postingoff == 0)
+			{
+				/* Simple, common case -- log itup from caller */
+				XLogRegisterBufData(0, (char *) itup, IndexTupleSize(itup));
+			}
+			else
+			{
+				/*
+				 * Insert with posting list split (XLOG_BTREE_INSERT_POST
+				 * record) case.
+				 *
+				 * Log postingoff.  Also log origitup, not itup.  REDO routine
+				 * must reconstruct final itup (as well as nposting) using
+				 * _bt_swap_posting().
+				 */
+				uint16		upostingoff = postingoff;
+
+				XLogRegisterBufData(0, (char *) &upostingoff, sizeof(uint16));
+				XLogRegisterBufData(0, (char *) origitup,
+									IndexTupleSize(origitup));
+			}
 
 			recptr = XLogInsert(RM_BTREE_ID, xlinfo);
 
 			if (BufferIsValid(metabuf))
-			{
 				PageSetLSN(metapg, recptr);
-			}
 			if (BufferIsValid(cbuf))
-			{
 				PageSetLSN(BufferGetPage(cbuf), recptr);
-			}
 
 			PageSetLSN(page, recptr);
 		}
 
 		END_CRIT_SECTION();
 
-		/* release buffers */
+		/* Release subsidiary buffers */
 		if (BufferIsValid(metabuf))
 			_bt_relbuf(rel, metabuf);
 		if (BufferIsValid(cbuf))
 			_bt_relbuf(rel, cbuf);
+
+		/*
+		 * Cache the block number if this is the rightmost leaf page.  Cache
+		 * may be used by a future inserter within _bt_search_insert().
+		 */
+		blockcache = InvalidBlockNumber;
+		if (isrightmost && isleaf && !P_ISROOT(lpageop))
+			blockcache = BufferGetBlockNumber(buf);
+
+		/* Release buffer for insertion target block */
 		_bt_relbuf(rel, buf);
 
 		/*
-		 * If we decided to cache the insertion target block, then set it now.
-		 * But before that, check for the height of the tree and don't go for
-		 * the optimization for small indexes. We defer that check to this
-		 * point to ensure that we don't call _bt_getrootheight while holding
-		 * lock on any other block.
-		 *
-		 * We do this after dropping locks on all buffers. So the information
-		 * about whether the insertion block is still the rightmost block or
-		 * not may have changed in between. But we will deal with that during
-		 * next insert operation. No special care is required while setting
-		 * it.
+		 * If we decided to cache the insertion target block before releasing
+		 * its buffer lock, then cache it now.  Check the height of the tree
+		 * first, though.  We don't go for the optimization with small
+		 * indexes.  Defer final check to this point to ensure that we don't
+		 * call _bt_getrootheight while holding a buffer lock.
 		 */
-		if (BlockNumberIsValid(cachedBlock) &&
+		if (BlockNumberIsValid(blockcache) &&
 			_bt_getrootheight(rel) >= BTREE_FASTPATH_MIN_LEVEL)
-			RelationSetTargetBlock(rel, cachedBlock);
+			RelationSetTargetBlock(rel, blockcache);
+	}
+
+	/* be tidy */
+	if (postingoff != 0)
+	{
+		/* itup is actually a modified copy of caller's original */
+		pfree(nposting);
+		pfree(itup);
 	}
 }
 
@@ -1204,12 +1419,24 @@ _bt_insertonpg(Relation rel,
  *		This function will clear the INCOMPLETE_SPLIT flag on it, and
  *		release the buffer.
  *
+ *		orignewitem, nposting, and postingoff are needed when an insert of
+ *		orignewitem results in both a posting list split and a page split.
+ *		These extra posting list split details are used here in the same
+ *		way as they are used in the more common case where a posting list
+ *		split does not coincide with a page split.  We need to deal with
+ *		posting list splits directly in order to ensure that everything
+ *		that follows from the insert of orignewitem is handled as a single
+ *		atomic operation (though caller's insert of a new pivot/downlink
+ *		into parent page will still be a separate operation).  See
+ *		nbtree/README for details on the design of posting list splits.
+ *
  *		Returns the new right sibling of buf, pinned and write-locked.
  *		The pin and lock on buf are maintained.
  */
 static Buffer
 _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
-		  OffsetNumber newitemoff, Size newitemsz, IndexTuple newitem)
+		  OffsetNumber newitemoff, Size newitemsz, IndexTuple newitem,
+		  IndexTuple orignewitem, IndexTuple nposting, uint16 postingoff)
 {
 	Buffer		rbuf;
 	Page		origpage;
@@ -1229,6 +1456,7 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 	OffsetNumber leftoff,
 				rightoff;
 	OffsetNumber firstright;
+	OffsetNumber origpagepostingoff;
 	OffsetNumber maxoff;
 	OffsetNumber i;
 	bool		newitemonleft,
@@ -1299,6 +1527,34 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 	isleaf = P_ISLEAF(oopaque);
 
 	/*
+	 * Determine page offset number of existing overlapped-with-orignewitem
+	 * posting list when it is necessary to perform a posting list split in
+	 * passing.  Note that newitem was already changed by caller (newitem no
+	 * longer has the orignewitem TID).
+	 *
+	 * This page offset number (origpagepostingoff) will be used to pretend
+	 * that the posting split has already taken place, even though the
+	 * required modifications to origpage won't occur until we reach the
+	 * critical section.  The lastleft and firstright tuples of our page split
+	 * point should, in effect, come from an imaginary version of origpage
+	 * that has the nposting tuple instead of the original posting list tuple.
+	 *
+	 * Note: _bt_findsplitloc() should have compensated for coinciding posting
+	 * list splits in just the same way, at least in theory.  It doesn't
+	 * bother with that, though.  In practice it won't affect its choice of
+	 * split point.
+	 */
+	origpagepostingoff = InvalidOffsetNumber;
+	if (postingoff != 0)
+	{
+		Assert(isleaf);
+		Assert(ItemPointerCompare(&orignewitem->t_tid,
+								  &newitem->t_tid) < 0);
+		Assert(BTreeTupleIsPosting(nposting));
+		origpagepostingoff = OffsetNumberPrev(newitemoff);
+	}
+
+	/*
 	 * The "high key" for the new left page will be the first key that's going
 	 * to go into the new right page, or a truncated version if this is a leaf
 	 * page split.
@@ -1335,6 +1591,8 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 		itemid = PageGetItemId(origpage, firstright);
 		itemsz = ItemIdGetLength(itemid);
 		item = (IndexTuple) PageGetItem(origpage, itemid);
+		if (firstright == origpagepostingoff)
+			item = nposting;
 	}
 
 	/*
@@ -1368,6 +1626,8 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 			Assert(lastleftoff >= P_FIRSTDATAKEY(oopaque));
 			itemid = PageGetItemId(origpage, lastleftoff);
 			lastleft = (IndexTuple) PageGetItem(origpage, itemid);
+			if (lastleftoff == origpagepostingoff)
+				lastleft = nposting;
 		}
 
 		Assert(lastleft != item);
@@ -1475,8 +1735,16 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 		itemsz = ItemIdGetLength(itemid);
 		item = (IndexTuple) PageGetItem(origpage, itemid);
 
+		/* replace original item with nposting due to posting split? */
+		if (i == origpagepostingoff)
+		{
+			Assert(BTreeTupleIsPosting(item));
+			Assert(itemsz == MAXALIGN(IndexTupleSize(nposting)));
+			item = nposting;
+		}
+
 		/* does new item belong before this one? */
-		if (i == newitemoff)
+		else if (i == newitemoff)
 		{
 			if (newitemonleft)
 			{
@@ -1645,8 +1913,12 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 		XLogRecPtr	recptr;
 
 		xlrec.level = ropaque->btpo.level;
+		/* See comments below on newitem, orignewitem, and posting lists */
 		xlrec.firstright = firstright;
 		xlrec.newitemoff = newitemoff;
+		xlrec.postingoff = 0;
+		if (postingoff != 0 && origpagepostingoff < firstright)
+			xlrec.postingoff = postingoff;
 
 		XLogBeginInsert();
 		XLogRegisterData((char *) &xlrec, SizeOfBtreeSplit);
@@ -1665,11 +1937,35 @@ _bt_split(Relation rel, BTScanInsert itup_key, Buffer buf, Buffer cbuf,
 		 * because it's included with all the other items on the right page.)
 		 * Show the new item as belonging to the left page buffer, so that it
 		 * is not stored if XLogInsert decides it needs a full-page image of
-		 * the left page.  We store the offset anyway, though, to support
-		 * archive compression of these records.
+		 * the left page.  We always store newitemoff in the record, though.
+		 *
+		 * The details are sometimes slightly different for page splits that
+		 * coincide with a posting list split.  If both the replacement
+		 * posting list and newitem go on the right page, then we don't need
+		 * to log anything extra, just like the simple !newitemonleft
+		 * no-posting-split case (postingoff is set to zero in the WAL record,
+		 * so recovery doesn't need to process a posting list split at all).
+		 * Otherwise, we set postingoff and log orignewitem instead of
+		 * newitem, despite having actually inserted newitem.  REDO routine
+		 * must reconstruct nposting and newitem using _bt_swap_posting().
+		 *
+		 * Note: It's possible that our page split point is the point that
+		 * makes the posting list lastleft and newitem firstright.  This is
+		 * the only case where we log orignewitem/newitem despite newitem
+		 * going on the right page.  If XLogInsert decides that it can omit
+		 * orignewitem due to logging a full-page image of the left page,
+		 * everything still works out, since recovery only needs to log
+		 * orignewitem for items on the left page (just like the regular
+		 * newitem-logged case).
 		 */
-		if (newitemonleft)
+		if (newitemonleft && xlrec.postingoff == 0)
 			XLogRegisterBufData(0, (char *) newitem, MAXALIGN(newitemsz));
+		else if (xlrec.postingoff != 0)
+		{
+			Assert(newitemonleft || firstright == newitemoff);
+			Assert(MAXALIGN(newitemsz) == IndexTupleSize(orignewitem));
+			XLogRegisterBufData(0, (char *) orignewitem, MAXALIGN(newitemsz));
+		}
 
 		/* Log the left page's new high key */
 		itemid = PageGetItemId(origpage, P_HIKEY);
@@ -1785,6 +2081,22 @@ _bt_insert_parent(Relation rel,
 
 			elog(DEBUG2, "concurrent ROOT page split");
 			lpageop = (BTPageOpaque) PageGetSpecialPointer(page);
+
+			/*
+			 * We should never reach here when a leaf page split takes place
+			 * despite the insert of newitem being able to apply the fastpath
+			 * optimization.  Make sure of that with an assertion.
+			 *
+			 * This is more of a performance issue than a correctness issue.
+			 * The fastpath won't have a descent stack.  Using a phony stack
+			 * here works, but never rely on that.  The fastpath should be
+			 * rejected within _bt_search_insert() when the rightmost leaf
+			 * page will split, since it's faster to go through _bt_search()
+			 * and get a stack in the usual way.
+			 */
+			Assert(!(P_ISLEAF(lpageop) &&
+					 BlockNumberIsValid(RelationGetTargetBlock(rel))));
+
 			/* Find the leftmost page at the next level up */
 			pbuf = _bt_get_endpoint(rel, lpageop->btpo.level + 1, false,
 									NULL);
@@ -1816,8 +2128,17 @@ _bt_insert_parent(Relation rel,
 		pbuf = _bt_getstackbuf(rel, stack, bknum);
 
 		/*
-		 * Now we can unlock the right child. The left child will be unlocked
-		 * by _bt_insertonpg().
+		 * Unlock the right child.  The left child will be unlocked in
+		 * _bt_insertonpg().
+		 *
+		 * Unlocking the right child must be delayed until here to ensure that
+		 * no concurrent VACUUM operation can become confused.  Page deletion
+		 * cannot be allowed to fail to re-find a downlink for the rbuf page.
+		 * (Actually, this is just a vestige of how things used to work.  The
+		 * page deletion code is expected to check for the INCOMPLETE_SPLIT
+		 * flag on the left child.  It won't attempt deletion of the right
+		 * child until the split is complete.  Despite all this, we opt to
+		 * conservatively delay unlocking the right child until here.)
 		 */
 		_bt_relbuf(rel, rbuf);
 
@@ -1829,8 +2150,8 @@ _bt_insert_parent(Relation rel,
 
 		/* Recursively insert into the parent */
 		_bt_insertonpg(rel, NULL, pbuf, buf, stack->bts_parent,
-					   new_item, stack->bts_offset + 1,
-					   is_only);
+					   new_item, MAXALIGN(IndexTupleSize(new_item)),
+					   stack->bts_offset + 1, 0, is_only);
 
 		/* be tidy */
 		pfree(new_item);
@@ -2185,6 +2506,7 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 		md.fastlevel = metad->btm_level;
 		md.oldest_btpo_xact = metad->btm_oldest_btpo_xact;
 		md.last_cleanup_num_heap_tuples = metad->btm_last_cleanup_num_heap_tuples;
+		md.allequalimage = metad->btm_allequalimage;
 
 		XLogRegisterBufData(2, (char *) &md, sizeof(xl_btree_metadata));
 
@@ -2216,19 +2538,25 @@ _bt_newroot(Relation rel, Buffer lbuf, Buffer rbuf)
 }
 
 /*
- *	_bt_pgaddtup() -- add a tuple to a particular page in the index.
+ *	_bt_pgaddtup() -- add a data item to a particular page during split.
  *
- *		This routine adds the tuple to the page as requested.  It does
- *		not affect pin/lock status, but you'd better have a write lock
- *		and pin on the target buffer!  Don't forget to write and release
- *		the buffer afterwards, either.
- *
- *		The main difference between this routine and a bare PageAddItem call
- *		is that this code knows that the leftmost index tuple on a non-leaf
+ *		The difference between this routine and a bare PageAddItem call is
+ *		that this code knows that the leftmost data item on an internal
  *		btree page has a key that must be treated as minus infinity.
- *		Therefore, it truncates away all attributes.  CAUTION: this works
- *		ONLY if we insert the tuples in order, so that the given itup_off
- *		does represent the final position of the tuple!
+ *		Therefore, it truncates away all attributes.  This extra step is
+ *		only needed during internal page splits.
+ *
+ *		Truncation of an internal page data item can be thought of as one
+ *		of the steps used to "move" a boundary separator key during an
+ *		internal page split.  Conceptually, _bt_split() caller splits
+ *		internal pages "inside" the firstright data item: firstright's
+ *		separator key is used as the high key for the left page, while its
+ *		downlink is used within the first data item (also the negative
+ *		infinity item) for the right page.  Each distinct separator key
+ *		should appear no more than once per level of the tree.
+ *
+ *		CAUTION: this works ONLY if we insert the tuples in order, so that
+ *		the given itup_off does represent the final position of the tuple!
  */
 static bool
 _bt_pgaddtup(Page page,
@@ -2265,7 +2593,7 @@ _bt_pgaddtup(Page page,
 static void
 _bt_vacuum_one_page(Relation rel, Buffer buffer, Relation heapRel)
 {
-	OffsetNumber deletable[MaxOffsetNumber];
+	OffsetNumber deletable[MaxIndexTuplesPerPage];
 	int			ndeletable = 0;
 	OffsetNumber offnum,
 				minoff,
@@ -2298,6 +2626,6 @@ _bt_vacuum_one_page(Relation rel, Buffer buffer, Relation heapRel)
 	 * Note: if we didn't find any LP_DEAD items, then the page's
 	 * BTP_HAS_GARBAGE hint bit is falsely set.  We do not bother expending a
 	 * separate write to clear it, however.  We will clear it when we split
-	 * the page.
+	 * the page, or when deduplication runs.
 	 */
 }

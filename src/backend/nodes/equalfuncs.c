@@ -1482,6 +1482,15 @@ _equalAlterOperatorStmt(const AlterOperatorStmt *a, const AlterOperatorStmt *b)
 }
 
 static bool
+_equalAlterTypeStmt(const AlterTypeStmt *a, const AlterTypeStmt *b)
+{
+	COMPARE_NODE_FIELD(typeName);
+	COMPARE_NODE_FIELD(options);
+
+	return true;
+}
+
+static bool
 _equalRuleStmt(const RuleStmt *a, const RuleStmt *b)
 {
 	COMPARE_NODE_FIELD(relation);
@@ -2563,6 +2572,7 @@ _equalIndexElem(const IndexElem *a, const IndexElem *b)
 	COMPARE_STRING_FIELD(indexcolname);
 	COMPARE_NODE_FIELD(collation);
 	COMPARE_NODE_FIELD(opclass);
+	COMPARE_NODE_FIELD(opclassopts);
 	COMPARE_SCALAR_FIELD(ordering);
 	COMPARE_SCALAR_FIELD(nulls_ordering);
 
@@ -3359,6 +3369,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_AlterOperatorStmt:
 			retval = _equalAlterOperatorStmt(a, b);
+			break;
+		case T_AlterTypeStmt:
+			retval = _equalAlterTypeStmt(a, b);
 			break;
 		case T_RuleStmt:
 			retval = _equalRuleStmt(a, b);

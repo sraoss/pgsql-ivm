@@ -336,7 +336,8 @@ usage(void)
 			 "  C:\\> set PGBINNEW=newCluster/bin\n"
 			 "  C:\\> pg_upgrade\n"));
 #endif
-	printf(_("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 
@@ -467,7 +468,7 @@ adjust_data_dir(ClusterInfo *cluster)
 void
 get_sock_dir(ClusterInfo *cluster, bool live_check)
 {
-#ifdef HAVE_UNIX_SOCKETS
+#if defined(HAVE_UNIX_SOCKETS) && !defined(WIN32)
 
 	/*
 	 * sockdir and port were added to postmaster.pid in PG 9.1. Pre-9.1 cannot
@@ -529,7 +530,7 @@ get_sock_dir(ClusterInfo *cluster, bool live_check)
 		 * default
 		 */
 		cluster->sockdir = NULL;
-#else							/* !HAVE_UNIX_SOCKETS */
+#else							/* !HAVE_UNIX_SOCKETS || WIN32 */
 	cluster->sockdir = NULL;
 #endif
 }

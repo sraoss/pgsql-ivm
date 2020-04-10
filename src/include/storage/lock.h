@@ -301,6 +301,7 @@ typedef struct LOCK
 } LOCK;
 
 #define LOCK_LOCKMETHOD(lock) ((LOCKMETHODID) (lock).tag.locktag_lockmethodid)
+#define LOCK_LOCKTAG(lock) ((LockTagType) (lock).tag.locktag_type)
 
 
 /*
@@ -419,6 +420,7 @@ typedef struct LOCALLOCK
 } LOCALLOCK;
 
 #define LOCALLOCK_LOCKMETHOD(llock) ((llock).tag.lock.locktag_lockmethodid)
+#define LOCALLOCK_LOCKTAG(llock) ((LockTagType) (llock).tag.lock.locktag_type)
 
 
 /*

@@ -82,10 +82,9 @@ typedef struct
 
 typedef enum OidOptions
 {
-	zeroAsOpaque = 1,
-	zeroAsAny = 2,
-	zeroAsStar = 4,
-	zeroAsNone = 8
+	zeroIsError = 1,
+	zeroAsStar = 2,
+	zeroAsNone = 4
 } OidOptions;
 
 /* global decls */
@@ -120,9 +119,9 @@ static SimpleStringList table_exclude_patterns = {NULL, NULL};
 static SimpleOidList table_exclude_oids = {NULL, NULL};
 static SimpleStringList tabledata_exclude_patterns = {NULL, NULL};
 static SimpleOidList tabledata_exclude_oids = {NULL, NULL};
+static SimpleStringList foreign_servers_include_patterns = {NULL, NULL};
+static SimpleOidList foreign_servers_include_oids = {NULL, NULL};
 
-
-char		g_opaque_type[10];	/* name for the opaque type */
 
 /* placeholders for the delimiters for comments */
 char		g_comment_start[10];
@@ -156,6 +155,9 @@ static void expand_schema_name_patterns(Archive *fout,
 										SimpleStringList *patterns,
 										SimpleOidList *oids,
 										bool strict_names);
+static void expand_foreign_server_name_patterns(Archive *fout,
+												SimpleStringList *patterns,
+												SimpleOidList *oids);
 static void expand_table_name_patterns(Archive *fout,
 									   SimpleStringList *patterns,
 									   SimpleOidList *oids,
@@ -388,6 +390,7 @@ main(int argc, char **argv)
 		{"no-sync", no_argument, NULL, 7},
 		{"on-conflict-do-nothing", no_argument, &dopt.do_nothing, 1},
 		{"rows-per-insert", required_argument, NULL, 10},
+		{"include-foreign-data", required_argument, NULL, 11},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -404,7 +407,6 @@ main(int argc, char **argv)
 
 	strcpy(g_comment_start, "-- ");
 	g_comment_end[0] = '\0';
-	strcpy(g_opaque_type, "opaque");
 
 	progname = get_progname(argv[0]);
 
@@ -604,6 +606,11 @@ main(int argc, char **argv)
 				dopt.dump_inserts = (int) rowsPerInsert;
 				break;
 
+			case 11:			/* include foreign data */
+				simple_string_list_append(&foreign_servers_include_patterns,
+										  optarg);
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit_nicely(1);
@@ -644,6 +651,12 @@ main(int argc, char **argv)
 		pg_log_error("options -s/--schema-only and -a/--data-only cannot be used together");
 		exit_nicely(1);
 	}
+
+	if (dopt.schemaOnly && foreign_servers_include_patterns.head != NULL)
+		fatal("options -s/--schema-only and --include-foreign-data cannot be used together");
+
+	if (numWorkers > 1 && foreign_servers_include_patterns.head != NULL)
+		fatal("option --include-foreign-data is not supported with parallel backup");
 
 	if (dopt.dataOnly && dopt.outputClean)
 	{
@@ -811,6 +824,9 @@ main(int argc, char **argv)
 	expand_table_name_patterns(fout, &tabledata_exclude_patterns,
 							   &tabledata_exclude_oids,
 							   false);
+
+	expand_foreign_server_name_patterns(fout, &foreign_servers_include_patterns,
+										&foreign_servers_include_oids);
 
 	/* non-matching exclusion patterns aren't an error */
 
@@ -1015,6 +1031,9 @@ help(const char *progname)
 	printf(_("  --exclude-table-data=PATTERN do NOT dump data for the specified table(s)\n"));
 	printf(_("  --extra-float-digits=NUM     override default setting for extra_float_digits\n"));
 	printf(_("  --if-exists                  use IF EXISTS when dropping objects\n"));
+	printf(_("  --include-foreign-data=PATTERN\n"
+			 "                               include data of foreign tables in\n"
+			 "                               foreign servers matching PATTERN\n"));
 	printf(_("  --inserts                    dump data as INSERT commands, rather than COPY\n"));
 	printf(_("  --load-via-partition-root    load partitions via the root table\n"));
 	printf(_("  --no-comments                do not dump comments\n"));
@@ -1047,7 +1066,8 @@ help(const char *progname)
 
 	printf(_("\nIf no database name is supplied, then the PGDATABASE environment\n"
 			 "variable value is used.\n\n"));
-	printf(_("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 static void
@@ -1325,6 +1345,51 @@ expand_schema_name_patterns(Archive *fout,
 		{
 			simple_oid_list_append(oids, atooid(PQgetvalue(res, i, 0)));
 		}
+
+		PQclear(res);
+		resetPQExpBuffer(query);
+	}
+
+	destroyPQExpBuffer(query);
+}
+
+/*
+ * Find the OIDs of all foreign servers matching the given list of patterns,
+ * and append them to the given OID list.
+ */
+static void
+expand_foreign_server_name_patterns(Archive *fout,
+									SimpleStringList *patterns,
+									SimpleOidList *oids)
+{
+	PQExpBuffer query;
+	PGresult   *res;
+	SimpleStringListCell *cell;
+	int			i;
+
+	if (patterns->head == NULL)
+		return;					/* nothing to do */
+
+	query = createPQExpBuffer();
+
+	/*
+	 * The loop below runs multiple SELECTs might sometimes result in
+	 * duplicate entries in the OID list, but we don't care.
+	 */
+
+	for (cell = patterns->head; cell; cell = cell->next)
+	{
+		appendPQExpBuffer(query,
+						  "SELECT oid FROM pg_catalog.pg_foreign_server s\n");
+		processSQLNamePattern(GetConnection(fout), query, cell->val, false,
+							  false, NULL, "s.srvname", NULL, NULL);
+
+		res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
+		if (PQntuples(res) == 0)
+			fatal("no matching foreign servers were found for pattern \"%s\"", cell->val);
+
+		for (i = 0; i < PQntuples(res); i++)
+			simple_oid_list_append(oids, atooid(PQgetvalue(res, i, 0)));
 
 		PQclear(res);
 		resetPQExpBuffer(query);
@@ -1778,7 +1843,6 @@ selectDumpableObject(DumpableObject *dobj, Archive *fout)
  *	- this routine is called by the Archiver when it wants the table
  *	  to be dumped.
  */
-
 static int
 dumpTableData_copy(Archive *fout, void *dcontext)
 {
@@ -1809,7 +1873,12 @@ dumpTableData_copy(Archive *fout, void *dcontext)
 	 */
 	column_list = fmtCopyColumnList(tbinfo, clistBuf);
 
-	if (tdinfo->filtercond)
+	/*
+	 * Use COPY (SELECT ...) TO when dumping a foreign table's data, and when
+	 * a filter condition was specified.  For other cases a simple COPY
+	 * suffices.
+	 */
+	if (tdinfo->filtercond || tbinfo->relkind == RELKIND_FOREIGN_TABLE)
 	{
 		/* Note: this syntax is only supported in 8.2 and up */
 		appendPQExpBufferStr(q, "COPY (SELECT ");
@@ -1821,9 +1890,10 @@ dumpTableData_copy(Archive *fout, void *dcontext)
 		}
 		else
 			appendPQExpBufferStr(q, "* ");
+
 		appendPQExpBuffer(q, "FROM %s %s) TO stdout;",
 						  fmtQualifiedDumpable(tbinfo),
-						  tdinfo->filtercond);
+						  tdinfo->filtercond ? tdinfo->filtercond : "");
 	}
 	else
 	{
@@ -2339,8 +2409,11 @@ makeTableDataInfo(DumpOptions *dopt, TableInfo *tbinfo)
 	/* Skip VIEWs (no data to dump) */
 	if (tbinfo->relkind == RELKIND_VIEW)
 		return;
-	/* Skip FOREIGN TABLEs (no data to dump) */
-	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE)
+	/* Skip FOREIGN TABLEs (no data to dump) unless requested explicitly */
+	if (tbinfo->relkind == RELKIND_FOREIGN_TABLE &&
+		(foreign_servers_include_oids.head == NULL ||
+		!simple_oid_list_member(&foreign_servers_include_oids,
+								tbinfo->foreign_server)))
 		return;
 	/* Skip partitioned tables (data in partitions) */
 	if (tbinfo->relkind == RELKIND_PARTITIONED_TABLE)
@@ -3984,8 +4057,12 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	{
 		TableInfo  *tbinfo = &tblinfo[i];
 
-		/* Only plain tables can be aded to publications. */
-		if (tbinfo->relkind != RELKIND_RELATION)
+		/*
+		 * Only regular and partitioned tables can be added to
+		 * publications.
+		 */
+		if (tbinfo->relkind != RELKIND_RELATION &&
+			tbinfo->relkind != RELKIND_PARTITIONED_TABLE)
 			continue;
 
 		/*
@@ -4289,6 +4366,56 @@ dumpSubscription(Archive *fout, SubscriptionInfo *subinfo)
 	destroyPQExpBuffer(query);
 	free(qsubname);
 }
+
+/*
+ * Given a "create query", append as many ALTER ... DEPENDS ON EXTENSION as
+ * the object needs.
+ */
+static void
+append_depends_on_extension(Archive *fout,
+							PQExpBuffer create,
+							DumpableObject *dobj,
+							const char *catalog,
+							const char *keyword,
+							const char *objname)
+{
+	if (dobj->depends_on_ext)
+	{
+		char   *nm;
+		PGresult   *res;
+		PQExpBuffer	query;
+		int		ntups;
+		int		i_extname;
+		int		i;
+
+		/* dodge fmtId() non-reentrancy */
+		nm = pg_strdup(objname);
+
+		query = createPQExpBuffer();
+		appendPQExpBuffer(query,
+						  "SELECT e.extname "
+						  "FROM pg_catalog.pg_depend d, pg_catalog.pg_extension e "
+						  "WHERE d.refobjid = e.oid AND classid = '%s'::pg_catalog.regclass "
+						  "AND objid = '%u'::pg_catalog.oid AND deptype = 'x' "
+						  "AND refclassid = 'pg_catalog.pg_extension'::pg_catalog.regclass",
+						  catalog,
+						  dobj->catId.oid);
+		res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
+		ntups = PQntuples(res);
+		i_extname = PQfnumber(res, "extname");
+		for (i = 0; i < ntups; i++)
+		{
+			appendPQExpBuffer(create, "ALTER %s %s DEPENDS ON EXTENSION %s;\n",
+							  keyword, nm,
+							  fmtId(PQgetvalue(res, i, i_extname)));
+		}
+
+		PQclear(res);
+		destroyPQExpBuffer(query);
+		pg_free(nm);
+	}
+}
+
 
 static void
 binary_upgrade_set_type_oids_by_type_oid(Archive *fout,
@@ -5948,6 +6075,7 @@ getTables(Archive *fout, int *numTables)
 	int			i_toastreloptions;
 	int			i_reloftype;
 	int			i_relpages;
+	int			i_foreignserver;
 	int			i_is_identity_sequence;
 	int			i_changed_acl;
 	int			i_partkeydef;
@@ -6050,6 +6178,9 @@ getTables(Archive *fout, int *numTables)
 						  "tc.relminmxid AS tminmxid, "
 						  "c.relpersistence, c.relispopulated, "
 						  "c.relreplident, c.relpages, am.amname, "
+						  "CASE WHEN c.relkind = 'f' THEN "
+						  "(SELECT ftserver FROM pg_catalog.pg_foreign_table WHERE ftrelid = c.oid) "
+						  "ELSE 0 END AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6142,6 +6273,9 @@ getTables(Archive *fout, int *numTables)
 						  "c.relpersistence, c.relispopulated, "
 						  "c.relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "CASE WHEN c.relkind = 'f' THEN "
+						  "(SELECT ftserver FROM pg_catalog.pg_foreign_table WHERE ftrelid = c.oid) "
+						  "ELSE 0 END AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6193,6 +6327,9 @@ getTables(Archive *fout, int *numTables)
 						  "c.relpersistence, c.relispopulated, "
 						  "c.relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "CASE WHEN c.relkind = 'f' THEN "
+						  "(SELECT ftserver FROM pg_catalog.pg_foreign_table WHERE ftrelid = c.oid) "
+						  "ELSE 0 END AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6244,6 +6381,9 @@ getTables(Archive *fout, int *numTables)
 						  "c.relpersistence, c.relispopulated, "
 						  "'d' AS relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "CASE WHEN c.relkind = 'f' THEN "
+						  "(SELECT ftserver FROM pg_catalog.pg_foreign_table WHERE ftrelid = c.oid) "
+						  "ELSE 0 END AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6295,6 +6435,9 @@ getTables(Archive *fout, int *numTables)
 						  "c.relpersistence, 't' as relispopulated, "
 						  "'d' AS relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "CASE WHEN c.relkind = 'f' THEN "
+						  "(SELECT ftserver FROM pg_catalog.pg_foreign_table WHERE ftrelid = c.oid) "
+						  "ELSE 0 END AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6344,6 +6487,7 @@ getTables(Archive *fout, int *numTables)
 						  "'p' AS relpersistence, 't' as relispopulated, "
 						  "'d' AS relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "NULL AS foreignserver, "
 						  "CASE WHEN c.reloftype <> 0 THEN c.reloftype::pg_catalog.regtype ELSE NULL END AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6392,6 +6536,7 @@ getTables(Archive *fout, int *numTables)
 						  "'p' AS relpersistence, 't' as relispopulated, "
 						  "'d' AS relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "NULL AS foreignserver, "
 						  "NULL AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6440,6 +6585,7 @@ getTables(Archive *fout, int *numTables)
 						  "'p' AS relpersistence, 't' as relispopulated, "
 						  "'d' AS relreplident, c.relpages, "
 						  "NULL AS amname, "
+						  "NULL AS foreignserver, "
 						  "NULL AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6487,6 +6633,7 @@ getTables(Archive *fout, int *numTables)
 						  "'p' AS relpersistence, 't' as relispopulated, "
 						  "'d' AS relreplident, relpages, "
 						  "NULL AS amname, "
+						  "NULL AS foreignserver, "
 						  "NULL AS reloftype, "
 						  "d.refobjid AS owning_tab, "
 						  "d.refobjsubid AS owning_col, "
@@ -6555,6 +6702,7 @@ getTables(Archive *fout, int *numTables)
 	i_relispopulated = PQfnumber(res, "relispopulated");
 	i_relreplident = PQfnumber(res, "relreplident");
 	i_relpages = PQfnumber(res, "relpages");
+	i_foreignserver = PQfnumber(res, "foreignserver");
 	i_owning_tab = PQfnumber(res, "owning_tab");
 	i_owning_col = PQfnumber(res, "owning_col");
 	i_reltablespace = PQfnumber(res, "reltablespace");
@@ -6679,6 +6827,9 @@ getTables(Archive *fout, int *numTables)
 		tblinfo[i].partkeydef = pg_strdup(PQgetvalue(res, i, i_partkeydef));
 		tblinfo[i].ispartition = (strcmp(PQgetvalue(res, i, i_ispartition), "t") == 0);
 		tblinfo[i].partbound = pg_strdup(PQgetvalue(res, i, i_partbound));
+
+		/* foreign server */
+		tblinfo[i].foreign_server = atooid(PQgetvalue(res, i, i_foreignserver));
 
 		/* Incremental view maintenance information */
 		tblinfo[i].isivm = (strcmp(PQgetvalue(res, i, i_isivm), "t") == 0);
@@ -10755,7 +10906,7 @@ dumpBaseType(Archive *fout, TypeInfo *tyinfo)
 	{
 		char	   *elemType;
 
-		elemType = getFormattedTypeName(fout, tyinfo->typelem, zeroAsOpaque);
+		elemType = getFormattedTypeName(fout, tyinfo->typelem, zeroIsError);
 		appendPQExpBuffer(q, ",\n    ELEMENT = %s", elemType);
 		free(elemType);
 	}
@@ -10775,22 +10926,22 @@ dumpBaseType(Archive *fout, TypeInfo *tyinfo)
 		appendStringLiteralAH(q, typdelim, fout);
 	}
 
-	if (strcmp(typalign, "c") == 0)
+	if (*typalign == TYPALIGN_CHAR)
 		appendPQExpBufferStr(q, ",\n    ALIGNMENT = char");
-	else if (strcmp(typalign, "s") == 0)
+	else if (*typalign == TYPALIGN_SHORT)
 		appendPQExpBufferStr(q, ",\n    ALIGNMENT = int2");
-	else if (strcmp(typalign, "i") == 0)
+	else if (*typalign == TYPALIGN_INT)
 		appendPQExpBufferStr(q, ",\n    ALIGNMENT = int4");
-	else if (strcmp(typalign, "d") == 0)
+	else if (*typalign == TYPALIGN_DOUBLE)
 		appendPQExpBufferStr(q, ",\n    ALIGNMENT = double");
 
-	if (strcmp(typstorage, "p") == 0)
+	if (*typstorage == TYPSTORAGE_PLAIN)
 		appendPQExpBufferStr(q, ",\n    STORAGE = plain");
-	else if (strcmp(typstorage, "e") == 0)
+	else if (*typstorage == TYPSTORAGE_EXTERNAL)
 		appendPQExpBufferStr(q, ",\n    STORAGE = external");
-	else if (strcmp(typstorage, "x") == 0)
+	else if (*typstorage == TYPSTORAGE_EXTENDED)
 		appendPQExpBufferStr(q, ",\n    STORAGE = extended");
-	else if (strcmp(typstorage, "m") == 0)
+	else if (*typstorage == TYPSTORAGE_MAIN)
 		appendPQExpBufferStr(q, ",\n    STORAGE = main");
 
 	if (strcmp(typbyval, "t") == 0)
@@ -11566,7 +11717,7 @@ format_function_arguments_old(Archive *fout,
 		const char *argname;
 
 		typid = allargtypes ? atooid(allargtypes[j]) : finfo->argtypes[j];
-		typname = getFormattedTypeName(fout, typid, zeroAsOpaque);
+		typname = getFormattedTypeName(fout, typid, zeroIsError);
 
 		if (argmodes)
 		{
@@ -11635,7 +11786,7 @@ format_function_signature(Archive *fout, FuncInfo *finfo, bool honor_quotes)
 			appendPQExpBufferStr(&fn, ", ");
 
 		typname = getFormattedTypeName(fout, finfo->argtypes[j],
-									   zeroAsOpaque);
+									   zeroIsError);
 		appendPQExpBufferStr(&fn, typname);
 		free(typname);
 	}
@@ -12040,7 +12191,7 @@ dumpFunc(Archive *fout, FuncInfo *finfo)
 	else
 	{
 		rettypename = getFormattedTypeName(fout, finfo->prorettype,
-										   zeroAsOpaque);
+										   zeroIsError);
 		appendPQExpBuffer(q, " RETURNS %s%s",
 						  (proretset[0] == 't') ? "SETOF " : "",
 						  rettypename);
@@ -12179,6 +12330,12 @@ dumpFunc(Archive *fout, FuncInfo *finfo)
 	}
 
 	appendPQExpBuffer(q, "\n    %s;\n", asPart->data);
+
+	append_depends_on_extension(fout, q, &finfo->dobj,
+								"pg_catalog.pg_proc", keyword,
+								psprintf("%s.%s",
+										 fmtId(finfo->dobj.namespace->dobj.name),
+										 funcsig));
 
 	if (dopt->binary_upgrade)
 		binary_upgrade_extension_member(q, &finfo->dobj,
@@ -13759,7 +13916,7 @@ format_aggregate_signature(AggInfo *agginfo, Archive *fout, bool honor_quotes)
 			char	   *typname;
 
 			typname = getFormattedTypeName(fout, agginfo->aggfn.argtypes[j],
-										   zeroAsOpaque);
+										   zeroIsError);
 
 			appendPQExpBuffer(&buf, "%s%s",
 							  (j > 0) ? ", " : "",
@@ -15618,6 +15775,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 	{
 		char	   *ftoptions = NULL;
 		char	   *srvname = NULL;
+		char	   *foreign = "";
 
 		switch (tbinfo->relkind)
 		{
@@ -15651,6 +15809,8 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 					ftoptions = pg_strdup(PQgetvalue(res, 0, i_ftoptions));
 					PQclear(res);
 					destroyPQExpBuffer(query);
+
+					foreign = "FOREIGN ";
 					break;
 				}
 			case RELKIND_MATVIEW:
@@ -15892,6 +16052,14 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 		else
 			appendPQExpBufferStr(q, ";\n");
 
+		/* Materialized views can depend on extensions */
+		if (tbinfo->relkind == RELKIND_MATVIEW)
+			append_depends_on_extension(fout, q, &tbinfo->dobj,
+										"pg_catalog.pg_class",
+										tbinfo->relkind == RELKIND_MATVIEW ?
+										"MATERIALIZED VIEW" : "INDEX",
+										qualrelname);
+
 		/*
 		 * in binary upgrade mode, update the catalog with any missing values
 		 * that might be present.
@@ -15994,11 +16162,10 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 					continue;
 
 				appendPQExpBufferStr(q, "\n-- For binary upgrade, set up inherited constraint.\n");
-				appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-								  qualrelname);
-				appendPQExpBuffer(q, " ADD CONSTRAINT %s ",
-								  fmtId(constr->dobj.name));
-				appendPQExpBuffer(q, "%s;\n", constr->condef);
+				appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s ADD CONSTRAINT %s %s;\n",
+								  foreign, qualrelname,
+								  fmtId(constr->dobj.name),
+								  constr->condef);
 				appendPQExpBufferStr(q, "UPDATE pg_catalog.pg_constraint\n"
 									 "SET conislocal = false\n"
 									 "WHERE contype = 'c' AND conname = ");
@@ -16015,7 +16182,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 				{
 					TableInfo  *parentRel = parents[k];
 
-					appendPQExpBuffer(q, "ALTER TABLE ONLY %s INHERIT %s;\n",
+					appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s INHERIT %s;\n", foreign,
 									  qualrelname,
 									  fmtQualifiedDumpable(parentRel));
 				}
@@ -16120,12 +16287,10 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 			 */
 			if (!shouldPrintColumn(dopt, tbinfo, j) &&
 				tbinfo->notnull[j] && !tbinfo->inhNotNull[j])
-			{
-				appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-								  qualrelname);
-				appendPQExpBuffer(q, "ALTER COLUMN %s SET NOT NULL;\n",
+				appendPQExpBuffer(q,
+								  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET NOT NULL;\n",
+								  foreign, qualrelname,
 								  fmtId(tbinfo->attnames[j]));
-			}
 
 			/*
 			 * Dump per-column statistics information. We only issue an ALTER
@@ -16133,14 +16298,10 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 			 * non-negative (i.e. it's not the default value)
 			 */
 			if (tbinfo->attstattarget[j] >= 0)
-			{
-				appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-								  qualrelname);
-				appendPQExpBuffer(q, "ALTER COLUMN %s ",
-								  fmtId(tbinfo->attnames[j]));
-				appendPQExpBuffer(q, "SET STATISTICS %d;\n",
+				appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET STATISTICS %d;\n",
+								  foreign, qualrelname,
+								  fmtId(tbinfo->attnames[j]),
 								  tbinfo->attstattarget[j]);
-			}
 
 			/*
 			 * Dump per-column storage information.  The statement is only
@@ -16150,17 +16311,17 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 			{
 				switch (tbinfo->attstorage[j])
 				{
-					case 'p':
+					case TYPSTORAGE_PLAIN:
 						storage = "PLAIN";
 						break;
-					case 'e':
+					case TYPSTORAGE_EXTERNAL:
 						storage = "EXTERNAL";
 						break;
-					case 'm':
-						storage = "MAIN";
-						break;
-					case 'x':
+					case TYPSTORAGE_EXTENDED:
 						storage = "EXTENDED";
+						break;
+					case TYPSTORAGE_MAIN:
+						storage = "MAIN";
 						break;
 					default:
 						storage = NULL;
@@ -16170,42 +16331,33 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 				 * Only dump the statement if it's a storage type we recognize
 				 */
 				if (storage != NULL)
-				{
-					appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-									  qualrelname);
-					appendPQExpBuffer(q, "ALTER COLUMN %s ",
-									  fmtId(tbinfo->attnames[j]));
-					appendPQExpBuffer(q, "SET STORAGE %s;\n",
+					appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET STORAGE %s;\n",
+									  foreign, qualrelname,
+									  fmtId(tbinfo->attnames[j]),
 									  storage);
-				}
 			}
 
 			/*
 			 * Dump per-column attributes.
 			 */
 			if (tbinfo->attoptions[j][0] != '\0')
-			{
-				appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-								  qualrelname);
-				appendPQExpBuffer(q, "ALTER COLUMN %s ",
-								  fmtId(tbinfo->attnames[j]));
-				appendPQExpBuffer(q, "SET (%s);\n",
+				appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET (%s);\n",
+								  foreign, qualrelname,
+								  fmtId(tbinfo->attnames[j]),
 								  tbinfo->attoptions[j]);
-			}
 
 			/*
 			 * Dump per-column fdw options.
 			 */
 			if (tbinfo->relkind == RELKIND_FOREIGN_TABLE &&
 				tbinfo->attfdwoptions[j][0] != '\0')
-			{
-				appendPQExpBuffer(q, "ALTER FOREIGN TABLE %s ",
-								  qualrelname);
-				appendPQExpBuffer(q, "ALTER COLUMN %s ",
-								  fmtId(tbinfo->attnames[j]));
-				appendPQExpBuffer(q, "OPTIONS (\n    %s\n);\n",
+				appendPQExpBuffer(q,
+								  "ALTER FOREIGN TABLE %s ALTER COLUMN %s OPTIONS (\n"
+								  "	  %s\n"
+								  ");\n",
+								  qualrelname,
+								  fmtId(tbinfo->attnames[j]),
 								  tbinfo->attfdwoptions[j]);
-			}
 		}
 
 		if (ftoptions)
@@ -16308,6 +16460,7 @@ dumpAttrDef(Archive *fout, AttrDefInfo *adinfo)
 	PQExpBuffer delq;
 	char	   *qualrelname;
 	char	   *tag;
+	char	   *foreign;
 
 	/* Skip if table definition not to be dumped */
 	if (!tbinfo->dobj.dump || dopt->dataOnly)
@@ -16322,15 +16475,15 @@ dumpAttrDef(Archive *fout, AttrDefInfo *adinfo)
 
 	qualrelname = pg_strdup(fmtQualifiedDumpable(tbinfo));
 
-	appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
-					  qualrelname);
-	appendPQExpBuffer(q, "ALTER COLUMN %s SET DEFAULT %s;\n",
-					  fmtId(tbinfo->attnames[adnum - 1]),
+	foreign = tbinfo->relkind == RELKIND_FOREIGN_TABLE ? "FOREIGN " : "";
+
+	appendPQExpBuffer(q,
+					  "ALTER %sTABLE ONLY %s ALTER COLUMN %s SET DEFAULT %s;\n",
+					  foreign, qualrelname, fmtId(tbinfo->attnames[adnum - 1]),
 					  adinfo->adef_expr);
 
-	appendPQExpBuffer(delq, "ALTER TABLE %s ",
-					  qualrelname);
-	appendPQExpBuffer(delq, "ALTER COLUMN %s DROP DEFAULT;\n",
+	appendPQExpBuffer(delq, "ALTER %sTABLE %s ALTER COLUMN %s DROP DEFAULT;\n",
+					  foreign, qualrelname,
 					  fmtId(tbinfo->attnames[adnum - 1]));
 
 	tag = psprintf("%s %s", tbinfo->dobj.name, tbinfo->attnames[adnum - 1]);
@@ -16396,6 +16549,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 	PQExpBuffer q;
 	PQExpBuffer delq;
 	char	   *qindxname;
+	char	   *qqindxname;
 
 	if (dopt->dataOnly)
 		return;
@@ -16404,6 +16558,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 	delq = createPQExpBuffer();
 
 	qindxname = pg_strdup(fmtId(indxinfo->dobj.name));
+	qqindxname = pg_strdup(fmtQualifiedDumpable(indxinfo));
 
 	/*
 	 * If there's an associated constraint, don't dump the index per se, but
@@ -16456,8 +16611,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 
 			for (j = 0; j < nstatcols; j++)
 			{
-				appendPQExpBuffer(q, "ALTER INDEX %s ",
-								  fmtQualifiedDumpable(indxinfo));
+				appendPQExpBuffer(q, "ALTER INDEX %s ", qqindxname);
 
 				/*
 				 * Note that this is a column number, so no quotes should be
@@ -16470,6 +16624,11 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 			}
 		}
 
+		/* Indexes can depend on extensions */
+		append_depends_on_extension(fout, q, &indxinfo->dobj,
+									"pg_catalog.pg_class",
+									"INDEX", qqindxname);
+
 		/* If the index defines identity, we need to record that. */
 		if (indxinfo->indisreplident)
 		{
@@ -16480,8 +16639,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 							  qindxname);
 		}
 
-		appendPQExpBuffer(delq, "DROP INDEX %s;\n",
-						  fmtQualifiedDumpable(indxinfo));
+		appendPQExpBuffer(delq, "DROP INDEX %s;\n", qqindxname);
 
 		if (indxinfo->dobj.dump & DUMP_COMPONENT_DEFINITION)
 			ArchiveEntry(fout, indxinfo->dobj.catId, indxinfo->dobj.dumpId,
@@ -16512,6 +16670,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 	destroyPQExpBuffer(q);
 	destroyPQExpBuffer(delq);
 	free(qindxname);
+	free(qqindxname);
 }
 
 /*
@@ -16634,6 +16793,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 	PQExpBuffer q;
 	PQExpBuffer delq;
 	char	   *tag = NULL;
+	char	   *foreign;
 
 	/* Skip if not to be dumped */
 	if (!coninfo->dobj.dump || dopt->dataOnly)
@@ -16641,6 +16801,9 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 
 	q = createPQExpBuffer();
 	delq = createPQExpBuffer();
+
+	foreign = tbinfo &&
+		tbinfo->relkind == RELKIND_FOREIGN_TABLE ?  "FOREIGN " : "";
 
 	if (coninfo->contype == 'p' ||
 		coninfo->contype == 'u' ||
@@ -16660,7 +16823,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 indxinfo->dobj.catId.oid, true);
 
-		appendPQExpBuffer(q, "ALTER TABLE ONLY %s\n",
+		appendPQExpBuffer(q, "ALTER %sTABLE ONLY %s\n", foreign,
 						  fmtQualifiedDumpable(tbinfo));
 		appendPQExpBuffer(q, "    ADD CONSTRAINT %s ",
 						  fmtId(coninfo->dobj.name));
@@ -16750,7 +16913,12 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 							  fmtId(indxinfo->dobj.name));
 		}
 
-		appendPQExpBuffer(delq, "ALTER TABLE ONLY %s ",
+		/* Indexes can depend on extensions */
+		append_depends_on_extension(fout, q, &indxinfo->dobj,
+									"pg_catalog.pg_class", "INDEX",
+									fmtQualifiedDumpable(indxinfo));
+
+		appendPQExpBuffer(delq, "ALTER %sTABLE ONLY %s ", foreign,
 						  fmtQualifiedDumpable(tbinfo));
 		appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
 						  fmtId(coninfo->dobj.name));
@@ -16784,13 +16952,13 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 		 * XXX Potentially wrap in a 'SET CONSTRAINTS OFF' block so that the
 		 * current table data is not processed
 		 */
-		appendPQExpBuffer(q, "ALTER TABLE %s%s\n",
+		appendPQExpBuffer(q, "ALTER %sTABLE %s%s\n", foreign,
 						  only, fmtQualifiedDumpable(tbinfo));
 		appendPQExpBuffer(q, "    ADD CONSTRAINT %s %s;\n",
 						  fmtId(coninfo->dobj.name),
 						  coninfo->condef);
 
-		appendPQExpBuffer(delq, "ALTER TABLE %s%s ",
+		appendPQExpBuffer(delq, "ALTER %sTABLE %s%s ", foreign,
 						  only, fmtQualifiedDumpable(tbinfo));
 		appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
 						  fmtId(coninfo->dobj.name));
@@ -16815,13 +16983,13 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 		if (coninfo->separate && coninfo->conislocal)
 		{
 			/* not ONLY since we want it to propagate to children */
-			appendPQExpBuffer(q, "ALTER TABLE %s\n",
+			appendPQExpBuffer(q, "ALTER %sTABLE %s\n", foreign,
 							  fmtQualifiedDumpable(tbinfo));
 			appendPQExpBuffer(q, "    ADD CONSTRAINT %s %s;\n",
 							  fmtId(coninfo->dobj.name),
 							  coninfo->condef);
 
-			appendPQExpBuffer(delq, "ALTER TABLE %s ",
+			appendPQExpBuffer(delq, "ALTER %sTABLE %s ", foreign,
 							  fmtQualifiedDumpable(tbinfo));
 			appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
 							  fmtId(coninfo->dobj.name));
@@ -17269,6 +17437,7 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 	PQExpBuffer query;
 	PQExpBuffer delqry;
 	PQExpBuffer trigprefix;
+	PQExpBuffer trigidentity;
 	char	   *qtabname;
 	char	   *tgargs;
 	size_t		lentgargs;
@@ -17286,13 +17455,14 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 	query = createPQExpBuffer();
 	delqry = createPQExpBuffer();
 	trigprefix = createPQExpBuffer();
+	trigidentity = createPQExpBuffer();
 
 	qtabname = pg_strdup(fmtId(tbinfo->dobj.name));
 
-	appendPQExpBuffer(delqry, "DROP TRIGGER %s ",
-					  fmtId(tginfo->dobj.name));
-	appendPQExpBuffer(delqry, "ON %s;\n",
-					  fmtQualifiedDumpable(tbinfo));
+	appendPQExpBuffer(trigidentity, "%s ", fmtId(tginfo->dobj.name));
+	appendPQExpBuffer(trigidentity, "ON %s", fmtQualifiedDumpable(tbinfo));
+
+	appendPQExpBuffer(delqry, "DROP TRIGGER %s;\n", trigidentity->data);
 
 	if (tginfo->tgdef)
 	{
@@ -17411,9 +17581,15 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 		appendPQExpBufferStr(query, ");\n");
 	}
 
+	/* Triggers can depend on extensions */
+	append_depends_on_extension(fout, query, &tginfo->dobj,
+								"pg_catalog.pg_trigger", "TRIGGER",
+								trigidentity->data);
+
 	if (tginfo->tgenabled != 't' && tginfo->tgenabled != 'O')
 	{
-		appendPQExpBuffer(query, "\nALTER TABLE %s ",
+		appendPQExpBuffer(query, "\nALTER %sTABLE %s ",
+						  tbinfo->relkind == RELKIND_FOREIGN_TABLE ? "FOREIGN " : "",
 						  fmtQualifiedDumpable(tbinfo));
 		switch (tginfo->tgenabled)
 		{
@@ -17459,6 +17635,7 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 	destroyPQExpBuffer(query);
 	destroyPQExpBuffer(delqry);
 	destroyPQExpBuffer(trigprefix);
+	destroyPQExpBuffer(trigidentity);
 	free(qtabname);
 }
 
@@ -18109,6 +18286,15 @@ getDependencies(Archive *fout)
 		}
 
 		/*
+		 * For 'x' dependencies, mark the object for later; we still add the
+		 * normal dependency, for possible ordering purposes.  Currently
+		 * pg_dump_sort.c knows to put extensions ahead of all object types
+		 * that could possibly depend on them, but this is safer.
+		 */
+		if (deptype == 'x')
+			dobj->depends_on_ext = true;
+
+		/*
 		 * Ordinarily, table rowtypes have implicit dependencies on their
 		 * tables.  However, for a composite type the implicit dependency goes
 		 * the other way in pg_depend; which is the right thing for DROP but
@@ -18384,11 +18570,7 @@ getFormattedTypeName(Archive *fout, Oid oid, OidOptions opts)
 
 	if (oid == 0)
 	{
-		if ((opts & zeroAsOpaque) != 0)
-			return pg_strdup(g_opaque_type);
-		else if ((opts & zeroAsAny) != 0)
-			return pg_strdup("'any'");
-		else if ((opts & zeroAsStar) != 0)
+		if ((opts & zeroAsStar) != 0)
 			return pg_strdup("*");
 		else if ((opts & zeroAsNone) != 0)
 			return pg_strdup("NONE");

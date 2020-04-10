@@ -346,6 +346,9 @@
 /* Define to 1 if you have the `z' library (-lz). */
 #undef HAVE_LIBZ
 
+/* Define to 1 if you have the `link' function. */
+#undef HAVE_LINK
+
 /* Define to 1 if the system has the type `locale_t'. */
 #undef HAVE_LOCALE_T
 
@@ -563,6 +566,9 @@
 /* Define to 1 if `__ss_len' is a member of `struct sockaddr_storage'. */
 #undef HAVE_STRUCT_SOCKADDR_STORAGE___SS_LEN
 
+/* Define to 1 if the system has the type `struct sockaddr_un'. */
+#undef HAVE_STRUCT_SOCKADDR_UN
+
 /* Define to 1 if `tm_zone' is a member of `struct tm'. */
 #undef HAVE_STRUCT_TM_TM_ZONE
 
@@ -643,9 +649,6 @@
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H
-
-/* Define to 1 if you have unix sockets. */
-#undef HAVE_UNIX_SOCKETS
 
 /* Define to 1 if you have the `unsetenv' function. */
 #undef HAVE_UNSETENV
@@ -776,6 +779,12 @@
 
 /* PostgreSQL major version as a string */
 #undef PG_MAJORVERSION
+
+/* PostgreSQL major version number */
+#undef PG_MAJORVERSION_NUM
+
+/* PostgreSQL minor version number */
+#undef PG_MINORVERSION_NUM
 
 /* Define to best printf format archetype, usually gnu_printf if available. */
 #undef PG_PRINTF_ATTRIBUTE

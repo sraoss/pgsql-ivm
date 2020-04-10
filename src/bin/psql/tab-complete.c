@@ -510,6 +510,13 @@ static const SchemaQuery Query_for_list_of_partitioned_relations = {
 	.result = "pg_catalog.quote_ident(c.relname)",
 };
 
+static const SchemaQuery Query_for_list_of_operator_families = {
+	.catname = "pg_catalog.pg_opfamily c",
+	.viscondition = "pg_catalog.pg_opfamily_is_visible(c.oid)",
+	.namespace = "c.opfnamespace",
+	.result = "pg_catalog.quote_ident(c.opfname)",
+};
+
 /* Relations supporting INSERT, UPDATE or DELETE */
 static const SchemaQuery Query_for_list_of_updatables = {
 	.catname = "pg_catalog.pg_class c",
@@ -1072,6 +1079,8 @@ static const char *const table_storage_parameters[] = {
 	"autovacuum_multixact_freeze_table_age",
 	"autovacuum_vacuum_cost_delay",
 	"autovacuum_vacuum_cost_limit",
+	"autovacuum_vacuum_insert_scale_factor",
+	"autovacuum_vacuum_insert_threshold",
 	"autovacuum_vacuum_scale_factor",
 	"autovacuum_vacuum_threshold",
 	"fillfactor",
@@ -1086,6 +1095,8 @@ static const char *const table_storage_parameters[] = {
 	"toast.autovacuum_multixact_freeze_table_age",
 	"toast.autovacuum_vacuum_cost_delay",
 	"toast.autovacuum_vacuum_cost_limit",
+	"toast.autovacuum_vacuum_insert_scale_factor",
+	"toast.autovacuum_vacuum_insert_threshold",
 	"toast.autovacuum_vacuum_scale_factor",
 	"toast.autovacuum_vacuum_threshold",
 	"toast.log_autovacuum_min_duration",
@@ -1463,7 +1474,8 @@ psql_completion(const char *text, int start, int end)
 		"\\a",
 		"\\connect", "\\conninfo", "\\C", "\\cd", "\\copy",
 		"\\copyright", "\\crosstabview",
-		"\\d", "\\da", "\\dA", "\\db", "\\dc", "\\dC", "\\dd", "\\ddp", "\\dD",
+		"\\d", "\\da", "\\dA", "\\dAc", "\\dAf", "\\dAo", "\\dAp",
+		"\\db", "\\dc", "\\dC", "\\dd", "\\ddp", "\\dD",
 		"\\des", "\\det", "\\deu", "\\dew", "\\dE", "\\df",
 		"\\dF", "\\dFd", "\\dFp", "\\dFt", "\\dg", "\\di", "\\dl", "\\dL",
 		"\\dm", "\\dn", "\\do", "\\dO", "\\dp", "\\dP", "\\dPi", "\\dPt",
@@ -1732,14 +1744,14 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER INDEX <foo> SET|RESET ( */
 	else if (Matches("ALTER", "INDEX", MatchAny, "RESET", "("))
 		COMPLETE_WITH("fillfactor",
-					  "vacuum_cleanup_index_scale_factor",	/* BTREE */
+					  "vacuum_cleanup_index_scale_factor", "deduplicate_items",	/* BTREE */
 					  "fastupdate", "gin_pending_list_limit",	/* GIN */
 					  "buffering",	/* GiST */
 					  "pages_per_range", "autosummarize"	/* BRIN */
 			);
 	else if (Matches("ALTER", "INDEX", MatchAny, "SET", "("))
 		COMPLETE_WITH("fillfactor =",
-					  "vacuum_cleanup_index_scale_factor =",	/* BTREE */
+					  "vacuum_cleanup_index_scale_factor =", "deduplicate_items =",	/* BTREE */
 					  "fastupdate =", "gin_pending_list_limit =",	/* GIN */
 					  "buffering =",	/* GiST */
 					  "pages_per_range =", "autosummarize ="	/* BRIN */
@@ -2133,7 +2145,7 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER TABLESPACE <foo> SET|RESET ( */
 	else if (Matches("ALTER", "TABLESPACE", MatchAny, "SET|RESET", "("))
 		COMPLETE_WITH("seq_page_cost", "random_page_cost",
-					  "effective_io_concurrency");
+					  "effective_io_concurrency", "maintenance_io_concurrency");
 
 	/* ALTER TEXT SEARCH */
 	else if (Matches("ALTER", "TEXT", "SEARCH"))
@@ -2141,7 +2153,7 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("ALTER", "TEXT", "SEARCH", "TEMPLATE|PARSER", MatchAny))
 		COMPLETE_WITH("RENAME TO", "SET SCHEMA");
 	else if (Matches("ALTER", "TEXT", "SEARCH", "DICTIONARY", MatchAny))
-		COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA");
+		COMPLETE_WITH("(", "OWNER TO", "RENAME TO", "SET SCHEMA");
 	else if (Matches("ALTER", "TEXT", "SEARCH", "CONFIGURATION", MatchAny))
 		COMPLETE_WITH("ADD MAPPING FOR", "ALTER MAPPING",
 					  "DROP MAPPING FOR",
@@ -2151,7 +2163,7 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("ALTER", "TYPE", MatchAny))
 		COMPLETE_WITH("ADD ATTRIBUTE", "ADD VALUE", "ALTER ATTRIBUTE",
 					  "DROP ATTRIBUTE",
-					  "OWNER TO", "RENAME", "SET SCHEMA");
+					  "OWNER TO", "RENAME", "SET SCHEMA", "SET (");
 	/* complete ALTER TYPE <foo> ADD with actions */
 	else if (Matches("ALTER", "TYPE", MatchAny, "ADD"))
 		COMPLETE_WITH("ATTRIBUTE", "VALUE");
@@ -2636,7 +2648,7 @@ psql_completion(const char *text, int start, int end)
 /* CREATE TEXT SEARCH */
 	else if (Matches("CREATE", "TEXT", "SEARCH"))
 		COMPLETE_WITH("CONFIGURATION", "DICTIONARY", "PARSER", "TEMPLATE");
-	else if (Matches("CREATE", "TEXT", "SEARCH", "CONFIGURATION", MatchAny))
+	else if (Matches("CREATE", "TEXT", "SEARCH", "CONFIGURATION|DICTIONARY|PARSER|TEMPLATE", MatchAny))
 		COMPLETE_WITH("(");
 
 /* CREATE SUBSCRIPTION */
@@ -3702,6 +3714,12 @@ psql_completion(const char *text, int start, int end)
 	}
 	else if (TailMatchesCS("\\da*"))
 		COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(Query_for_list_of_aggregates, NULL);
+	else if (TailMatchesCS("\\dAc*", MatchAny) ||
+			 TailMatchesCS("\\dAf*", MatchAny))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes, NULL);
+	else if (TailMatchesCS("\\dAo*", MatchAny) ||
+			 TailMatchesCS("\\dAp*", MatchAny))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_operator_families, NULL);
 	else if (TailMatchesCS("\\dA*"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_access_methods);
 	else if (TailMatchesCS("\\db*"))

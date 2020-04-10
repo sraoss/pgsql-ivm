@@ -2229,6 +2229,26 @@ include_dir 'conf.d'
        </listitem>
       </varlistentry>
 
+      <varlistentry id="guc-maintenance-io-concurrency" xreflabel="maintenance_io_concurrency">
+       <term><varname>maintenance_io_concurrency</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>maintenance_io_concurrency</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Similar to <varname>effective_io_concurrency</varname>, but used
+         for maintenance work that is done on behalf of many client sessions.
+        </para>
+        <para>
+         The default is 10 on supported systems, otherwise 0.  This value can
+         be overridden for tables in a particular tablespace by setting the
+         tablespace parameter of the same name (see
+         <xref linkend="sql-altertablespace"/>).
+        </para>
+       </listitem>
+      </varlistentry>
+ 
       <varlistentry id="guc-max-worker-processes" xreflabel="max_worker_processes">
        <term><varname>max_worker_processes</varname> (<type>integer</type>)
        <indexterm>
@@ -3570,6 +3590,9 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         This setting has no effect if no recovery target is set.
         If <xref linkend="guc-hot-standby"/> is not enabled, a setting of
         <literal>pause</literal> will act the same as <literal>shutdown</literal>.
+        If the recovery target is reached while a promotion is ongoing,
+        a setting of <literal>pause</literal> will act the same as
+        <literal>promote</literal>.
        </para>
        <para>
         In any case, if a recovery target is configured but the archive
@@ -4005,7 +4028,12 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           <varname>primary_conninfo</varname> string.
          </para>
          <para>
-          This parameter can only be set at server start.
+          This parameter can only be set in the <filename>postgresql.conf</filename>
+          file or on the server command line.
+          If this parameter is changed while the WAL receiver process is
+          running, that process is signalled to shut down and expected to
+          restart with the new setting (except if <varname>primary_conninfo</varname>
+          is an empty string).
           This setting has no effect if the server is not in standby mode.
          </para>
         </listitem>
@@ -4022,9 +4050,13 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           connecting to the sending server via streaming replication to control
           resource removal on the upstream node
           (see <xref linkend="streaming-replication-slots"/>).
-          This parameter can only be set at server start.
+          This parameter can only be set in the <filename>postgresql.conf</filename>
+          file or on the server command line.
+          If this parameter is changed while the WAL receiver process is running,
+          that process is signalled to shut down and expected to restart with the
+          new setting.
           This setting has no effect if <varname>primary_conninfo</varname> is not
-          set.
+          set or the server is not in standby mode.
          </para>
         </listitem>
        </varlistentry>
@@ -4137,14 +4169,14 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </term>
       <listitem>
        <para>
-        Specifies whether a WAL receiver should create a temporary replication
+        Specifies whether the WAL receiver process should create a temporary replication
         slot on the remote instance when no permanent replication slot to use
         has been configured (using <xref linkend="guc-primary-slot-name"/>).
-        The default is on.  The only reason to turn this off would be if the
-        remote instance is currently out of available replication slots.  This
-        parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.  Changes only take effect when the
-        WAL receiver process starts a new connection.
+        The default is off.  This parameter can only be set in the 
+        <filename>postgresql.conf</filename> file or on the server command line.
+        If this parameter is changed while the WAL receiver process is running,
+        that process is signalled to shut down and expected to restart with
+        the new setting.
        </para>
       </listitem>
      </varlistentry>
@@ -4462,6 +4494,23 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-enable-groupingsets-hash-disk" xreflabel="enable_groupingsets_hash_disk">
+      <term><varname>enable_groupingsets_hash_disk</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_groupingsets_hash_disk</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of hashed aggregation plan
+        types for grouping sets when the total size of the hash tables is
+        expected to exceed <varname>work_mem</varname>.  See <xref
+        linkend="queries-grouping-sets"/>.  The default is
+        <literal>off</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-hashagg" xreflabel="enable_hashagg">
       <term><varname>enable_hashagg</varname> (<type>boolean</type>)
       <indexterm>
@@ -4472,6 +4521,21 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of hashed
         aggregation plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-hashagg-disk" xreflabel="enable_hashagg_disk">
+      <term><varname>enable_hashagg_disk</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_hashagg_disk</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of hashed aggregation plan
+        types when the memory usage is expected to exceed
+        <varname>work_mem</varname>.  The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -5984,13 +6048,13 @@ local0.*    /var/log/postgresql
         <para>
          Causes the duration of each completed statement to be logged
          if the statement ran for at least the specified amount of time.
-         If this value is specified without units, it is taken as milliseconds.
-         Setting this to zero prints all statement durations.
-         Minus-one (the default) disables logging statement durations.
          For example, if you set it to <literal>250ms</literal>
          then all SQL statements that run 250ms or longer will be
          logged.  Enabling this parameter can be helpful in tracking down
          unoptimized queries in your applications.
+         If this value is specified without units, it is taken as milliseconds.
+         Setting this to zero prints all statement durations.
+         Minus-one (the default) disables logging statement durations.
          Only superusers can change this setting.
         </para>
 
@@ -6030,49 +6094,39 @@ local0.*    /var/log/postgresql
       </term>
        <listitem>
         <para>
-         Allows to sample the logging of the duration of each completed
-         statement if the statement ran for at least the specified amount of
-         time. If this value is specified without units, it is taken as milliseconds.
+         Allows sampling the duration of completed statements that ran for
+         at least the specified amount of time.  This produces the same
+         kind of log entries as
+         <xref linkend="guc-log-min-duration-statement"/>, but only for a
+         subset of the executed statements, with sample rate controlled by
+         <xref linkend="guc-log-statement-sample-rate"/>.
+         For example, if you set it to <literal>100ms</literal> then all
+         SQL statements that run 100ms or longer will be considered for
+         sampling.  Enabling this parameter can be helpful when the
+         traffic is too high to log all queries.
+         If this value is specified without units, it is taken as milliseconds.
          Setting this to zero samples all statement durations.
          Minus-one (the default) disables sampling statement durations.
-         For example, if you set it to <literal>250ms</literal>
-         then all SQL statements that run 250ms or longer will be considered
-         for sampling, with sample rate is controlled by <xref linkend="guc-log-statement-sample-rate"/>. 
-         Enabling this parameter can be helpful when the traffic too high to
-         sample all queries.
          Only superusers can change this setting.
         </para>
 
         <para>
-         This option has lower priority than <xref linkend="guc-log-min-duration-statement"/>,
-         meaning that statements with durations exceeding <xref linkend="guc-log-min-duration-statement"/>
-         are not subject to sampling and are always logged.
+         This setting has lower priority
+         than <varname>log_min_duration_statement</varname>, meaning that
+         statements with durations
+         exceeding <varname>log_min_duration_statement</varname> are not
+         subject to sampling and are always logged.
         </para>
 
         <para>
-         For clients using extended query protocol, durations of the Parse,
-         Bind, and Execute steps are logged independently.
+         Other notes for <varname>log_min_duration_statement</varname>
+         apply also to this setting.
         </para>
-
-       <note>
-        <para>
-         When using this option together with
-         <xref linkend="guc-log-statement"/>,
-         the text of statements that are logged because of
-         <varname>log_statement</varname> will not be repeated in the
-         duration log message.
-         If you are not using <application>syslog</application>, it is recommended
-         that you log the PID or session ID using
-         <xref linkend="guc-log-line-prefix"/>
-         so that you can link the statement message to the later
-         duration message using the process ID or session ID.
-        </para>
-       </note>
        </listitem>
      </varlistentry>
 
      <varlistentry id="guc-log-statement-sample-rate" xreflabel="log_statement_sample_rate">
-      <term><varname>log_statement_sample_rate</varname> (<type>real</type>)
+      <term><varname>log_statement_sample_rate</varname> (<type>floating point</type>)
       <indexterm>
        <primary><varname>log_statement_sample_rate</varname> configuration parameter</primary>
       </indexterm>
@@ -6080,43 +6134,40 @@ local0.*    /var/log/postgresql
        <listitem>
         <para>
          Determines the fraction of statements with duration exceeding
-         <xref linkend="guc-log-min-duration-sample"/> to be logged.
-         This is a statistical parameter, for example <literal>0.5</literal>
-         means there is statistically one in two chances to log the statement.
-         The default is <literal>1.0</literal>, meaning log all such
+         <xref linkend="guc-log-min-duration-sample"/> that will be logged.
+         Sampling is stochastic, for example <literal>0.5</literal> means
+         there is statistically one chance in two that any given statement
+         will be logged.
+         The default is <literal>1.0</literal>, meaning to log all sampled
          statements.
-         Setting this to zero disables sampling logging, same as setting
+         Setting this to zero disables sampled statement-duration logging,
+         the same as setting
          <varname>log_min_duration_sample</varname> to
          <literal>-1</literal>.
-         <varname>log_statement_sample_rate</varname> is helpful when the
-         traffic is too high to log all queries.
          Only superusers can change this setting.
         </para>
-       <note>
-        <para>
-         Like all statement-logging options, this option can add significant
-         overhead.
-        </para>
-       </note>
        </listitem>
      </varlistentry>
 
      <varlistentry id="guc-log-transaction-sample-rate" xreflabel="log_transaction_sample_rate">
-      <term><varname>log_transaction_sample_rate</varname> (<type>real</type>)
+      <term><varname>log_transaction_sample_rate</varname> (<type>floating point</type>)
       <indexterm>
        <primary><varname>log_transaction_sample_rate</varname> configuration parameter</primary>
       </indexterm>
       </term>
        <listitem>
         <para>
-         Set the fraction of transactions whose statements are all logged,
+         Sets the fraction of transactions whose statements are all logged,
          in addition to statements logged for other reasons.  It applies to
          each new transaction regardless of its statements' durations.
-         The default is <literal>0</literal>, meaning not to log statements
-         from any additional transaction.  Setting this to <literal>1</literal>
-         logs all statements for all transactions.
-         <varname>log_transaction_sample_rate</varname> is helpful to track a
-         sample of transaction.
+         Sampling is stochastic, for example <literal>0.1</literal> means
+         there is statistically one chance in ten that any given transaction
+         will be logged.
+         <varname>log_transaction_sample_rate</varname> can be helpful to
+         construct a sample of transactions.
+         The default is <literal>0</literal>, meaning not to log
+         statements from any additional transactions.  Setting this
+         to <literal>1</literal> logs all statements of all transactions.
          Only superusers can change this setting.
         </para>
        <note>
@@ -6451,9 +6502,13 @@ local0.*    /var/log/postgresql
          right with spaces to give it a minimum width, whereas a positive
          value will pad on the left. Padding can be useful to aid human
          readability in log files.
+       </para>
+
+       <para>
          This parameter can only be set in the <filename>postgresql.conf</filename>
          file or on the server command line. The default is
          <literal>'%m [%p] '</literal> which logs a time stamp and the process ID.
+       </para>
 
          <informaltable>
           <tgroup cols="3">
@@ -6489,6 +6544,11 @@ local0.*    /var/log/postgresql
              <entry><literal>%h</literal></entry>
              <entry>Remote host name or IP address</entry>
              <entry>yes</entry>
+            </row>
+            <row>
+             <entry><literal>%b</literal></entry>
+             <entry>Backend type</entry>
+             <entry>no</entry>
             </row>
             <row>
              <entry><literal>%p</literal></entry>
@@ -6561,6 +6621,14 @@ local0.*    /var/log/postgresql
           </tgroup>
          </informaltable>
 
+         <para>
+          The backend type corresponds to the column
+          <structfield>backend_type</structfield> in the view <xref
+          linkend="pg-stat-activity-view"/>, but additional types can appear
+          in the log that don't show in that view.
+         </para>
+
+         <para>
          The <literal>%c</literal> escape prints a quasi-unique session identifier,
          consisting of two 4-byte hexadecimal numbers (without leading zeros)
          separated by a dot.  The numbers are the process start time and the
@@ -6632,9 +6700,9 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
        <para>
         Controls whether bind parameters are logged when a statement is logged
         as a result of <xref linkend="guc-log-min-error-statement"/>.
-        It adds some overhead, as postgres will compute and store textual
-        representations of parameter values in memory for all statements,
-        even if they eventually do not get logged.
+        It adds some overhead, as <productname>PostgreSQL</productname> will
+        compute and store textual representations of parameter values in
+        memory for all statements, even if they eventually do not get logged.
         This setting has no effect on statements logged due to
         <xref linkend="guc-log-min-duration-statement"/> or
         <xref linkend="guc-log-statement"/> settings, as they are always logged
@@ -6785,7 +6853,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         character count of the error position therein,
         location of the error in the PostgreSQL source code
         (if <varname>log_error_verbosity</varname> is set to <literal>verbose</literal>),
-        and application name.
+        application name, and backend type.
         Here is a sample table definition for storing CSV-format log output:
 
 <programlisting>
@@ -6814,6 +6882,7 @@ CREATE TABLE postgres_log
   query_pos integer,
   location text,
   application_name text,
+  backend_type text,
   PRIMARY KEY (session_id, session_line_num)
 );
 </programlisting>
@@ -7244,6 +7313,28 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-autovacuum-vacuum-insert-threshold" xreflabel="autovacuum_vacuum_insert_threshold">
+      <term><varname>autovacuum_vacuum_insert_threshold</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_insert_threshold</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the number of inserted tuples needed to trigger a
+        <command>VACUUM</command> in any one table.
+        The default is 1000 tuples.  If -1 is specified, autovacuum will not
+        trigger a <command>VACUUM</command> operation on any tables based on
+        the number of inserts.
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line;
+        but the setting can be overridden for individual tables by
+        changing table storage parameters.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-autovacuum-analyze-threshold" xreflabel="autovacuum_analyze_threshold">
       <term><varname>autovacuum_analyze_threshold</varname> (<type>integer</type>)
       <indexterm>
@@ -7275,6 +7366,27 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
        <para>
         Specifies a fraction of the table size to add to
         <varname>autovacuum_vacuum_threshold</varname>
+        when deciding whether to trigger a <command>VACUUM</command>.
+        The default is 0.2 (20% of table size).
+        This parameter can only be set in the <filename>postgresql.conf</filename>
+        file or on the server command line;
+        but the setting can be overridden for individual tables by
+        changing table storage parameters.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-autovacuum-vacuum-insert-scale-factor" xreflabel="autovacuum_vacuum_insert_scale_factor">
+      <term><varname>autovacuum_vacuum_insert_scale_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>autovacuum_vacuum_insert_scale_factor</varname></primary>
+       <secondary>configuration parameter</secondary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies a fraction of the table size to add to
+        <varname>autovacuum_vacuum_insert_threshold</varname>
         when deciding whether to trigger a <command>VACUUM</command>.
         The default is 0.2 (20% of table size).
         This parameter can only be set in the <filename>postgresql.conf</filename>

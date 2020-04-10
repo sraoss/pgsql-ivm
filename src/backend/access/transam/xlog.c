@@ -39,6 +39,7 @@
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
+#include "commands/progress.h"
 #include "commands/tablespace.h"
 #include "common/controldata_utils.h"
 #include "miscadmin.h"
@@ -229,6 +230,12 @@ static bool LocalRecoveryInProgress = true;
 static bool LocalHotStandbyActive = false;
 
 /*
+ * Local copy of SharedPromoteIsTriggered variable. False actually means "not
+ * known, need to check the shared state".
+ */
+static bool LocalPromoteIsTriggered = false;
+
+/*
  * Local state for XLogInsertAllowed():
  *		1: unconditionally allowed to insert XLOG
  *		0: unconditionally not allowed to insert XLOG
@@ -257,6 +264,8 @@ bool		InArchiveRecovery = false;
 static bool standby_signal_file_found = false;
 static bool recovery_signal_file_found = false;
 
+static bool need_restart_for_parameter_values = false;
+
 /* Was the last xlog file restored from archive, or local? */
 static bool restoredFromArchive = false;
 
@@ -283,6 +292,7 @@ bool		StandbyModeRequested = false;
 char	   *PrimaryConnInfo = NULL;
 char	   *PrimarySlotName = NULL;
 char	   *PromoteTriggerFile = NULL;
+bool		wal_receiver_create_temp_slot = false;
 
 /* are we currently in standby mode? */
 bool		StandbyMode = false;
@@ -648,10 +658,16 @@ typedef struct XLogCtlData
 	bool		SharedRecoveryInProgress;
 
 	/*
-	 * SharedHotStandbyActive indicates if we're still in crash or archive
-	 * recovery.  Protected by info_lck.
+	 * SharedHotStandbyActive indicates if we allow hot standby queries to be
+	 * run.  Protected by info_lck.
 	 */
 	bool		SharedHotStandbyActive;
+
+	/*
+	 * SharedPromoteIsTriggered indicates if a standby promotion has been
+	 * triggered.  Protected by info_lck.
+	 */
+	bool		SharedPromoteIsTriggered;
 
 	/*
 	 * WalWriterSleeping indicates whether the WAL writer is currently in
@@ -794,7 +810,7 @@ static int	readFile = -1;
 static XLogSegNo readSegNo = 0;
 static uint32 readOff = 0;
 static uint32 readLen = 0;
-static XLogSource readSource = 0;	/* XLOG_FROM_* code */
+static XLogSource readSource = XLOG_FROM_ANY;
 
 /*
  * Keeps track of which source we're currently reading from. This is
@@ -802,9 +818,13 @@ static XLogSource readSource = 0;	/* XLOG_FROM_* code */
  * currently have a WAL file open. If lastSourceFailed is set, our last
  * attempt to read from currentSource failed, and we should try another source
  * next.
+ *
+ * pendingWalRcvRestart is set when a config change occurs that requires a
+ * walreceiver restart.  This is only valid in XLOG_FROM_STREAM state.
  */
-static XLogSource currentSource = 0;	/* XLOG_FROM_* code */
+static XLogSource currentSource = XLOG_FROM_ANY;
 static bool lastSourceFailed = false;
+static bool pendingWalRcvRestart = false;
 
 typedef struct XLogPageReadPrivate
 {
@@ -822,7 +842,7 @@ typedef struct XLogPageReadPrivate
  * XLogReceiptSource tracks where we last successfully read some WAL.)
  */
 static TimestampTz XLogReceiptTime = 0;
-static XLogSource XLogReceiptSource = 0;	/* XLOG_FROM_* code */
+static XLogSource XLogReceiptSource = XLOG_FROM_ANY;
 
 /* State information for XLOG reading */
 static XLogRecPtr ReadRecPtr;	/* start of last record read */
@@ -885,8 +905,8 @@ static bool InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 								   bool find_free, XLogSegNo max_segno,
 								   bool use_lock);
 static int	XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
-						 int source, bool notfoundOk);
-static int	XLogFileReadAnyTLI(XLogSegNo segno, int emode, int source);
+						 XLogSource source, bool notfoundOk);
+static int	XLogFileReadAnyTLI(XLogSegNo segno, int emode, XLogSource source);
 static int	XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr,
 						 int reqLen, XLogRecPtr targetRecPtr, char *readBuf);
 static bool WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
@@ -911,6 +931,7 @@ static void InitControlFile(uint64 sysidentifier);
 static void WriteControlFile(void);
 static void ReadControlFile(void);
 static char *str_time(pg_time_t tnow);
+static void SetPromoteIsTriggered(void);
 static bool CheckForStandbyTrigger(void);
 
 #ifdef WAL_DEBUG
@@ -3590,11 +3611,11 @@ InstallXLogFileSegment(XLogSegNo *segno, char *tmppath,
 	 * Perform the rename using link if available, paranoidly trying to avoid
 	 * overwriting an existing file (there shouldn't be one).
 	 */
-	if (durable_link_or_rename(tmppath, path, LOG) != 0)
+	if (durable_rename_excl(tmppath, path, LOG) != 0)
 	{
 		if (use_lock)
 			LWLockRelease(ControlFileLock);
-		/* durable_link_or_rename already emitted log message */
+		/* durable_rename_excl already emitted log message */
 		return false;
 	}
 
@@ -3632,7 +3653,7 @@ XLogFileOpen(XLogSegNo segno)
  */
 static int
 XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
-			 int source, bool notfoundOk)
+			 XLogSource source, bool notfoundOk)
 {
 	char		xlogfname[MAXFNAMELEN];
 	char		activitymsg[MAXFNAMELEN + 16];
@@ -3647,7 +3668,7 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
 			/* Report recovery progress in PS display */
 			snprintf(activitymsg, sizeof(activitymsg), "waiting for %s",
 					 xlogfname);
-			set_ps_display(activitymsg, false);
+			set_ps_display(activitymsg);
 
 			restoredFromArchive = RestoreArchivedFile(path, xlogfname,
 													  "RECOVERYXLOG",
@@ -3690,7 +3711,7 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
 		/* Report recovery progress in PS display */
 		snprintf(activitymsg, sizeof(activitymsg), "recovering %s",
 				 xlogfname);
-		set_ps_display(activitymsg, false);
+		set_ps_display(activitymsg);
 
 		/* Track source of data in assorted state variables */
 		readSource = source;
@@ -3714,7 +3735,7 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
  * This version searches for the segment with any TLI listed in expectedTLEs.
  */
 static int
-XLogFileReadAnyTLI(XLogSegNo segno, int emode, int source)
+XLogFileReadAnyTLI(XLogSegNo segno, int emode, XLogSource source)
 {
 	char		path[MAXPGPATH];
 	ListCell   *cell;
@@ -4386,7 +4407,7 @@ ReadRecord(XLogReaderState *xlogreader, int emode,
 				 * so that we will check the archive next.
 				 */
 				lastSourceFailed = false;
-				currentSource = 0;
+				currentSource = XLOG_FROM_ANY;
 
 				continue;
 			}
@@ -5111,6 +5132,7 @@ XLOGShmemInit(void)
 	XLogCtl->XLogCacheBlck = XLOGbuffers - 1;
 	XLogCtl->SharedRecoveryInProgress = true;
 	XLogCtl->SharedHotStandbyActive = false;
+	XLogCtl->SharedPromoteIsTriggered = false;
 	XLogCtl->WalWriterSleeping = false;
 
 	SpinLockInit(&XLogCtl->Insert.insertpos_lck);
@@ -5939,14 +5961,22 @@ recoveryPausesHere(void)
 	if (!LocalHotStandbyActive)
 		return;
 
+	/* Don't pause after standby promotion has been triggered */
+	if (LocalPromoteIsTriggered)
+		return;
+
 	ereport(LOG,
 			(errmsg("recovery has paused"),
 			 errhint("Execute pg_wal_replay_resume() to continue.")));
 
 	while (RecoveryIsPaused())
 	{
-		pg_usleep(1000000L);	/* 1000 ms */
 		HandleStartupProcInterrupts();
+		if (CheckForStandbyTrigger())
+			return;
+		pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
+		pg_usleep(1000000L);	/* 1000 ms */
+		pgstat_report_wait_end();
 	}
 }
 
@@ -5968,6 +5998,54 @@ SetRecoveryPause(bool recoveryPause)
 	SpinLockAcquire(&XLogCtl->info_lck);
 	XLogCtl->recoveryPause = recoveryPause;
 	SpinLockRelease(&XLogCtl->info_lck);
+}
+
+/*
+ * If in hot standby, pause recovery because of a parameter conflict.
+ *
+ * Similar to recoveryPausesHere() but with a different messaging.  The user
+ * is expected to make the parameter change and restart the server.  If they
+ * just unpause recovery, they will then run into whatever error is after this
+ * function call for the non-hot-standby case.
+ *
+ * We intentionally do not give advice about specific parameters or values
+ * here because it might be misleading.  For example, if we run out of lock
+ * space, then in the single-server case we would recommend raising
+ * max_locks_per_transaction, but in recovery it could equally be the case
+ * that max_connections is out of sync with the primary.  If we get here, we
+ * have already logged any parameter discrepancies in
+ * RecoveryRequiresIntParameter(), so users can go back to that and get
+ * concrete and accurate information.
+ */
+void
+StandbyParamErrorPauseRecovery(void)
+{
+	TimestampTz last_warning = 0;
+
+	if (!AmStartupProcess() || !need_restart_for_parameter_values)
+		return;
+
+	SetRecoveryPause(true);
+
+	do
+	{
+		TimestampTz now = GetCurrentTimestamp();
+
+		if (TimestampDifferenceExceeds(last_warning, now, 60000))
+		{
+			ereport(WARNING,
+					(errmsg("recovery paused because of insufficient parameter settings"),
+					 errdetail("See earlier in the log about which settings are insufficient."),
+					 errhint("Recovery cannot continue unless the configuration is changed and the server restarted.")));
+			last_warning = now;
+		}
+
+		pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
+		pg_usleep(1000000L);    /* 1000 ms */
+		pgstat_report_wait_end();
+		HandleStartupProcInterrupts();
+	}
+	while (RecoveryIsPaused());
 }
 
 /*
@@ -6149,16 +6227,20 @@ GetXLogReceiptTime(TimestampTz *rtime, bool *fromStream)
  * Note that text field supplied is a parameter name and does not require
  * translation
  */
-#define RecoveryRequiresIntParameter(param_name, currValue, minValue) \
-do { \
-	if ((currValue) < (minValue)) \
-		ereport(ERROR, \
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE), \
-				 errmsg("hot standby is not possible because %s = %d is a lower setting than on the master server (its value was %d)", \
-						param_name, \
-						currValue, \
-						minValue))); \
-} while(0)
+static void
+RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue)
+{
+	if (currValue < minValue)
+	{
+		ereport(WARNING,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("insufficient setting for parameter %s", param_name),
+				 errdetail("%s = %d is a lower setting than on the master server (where its value was %d).",
+						   param_name, currValue, minValue),
+				 errhint("Change parameters and restart the server, or there may be resource exhaustion errors sooner or later.")));
+		need_restart_for_parameter_values = true;
+	}
+}
 
 /*
  * Check to see if required parameters are set high enough on this server
@@ -7391,7 +7473,11 @@ StartupXLOG(void)
 	 * We are now done reading the xlog from stream. Turn off streaming
 	 * recovery to force fetching the files (which would be required at end of
 	 * recovery, e.g., timeline history file) from archive or pg_wal.
+	 *
+	 * Note that standby mode must be turned off after killing WAL receiver,
+	 * i.e., calling ShutdownWalRcv().
 	 */
+	Assert(!WalRcvStreaming());
 	StandbyMode = false;
 
 	/*
@@ -10228,6 +10314,10 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
  * active at the same time, and they don't conflict with an exclusive backup
  * either.
  *
+ * tablespaces is required only when this function is called while
+ * the streaming base backup requested by pg_basebackup is running.
+ * NULL should be specified otherwise.
+ *
  * tblspcmapfile is required mainly for tar format in windows as native windows
  * utilities are not able to create symlinks while extracting files from tar.
  * However for consistency, the same is used for all platforms.
@@ -10469,6 +10559,14 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			tblspcmapfile = makeStringInfo();
 
 		datadirpathlen = strlen(DataDir);
+
+		/*
+		 * Report that we are now estimating the total backup size
+		 * if we're streaming base backup as requested by pg_basebackup
+		 */
+		if (tablespaces)
+			pgstat_progress_update_param(PROGRESS_BASEBACKUP_PHASE,
+										 PROGRESS_BASEBACKUP_PHASE_ESTIMATE_BACKUP_SIZE);
 
 		/* Collect information about all tablespaces */
 		tblspcdir = AllocateDir("pg_tblspc");
@@ -11129,7 +11227,9 @@ do_pg_stop_backup(char *labelfile, bool waitforarchive, TimeLineID *stoptli_p)
 				reported_waiting = true;
 			}
 
+			pgstat_report_wait_start(WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE);
 			pg_usleep(1000000L);
+			pgstat_report_wait_end();
 
 			if (++waits >= seconds_before_warning)
 			{
@@ -11656,7 +11756,7 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 
 		close(readFile);
 		readFile = -1;
-		readSource = 0;
+		readSource = XLOG_FROM_ANY;
 	}
 
 	XLByteToSeg(targetPagePtr, readSegNo, wal_segment_size);
@@ -11676,7 +11776,7 @@ retry:
 				close(readFile);
 			readFile = -1;
 			readLen = 0;
-			readSource = 0;
+			readSource = XLOG_FROM_ANY;
 
 			return -1;
 		}
@@ -11782,7 +11882,7 @@ next_record_is_invalid:
 		close(readFile);
 	readFile = -1;
 	readLen = 0;
-	readSource = 0;
+	readSource = XLOG_FROM_ANY;
 
 	/* In standby-mode, keep trying */
 	if (StandbyMode)
@@ -11842,16 +11942,28 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 	 * values for "check trigger", "rescan timelines", and "sleep" states,
 	 * those actions are taken when reading from the previous source fails, as
 	 * part of advancing to the next state.
+	 *
+	 * If standby mode is turned off while reading WAL from stream, we move
+	 * to XLOG_FROM_ARCHIVE and reset lastSourceFailed, to force fetching
+	 * the files (which would be required at end of recovery, e.g., timeline
+	 * history file) from archive or pg_wal. We don't need to kill WAL receiver
+	 * here because it's already stopped when standby mode is turned off at
+	 * the end of recovery.
 	 *-------
 	 */
 	if (!InArchiveRecovery)
 		currentSource = XLOG_FROM_PG_WAL;
-	else if (currentSource == 0)
+	else if (currentSource == XLOG_FROM_ANY ||
+			 (!StandbyMode && currentSource == XLOG_FROM_STREAM))
+	{
+		lastSourceFailed = false;
 		currentSource = XLOG_FROM_ARCHIVE;
+	}
 
 	for (;;)
 	{
-		int			oldSource = currentSource;
+		XLogSource	oldSource = currentSource;
+		bool		startWalReceiver = false;
 
 		/*
 		 * First check if we failed to read from the current source, and
@@ -11886,53 +11998,11 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 						return false;
 
 					/*
-					 * If primary_conninfo is set, launch walreceiver to try
-					 * to stream the missing WAL.
-					 *
-					 * If fetching_ckpt is true, RecPtr points to the initial
-					 * checkpoint location. In that case, we use RedoStartLSN
-					 * as the streaming start position instead of RecPtr, so
-					 * that when we later jump backwards to start redo at
-					 * RedoStartLSN, we will have the logs streamed already.
-					 */
-					if (PrimaryConnInfo && strcmp(PrimaryConnInfo, "") != 0)
-					{
-						XLogRecPtr	ptr;
-						TimeLineID	tli;
-
-						if (fetching_ckpt)
-						{
-							ptr = RedoStartLSN;
-							tli = ControlFile->checkPointCopy.ThisTimeLineID;
-						}
-						else
-						{
-							ptr = RecPtr;
-
-							/*
-							 * Use the record begin position to determine the
-							 * TLI, rather than the position we're reading.
-							 */
-							tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
-
-							if (curFileTLI > 0 && tli < curFileTLI)
-								elog(ERROR, "according to history file, WAL location %X/%X belongs to timeline %u, but previous recovered WAL file came from timeline %u",
-									 (uint32) (tliRecPtr >> 32),
-									 (uint32) tliRecPtr,
-									 tli, curFileTLI);
-						}
-						curFileTLI = tli;
-						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
-											 PrimarySlotName);
-						receivedUpto = 0;
-					}
-
-					/*
-					 * Move to XLOG_FROM_STREAM state in either case. We'll
-					 * get immediate failure if we didn't launch walreceiver,
-					 * and move on to the next state.
+					 * Move to XLOG_FROM_STREAM state, and set to start a
+					 * walreceiver if necessary.
 					 */
 					currentSource = XLOG_FROM_STREAM;
+					startWalReceiver = true;
 					break;
 
 				case XLOG_FROM_STREAM:
@@ -12003,7 +12073,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 										 WL_LATCH_SET | WL_TIMEOUT |
 										 WL_EXIT_ON_PM_DEATH,
 										 wait_time,
-										 WAIT_EVENT_RECOVERY_WAL_STREAM);
+										 WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL);
 						ResetLatch(&XLogCtl->recoveryWakeupLatch);
 						now = GetCurrentTimestamp();
 					}
@@ -12041,6 +12111,12 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 		{
 			case XLOG_FROM_ARCHIVE:
 			case XLOG_FROM_PG_WAL:
+				/*
+				 * WAL receiver must not be running when reading WAL from
+				 * archive or pg_wal.
+				 */
+				Assert(!WalRcvStreaming());
+
 				/* Close any old file we might have open. */
 				if (readFile >= 0)
 				{
@@ -12078,7 +12154,71 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					Assert(StandbyMode);
 
 					/*
-					 * Check if WAL receiver is still active.
+					 * First, shutdown walreceiver if its restart has been
+					 * requested -- but no point if we're already slated for
+					 * starting it.
+					 */
+					if (pendingWalRcvRestart && !startWalReceiver)
+					{
+						ShutdownWalRcv();
+
+						/*
+						 * Re-scan for possible new timelines if we were
+						 * requested to recover to the latest timeline.
+						 */
+						if (recoveryTargetTimeLineGoal ==
+							RECOVERY_TARGET_TIMELINE_LATEST)
+							rescanLatestTimeLine();
+
+						startWalReceiver = true;
+					}
+					pendingWalRcvRestart = false;
+
+					/*
+					 * Launch walreceiver if needed.
+					 *
+					 * If fetching_ckpt is true, RecPtr points to the initial
+					 * checkpoint location. In that case, we use RedoStartLSN
+					 * as the streaming start position instead of RecPtr, so
+					 * that when we later jump backwards to start redo at
+					 * RedoStartLSN, we will have the logs streamed already.
+					 */
+					if (startWalReceiver &&
+						PrimaryConnInfo && strcmp(PrimaryConnInfo, "") != 0)
+					{
+						XLogRecPtr	ptr;
+						TimeLineID	tli;
+
+						if (fetching_ckpt)
+						{
+							ptr = RedoStartLSN;
+							tli = ControlFile->checkPointCopy.ThisTimeLineID;
+						}
+						else
+						{
+							ptr = RecPtr;
+
+							/*
+							 * Use the record begin position to determine the
+							 * TLI, rather than the position we're reading.
+							 */
+							tli = tliOfPointInHistory(tliRecPtr, expectedTLEs);
+
+							if (curFileTLI > 0 && tli < curFileTLI)
+								elog(ERROR, "according to history file, WAL location %X/%X belongs to timeline %u, but previous recovered WAL file came from timeline %u",
+									 (uint32) (tliRecPtr >> 32),
+									 (uint32) tliRecPtr,
+									 tli, curFileTLI);
+						}
+						curFileTLI = tli;
+						RequestXLogStreaming(tli, ptr, PrimaryConnInfo,
+											 PrimarySlotName,
+											 wal_receiver_create_temp_slot);
+						receivedUpto = 0;
+					}
+
+					/*
+					 * Check if WAL receiver is active or wait to start up.
 					 */
 					if (!WalRcvStreaming())
 					{
@@ -12187,7 +12327,7 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 					(void) WaitLatch(&XLogCtl->recoveryWakeupLatch,
 									 WL_LATCH_SET | WL_TIMEOUT |
 									 WL_EXIT_ON_PM_DEATH,
-									 5000L, WAIT_EVENT_RECOVERY_WAL_ALL);
+									 5000L, WAIT_EVENT_RECOVERY_WAL_STREAM);
 					ResetLatch(&XLogCtl->recoveryWakeupLatch);
 					break;
 				}
@@ -12204,6 +12344,22 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 	}
 
 	return false;				/* not reached */
+}
+
+/*
+ * Set flag to signal the walreceiver to restart.  (The startup process calls
+ * this on noticing a relevant configuration change.)
+ */
+void
+StartupRequestWalReceiverRestart(void)
+{
+	if (currentSource == XLOG_FROM_STREAM && WalRcvRunning())
+	{
+		ereport(LOG,
+				(errmsg("wal receiver process shutdown requested")));
+
+		pendingWalRcvRestart = true;
+	}
 }
 
 /*
@@ -12240,6 +12396,40 @@ emode_for_corrupt_record(int emode, XLogRecPtr RecPtr)
 }
 
 /*
+ * Has a standby promotion already been triggered?
+ *
+ * Unlike CheckForStandbyTrigger(), this works in any process
+ * that's connected to shared memory.
+ */
+bool
+PromoteIsTriggered(void)
+{
+	/*
+	 * We check shared state each time only until a standby promotion is
+	 * triggered. We can't trigger a promotion again, so there's no need to
+	 * keep checking after the shared variable has once been seen true.
+	 */
+	if (LocalPromoteIsTriggered)
+		return true;
+
+	SpinLockAcquire(&XLogCtl->info_lck);
+	LocalPromoteIsTriggered = XLogCtl->SharedPromoteIsTriggered;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	return LocalPromoteIsTriggered;
+}
+
+static void
+SetPromoteIsTriggered(void)
+{
+	SpinLockAcquire(&XLogCtl->info_lck);
+	XLogCtl->SharedPromoteIsTriggered = true;
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	LocalPromoteIsTriggered = true;
+}
+
+/*
  * Check to see whether the user-specified trigger file exists and whether a
  * promote request has arrived.  If either condition holds, return true.
  */
@@ -12247,12 +12437,11 @@ static bool
 CheckForStandbyTrigger(void)
 {
 	struct stat stat_buf;
-	static bool triggered = false;
 
-	if (triggered)
+	if (LocalPromoteIsTriggered)
 		return true;
 
-	if (IsPromoteTriggered())
+	if (IsPromoteSignaled())
 	{
 		/*
 		 * In 9.1 and 9.2 the postmaster unlinked the promote file inside the
@@ -12275,8 +12464,8 @@ CheckForStandbyTrigger(void)
 
 		ereport(LOG, (errmsg("received promote request")));
 
-		ResetPromoteTriggered();
-		triggered = true;
+		ResetPromoteSignaled();
+		SetPromoteIsTriggered();
 		return true;
 	}
 
@@ -12288,7 +12477,7 @@ CheckForStandbyTrigger(void)
 		ereport(LOG,
 				(errmsg("promote trigger file found: %s", PromoteTriggerFile)));
 		unlink(PromoteTriggerFile);
-		triggered = true;
+		SetPromoteIsTriggered();
 		fast_promote = true;
 		return true;
 	}

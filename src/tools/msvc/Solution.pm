@@ -19,7 +19,6 @@ sub _new
 	my $self      = {
 		projects                   => {},
 		options                    => $options,
-		numver                     => '',
 		VisualStudioVersion        => undef,
 		MinimumVisualStudioVersion => undef,
 		vcver                      => undef,
@@ -146,35 +145,39 @@ sub GenerateFiles
 {
 	my $self = shift;
 	my $bits = $self->{platform} eq 'Win32' ? 32 : 64;
+	my $ac_init_found = 0;
 	my $package_name;
 	my $package_version;
 	my $package_bugreport;
+	my $package_url;
+	my ($majorver, $minorver);
 
 	# Parse configure.in to get version numbers
 	open(my $c, '<', "configure.in")
 	  || confess("Could not open configure.in for reading\n");
 	while (<$c>)
 	{
-		if (/^AC_INIT\(\[([^\]]+)\], \[([^\]]+)\], \[([^\]]+)\]/)
+		if (/^AC_INIT\(\[([^\]]+)\], \[([^\]]+)\], \[([^\]]+)\], \[([^\]]*)\], \[([^\]]+)\]/)
 		{
+			$ac_init_found = 1;
+
 			$package_name      = $1;
 			$package_version   = $2;
 			$package_bugreport = $3;
+			#$package_tarname   = $4;
+			$package_url       = $5;
 
 			if ($package_version !~ /^(\d+)(?:\.(\d+))?/)
 			{
 				confess "Bad format of version: $self->{strver}\n";
 			}
-			$self->{numver} = sprintf("%d%04d", $1, $2 ? $2 : 0);
-			$self->{majorver} = sprintf("%d", $1);
+			$majorver = sprintf("%d", $1);
+			$minorver = sprintf("%d", $2 ? $2 : 0);
 		}
 	}
 	close($c);
 	confess "Unable to parse configure.in for all variables!"
-	  if ( $package_name eq ''
-		|| $package_version eq ''
-		|| $self->{numver} eq ''
-		|| $package_bugreport eq '');
+	  unless $ac_init_found;
 
 	if (IsNewer("src/include/pg_config_os.h", "src/include/port/win32.h"))
 	{
@@ -295,6 +298,7 @@ sub GenerateFiles
 		HAVE_LIBXML2                                => undef,
 		HAVE_LIBXSLT                                => undef,
 		HAVE_LIBZ                   => $self->{options}->{zlib} ? 1 : undef,
+		HAVE_LINK                   => undef,
 		HAVE_LOCALE_T               => 1,
 		HAVE_LONG_INT_64            => undef,
 		HAVE_LONG_LONG_INT_64       => 1,
@@ -366,6 +370,7 @@ sub GenerateFiles
 		HAVE_STRUCT_SOCKADDR_STORAGE_SS_LEN      => undef,
 		HAVE_STRUCT_SOCKADDR_STORAGE___SS_FAMILY => undef,
 		HAVE_STRUCT_SOCKADDR_STORAGE___SS_LEN    => undef,
+		HAVE_STRUCT_SOCKADDR_UN                  => undef,
 		HAVE_STRUCT_TM_TM_ZONE                   => undef,
 		HAVE_SYNC_FILE_RANGE                     => undef,
 		HAVE_SYMLINK                             => 1,
@@ -393,7 +398,6 @@ sub GenerateFiles
 		HAVE_UINT8                               => undef,
 		HAVE_UNION_SEMUN                         => undef,
 		HAVE_UNISTD_H                            => 1,
-		HAVE_UNIX_SOCKETS                        => undef,
 		HAVE_UNSETENV                            => undef,
 		HAVE_USELOCALE                           => undef,
 		HAVE_UUID_BSD                            => undef,
@@ -431,16 +435,18 @@ sub GenerateFiles
 		PACKAGE_NAME                             => qq{"$package_name"},
 		PACKAGE_STRING      => qq{"$package_name $package_version"},
 		PACKAGE_TARNAME     => lc qq{"$package_name"},
-		PACKAGE_URL         => undef,
+		PACKAGE_URL         => qq{"$package_url"},
 		PACKAGE_VERSION     => qq{"$package_version"},
 		PG_INT128_TYPE      => undef,
 		PG_INT64_TYPE       => 'long long int',
 		PG_KRB_SRVNAM       => qq{"postgres"},
-		PG_MAJORVERSION     => qq{"$self->{majorver}"},
+		PG_MAJORVERSION     => qq{"$majorver"},
+		PG_MAJORVERSION_NUM => $majorver,
+		PG_MINORVERSION_NUM => $minorver,
 		PG_PRINTF_ATTRIBUTE => undef,
 		PG_USE_STDBOOL      => 1,
 		PG_VERSION          => qq{"$package_version$extraver"},
-		PG_VERSION_NUM      => $self->{numver},
+		PG_VERSION_NUM      => sprintf("%d%04d", $majorver, $minorver),
 		PG_VERSION_STR =>
 		  qq{"PostgreSQL $package_version$extraver, compiled by Visual C++ build " CppAsString2(_MSC_VER) ", $bits-bit"},
 		PROFILE_PID_DIR         => undef,
@@ -774,7 +780,7 @@ EOF
 		chdir('src/backend/catalog');
 		my $bki_srcs = join(' ../../../src/include/catalog/', @bki_srcs);
 		system(
-			"perl genbki.pl --include-path ../../../src/include/ --set-version=$self->{majorver} $bki_srcs"
+			"perl genbki.pl --include-path ../../../src/include/ --set-version=$majorver $bki_srcs"
 		);
 		open(my $f, '>', 'bki-stamp')
 		  || confess "Could not touch bki-stamp";
@@ -809,7 +815,7 @@ EOF
 	  || croak "Could not write to version.sgml\n";
 	print $o <<EOF;
 <!ENTITY version "$package_version">
-<!ENTITY majorversion "$self->{majorver}">
+<!ENTITY majorversion "$majorver">
 EOF
 	close($o);
 	return;

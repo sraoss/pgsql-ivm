@@ -177,6 +177,7 @@ typedef struct AlteredTableInfo
 	List	   *changedConstraintDefs;	/* string definitions of same */
 	List	   *changedIndexOids;	/* OIDs of indexes to rebuild */
 	List	   *changedIndexDefs;	/* string definitions of same */
+	char	   *replicaIdentityIndex;	/* index to reset as REPLICA IDENTITY */
 } AlteredTableInfo;
 
 /* Struct describing one new constraint to check in Phase 3 scan */
@@ -2031,14 +2032,14 @@ storage_name(char c)
 {
 	switch (c)
 	{
-		case 'p':
+		case TYPSTORAGE_PLAIN:
 			return "PLAIN";
-		case 'm':
-			return "MAIN";
-		case 'x':
-			return "EXTENDED";
-		case 'e':
+		case TYPSTORAGE_EXTERNAL:
 			return "EXTERNAL";
+		case TYPSTORAGE_EXTENDED:
+			return "EXTENDED";
+		case TYPSTORAGE_MAIN:
+			return "MAIN";
 		default:
 			return "???";
 	}
@@ -5351,12 +5352,14 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 					ereport(ERROR,
 							(errcode(ERRCODE_CHECK_VIOLATION),
 							 errmsg("updated partition constraint for default partition \"%s\" would be violated by some row",
-									RelationGetRelationName(oldrel))));
+									RelationGetRelationName(oldrel)),
+							 errtable(oldrel)));
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_CHECK_VIOLATION),
 							 errmsg("partition constraint of relation \"%s\" is violated by some row",
-									RelationGetRelationName(oldrel))));
+									RelationGetRelationName(oldrel)),
+							 errtable(oldrel)));
 			}
 
 			/* Write the tuple out to the new relation */
@@ -6091,7 +6094,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 
 	ReleaseSysCache(typeTuple);
 
-	InsertPgAttributeTuple(attrdesc, &attribute, NULL);
+	InsertPgAttributeTuple(attrdesc, &attribute, (Datum) 0, NULL);
 
 	table_close(attrdesc, RowExclusiveLock);
 
@@ -7397,13 +7400,13 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	storagemode = strVal(newValue);
 
 	if (pg_strcasecmp(storagemode, "plain") == 0)
-		newstorage = 'p';
+		newstorage = TYPSTORAGE_PLAIN;
 	else if (pg_strcasecmp(storagemode, "external") == 0)
-		newstorage = 'e';
+		newstorage = TYPSTORAGE_EXTERNAL;
 	else if (pg_strcasecmp(storagemode, "extended") == 0)
-		newstorage = 'x';
+		newstorage = TYPSTORAGE_EXTENDED;
 	else if (pg_strcasecmp(storagemode, "main") == 0)
-		newstorage = 'm';
+		newstorage = TYPSTORAGE_MAIN;
 	else
 	{
 		ereport(ERROR,
@@ -7435,7 +7438,7 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	 * safety check: do not allow toasted storage modes unless column datatype
 	 * is TOAST-aware.
 	 */
-	if (newstorage == 'p' || TypeIsToastable(attrtuple->atttypid))
+	if (newstorage == TYPSTORAGE_PLAIN || TypeIsToastable(attrtuple->atttypid))
 		attrtuple->attstorage = newstorage;
 	else
 		ereport(ERROR,
@@ -10273,7 +10276,7 @@ validateForeignKeyConstraint(char *conname,
 	while (table_scan_getnextslot(scan, ForwardScanDirection, slot))
 	{
 		LOCAL_FCINFO(fcinfo, 0);
-		TriggerData trigdata;
+		TriggerData trigdata = {0};
 
 		CHECK_FOR_INTERRUPTS();
 
@@ -10292,8 +10295,6 @@ validateForeignKeyConstraint(char *conname,
 		trigdata.tg_relation = rel;
 		trigdata.tg_trigtuple = ExecFetchSlotHeapTuple(slot, false, NULL);
 		trigdata.tg_trigslot = slot;
-		trigdata.tg_newtuple = NULL;
-		trigdata.tg_newslot = NULL;
 		trigdata.tg_trigger = &trig;
 
 		fcinfo->context = (Node *) &trigdata;
@@ -11574,6 +11575,22 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 }
 
 /*
+ * Subroutine for ATExecAlterColumnType: remember that a replica identity
+ * needs to be reset.
+ */
+static void
+RememberReplicaIdentityForRebuilding(Oid indoid, AlteredTableInfo *tab)
+{
+	if (!get_index_isreplident(indoid))
+		return;
+
+	if (tab->replicaIdentityIndex)
+		elog(ERROR, "relation %u has multiple indexes marked as replica identity", tab->relid);
+
+	tab->replicaIdentityIndex = get_rel_name(indoid);
+}
+
+/*
  * Subroutine for ATExecAlterColumnType: remember that a constraint needs
  * to be rebuilt (which we might already know).
  */
@@ -11591,11 +11608,16 @@ RememberConstraintForRebuilding(Oid conoid, AlteredTableInfo *tab)
 	{
 		/* OK, capture the constraint's existing definition string */
 		char	   *defstring = pg_get_constraintdef_command(conoid);
+		Oid			indoid;
 
 		tab->changedConstraintOids = lappend_oid(tab->changedConstraintOids,
 												 conoid);
 		tab->changedConstraintDefs = lappend(tab->changedConstraintDefs,
 											 defstring);
+
+		indoid = get_constraint_index(conoid);
+		if (OidIsValid(indoid))
+			RememberReplicaIdentityForRebuilding(indoid, tab);
 	}
 }
 
@@ -11638,6 +11660,8 @@ RememberIndexForRebuilding(Oid indoid, AlteredTableInfo *tab)
 												indoid);
 			tab->changedIndexDefs = lappend(tab->changedIndexDefs,
 											defstring);
+
+			RememberReplicaIdentityForRebuilding(indoid, tab);
 		}
 	}
 }
@@ -11744,6 +11768,24 @@ ATPostAlterTypeCleanup(List **wqueue, AlteredTableInfo *tab, LOCKMODE lockmode)
 
 		ObjectAddressSet(obj, RelationRelationId, oldId);
 		add_exact_object_address(&obj, objects);
+	}
+
+	/*
+	 * Queue up command to restore replica identity index marking
+	 */
+	if (tab->replicaIdentityIndex)
+	{
+		AlterTableCmd *cmd = makeNode(AlterTableCmd);
+		ReplicaIdentityStmt *subcmd = makeNode(ReplicaIdentityStmt);
+
+		subcmd->identity_type = REPLICA_IDENTITY_INDEX;
+		subcmd->name = tab->replicaIdentityIndex;
+		cmd->subtype = AT_ReplicaIdentity;
+		cmd->def = (Node *) subcmd;
+
+		/* do it after indexes and constraints */
+		tab->subcmds[AT_PASS_OLD_CONSTR] =
+			lappend(tab->subcmds[AT_PASS_OLD_CONSTR], cmd);
 	}
 
 	/*
@@ -16457,54 +16499,6 @@ out:
 }
 
 /*
- * isPartitionTrigger
- *		Subroutine for CloneRowTriggersToPartition: determine whether
- *		the given trigger has been cloned from another one.
- *
- * We use pg_depend as a proxy for this, since we don't have any direct
- * evidence.  This is an ugly hack to cope with a catalog deficiency.
- * Keep away from children.  Do not stare with naked eyes.  Do not propagate.
- */
-static bool
-isPartitionTrigger(Oid trigger_oid)
-{
-	Relation	pg_depend;
-	ScanKeyData key[2];
-	SysScanDesc scan;
-	HeapTuple	tup;
-	bool		found = false;
-
-	pg_depend = table_open(DependRelationId, AccessShareLock);
-
-	ScanKeyInit(&key[0], Anum_pg_depend_classid,
-				BTEqualStrategyNumber,
-				F_OIDEQ,
-				ObjectIdGetDatum(TriggerRelationId));
-	ScanKeyInit(&key[1], Anum_pg_depend_objid,
-				BTEqualStrategyNumber,
-				F_OIDEQ,
-				ObjectIdGetDatum(trigger_oid));
-
-	scan = systable_beginscan(pg_depend, DependDependerIndexId,
-							  true, NULL, 2, key);
-	while ((tup = systable_getnext(scan)) != NULL)
-	{
-		Form_pg_depend dep = (Form_pg_depend) GETSTRUCT(tup);
-
-		if (dep->refclassid == TriggerRelationId)
-		{
-			found = true;
-			break;
-		}
-	}
-
-	systable_endscan(scan);
-	table_close(pg_depend, AccessShareLock);
-
-	return found;
-}
-
-/*
  * CloneRowTriggersToPartition
  *		subroutine for ATExecAttachPartition/DefineRelation to create row
  *		triggers on partitions
@@ -16546,11 +16540,10 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 
 		/*
 		 * Internal triggers require careful examination.  Ideally, we don't
-		 * clone them.
-		 *
-		 * However, if our parent is a partitioned relation, there might be
-		 * internal triggers that need cloning.  In that case, we must skip
-		 * clone it if the trigger on parent depends on another trigger.
+		 * clone them.  However, if our parent is itself a partition, there
+		 * might be internal triggers that must not be skipped; for example,
+		 * triggers on our parent that are in turn clones from its parent (our
+		 * grandparent) are marked internal, yet they are to be cloned.
 		 *
 		 * Note we dare not verify that the other trigger belongs to an
 		 * ancestor relation of our parent, because that creates deadlock
@@ -16558,13 +16551,14 @@ CloneRowTriggersToPartition(Relation parent, Relation partition)
 		 */
 		if (trigForm->tgisinternal &&
 			(!parent->rd_rel->relispartition ||
-			 !isPartitionTrigger(trigForm->oid)))
+			 !OidIsValid(trigForm->tgparentid)))
 			continue;
 
 		/*
 		 * Complain if we find an unexpected trigger type.
 		 */
-		if (!TRIGGER_FOR_AFTER(trigForm->tgtype))
+		if (!TRIGGER_FOR_BEFORE(trigForm->tgtype) &&
+			!TRIGGER_FOR_AFTER(trigForm->tgtype))
 			elog(ERROR, "unexpected trigger \"%s\" found",
 				 NameStr(trigForm->tgname));
 

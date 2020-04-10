@@ -526,7 +526,7 @@ UPDATE OF <replaceable>column_name1</replaceable> [, <replaceable>column_name2</
    Creating a row-level trigger on a partitioned table will cause identical
    triggers to be created in all its existing partitions; and any partitions
    created or attached later will contain an identical trigger, too.
-   Triggers on partitioned tables may only be <literal>AFTER</literal>.
+   Triggers on partitioned tables may not be <literal>INSTEAD OF</literal>.
   </para>
 
   <para>
@@ -542,15 +542,6 @@ UPDATE OF <replaceable>column_name1</replaceable> [, <replaceable>column_name2</
    that are present in the table that the trigger is attached to.  Currently,
    row-level triggers with transition relations cannot be defined on
    partitions or inheritance child tables.
-  </para>
-
-  <para>
-   In <productname>PostgreSQL</productname> versions before 7.3, it was
-   necessary to declare trigger functions as returning the placeholder
-   type <type>opaque</type>, rather than <type>trigger</type>.  To support loading
-   of old dump files, <command>CREATE TRIGGER</command> will accept a function
-   declared as returning <type>opaque</type>, but it will issue a notice and
-   change the function's declared return type to <type>trigger</type>.
   </para>
  </refsect1>
 

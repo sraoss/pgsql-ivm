@@ -144,10 +144,8 @@ CustomizableInitialize(void)
 	switch (restoreCommandType)
 	{
 		case RESTORE_COMMAND_LINK:
-#ifdef HAVE_WORKING_LINK
 			SET_RESTORE_COMMAND("ln -s -f", WALFilePath, xlogFilePath);
 			break;
-#endif
 		case RESTORE_COMMAND_COPY:
 		default:
 			SET_RESTORE_COMMAND("cp", WALFilePath, xlogFilePath);
@@ -612,7 +610,8 @@ usage(void)
 		   "  restore_command = 'pg_standby [OPTION]... ARCHIVELOCATION %%f %%p %%r'\n"
 		   "e.g.\n"
 		   "  restore_command = 'pg_standby /mnt/server/archiverdir %%f %%p %%r'\n");
-	printf("\nReport bugs to <pgsql-bugs@lists.postgresql.org>.\n");
+	printf("\nReport bugs to <%s>.\n", PACKAGE_BUGREPORT);
+	printf("%s home page: <%s>\n", PACKAGE_NAME, PACKAGE_URL);
 }
 
 #ifndef WIN32

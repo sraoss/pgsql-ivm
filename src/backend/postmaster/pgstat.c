@@ -2892,62 +2892,7 @@ pgstat_bestart(void)
 	 * out-of-line data.  Those have to be handled separately, below.
 	 */
 	lbeentry.st_procpid = MyProcPid;
-
-	if (MyBackendId != InvalidBackendId)
-	{
-		if (IsAutoVacuumLauncherProcess())
-		{
-			/* Autovacuum Launcher */
-			lbeentry.st_backendType = B_AUTOVAC_LAUNCHER;
-		}
-		else if (IsAutoVacuumWorkerProcess())
-		{
-			/* Autovacuum Worker */
-			lbeentry.st_backendType = B_AUTOVAC_WORKER;
-		}
-		else if (am_walsender)
-		{
-			/* Wal sender */
-			lbeentry.st_backendType = B_WAL_SENDER;
-		}
-		else if (IsBackgroundWorker)
-		{
-			/* bgworker */
-			lbeentry.st_backendType = B_BG_WORKER;
-		}
-		else
-		{
-			/* client-backend */
-			lbeentry.st_backendType = B_BACKEND;
-		}
-	}
-	else
-	{
-		/* Must be an auxiliary process */
-		Assert(MyAuxProcType != NotAnAuxProcess);
-		switch (MyAuxProcType)
-		{
-			case StartupProcess:
-				lbeentry.st_backendType = B_STARTUP;
-				break;
-			case BgWriterProcess:
-				lbeentry.st_backendType = B_BG_WRITER;
-				break;
-			case CheckpointerProcess:
-				lbeentry.st_backendType = B_CHECKPOINTER;
-				break;
-			case WalWriterProcess:
-				lbeentry.st_backendType = B_WAL_WRITER;
-				break;
-			case WalReceiverProcess:
-				lbeentry.st_backendType = B_WAL_RECEIVER;
-				break;
-			default:
-				elog(FATAL, "unrecognized process type: %d",
-					 (int) MyAuxProcType);
-		}
-	}
-
+	lbeentry.st_backendType = MyBackendType;
 	lbeentry.st_proc_start_timestamp = MyStartTimestamp;
 	lbeentry.st_activity_start_timestamp = 0;
 	lbeentry.st_state_start_timestamp = 0;
@@ -3657,9 +3602,6 @@ pgstat_get_wait_activity(WaitEventActivity w)
 		case WAIT_EVENT_PGSTAT_MAIN:
 			event_name = "PgStatMain";
 			break;
-		case WAIT_EVENT_RECOVERY_WAL_ALL:
-			event_name = "RecoveryWalAll";
-			break;
 		case WAIT_EVENT_RECOVERY_WAL_STREAM:
 			event_name = "RecoveryWalStream";
 			break;
@@ -3740,6 +3682,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 
 	switch (w)
 	{
+		case WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE:
+			event_name = "BackupWaitWalArchive";
+			break;
 		case WAIT_EVENT_BGWORKER_SHUTDOWN:
 			event_name = "BgWorkerShutdown";
 			break;
@@ -3839,6 +3784,9 @@ pgstat_get_wait_ipc(WaitEventIPC w)
 		case WAIT_EVENT_PROMOTE:
 			event_name = "Promote";
 			break;
+		case WAIT_EVENT_RECOVERY_PAUSE:
+			event_name = "RecoveryPause";
+			break;
 		case WAIT_EVENT_REPLICATION_ORIGIN_DROP:
 			event_name = "ReplicationOriginDrop";
 			break;
@@ -3878,6 +3826,12 @@ pgstat_get_wait_timeout(WaitEventTimeout w)
 			break;
 		case WAIT_EVENT_RECOVERY_APPLY_DELAY:
 			event_name = "RecoveryApplyDelay";
+			break;
+		case WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL:
+			event_name = "RecoveryRetrieveRetryInterval";
+			break;
+		case WAIT_EVENT_VACUUM_DELAY:
+			event_name = "VacuumDelay";
 			break;
 			/* no default case, so that compiler will warn */
 	}
@@ -4269,48 +4223,6 @@ pgstat_get_crashed_backend_activity(int pid, char *buffer, int buflen)
 	return NULL;
 }
 
-const char *
-pgstat_get_backend_desc(BackendType backendType)
-{
-	const char *backendDesc = "unknown process type";
-
-	switch (backendType)
-	{
-		case B_AUTOVAC_LAUNCHER:
-			backendDesc = "autovacuum launcher";
-			break;
-		case B_AUTOVAC_WORKER:
-			backendDesc = "autovacuum worker";
-			break;
-		case B_BACKEND:
-			backendDesc = "client backend";
-			break;
-		case B_BG_WORKER:
-			backendDesc = "background worker";
-			break;
-		case B_BG_WRITER:
-			backendDesc = "background writer";
-			break;
-		case B_CHECKPOINTER:
-			backendDesc = "checkpointer";
-			break;
-		case B_STARTUP:
-			backendDesc = "startup";
-			break;
-		case B_WAL_RECEIVER:
-			backendDesc = "walreceiver";
-			break;
-		case B_WAL_SENDER:
-			backendDesc = "walsender";
-			break;
-		case B_WAL_WRITER:
-			backendDesc = "walwriter";
-			break;
-	}
-
-	return backendDesc;
-}
-
 /* ------------------------------------------------------------
  * Local support functions follow
  * ------------------------------------------------------------
@@ -4447,10 +4359,8 @@ PgstatCollectorMain(int argc, char *argv[])
 	pqsignal(SIGCHLD, SIG_DFL);
 	PG_SETMASK(&UnBlockSig);
 
-	/*
-	 * Identify myself via ps
-	 */
-	init_ps_display("stats collector", "", "", "");
+	MyBackendType = B_STATS_COLLECTOR;
+	init_ps_display(NULL);
 
 	/*
 	 * Read in existing stats files or initialize the stats to zero.
@@ -4791,6 +4701,7 @@ pgstat_get_tab_entry(PgStat_StatDBEntry *dbentry, Oid tableoid, bool create)
 		result->n_live_tuples = 0;
 		result->n_dead_tuples = 0;
 		result->changes_since_analyze = 0;
+		result->inserts_since_vacuum = 0;
 		result->blocks_fetched = 0;
 		result->blocks_hit = 0;
 		result->vacuum_timestamp = 0;
@@ -5921,6 +5832,7 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->n_live_tuples = tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples = tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze = tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum = tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched = tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit = tabmsg->t_counts.t_blocks_hit;
 
@@ -5950,10 +5862,12 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			{
 				tabentry->n_live_tuples = 0;
 				tabentry->n_dead_tuples = 0;
+				tabentry->inserts_since_vacuum = 0;
 			}
 			tabentry->n_live_tuples += tabmsg->t_counts.t_delta_live_tuples;
 			tabentry->n_dead_tuples += tabmsg->t_counts.t_delta_dead_tuples;
 			tabentry->changes_since_analyze += tabmsg->t_counts.t_changed_tuples;
+			tabentry->inserts_since_vacuum += tabmsg->t_counts.t_tuples_inserted;
 			tabentry->blocks_fetched += tabmsg->t_counts.t_blocks_fetched;
 			tabentry->blocks_hit += tabmsg->t_counts.t_blocks_hit;
 		}
@@ -6187,6 +6101,18 @@ pgstat_recv_vacuum(PgStat_MsgVacuum *msg, int len)
 
 	tabentry->n_live_tuples = msg->m_live_tuples;
 	tabentry->n_dead_tuples = msg->m_dead_tuples;
+
+	/*
+	 * It is quite possible that a non-aggressive VACUUM ended up skipping
+	 * various pages, however, we'll zero the insert counter here regardless.
+	 * It's currently used only to track when we need to perform an
+	 * "insert" autovacuum, which are mainly intended to freeze newly inserted
+	 * tuples.  Zeroing this may just mean we'll not try to vacuum the table
+	 * again until enough tuples have been inserted to trigger another insert
+	 * autovacuum.  An anti-wraparound autovacuum will catch any persistent
+	 * stragglers.
+	 */
+	tabentry->inserts_since_vacuum = 0;
 
 	if (msg->m_autovacuum)
 	{

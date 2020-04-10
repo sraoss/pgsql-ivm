@@ -20,12 +20,12 @@
  */
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "jit/jit.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
-#include "utils/hashutils.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/resowner_private.h"
@@ -675,6 +675,30 @@ ResourceOwnerReleaseInternal(ResourceOwner owner,
 	for (item = ResourceRelease_callbacks; item; item = item->next)
 		item->callback(phase, isCommit, isTopLevel, item->arg);
 
+	CurrentResourceOwner = save;
+}
+
+/*
+ * ResourceOwnerReleaseAllPlanCacheRefs
+ *		Release the plancache references (only) held by this owner.
+ *
+ * We might eventually add similar functions for other resource types,
+ * but for now, only this is needed.
+ */
+void
+ResourceOwnerReleaseAllPlanCacheRefs(ResourceOwner owner)
+{
+	ResourceOwner save;
+	Datum		foundres;
+
+	save = CurrentResourceOwner;
+	CurrentResourceOwner = owner;
+	while (ResourceArrayGetAny(&(owner->planrefarr), &foundres))
+	{
+		CachedPlan *res = (CachedPlan *) DatumGetPointer(foundres);
+
+		ReleaseCachedPlan(res, true);
+	}
 	CurrentResourceOwner = save;
 }
 

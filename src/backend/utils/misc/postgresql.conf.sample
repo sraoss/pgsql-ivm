@@ -309,9 +309,7 @@
 # These settings are ignored on a master server.
 
 #primary_conninfo = ''			# connection string to sending server
-					# (change requires restart)
 #primary_slot_name = ''			# replication slot on sending server
-					# (change requires restart)
 #promote_trigger_file = ''		# file name whose presence ends recovery
 #hot_standby = on			# "off" disallows queries during recovery
 					# (change requires restart)
@@ -321,7 +319,8 @@
 #max_standby_streaming_delay = 30s	# max delay before canceling queries
 					# when reading streaming WAL;
 					# -1 allows indefinite delay
-#wal_receiver_create_temp_slot = on	# create temp slot if primary_slot_name not set
+#wal_receiver_create_temp_slot = off	# Create temp slot if primary_slot_name
+					# is not set.
 #wal_receiver_status_interval = 10s	# send replies at least this often
 					# 0 disables
 #hot_standby_feedback = off		# send info from standby to prevent
@@ -528,6 +527,7 @@
 					#   %d = database name
 					#   %r = remote host and port
 					#   %h = remote host
+					#   %b = backend type
 					#   %p = process ID
 					#   %t = timestamp without milliseconds
 					#   %m = timestamp with milliseconds
@@ -598,9 +598,14 @@
 #autovacuum_naptime = 1min		# time between autovacuum runs
 #autovacuum_vacuum_threshold = 50	# min number of row updates before
 					# vacuum
+#autovacuum_vacuum_insert_threshold = 1000	# min number of row inserts
+					# before vacuum. -1 disables insert
+					# vacuums
 #autovacuum_analyze_threshold = 50	# min number of row updates before
 					# analyze
 #autovacuum_vacuum_scale_factor = 0.2	# fraction of table size before vacuum
+#autovacuum_vacuum_insert_scale_factor = 0.2	# fraction of inserts over table
+					# size before insert vacuum
 #autovacuum_analyze_scale_factor = 0.1	# fraction of table size before analyze
 #autovacuum_freeze_max_age = 200000000	# maximum XID age before forced vacuum
 					# (change requires restart)

@@ -26,6 +26,7 @@
 #include "access/amapi.h"
 #include "access/heapam.h"
 #include "access/multixact.h"
+#include "access/reloptions.h"
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
@@ -105,7 +106,8 @@ static TupleDesc ConstructTupleDescriptor(Relation heapRelation,
 										  Oid *classObjectId);
 static void InitializeAttributeOids(Relation indexRelation,
 									int numatts, Oid indexoid);
-static void AppendAttributeTuples(Relation indexRelation, int numatts);
+static void AppendAttributeTuples(Relation indexRelation, int numatts,
+								  Datum *attopts);
 static void UpdateIndexRelation(Oid indexoid, Oid heapoid,
 								Oid parentIndexId,
 								IndexInfo *indexInfo,
@@ -404,10 +406,6 @@ ConstructTupleDescriptor(Relation heapRelation,
 		 */
 		keyType = amroutine->amkeytype;
 
-		/*
-		 * Code below is concerned to the opclasses which are not used with
-		 * the included columns.
-		 */
 		if (i < indexInfo->ii_NumIndexKeyAttrs)
 		{
 			tuple = SearchSysCache1(CLAOID, ObjectIdGetDatum(classObjectId[i]));
@@ -422,6 +420,10 @@ ConstructTupleDescriptor(Relation heapRelation,
 			 * If keytype is specified as ANYELEMENT, and opcintype is
 			 * ANYARRAY, then the attribute type must be an array (else it'd
 			 * not have matched this opclass); use its element type.
+			 *
+			 * We could also allow ANYCOMPATIBLE/ANYCOMPATIBLEARRAY here, but
+			 * there seems no need to do so; there's no reason to declare an
+			 * opclass as taking ANYCOMPATIBLEARRAY rather than ANYARRAY.
 			 */
 			if (keyType == ANYELEMENTOID && opclassTup->opcintype == ANYARRAYOID)
 			{
@@ -484,7 +486,7 @@ InitializeAttributeOids(Relation indexRelation,
  * ----------------------------------------------------------------
  */
 static void
-AppendAttributeTuples(Relation indexRelation, int numatts)
+AppendAttributeTuples(Relation indexRelation, int numatts, Datum *attopts)
 {
 	Relation	pg_attribute;
 	CatalogIndexState indstate;
@@ -506,10 +508,11 @@ AppendAttributeTuples(Relation indexRelation, int numatts)
 	for (i = 0; i < numatts; i++)
 	{
 		Form_pg_attribute attr = TupleDescAttr(indexTupDesc, i);
+		Datum		attoptions = attopts ? attopts[i] : (Datum) 0;
 
 		Assert(attr->attnum == i + 1);
 
-		InsertPgAttributeTuple(pg_attribute, attr, indstate);
+		InsertPgAttributeTuple(pg_attribute, attr, attoptions, indstate);
 	}
 
 	CatalogCloseIndexes(indstate);
@@ -588,6 +591,7 @@ UpdateIndexRelation(Oid indexoid,
 	}
 	else
 		predDatum = (Datum) 0;
+
 
 	/*
 	 * open the system catalog index relation
@@ -977,7 +981,8 @@ index_create(Relation heapRelation,
 	/*
 	 * append ATTRIBUTE tuples for the index
 	 */
-	AppendAttributeTuples(indexRelation, indexInfo->ii_NumIndexAttrs);
+	AppendAttributeTuples(indexRelation, indexInfo->ii_NumIndexAttrs,
+						  indexInfo->ii_OpclassOptions);
 
 	/* ----------------
 	 *	  update pg_index
@@ -1189,6 +1194,13 @@ index_create(Relation heapRelation,
 		Assert(indexRelation->rd_indexcxt != NULL);
 
 	indexRelation->rd_index->indnkeyatts = indexInfo->ii_NumIndexKeyAttrs;
+
+	/* Validate opclass-specific options */
+	if (indexInfo->ii_OpclassOptions)
+		for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+			(void) index_opclass_options(indexRelation, i + 1,
+										 indexInfo->ii_OpclassOptions[i],
+										 true);
 
 	/*
 	 * If this is bootstrap (initdb) time, then we don't actually fill in the
@@ -1528,7 +1540,13 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	newIndexForm->indimmediate = oldIndexForm->indimmediate;
 	oldIndexForm->indimmediate = true;
 
-	/* Mark old index as valid and new as invalid as index_set_state_flags */
+	/* Preserve indisclustered in the new index */
+	newIndexForm->indisclustered = oldIndexForm->indisclustered;
+
+	/*
+	 * Mark the new index as valid, and the old index as invalid similarly
+	 * to what index_set_state_flags() does.
+	 */
 	newIndexForm->indisvalid = true;
 	oldIndexForm->indisvalid = false;
 	oldIndexForm->indisclustered = false;
@@ -1670,12 +1688,13 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	}
 
 	/*
-	 * Move all dependencies of and on the old index to the new one.  First
-	 * remove any dependencies that the new index may have to provide an
-	 * initial clean state for the dependency switch, and then move all the
-	 * dependencies from the old index to the new one.
+	 * Swap all dependencies of and on the old index to the new one, and
+	 * vice-versa.  Note that a call to CommandCounterIncrement() would cause
+	 * duplicate entries in pg_depend, so this should not be done.
 	 */
-	deleteDependencyRecordsFor(RelationRelationId, newIndexId, false);
+	changeDependenciesOf(RelationRelationId, newIndexId, oldIndexId);
+	changeDependenciesOn(RelationRelationId, newIndexId, oldIndexId);
+
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
@@ -2329,6 +2348,8 @@ BuildIndexInfo(Relation index)
 								 &ii->ii_ExclusionProcs,
 								 &ii->ii_ExclusionStrats);
 	}
+
+	ii->ii_OpclassOptions = RelationGetIndexRawAttOptions(index);
 
 	return ii;
 }
@@ -3469,6 +3490,17 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 				 errmsg("cannot reindex temporary tables of other sessions")));
 
 	/*
+	 * Don't allow reindex of an invalid index on TOAST table.  This is a
+	 * leftover from a failed REINDEX CONCURRENTLY, and if rebuilt it would
+	 * not be possible to drop it anymore.
+	 */
+	if (IsToastNamespace(RelationGetNamespace(iRel)) &&
+		!get_index_isvalid(indexId))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot reindex invalid index on TOAST table")));
+
+	/*
 	 * Also check for active uses of the index in the current transaction; we
 	 * don't want to reindex underneath an open indexscan.
 	 */
@@ -3717,6 +3749,23 @@ reindex_relation(Oid relid, int flags, int options)
 		foreach(indexId, indexIds)
 		{
 			Oid			indexOid = lfirst_oid(indexId);
+			Oid			indexNamespaceId = get_rel_namespace(indexOid);
+
+			/*
+			 * Skip any invalid indexes on a TOAST table.  These can only be
+			 * duplicate leftovers from a failed REINDEX CONCURRENTLY, and if
+			 * rebuilt it would not be possible to drop them anymore.
+			 */
+			if (IsToastNamespace(indexNamespaceId) &&
+				!get_index_isvalid(indexOid))
+			{
+				ereport(WARNING,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("cannot reindex invalid index \"%s.%s\" on TOAST table, skipping",
+								get_namespace_name(indexNamespaceId),
+								get_rel_name(indexOid))));
+				continue;
+			}
 
 			reindex_index(indexOid, !(flags & REINDEX_REL_CHECK_CONSTRAINTS),
 						  persistence, options);

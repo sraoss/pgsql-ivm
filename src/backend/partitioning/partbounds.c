@@ -21,6 +21,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_type.h"
 #include "commands/tablecmds.h"
+#include "common/hashfn.h"
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
@@ -32,7 +33,6 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
-#include "utils/hashutils.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/ruleutils.h"
@@ -1366,7 +1366,8 @@ check_default_partition_contents(Relation parent, Relation default_rel,
 				ereport(ERROR,
 						(errcode(ERRCODE_CHECK_VIOLATION),
 						 errmsg("updated partition constraint for default partition \"%s\" would be violated by some row",
-								RelationGetRelationName(default_rel))));
+								RelationGetRelationName(default_rel)),
+						 errtable(default_rel)));
 
 			ResetExprContext(econtext);
 			CHECK_FOR_INTERRUPTS();

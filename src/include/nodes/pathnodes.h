@@ -808,6 +808,7 @@ struct IndexOptInfo
 	Oid		   *sortopfamily;	/* OIDs of btree opfamilies, if orderable */
 	bool	   *reverse_sort;	/* is sort order descending? */
 	bool	   *nulls_first;	/* do NULLs come first in the sort order? */
+	bytea	  **opclassoptions; /* opclass-specific options for columns */
 	bool	   *canreturn;		/* which index cols can be returned in an
 								 * index-only scan? */
 	Oid			relam;			/* OID of the access method (in pg_am) */
@@ -1663,6 +1664,7 @@ typedef struct AggPath
 	AggStrategy aggstrategy;	/* basic strategy, see nodes.h */
 	AggSplit	aggsplit;		/* agg-splitting mode, see nodes.h */
 	double		numGroups;		/* estimated number of groups in input */
+	uint64		transitionSpace;	/* for pass-by-ref transition data */
 	List	   *groupClause;	/* a list of SortGroupClause's */
 	List	   *qual;			/* quals (HAVING quals), if any */
 } AggPath;
@@ -1700,6 +1702,7 @@ typedef struct GroupingSetsPath
 	AggStrategy aggstrategy;	/* basic strategy */
 	List	   *rollups;		/* list of RollupData */
 	List	   *qual;			/* quals (HAVING quals), if any */
+	uint64		transitionSpace;	/* for pass-by-ref transition data */
 } GroupingSetsPath;
 
 /*

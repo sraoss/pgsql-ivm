@@ -62,6 +62,7 @@
 #include <unistd.h>
 
 #include "catalog/pg_authid.h"
+#include "common/hashfn.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
@@ -77,7 +78,6 @@
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
-#include "utils/hashutils.h"
 #include "utils/memutils.h"
 
 PG_MODULE_MAGIC;
@@ -307,7 +307,7 @@ static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 								ProcessUtilityContext context, ParamListInfo params,
 								QueryEnvironment *queryEnv,
-								DestReceiver *dest, char *completionTag);
+								DestReceiver *dest, QueryCompletion *qc);
 static uint64 pgss_hash_string(const char *str, int len);
 static void pgss_store(const char *query, uint64 queryId,
 					   int query_location, int query_len,
@@ -960,7 +960,7 @@ static void
 pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 					ProcessUtilityContext context,
 					ParamListInfo params, QueryEnvironment *queryEnv,
-					DestReceiver *dest, char *completionTag)
+					DestReceiver *dest, QueryCompletion *qc)
 {
 	Node	   *parsetree = pstmt->utilityStmt;
 
@@ -998,11 +998,11 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 			if (prev_ProcessUtility)
 				prev_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest, qc);
 			else
 				standard_ProcessUtility(pstmt, queryString,
 										context, params, queryEnv,
-										dest, completionTag);
+										dest, qc);
 		}
 		PG_FINALLY();
 		{
@@ -1013,38 +1013,11 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		INSTR_TIME_SET_CURRENT(duration);
 		INSTR_TIME_SUBTRACT(duration, start);
 
-		/* parse command tag to retrieve the number of affected rows. */
-		if (completionTag &&
-			strncmp(completionTag, "COPY ", 5) == 0)
-			rows = pg_strtouint64(completionTag + 5, NULL, 10);
-		else
-			rows = 0;
+		rows = (qc && qc->commandTag == CMDTAG_COPY) ? qc->nprocessed : 0;
 
 		/* calc differences of buffer counters. */
-		bufusage.shared_blks_hit =
-			pgBufferUsage.shared_blks_hit - bufusage_start.shared_blks_hit;
-		bufusage.shared_blks_read =
-			pgBufferUsage.shared_blks_read - bufusage_start.shared_blks_read;
-		bufusage.shared_blks_dirtied =
-			pgBufferUsage.shared_blks_dirtied - bufusage_start.shared_blks_dirtied;
-		bufusage.shared_blks_written =
-			pgBufferUsage.shared_blks_written - bufusage_start.shared_blks_written;
-		bufusage.local_blks_hit =
-			pgBufferUsage.local_blks_hit - bufusage_start.local_blks_hit;
-		bufusage.local_blks_read =
-			pgBufferUsage.local_blks_read - bufusage_start.local_blks_read;
-		bufusage.local_blks_dirtied =
-			pgBufferUsage.local_blks_dirtied - bufusage_start.local_blks_dirtied;
-		bufusage.local_blks_written =
-			pgBufferUsage.local_blks_written - bufusage_start.local_blks_written;
-		bufusage.temp_blks_read =
-			pgBufferUsage.temp_blks_read - bufusage_start.temp_blks_read;
-		bufusage.temp_blks_written =
-			pgBufferUsage.temp_blks_written - bufusage_start.temp_blks_written;
-		bufusage.blk_read_time = pgBufferUsage.blk_read_time;
-		INSTR_TIME_SUBTRACT(bufusage.blk_read_time, bufusage_start.blk_read_time);
-		bufusage.blk_write_time = pgBufferUsage.blk_write_time;
-		INSTR_TIME_SUBTRACT(bufusage.blk_write_time, bufusage_start.blk_write_time);
+		memset(&bufusage, 0, sizeof(BufferUsage));
+		BufferUsageAccumDiff(&bufusage, &pgBufferUsage, &bufusage_start);
 
 		pgss_store(queryString,
 				   0,			/* signal that it's a utility stmt */
@@ -1060,11 +1033,11 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		if (prev_ProcessUtility)
 			prev_ProcessUtility(pstmt, queryString,
 								context, params, queryEnv,
-								dest, completionTag);
+								dest, qc);
 		else
 			standard_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
-									dest, completionTag);
+									dest, qc);
 	}
 }
 

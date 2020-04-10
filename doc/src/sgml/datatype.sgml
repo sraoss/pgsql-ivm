@@ -4473,27 +4473,11 @@ INSERT INTO mytable VALUES(-1);  -- fails
    </indexterm>
 
    <indexterm zone="datatype-oid">
-    <primary>regproc</primary>
-   </indexterm>
-
-   <indexterm zone="datatype-oid">
-    <primary>regprocedure</primary>
-   </indexterm>
-
-   <indexterm zone="datatype-oid">
-    <primary>regoper</primary>
-   </indexterm>
-
-   <indexterm zone="datatype-oid">
-    <primary>regoperator</primary>
-   </indexterm>
-
-   <indexterm zone="datatype-oid">
     <primary>regclass</primary>
    </indexterm>
 
    <indexterm zone="datatype-oid">
-    <primary>regtype</primary>
+    <primary>regcollation</primary>
    </indexterm>
 
    <indexterm zone="datatype-oid">
@@ -4505,7 +4489,31 @@ INSERT INTO mytable VALUES(-1);  -- fails
    </indexterm>
 
    <indexterm zone="datatype-oid">
-    <primary>xid</primary>
+    <primary>regnamespace</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regoper</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regoperator</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regproc</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regprocedure</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regrole</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-oid">
+    <primary>regtype</primary>
    </indexterm>
 
    <indexterm zone="datatype-oid">
@@ -4516,17 +4524,17 @@ INSERT INTO mytable VALUES(-1);  -- fails
     <primary>tid</primary>
    </indexterm>
 
+   <indexterm zone="datatype-oid">
+    <primary>xid</primary>
+   </indexterm>
+
    <para>
     Object identifiers (OIDs) are used internally by
     <productname>PostgreSQL</productname> as primary keys for various
     system tables.
-
     Type <type>oid</type> represents an object identifier.  There are also
-    several alias types for <type>oid</type>: <type>regproc</type>,
-    <type>regprocedure</type>, <type>regoper</type>, <type>regoperator</type>,
-    <type>regclass</type>, <type>regtype</type>, <type>regrole</type>,
-    <type>regnamespace</type>, <type>regconfig</type>, and
-    <type>regdictionary</type>.  <xref linkend="datatype-oid-table"/> shows an
+    several alias types for <type>oid</type> named <type>reg<replaceable>something</replaceable></type>.
+    <xref linkend="datatype-oid-table"/> shows an
     overview.
    </para>
 
@@ -4592,17 +4600,38 @@ SELECT * FROM pg_attribute
        </row>
 
        <row>
-        <entry><type>regproc</type></entry>
-        <entry><structname>pg_proc</structname></entry>
-        <entry>function name</entry>
-        <entry><literal>sum</literal></entry>
+        <entry><type>regclass</type></entry>
+        <entry><structname>pg_class</structname></entry>
+        <entry>relation name</entry>
+        <entry><literal>pg_type</literal></entry>
        </row>
 
        <row>
-        <entry><type>regprocedure</type></entry>
-        <entry><structname>pg_proc</structname></entry>
-        <entry>function with argument types</entry>
-        <entry><literal>sum(int4)</literal></entry>
+        <entry><type>regcollation</type></entry>
+        <entry><structname>pg_collation</structname></entry>
+        <entry>collation name</entry>
+        <entry><literal>"POSIX"</literal></entry>
+       </row>
+
+       <row>
+        <entry><type>regconfig</type></entry>
+        <entry><structname>pg_ts_config</structname></entry>
+        <entry>text search configuration</entry>
+        <entry><literal>english</literal></entry>
+       </row>
+
+       <row>
+        <entry><type>regdictionary</type></entry>
+        <entry><structname>pg_ts_dict</structname></entry>
+        <entry>text search dictionary</entry>
+        <entry><literal>simple</literal></entry>
+       </row>
+
+       <row>
+        <entry><type>regnamespace</type></entry>
+        <entry><structname>pg_namespace</structname></entry>
+        <entry>namespace name</entry>
+        <entry><literal>pg_catalog</literal></entry>
        </row>
 
        <row>
@@ -4620,17 +4649,17 @@ SELECT * FROM pg_attribute
        </row>
 
        <row>
-        <entry><type>regclass</type></entry>
-        <entry><structname>pg_class</structname></entry>
-        <entry>relation name</entry>
-        <entry><literal>pg_type</literal></entry>
+        <entry><type>regproc</type></entry>
+        <entry><structname>pg_proc</structname></entry>
+        <entry>function name</entry>
+        <entry><literal>sum</literal></entry>
        </row>
 
        <row>
-        <entry><type>regtype</type></entry>
-        <entry><structname>pg_type</structname></entry>
-        <entry>data type name</entry>
-        <entry><literal>integer</literal></entry>
+        <entry><type>regprocedure</type></entry>
+        <entry><structname>pg_proc</structname></entry>
+        <entry>function with argument types</entry>
+        <entry><literal>sum(int4)</literal></entry>
        </row>
 
        <row>
@@ -4641,24 +4670,10 @@ SELECT * FROM pg_attribute
        </row>
 
        <row>
-        <entry><type>regnamespace</type></entry>
-        <entry><structname>pg_namespace</structname></entry>
-        <entry>namespace name</entry>
-        <entry><literal>pg_catalog</literal></entry>
-       </row>
-
-       <row>
-        <entry><type>regconfig</type></entry>
-        <entry><structname>pg_ts_config</structname></entry>
-        <entry>text search configuration</entry>
-        <entry><literal>english</literal></entry>
-       </row>
-
-       <row>
-        <entry><type>regdictionary</type></entry>
-        <entry><structname>pg_ts_dict</structname></entry>
-        <entry>text search dictionary</entry>
-        <entry><literal>simple</literal></entry>
+        <entry><type>regtype</type></entry>
+        <entry><structname>pg_type</structname></entry>
+        <entry>data type name</entry>
+        <entry><literal>integer</literal></entry>
        </row>
       </tbody>
      </tgroup>
@@ -4784,6 +4799,22 @@ SELECT * FROM pg_attribute
    </indexterm>
 
    <indexterm zone="datatype-pseudo">
+    <primary>anycompatible</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-pseudo">
+    <primary>anycompatiblearray</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-pseudo">
+    <primary>anycompatiblenonarray</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-pseudo">
+    <primary>anycompatiblerange</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-pseudo">
     <primary>void</primary>
    </indexterm>
 
@@ -4808,6 +4839,10 @@ SELECT * FROM pg_attribute
    </indexterm>
 
    <indexterm zone="datatype-pseudo">
+    <primary>table_am_handler</primary>
+   </indexterm>
+
+   <indexterm zone="datatype-pseudo">
     <primary>index_am_handler</primary>
    </indexterm>
 
@@ -4825,10 +4860,6 @@ SELECT * FROM pg_attribute
 
    <indexterm zone="datatype-pseudo">
     <primary>unknown</primary>
-   </indexterm>
-
-   <indexterm zone="datatype-pseudo">
-    <primary>opaque</primary>
    </indexterm>
 
    <para>
@@ -4893,6 +4924,35 @@ SELECT * FROM pg_attribute
        </row>
 
        <row>
+        <entry><type>anycompatible</type></entry>
+        <entry>Indicates that a function accepts any data type,
+        with automatic promotion of multiple arguments to a common data type
+        (see <xref linkend="extend-types-polymorphic"/>).</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblearray</type></entry>
+        <entry>Indicates that a function accepts any array data type,
+        with automatic promotion of multiple arguments to a common data type
+        (see <xref linkend="extend-types-polymorphic"/>).</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblenonarray</type></entry>
+        <entry>Indicates that a function accepts any non-array data type,
+        with automatic promotion of multiple arguments to a common data type
+        (see <xref linkend="extend-types-polymorphic"/>).</entry>
+       </row>
+
+       <row>
+        <entry><type>anycompatiblerange</type></entry>
+        <entry>Indicates that a function accepts any range data type,
+        with automatic promotion of multiple arguments to a common data type
+        (see <xref linkend="extend-types-polymorphic"/> and
+        <xref linkend="rangetypes"/>).</entry>
+       </row>
+
+       <row>
         <entry><type>cstring</type></entry>
         <entry>Indicates that a function accepts or returns a null-terminated C string.</entry>
        </row>
@@ -4911,6 +4971,11 @@ SELECT * FROM pg_attribute
        <row>
         <entry><type>fdw_handler</type></entry>
         <entry>A foreign-data wrapper handler is declared to return <type>fdw_handler</type>.</entry>
+       </row>
+
+       <row>
+        <entry><type>table_am_handler</type></entry>
+        <entry>A table access method handler is declared to return <type>table_am_handler</type>.</entry>
        </row>
 
        <row>
@@ -4953,19 +5018,13 @@ SELECT * FROM pg_attribute
         <entry>Identifies a not-yet-resolved type, e.g. of an undecorated
          string literal.</entry>
        </row>
-
-       <row>
-        <entry><type>opaque</type></entry>
-        <entry>An obsolete type name that formerly served many of the above
-         purposes.</entry>
-       </row>
       </tbody>
      </tgroup>
     </table>
 
    <para>
     Functions coded in C (whether built-in or dynamically loaded) can be
-    declared to accept or return any of these pseudo data types.  It is up to
+    declared to accept or return any of these pseudo-types.  It is up to
     the function author to ensure that the function will behave safely
     when a pseudo-type is used as an argument type.
    </para>
@@ -4976,10 +5035,9 @@ SELECT * FROM pg_attribute
     languages forbid use of a pseudo-type as an argument type, and allow
     only <type>void</type> and <type>record</type> as a result type (plus
     <type>trigger</type> or <type>event_trigger</type> when the function is used
-    as a trigger or event trigger).  Some also
-    support polymorphic functions using the types <type>anyelement</type>,
-    <type>anyarray</type>, <type>anynonarray</type>, <type>anyenum</type>, and
-    <type>anyrange</type>.
+    as a trigger or event trigger).  Some also support polymorphic functions
+    using the polymorphic pseudo-types, which are shown above and discussed
+    in detail in <xref linkend="extend-types-polymorphic"/>.
    </para>
 
    <para>

@@ -313,7 +313,7 @@ ScanPgRelation(Oid targetRelId, bool indexOK, bool force_non_historic)
 	Relation	pg_class_desc;
 	SysScanDesc pg_class_scan;
 	ScanKeyData key[1];
-	Snapshot	snapshot;
+	Snapshot	snapshot = NULL;
 
 	/*
 	 * If something goes wrong during backend startup, we might find ourselves
@@ -343,12 +343,12 @@ ScanPgRelation(Oid targetRelId, bool indexOK, bool force_non_historic)
 	/*
 	 * The caller might need a tuple that's newer than the one the historic
 	 * snapshot; currently the only case requiring to do so is looking up the
-	 * relfilenode of non mapped system relations during decoding.
+	 * relfilenode of non mapped system relations during decoding. That
+	 * snapshot cant't change in the midst of a relcache build, so there's no
+	 * need to register the snapshot.
 	 */
 	if (force_non_historic)
 		snapshot = GetNonHistoricCatalogSnapshot(RelationRelationId);
-	else
-		snapshot = GetCatalogSnapshot(RelationRelationId);
 
 	pg_class_scan = systable_beginscan(pg_class_desc, ClassOidIndexId,
 									   indexOK && criticalRelcachesBuilt,
@@ -1490,6 +1490,8 @@ RelationInitIndexAccessInfo(Relation relation)
 	indoption = (int2vector *) DatumGetPointer(indoptionDatum);
 	memcpy(relation->rd_indoption, indoption->values, indnkeyatts * sizeof(int16));
 
+	(void) RelationGetIndexAttOptions(relation, false);
+
 	/*
 	 * expressions, predicate, exclusion caches will be filled later
 	 */
@@ -1606,7 +1608,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 		if (numSupport > 0)
 			opcentry->supportProcs = (RegProcedure *)
 				MemoryContextAllocZero(CacheMemoryContext,
-									   numSupport * sizeof(RegProcedure));
+									   (numSupport + 1) * sizeof(RegProcedure));
 		else
 			opcentry->supportProcs = NULL;
 	}
@@ -3037,10 +3039,7 @@ AtEOXact_cleanup(Relation relation, bool isCommit)
 	 *
 	 * During commit, reset the flag to zero, since we are now out of the
 	 * creating transaction.  During abort, simply delete the relcache entry
-	 * --- it isn't interesting any longer.  (NOTE: if we have forgotten the
-	 * new-ness of a new relation due to a forced cache flush, the entry will
-	 * get deleted anyway by shared-cache-inval processing of the aborted
-	 * pg_class insertion.)
+	 * --- it isn't interesting any longer.
 	 */
 	if (relation->rd_createSubid != InvalidSubTransactionId)
 	{
@@ -3985,6 +3984,8 @@ load_critical_index(Oid indexoid, Oid heapoid)
 	ird->rd_refcnt = 1;
 	UnlockRelationOid(indexoid, AccessShareLock);
 	UnlockRelationOid(heapoid, AccessShareLock);
+
+	(void) RelationGetIndexAttOptions(ird, false);
 }
 
 /*
@@ -5191,6 +5192,103 @@ GetRelationPublicationActions(Relation relation)
 }
 
 /*
+ * RelationGetIndexRawAttOptions -- get AM/opclass-specific options for the index
+ */
+Datum *
+RelationGetIndexRawAttOptions(Relation indexrel)
+{
+	Oid			indexrelid = RelationGetRelid(indexrel);
+	int16		natts = RelationGetNumberOfAttributes(indexrel);
+	Datum	   *options = NULL;
+	int16		attnum;
+
+	for (attnum = 1; attnum <= natts; attnum++)
+	{
+		if (indexrel->rd_indam->amoptsprocnum == 0)
+			continue;
+
+		if (!OidIsValid(index_getprocid(indexrel, attnum,
+										indexrel->rd_indam->amoptsprocnum)))
+			continue;
+
+		if (!options)
+			options = palloc0(sizeof(Datum) * natts);
+
+		options[attnum - 1] = get_attoptions(indexrelid, attnum);
+	}
+
+	return options;
+}
+
+static bytea **
+CopyIndexAttOptions(bytea **srcopts, int natts)
+{
+	bytea	  **opts = palloc(sizeof(*opts) * natts);
+
+	for (int i = 0; i < natts; i++)
+	{
+		bytea	   *opt = srcopts[i];
+
+		opts[i] = !opt ? NULL : (bytea *)
+			DatumGetPointer(datumCopy(PointerGetDatum(opt), false, -1));
+	}
+
+	return opts;
+}
+
+/*
+ * RelationGetIndexAttOptions
+ *		get AM/opclass-specific options for an index parsed into a binary form
+ */
+bytea **
+RelationGetIndexAttOptions(Relation relation, bool copy)
+{
+	MemoryContext oldcxt;
+	bytea	  **opts = relation->rd_opcoptions;
+	Oid			relid = RelationGetRelid(relation);
+	int			natts = RelationGetNumberOfAttributes(relation);	/* XXX IndexRelationGetNumberOfKeyAttributes */
+	int			i;
+
+	/* Try to copy cached options. */
+	if (opts)
+		return copy ? CopyIndexAttOptions(opts, natts) : opts;
+
+	/* Get and parse opclass options. */
+	opts = palloc0(sizeof(*opts) * natts);
+
+	for (i = 0; i < natts; i++)
+	{
+		if (criticalRelcachesBuilt && relid != AttributeRelidNumIndexId)
+		{
+			Datum		attoptions = get_attoptions(relid, i + 1);
+
+			opts[i] = index_opclass_options(relation, i + 1, attoptions, false);
+
+			if (attoptions != (Datum) 0)
+				pfree(DatumGetPointer(attoptions));
+		}
+	}
+
+	/* Copy parsed options to the cache. */
+	oldcxt = MemoryContextSwitchTo(relation->rd_indexcxt);
+	relation->rd_opcoptions = CopyIndexAttOptions(opts, natts);
+	MemoryContextSwitchTo(oldcxt);
+
+	if (copy)
+		return opts;
+
+	for (i = 0; i < natts; i++)
+	{
+		if (opts[i])
+			pfree(opts[i]);
+	}
+
+	pfree(opts);
+
+	return relation->rd_opcoptions;
+}
+
+/*
  * Routines to support ereport() reports of relation-related errors
  *
  * These could have been put into elog.c, but it seems like a module layering
@@ -5551,6 +5649,23 @@ load_relcache_init_file(bool shared)
 
 			rel->rd_indoption = indoption;
 
+			/* finally, read the vector of opcoptions values */
+			rel->rd_opcoptions = (bytea **)
+				MemoryContextAllocZero(indexcxt, sizeof(*rel->rd_opcoptions) * relform->relnatts);
+
+			for (i = 0; i < relform->relnatts; i++)
+			{
+				if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+					goto read_failed;
+
+				if (len > 0)
+				{
+					rel->rd_opcoptions[i] = (bytea *) MemoryContextAlloc(indexcxt, len);
+					if (fread(rel->rd_opcoptions[i], 1, len, fp) != len)
+						goto read_failed;
+				}
+			}
+
 			/* set up zeroed fmgr-info vector */
 			nsupport = relform->relnatts * rel->rd_indam->amsupport;
 			rel->rd_supportinfo = (FmgrInfo *)
@@ -5579,6 +5694,7 @@ load_relcache_init_file(bool shared)
 			Assert(rel->rd_supportinfo == NULL);
 			Assert(rel->rd_indoption == NULL);
 			Assert(rel->rd_indcollation == NULL);
+			Assert(rel->rd_opcoptions == NULL);
 		}
 
 		/*
@@ -5864,6 +5980,16 @@ write_relcache_init_file(bool shared)
 			write_item(rel->rd_indoption,
 					   relform->relnatts * sizeof(int16),
 					   fp);
+
+			Assert(rel->rd_opcoptions);
+
+			/* finally, write the vector of opcoptions values */
+			for (i = 0; i < relform->relnatts; i++)
+			{
+				bytea	   *opt = rel->rd_opcoptions[i];
+
+				write_item(opt, opt ? VARSIZE(opt) : 0, fp);
+			}
 		}
 	}
 

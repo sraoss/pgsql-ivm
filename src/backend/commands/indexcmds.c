@@ -91,6 +91,7 @@ static void RangeVarCallbackForReindexIndex(const RangeVar *relation,
 static bool ReindexRelationConcurrently(Oid relationOid, int options);
 static void ReindexPartitionedIndex(Relation parentIdx);
 static void update_relispartition(Oid relationId, bool newval);
+static bool CompareOpclassOptions(Datum *opts1, Datum *opts2, int natts);
 
 /*
  * callback argument type for RangeVarCallbackForReindexIndex()
@@ -269,6 +270,18 @@ CheckIndexCompatible(Oid oldId,
 		}
 	}
 
+	/* Any change in opclass options break compatibility. */
+	if (ret)
+	{
+		Datum	   *opclassOptions = RelationGetIndexRawAttOptions(irel);
+
+		ret = CompareOpclassOptions(opclassOptions,
+									indexInfo->ii_OpclassOptions, old_natts);
+
+		if (opclassOptions)
+			pfree(opclassOptions);
+	}
+
 	/* Any change in exclusion operator selections breaks compatibility. */
 	if (ret && indexInfo->ii_ExclusionOps != NULL)
 	{
@@ -303,6 +316,42 @@ CheckIndexCompatible(Oid oldId,
 	return ret;
 }
 
+/*
+ * CompareOpclassOptions
+ *
+ * Compare per-column opclass options which are represented by arrays of text[]
+ * datums.  Both elements of arrays and array themselves can be NULL.
+ */
+static bool
+CompareOpclassOptions(Datum *opts1, Datum *opts2, int natts)
+{
+	int			i;
+
+	if (!opts1 && !opts2)
+		return true;
+
+	for (i = 0; i < natts; i++)
+	{
+		Datum		opt1 = opts1 ? opts1[i] : (Datum) 0;
+		Datum		opt2 = opts2 ? opts2[i] : (Datum) 0;
+
+		if (opt1 == (Datum) 0)
+		{
+			if (opt2 == (Datum) 0)
+				continue;
+			else
+				return false;
+		}
+		else if (opt2 == (Datum) 0)
+			return false;
+
+		/* Compare non-NULL text[] datums. */
+		if (!DatumGetBool(DirectFunctionCall2(array_eq, opt1, opt2)))
+			return false;
+	}
+
+	return true;
+}
 
 /*
  * WaitForOlderSnapshots
@@ -1568,7 +1617,7 @@ CheckPredicate(Expr *predicate)
 
 /*
  * Compute per-index-column information, including indexed column numbers
- * or index expressions, opclasses, and indoptions. Note, all output vectors
+ * or index expressions, opclasses and their options. Note, all output vectors
  * should be allocated for all columns, including "including" ones.
  */
 static void
@@ -1869,6 +1918,20 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 								accessMethodName)));
 		}
 
+		/* Set up the per-column opclass options (attoptions field). */
+		if (attribute->opclassopts)
+		{
+			Assert(attn < nkeycols);
+
+			if (!indexInfo->ii_OpclassOptions)
+				indexInfo->ii_OpclassOptions =
+					palloc0(sizeof(Datum) * indexInfo->ii_NumIndexAttrs);
+
+			indexInfo->ii_OpclassOptions[attn] =
+				transformRelOptions((Datum) 0, attribute->opclassopts,
+									NULL, NULL, false, false);
+		}
+
 		attn++;
 	}
 }
@@ -1876,7 +1939,7 @@ ComputeIndexAttrs(IndexInfo *indexInfo,
 /*
  * Resolve possibly-defaulted operator class specification
  *
- * Note: This is used to resolve operator class specification in index and
+ * Note: This is used to resolve operator class specifications in index and
  * partition key definitions.
  */
 Oid
@@ -1889,34 +1952,6 @@ ResolveOpClass(List *opclass, Oid attrType,
 	Form_pg_opclass opform;
 	Oid			opClassId,
 				opInputType;
-
-	/*
-	 * Release 7.0 removed network_ops, timespan_ops, and datetime_ops, so we
-	 * ignore those opclass names so the default *_ops is used.  This can be
-	 * removed in some later release.  bjm 2000/02/07
-	 *
-	 * Release 7.1 removes lztext_ops, so suppress that too for a while.  tgl
-	 * 2000/07/30
-	 *
-	 * Release 7.2 renames timestamp_ops to timestamptz_ops, so suppress that
-	 * too for awhile.  I'm starting to think we need a better approach. tgl
-	 * 2000/10/01
-	 *
-	 * Release 8.0 removes bigbox_ops (which was dead code for a long while
-	 * anyway).  tgl 2003/11/11
-	 */
-	if (list_length(opclass) == 1)
-	{
-		char	   *claname = strVal(linitial(opclass));
-
-		if (strcmp(claname, "network_ops") == 0 ||
-			strcmp(claname, "timespan_ops") == 0 ||
-			strcmp(claname, "datetime_ops") == 0 ||
-			strcmp(claname, "lztext_ops") == 0 ||
-			strcmp(claname, "timestamp_ops") == 0 ||
-			strcmp(claname, "bigbox_ops") == 0)
-			opclass = NIL;
-	}
 
 	if (opclass == NIL)
 	{
@@ -2935,6 +2970,16 @@ ReindexRelationConcurrently(Oid relationOid, int options)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("cannot reindex system catalogs concurrently")));
+
+				/*
+				 * Don't allow reindex for an invalid index on TOAST table, as
+				 * if rebuilt it would not be possible to drop it.
+				 */
+				if (IsToastNamespace(get_rel_namespace(relationOid)) &&
+					!get_index_isvalid(relationOid))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("cannot reindex invalid index on TOAST table concurrently")));
 
 				/* Save the list of relation OIDs in private context */
 				oldcontext = MemoryContextSwitchTo(private_context);

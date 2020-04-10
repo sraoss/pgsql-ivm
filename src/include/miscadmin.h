@@ -303,8 +303,35 @@ extern char *DatabasePath;
 /* now in utils/init/miscinit.c */
 extern void InitPostmasterChild(void);
 extern void InitStandaloneProcess(const char *argv0);
+extern void SwitchToSharedLatch(void);
+extern void SwitchBackToLocalLatch(void);
+
+typedef enum BackendType
+{
+	B_INVALID = 0,
+	B_AUTOVAC_LAUNCHER,
+	B_AUTOVAC_WORKER,
+	B_BACKEND,
+	B_BG_WORKER,
+	B_BG_WRITER,
+	B_CHECKPOINTER,
+	B_STARTUP,
+	B_WAL_RECEIVER,
+	B_WAL_SENDER,
+	B_WAL_WRITER,
+	B_ARCHIVER,
+	B_STATS_COLLECTOR,
+	B_LOGGER,
+} BackendType;
+
+extern BackendType MyBackendType;
+
+extern const char *GetBackendTypeDesc(BackendType backendType);
 
 extern void SetDatabasePath(const char *path);
+extern void checkDataDir(void);
+extern void SetDataDir(const char *dir);
+extern void ChangeToDataDir(void);
 
 extern char *GetUserNameFromId(Oid roleid, bool noerr);
 extern Oid	GetUserId(void);
@@ -323,13 +350,6 @@ extern void InitializeSessionUserIdStandalone(void);
 extern void SetSessionAuthorization(Oid userid, bool is_superuser);
 extern Oid	GetCurrentRoleId(void);
 extern void SetCurrentRoleId(Oid roleid, bool is_superuser);
-
-extern void checkDataDir(void);
-extern void SetDataDir(const char *dir);
-extern void ChangeToDataDir(void);
-
-extern void SwitchToSharedLatch(void);
-extern void SwitchBackToLocalLatch(void);
 
 /* in utils/misc/superuser.c */
 extern bool superuser(void);	/* current user is superuser */

@@ -49,6 +49,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
 #include "tcop/tcopprot.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -1579,7 +1580,8 @@ BeginCopy(ParseState *pstate,
 		}
 
 		/* plan the query */
-		plan = pg_plan_query(query, CURSOR_OPT_PARALLEL_OK, NULL);
+		plan = pg_plan_query(query, pstate->p_sourcetext,
+							 CURSOR_OPT_PARALLEL_OK, NULL);
 
 		/*
 		 * With row level security and a user using "COPY relation TO", we

@@ -23,6 +23,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
 #include "catalog/pg_amproc.h"
+#include "catalog/pg_cast.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_language.h"
@@ -906,6 +907,66 @@ get_atttypetypmodcoll(Oid relid, AttrNumber attnum,
 	*typmod = att_tup->atttypmod;
 	*collid = att_tup->attcollation;
 	ReleaseSysCache(tp);
+}
+
+/*
+ * get_attoptions
+ *
+ *		Given the relation id and the attribute number,
+ *		return the attribute options text[] datum, if any.
+ */
+Datum
+get_attoptions(Oid relid, int16 attnum)
+{
+	HeapTuple	tuple;
+	Datum		attopts;
+	Datum		result;
+	bool		isnull;
+
+	tuple = SearchSysCache2(ATTNUM,
+							ObjectIdGetDatum(relid),
+							Int16GetDatum(attnum));
+
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for attribute %d of relation %u",
+			 attnum, relid);
+
+	attopts = SysCacheGetAttr(ATTNAME, tuple, Anum_pg_attribute_attoptions,
+							  &isnull);
+
+	if (isnull)
+		result = (Datum) 0;
+	else
+		result = datumCopy(attopts, false, -1);		/* text[] */
+
+	ReleaseSysCache(tuple);
+
+	return result;
+}
+
+/*				---------- PG_CAST CACHE ----------					 */
+
+/*
+ * get_cast_oid - given two type OIDs, look up a cast OID
+ *
+ * If missing_ok is false, throw an error if the cast is not found.  If
+ * true, just return InvalidOid.
+ */
+Oid
+get_cast_oid(Oid sourcetypeid, Oid targettypeid, bool missing_ok)
+{
+	Oid			oid;
+
+	oid = GetSysCacheOid2(CASTSOURCETARGET, Anum_pg_cast_oid,
+						  ObjectIdGetDatum(sourcetypeid),
+						  ObjectIdGetDatum(targettypeid));
+	if (!OidIsValid(oid) && !missing_ok)
+		ereport(ERROR,
+				(errcode(ERRCODE_UNDEFINED_OBJECT),
+				 errmsg("cast from type %s to type %s does not exist",
+						format_type_be(sourcetypeid),
+						format_type_be(targettypeid))));
+	return oid;
 }
 
 /*				---------- COLLATION CACHE ----------					 */
@@ -2213,7 +2274,7 @@ get_typalign(Oid typid)
 		return result;
 	}
 	else
-		return 'i';
+		return TYPALIGN_INT;
 }
 #endif
 
@@ -2233,7 +2294,7 @@ get_typstorage(Oid typid)
 		return result;
 	}
 	else
-		return 'p';
+		return TYPSTORAGE_PLAIN;
 }
 
 /*
@@ -3250,4 +3311,50 @@ get_index_column_opclass(Oid index_oid, int attno)
 	ReleaseSysCache(tuple);
 
 	return opclass;
+}
+
+/*
+ * get_index_isreplident
+ *
+ *		Given the index OID, return pg_index.indisreplident.
+ */
+bool
+get_index_isreplident(Oid index_oid)
+{
+	HeapTuple		tuple;
+	Form_pg_index	rd_index;
+	bool			result;
+
+	tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(tuple))
+		return false;
+
+	rd_index = (Form_pg_index) GETSTRUCT(tuple);
+	result = rd_index->indisreplident;
+	ReleaseSysCache(tuple);
+
+	return result;
+}
+
+/*
+ * get_index_isvalid
+ *
+ *		Given the index OID, return pg_index.indisvalid.
+ */
+bool
+get_index_isvalid(Oid index_oid)
+{
+	bool		isvalid;
+	HeapTuple	tuple;
+	Form_pg_index rd_index;
+
+	tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(index_oid));
+	if (!HeapTupleIsValid(tuple))
+		elog(ERROR, "cache lookup failed for index %u", index_oid);
+
+	rd_index = (Form_pg_index) GETSTRUCT(tuple);
+	isvalid = rd_index->indisvalid;
+	ReleaseSysCache(tuple);
+
+	return isvalid;
 }

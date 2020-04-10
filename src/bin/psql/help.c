@@ -144,7 +144,8 @@ usage(unsigned short int pager)
 	fprintf(output, _("\nFor more information, type \"\\?\" (for internal commands) or \"\\help\" (for SQL\n"
 					  "commands) from within psql, or consult the psql section in the PostgreSQL\n"
 					  "documentation.\n\n"));
-	fprintf(output, _("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	fprintf(output, _("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	fprintf(output, _("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 
 	ClosePager(output);
 }
@@ -226,6 +227,10 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\d[S+]  NAME           describe table, view, sequence, or index\n"));
 	fprintf(output, _("  \\da[S]  [PATTERN]      list aggregates\n"));
 	fprintf(output, _("  \\dA[+]  [PATTERN]      list access methods\n"));
+	fprintf(output, _("  \\dAc[+] [AMPTRN [TYPEPTRN]] list operator classes\n"));
+	fprintf(output, _("  \\dAf[+] [AMPTRN [TYPEPTRN]] list operator families\n"));
+	fprintf(output, _("  \\dAo[+] [AMPTRN [OPFPTRN]] list operators of operator families\n"));
+	fprintf(output, _("  \\dAp    [AMPTRN [OPFPTRN]] list procedures of operator families\n"));
 	fprintf(output, _("  \\db[+]  [PATTERN]      list tablespaces\n"));
 	fprintf(output, _("  \\dc[S+] [PATTERN]      list conversions\n"));
 	fprintf(output, _("  \\dC[+]  [PATTERN]      list casts\n"));

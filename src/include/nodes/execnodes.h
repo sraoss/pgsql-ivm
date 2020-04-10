@@ -139,6 +139,7 @@ typedef struct ExprState
  *		UniqueProcs
  *		UniqueStrats
  *		Unique				is it a unique index?
+ *		OpclassOptions		opclass-specific options, or NULL if none
  *		ReadyForInserts		is it valid for inserts?
  *		Concurrent			are we doing a concurrent index build?
  *		BrokenHotChain		did we detect any broken HOT chains?
@@ -167,6 +168,7 @@ typedef struct IndexInfo
 	Oid		   *ii_UniqueOps;	/* array with one entry per column */
 	Oid		   *ii_UniqueProcs; /* array with one entry per column */
 	uint16	   *ii_UniqueStrats;	/* array with one entry per column */
+	Datum	   *ii_OpclassOptions;	/* array with one entry per column */
 	bool		ii_Unique;
 	bool		ii_ReadyForInserts;
 	bool		ii_Concurrent;
@@ -2079,12 +2081,32 @@ typedef struct AggState
 	/* these fields are used in AGG_HASHED and AGG_MIXED modes: */
 	bool		table_filled;	/* hash table filled yet? */
 	int			num_hashes;
+	MemoryContext	hash_metacxt;	/* memory for hash table itself */
+	struct HashTapeInfo *hash_tapeinfo; /* metadata for spill tapes */
+	struct HashAggSpill *hash_spills; /* HashAggSpill for each grouping set,
+										 exists only during first pass */
+	TupleTableSlot *hash_spill_slot; /* slot for reading from spill files */
+	List	   *hash_batches;	/* hash batches remaining to be processed */
+	bool		hash_ever_spilled;	/* ever spilled during this execution? */
+	bool		hash_spill_mode;	/* we hit a limit during the current batch
+									   and we must not create new groups */
+	Size		hash_mem_limit;	/* limit before spilling hash table */
+	uint64		hash_ngroups_limit;	/* limit before spilling hash table */
+	int			hash_planned_partitions; /* number of partitions planned
+											for first pass */
+	double		hashentrysize;	/* estimate revised during execution */
+	Size		hash_mem_peak;	/* peak hash table memory usage */
+	uint64		hash_ngroups_current;	/* number of groups currently in
+										   memory in all hash tables */
+	uint64		hash_disk_used; /* kB of disk space used */
+	int			hash_batches_used;	/* batches used during entire execution */
+
 	AggStatePerHash perhash;	/* array of per-hashtable data */
 	AggStatePerGroup *hash_pergroup;	/* grouping set indexed array of
 										 * per-group pointers */
 
 	/* support for evaluation of agg input expressions: */
-#define FIELDNO_AGGSTATE_ALL_PERGROUPS 34
+#define FIELDNO_AGGSTATE_ALL_PERGROUPS 49
 	AggStatePerGroup *all_pergroups;	/* array of first ->pergroups, than
 										 * ->hash_pergroup */
 	ProjectionInfo *combinedproj;	/* projection machinery */

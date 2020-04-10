@@ -1133,12 +1133,14 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 	if ((table_like_clause->options & CREATE_TABLE_LIKE_CONSTRAINTS) &&
 		tupleDesc->constr)
 	{
+		TupleConstr *constr = tupleDesc->constr;
 		int			ccnum;
 
-		for (ccnum = 0; ccnum < tupleDesc->constr->num_check; ccnum++)
+		for (ccnum = 0; ccnum < constr->num_check; ccnum++)
 		{
-			char	   *ccname = tupleDesc->constr->check[ccnum].ccname;
-			char	   *ccbin = tupleDesc->constr->check[ccnum].ccbin;
+			char	   *ccname = constr->check[ccnum].ccname;
+			char	   *ccbin = constr->check[ccnum].ccbin;
+			bool		ccnoinherit = constr->check[ccnum].ccnoinherit;
 			Constraint *n = makeNode(Constraint);
 			Node	   *ccbin_node;
 			bool		found_whole_row;
@@ -1163,8 +1165,9 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 								   RelationGetRelationName(relation))));
 
 			n->contype = CONSTR_CHECK;
-			n->location = -1;
 			n->conname = pstrdup(ccname);
+			n->location = -1;
+			n->is_no_inherit = ccnoinherit;
 			n->raw_expr = NULL;
 			n->cooked_expr = nodeToString(ccbin_node);
 			cxt->ckconstraints = lappend(cxt->ckconstraints, n);
@@ -1473,7 +1476,7 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 						 constraintId);
 
 				deconstruct_array(DatumGetArrayTypeP(datum),
-								  OIDOID, sizeof(Oid), true, 'i',
+								  OIDOID, sizeof(Oid), true, TYPALIGN_INT,
 								  &elems, NULL, &nElems);
 
 				for (i = 0; i < nElems; i++)
@@ -1588,6 +1591,8 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 
 		/* Add the operator class name, if non-default */
 		iparam->opclass = get_opclass(indclass->values[keyno], keycoltype);
+		iparam->opclassopts =
+			untransformRelOptions(get_attoptions(source_relid, keyno + 1));
 
 		iparam->ordering = SORTBY_DEFAULT;
 		iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
@@ -2165,10 +2170,14 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 				 * constraint; and there's also the dump/reload problem
 				 * mentioned above.
 				 */
+				Datum		attoptions =
+					get_attoptions(RelationGetRelid(index_rel), i + 1);
+
 				defopclass = GetDefaultOpClass(attform->atttypid,
 											   index_rel->rd_rel->relam);
 				if (indclass->values[i] != defopclass ||
 					attform->attcollation != index_rel->rd_indcollation[i] ||
+					attoptions != (Datum) 0 ||
 					index_rel->rd_indoption[i] != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_WRONG_OBJECT_TYPE),
@@ -2348,6 +2357,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 			iparam->indexcolname = NULL;
 			iparam->collation = NIL;
 			iparam->opclass = NIL;
+			iparam->opclassopts = NIL;
 			iparam->ordering = SORTBY_DEFAULT;
 			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
 			index->indexParams = lappend(index->indexParams, iparam);
@@ -2461,6 +2471,7 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 		iparam->indexcolname = NULL;
 		iparam->collation = NIL;
 		iparam->opclass = NIL;
+		iparam->opclassopts = NIL;
 		index->indexIncludingParams = lappend(index->indexIncludingParams, iparam);
 	}
 
@@ -3698,8 +3709,16 @@ transformPartitionCmd(CreateStmtContext *cxt, PartitionCmd *cmd)
 														 cmd->bound);
 			break;
 		case RELKIND_PARTITIONED_INDEX:
-			/* nothing to check */
-			Assert(cmd->bound == NULL);
+
+			/*
+			 * A partitioned index cannot have a partition bound set.  ALTER
+			 * INDEX prevents that with its grammar, but not ALTER TABLE.
+			 */
+			if (cmd->bound != NULL)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("\"%s\" is not a partitioned table",
+								RelationGetRelationName(parentRel))));
 			break;
 		case RELKIND_RELATION:
 			/* the table must be partitioned */

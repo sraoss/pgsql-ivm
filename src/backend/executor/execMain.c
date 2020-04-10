@@ -787,11 +787,11 @@ ExecCheckXactReadOnly(PlannedStmt *plannedstmt)
 		if (isTempNamespace(get_rel_namespace(rte->relid)))
 			continue;
 
-		PreventCommandIfReadOnly(CreateCommandTag((Node *) plannedstmt));
+		PreventCommandIfReadOnly(CreateCommandName((Node *) plannedstmt));
 	}
 
 	if (plannedstmt->commandType != CMD_SELECT || plannedstmt->hasModifyingCTE)
-		PreventCommandIfParallelMode(CreateCommandTag((Node *) plannedstmt));
+		PreventCommandIfParallelMode(CreateCommandName((Node *) plannedstmt));
 }
 
 
@@ -1878,7 +1878,8 @@ ExecPartitionCheckEmitError(ResultRelInfo *resultRelInfo,
 			(errcode(ERRCODE_CHECK_VIOLATION),
 			 errmsg("new row for relation \"%s\" violates partition constraint",
 					RelationGetRelationName(resultRelInfo->ri_RelationDesc)),
-			 val_desc ? errdetail("Failing row contains %s.", val_desc) : 0));
+			 val_desc ? errdetail("Failing row contains %s.", val_desc) : 0,
+			 errtable(resultRelInfo->ri_RelationDesc)));
 }
 
 /*

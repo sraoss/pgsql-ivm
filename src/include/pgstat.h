@@ -13,6 +13,7 @@
 
 #include "datatype/timestamp.h"
 #include "libpq/pqcomm.h"
+#include "miscadmin.h"
 #include "port/atomics.h"
 #include "portability/instr_time.h"
 #include "postmaster/pgarch.h"
@@ -646,6 +647,7 @@ typedef struct PgStat_StatTabEntry
 	PgStat_Counter n_live_tuples;
 	PgStat_Counter n_dead_tuples;
 	PgStat_Counter changes_since_analyze;
+	PgStat_Counter inserts_since_vacuum;
 
 	PgStat_Counter blocks_fetched;
 	PgStat_Counter blocks_hit;
@@ -713,25 +715,6 @@ typedef struct PgStat_GlobalStats
 
 
 /* ----------
- * Backend types
- * ----------
- */
-typedef enum BackendType
-{
-	B_AUTOVAC_LAUNCHER,
-	B_AUTOVAC_WORKER,
-	B_BACKEND,
-	B_BG_WORKER,
-	B_BG_WRITER,
-	B_CHECKPOINTER,
-	B_STARTUP,
-	B_WAL_RECEIVER,
-	B_WAL_SENDER,
-	B_WAL_WRITER
-} BackendType;
-
-
-/* ----------
  * Backend states
  * ----------
  */
@@ -779,7 +762,6 @@ typedef enum
 	WAIT_EVENT_LOGICAL_APPLY_MAIN,
 	WAIT_EVENT_LOGICAL_LAUNCHER_MAIN,
 	WAIT_EVENT_PGSTAT_MAIN,
-	WAIT_EVENT_RECOVERY_WAL_ALL,
 	WAIT_EVENT_RECOVERY_WAL_STREAM,
 	WAIT_EVENT_SYSLOGGER_MAIN,
 	WAIT_EVENT_WAL_RECEIVER_MAIN,
@@ -817,7 +799,8 @@ typedef enum
  */
 typedef enum
 {
-	WAIT_EVENT_BGWORKER_SHUTDOWN = PG_WAIT_IPC,
+	WAIT_EVENT_BACKUP_WAIT_WAL_ARCHIVE = PG_WAIT_IPC,
+	WAIT_EVENT_BGWORKER_SHUTDOWN,
 	WAIT_EVENT_BGWORKER_STARTUP,
 	WAIT_EVENT_BTREE_PAGE,
 	WAIT_EVENT_CLOG_GROUP_UPDATE,
@@ -850,6 +833,7 @@ typedef enum
 	WAIT_EVENT_PARALLEL_FINISH,
 	WAIT_EVENT_PROCARRAY_GROUP_UPDATE,
 	WAIT_EVENT_PROMOTE,
+	WAIT_EVENT_RECOVERY_PAUSE,
 	WAIT_EVENT_REPLICATION_ORIGIN_DROP,
 	WAIT_EVENT_REPLICATION_SLOT_DROP,
 	WAIT_EVENT_SAFE_SNAPSHOT,
@@ -866,7 +850,9 @@ typedef enum
 {
 	WAIT_EVENT_BASE_BACKUP_THROTTLE = PG_WAIT_TIMEOUT,
 	WAIT_EVENT_PG_SLEEP,
-	WAIT_EVENT_RECOVERY_APPLY_DELAY
+	WAIT_EVENT_RECOVERY_APPLY_DELAY,
+	WAIT_EVENT_RECOVERY_RETRIEVE_RETRY_INTERVAL,
+	WAIT_EVENT_VACUUM_DELAY
 } WaitEventTimeout;
 
 /* ----------
@@ -958,7 +944,8 @@ typedef enum ProgressCommandType
 	PROGRESS_COMMAND_VACUUM,
 	PROGRESS_COMMAND_ANALYZE,
 	PROGRESS_COMMAND_CLUSTER,
-	PROGRESS_COMMAND_CREATE_INDEX
+	PROGRESS_COMMAND_CREATE_INDEX,
+	PROGRESS_COMMAND_BASEBACKUP
 } ProgressCommandType;
 
 #define PGSTAT_NUM_PROGRESS_PARAM	20
@@ -1285,7 +1272,6 @@ extern const char *pgstat_get_wait_event_type(uint32 wait_event_info);
 extern const char *pgstat_get_backend_current_activity(int pid, bool checkUser);
 extern const char *pgstat_get_crashed_backend_activity(int pid, char *buffer,
 													   int buflen);
-extern const char *pgstat_get_backend_desc(BackendType backendType);
 
 extern void pgstat_progress_start_command(ProgressCommandType cmdtype,
 										  Oid relid);

@@ -677,7 +677,7 @@ jsonb_categorize_type(Oid typoid,
 		default:
 			/* Check for arrays and composites */
 			if (OidIsValid(get_element_type(typoid)) || typoid == ANYARRAYOID
-				|| typoid == RECORDARRAYOID)
+				|| typoid == ANYCOMPATIBLEARRAYOID || typoid == RECORDARRAYOID)
 				*tcategory = JSONBTYPE_ARRAY;
 			else if (type_is_rowtype(typoid))	/* includes RECORDOID */
 				*tcategory = JSONBTYPE_COMPOSITE;
@@ -1317,7 +1317,7 @@ jsonb_object(PG_FUNCTION_ARGS)
 	}
 
 	deconstruct_array(in_array,
-					  TEXTOID, -1, false, 'i',
+					  TEXTOID, -1, false, TYPALIGN_INT,
 					  &in_datums, &in_nulls, &in_count);
 
 	count = in_count / 2;
@@ -1405,11 +1405,11 @@ jsonb_object_two_arg(PG_FUNCTION_ARGS)
 		goto close_object;
 
 	deconstruct_array(key_array,
-					  TEXTOID, -1, false, 'i',
+					  TEXTOID, -1, false, TYPALIGN_INT,
 					  &key_datums, &key_nulls, &key_count);
 
 	deconstruct_array(val_array,
-					  TEXTOID, -1, false, 'i',
+					  TEXTOID, -1, false, TYPALIGN_INT,
 					  &val_datums, &val_nulls, &val_count);
 
 	if (key_count != val_count)

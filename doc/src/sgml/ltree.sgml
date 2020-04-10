@@ -25,8 +25,8 @@
   <para>
    A <firstterm>label</firstterm> is a sequence of alphanumeric characters
    and underscores (for example, in C locale the characters
-   <literal>A-Za-z0-9_</literal> are allowed).  Labels must be less than 256 bytes
-   long.
+   <literal>A-Za-z0-9_</literal> are allowed).
+   Labels must be less than 256 characters long.
   </para>
 
   <para>
@@ -37,8 +37,7 @@
    A <firstterm>label path</firstterm> is a sequence of zero or more
    labels separated by dots, for example <literal>L1.L2.L3</literal>, representing
    a path from the root of a hierarchical tree to a particular node.  The
-   length of a label path must be less than 65kB, but keeping it under 2kB is
-   preferable.
+   length of a label path cannot exceed 65535 labels.
   </para>
 
   <para>
@@ -499,30 +498,59 @@ Europe &amp; Russia*@ &amp; !Transportation
    </listitem>
    <listitem>
     <para>
-     GiST index over <type>ltree</type>:
+     GiST index over <type>ltree</type> (<literal>gist_ltree_ops</literal>
+     opclass):
      <literal>&lt;</literal>, <literal>&lt;=</literal>, <literal>=</literal>,
      <literal>&gt;=</literal>, <literal>&gt;</literal>,
      <literal>@&gt;</literal>, <literal>&lt;@</literal>,
      <literal>@</literal>, <literal>~</literal>, <literal>?</literal>
     </para>
     <para>
-     Example of creating such an index:
+     <literal>gist_ltree_ops</literal> GiST opclass approximates set of
+     path labels as a bitmap signature.  Optional integer parameter
+     <literal>siglen</literal> of <literal>gist_ltree_ops</literal> determines
+     signature length in bytes.  Default signature length is 8 bytes.
+     Valid values of signature length are between 1 and 2024 bytes.  Longer
+     signatures leads to more precise search (scan less fraction of index, scan
+     less heap pages), but larger index.
+    </para>
+    <para>
+     Example of creating such an index with a default signature length of 8 bytes:
     </para>
 <programlisting>
 CREATE INDEX path_gist_idx ON test USING GIST (path);
 </programlisting>
+    <para>
+     Example of creating such an index with a signature length of 100 bytes:
+    </para>
+<programlisting>
+CREATE INDEX path_gist_idx ON test USING GIST (path gist_ltree_ops(siglen=100));
+</programlisting>
    </listitem>
    <listitem>
     <para>
-     GiST index over <type>ltree[]</type>:
+     GiST index over <type>ltree[]</type> (<literal>gist__ltree_ops</literal>
+     opclass):
      <literal>ltree[] &lt;@ ltree</literal>, <literal>ltree @&gt; ltree[]</literal>,
      <literal>@</literal>, <literal>~</literal>, <literal>?</literal>
     </para>
     <para>
-     Example of creating such an index:
+     <literal>gist__ltree_ops</literal> GiST opclass works similar to
+     <literal>gist_ltree_ops</literal> and also takes signature length as
+     a parameter.  Default value of <literal>siglen</literal> in
+      <literal>gist__ltree_ops</literal> is 28 bytes.
+    </para>
+    <para>
+     Example of creating such an index with a default signature length of 28 bytes:
     </para>
 <programlisting>
 CREATE INDEX path_gist_idx ON test USING GIST (array_path);
+</programlisting>
+    <para>
+     Example of creating such an index with a signature length of 100 bytes:
+    </para>
+<programlisting>
+CREATE INDEX path_gist_idx ON test USING GIST (array_path gist__ltree_ops(siglen=100));
 </programlisting>
     <para>
      Note: This index type is lossy.

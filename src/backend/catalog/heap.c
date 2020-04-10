@@ -156,8 +156,8 @@ static const FormData_pg_attribute a1 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = false,
-	.attstorage = 'p',
-	.attalign = 's',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_SHORT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -170,8 +170,8 @@ static const FormData_pg_attribute a2 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = true,
-	.attstorage = 'p',
-	.attalign = 'i',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_INT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -184,8 +184,8 @@ static const FormData_pg_attribute a3 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = true,
-	.attstorage = 'p',
-	.attalign = 'i',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_INT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -198,8 +198,8 @@ static const FormData_pg_attribute a4 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = true,
-	.attstorage = 'p',
-	.attalign = 'i',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_INT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -212,8 +212,8 @@ static const FormData_pg_attribute a5 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = true,
-	.attstorage = 'p',
-	.attalign = 'i',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_INT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -232,8 +232,8 @@ static const FormData_pg_attribute a6 = {
 	.attcacheoff = -1,
 	.atttypmod = -1,
 	.attbyval = true,
-	.attstorage = 'p',
-	.attalign = 'i',
+	.attstorage = TYPSTORAGE_PLAIN,
+	.attalign = TYPALIGN_INT,
 	.attnotnull = true,
 	.attislocal = true,
 };
@@ -725,6 +725,7 @@ CheckAttributeType(const char *attname,
 void
 InsertPgAttributeTuple(Relation pg_attribute_rel,
 					   Form_pg_attribute new_attribute,
+					   Datum attoptions,
 					   CatalogIndexState indstate)
 {
 	Datum		values[Natts_pg_attribute];
@@ -756,10 +757,11 @@ InsertPgAttributeTuple(Relation pg_attribute_rel,
 	values[Anum_pg_attribute_attislocal - 1] = BoolGetDatum(new_attribute->attislocal);
 	values[Anum_pg_attribute_attinhcount - 1] = Int32GetDatum(new_attribute->attinhcount);
 	values[Anum_pg_attribute_attcollation - 1] = ObjectIdGetDatum(new_attribute->attcollation);
+	values[Anum_pg_attribute_attoptions - 1] = attoptions;
 
 	/* start out with empty permissions and empty options */
 	nulls[Anum_pg_attribute_attacl - 1] = true;
-	nulls[Anum_pg_attribute_attoptions - 1] = true;
+	nulls[Anum_pg_attribute_attoptions - 1] = attoptions == (Datum) 0;
 	nulls[Anum_pg_attribute_attfdwoptions - 1] = true;
 	nulls[Anum_pg_attribute_attmissingval - 1] = true;
 
@@ -813,7 +815,7 @@ AddNewAttributeTuples(Oid new_rel_oid,
 		/* Make sure this is OK, too */
 		attr->attstattarget = -1;
 
-		InsertPgAttributeTuple(rel, attr, indstate);
+		InsertPgAttributeTuple(rel, attr, (Datum) 0, indstate);
 
 		/* Add dependency info */
 		myself.classId = RelationRelationId;
@@ -851,7 +853,7 @@ AddNewAttributeTuples(Oid new_rel_oid,
 			/* Fill in the correct relation OID in the copied tuple */
 			attStruct.attrelid = new_rel_oid;
 
-			InsertPgAttributeTuple(rel, &attStruct, indstate);
+			InsertPgAttributeTuple(rel, &attStruct, (Datum) 0, indstate);
 		}
 	}
 
@@ -1054,8 +1056,8 @@ AddNewRelationType(const char *typeName,
 				   NULL,		/* default value - none */
 				   NULL,		/* default binary representation */
 				   false,		/* passed by reference */
-				   'd',			/* alignment - must be the largest! */
-				   'x',			/* fully TOASTable */
+				   TYPALIGN_DOUBLE, /* alignment - must be the largest! */
+				   TYPSTORAGE_EXTENDED, /* fully TOASTable */
 				   -1,			/* typmod */
 				   0,			/* array dimensions for typBaseType */
 				   false,		/* Type NOT NULL */
@@ -1335,8 +1337,8 @@ heap_create_with_catalog(const char *relname,
 				   NULL,		/* default value - none */
 				   NULL,		/* default binary representation */
 				   false,		/* passed by reference */
-				   'd',			/* alignment - must be the largest! */
-				   'x',			/* fully TOASTable */
+				   TYPALIGN_DOUBLE, /* alignment - must be the largest! */
+				   TYPSTORAGE_EXTENDED, /* fully TOASTable */
 				   -1,			/* typmod */
 				   0,			/* array dimensions for typBaseType */
 				   false,		/* Type NOT NULL */

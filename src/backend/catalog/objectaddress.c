@@ -81,6 +81,7 @@
 #include "storage/large_object.h"
 #include "storage/lmgr.h"
 #include "storage/sinval.h"
+#include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -747,7 +748,7 @@ static const struct object_type_map
 	{
 		"transform", OBJECT_TRANSFORM
 	},
-	/* OBJECT_STATISTIC_EXT */
+	/* OCLASS_STATISTIC_EXT */
 	{
 		"statistics object", OBJECT_STATISTIC_EXT
 	}
@@ -1967,7 +1968,7 @@ textarray_to_strvaluelist(ArrayType *arr)
 	List	   *list = NIL;
 	int			i;
 
-	deconstruct_array(arr, TEXTOID, -1, false, 'i',
+	deconstruct_array(arr, TEXTOID, -1, false, TYPALIGN_INT,
 					  &elems, &nulls, &nelems);
 
 	for (i = 0; i < nelems; i++)
@@ -2024,7 +2025,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		bool	   *nulls;
 		int			nelems;
 
-		deconstruct_array(namearr, TEXTOID, -1, false, 'i',
+		deconstruct_array(namearr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 		if (nelems != 1)
 			ereport(ERROR,
@@ -2042,7 +2043,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		bool	   *nulls;
 		int			nelems;
 
-		deconstruct_array(namearr, TEXTOID, -1, false, 'i',
+		deconstruct_array(namearr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 		if (nelems != 1)
 			ereport(ERROR,
@@ -2081,7 +2082,7 @@ pg_get_object_address(PG_FUNCTION_ARGS)
 		int			nelems;
 		int			i;
 
-		deconstruct_array(argsarr, TEXTOID, -1, false, 'i',
+		deconstruct_array(argsarr, TEXTOID, -1, false, TYPALIGN_INT,
 						  &elems, &nulls, &nelems);
 
 		args = NIL;
@@ -5333,7 +5334,7 @@ strlist_to_textarray(List *list)
 
 	lb[0] = 1;
 	arr = construct_md_array(datums, nulls, 1, &j,
-							 lb, TEXTOID, -1, false, 'i');
+							 lb, TEXTOID, -1, false, TYPALIGN_INT);
 
 	MemoryContextDelete(memcxt);
 

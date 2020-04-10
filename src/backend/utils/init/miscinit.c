@@ -57,6 +57,8 @@
 
 ProcessingMode Mode = InitProcessing;
 
+BackendType	MyBackendType;
+
 /* List of lock files to be removed at proc exit */
 static List *lock_files = NIL;
 
@@ -74,6 +76,172 @@ static Latch LocalLatchData;
 
 bool		IgnoreSystemIndexes = false;
 
+
+/* ----------------------------------------------------------------
+ *	common process startup code
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * Initialize the basic environment for a postmaster child
+ *
+ * Should be called as early as possible after the child's startup.
+ */
+void
+InitPostmasterChild(void)
+{
+	IsUnderPostmaster = true;	/* we are a postmaster subprocess now */
+
+	InitProcessGlobals();
+
+	/*
+	 * make sure stderr is in binary mode before anything can possibly be
+	 * written to it, in case it's actually the syslogger pipe, so the pipe
+	 * chunking protocol isn't disturbed. Non-logpipe data gets translated on
+	 * redirection (e.g. via pg_ctl -l) anyway.
+	 */
+#ifdef WIN32
+	_setmode(fileno(stderr), _O_BINARY);
+#endif
+
+	/* We don't want the postmaster's proc_exit() handlers */
+	on_exit_reset();
+
+	/* Initialize process-local latch support */
+	InitializeLatchSupport();
+	MyLatch = &LocalLatchData;
+	InitLatch(MyLatch);
+
+	/*
+	 * If possible, make this process a group leader, so that the postmaster
+	 * can signal any child processes too. Not all processes will have
+	 * children, but for consistency we make all postmaster child processes do
+	 * this.
+	 */
+#ifdef HAVE_SETSID
+	if (setsid() < 0)
+		elog(FATAL, "setsid() failed: %m");
+#endif
+
+	/* Request a signal if the postmaster dies, if possible. */
+	PostmasterDeathSignalInit();
+}
+
+/*
+ * Initialize the basic environment for a standalone process.
+ *
+ * argv0 has to be suitable to find the program's executable.
+ */
+void
+InitStandaloneProcess(const char *argv0)
+{
+	Assert(!IsPostmasterEnvironment);
+
+	InitProcessGlobals();
+
+	/* Initialize process-local latch support */
+	InitializeLatchSupport();
+	MyLatch = &LocalLatchData;
+	InitLatch(MyLatch);
+
+	/* Compute paths, no postmaster to inherit from */
+	if (my_exec_path[0] == '\0')
+	{
+		if (find_my_exec(argv0, my_exec_path) < 0)
+			elog(FATAL, "%s: could not locate my own executable path",
+				 argv0);
+	}
+
+	if (pkglib_path[0] == '\0')
+		get_pkglib_path(my_exec_path, pkglib_path);
+}
+
+void
+SwitchToSharedLatch(void)
+{
+	Assert(MyLatch == &LocalLatchData);
+	Assert(MyProc != NULL);
+
+	MyLatch = &MyProc->procLatch;
+
+	if (FeBeWaitSet)
+		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
+
+	/*
+	 * Set the shared latch as the local one might have been set. This
+	 * shouldn't normally be necessary as code is supposed to check the
+	 * condition before waiting for the latch, but a bit care can't hurt.
+	 */
+	SetLatch(MyLatch);
+}
+
+void
+SwitchBackToLocalLatch(void)
+{
+	Assert(MyLatch != &LocalLatchData);
+	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
+
+	MyLatch = &LocalLatchData;
+
+	if (FeBeWaitSet)
+		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
+
+	SetLatch(MyLatch);
+}
+
+const char *
+GetBackendTypeDesc(BackendType backendType)
+{
+	const char *backendDesc = "unknown process type";
+
+	switch (backendType)
+	{
+		case B_INVALID:
+			backendDesc = "not initialized";
+			break;
+		case B_AUTOVAC_LAUNCHER:
+			backendDesc = "autovacuum launcher";
+			break;
+		case B_AUTOVAC_WORKER:
+			backendDesc = "autovacuum worker";
+			break;
+		case B_BACKEND:
+			backendDesc = "client backend";
+			break;
+		case B_BG_WORKER:
+			backendDesc = "background worker";
+			break;
+		case B_BG_WRITER:
+			backendDesc = "background writer";
+			break;
+		case B_CHECKPOINTER:
+			backendDesc = "checkpointer";
+			break;
+		case B_STARTUP:
+			backendDesc = "startup";
+			break;
+		case B_WAL_RECEIVER:
+			backendDesc = "walreceiver";
+			break;
+		case B_WAL_SENDER:
+			backendDesc = "walsender";
+			break;
+		case B_WAL_WRITER:
+			backendDesc = "walwriter";
+			break;
+		case B_ARCHIVER:
+			backendDesc = "archiver";
+			break;
+		case B_STATS_COLLECTOR:
+			backendDesc = "stats collector";
+			break;
+		case B_LOGGER:
+			backendDesc = "logger";
+			break;
+	}
+
+	return backendDesc;
+}
 
 /* ----------------------------------------------------------------
  *				database path / name support stuff
@@ -261,113 +429,6 @@ static int	SecurityRestrictionContext = 0;
 
 /* We also remember if a SET ROLE is currently active */
 static bool SetRoleIsActive = false;
-
-/*
- * Initialize the basic environment for a postmaster child
- *
- * Should be called as early as possible after the child's startup.
- */
-void
-InitPostmasterChild(void)
-{
-	IsUnderPostmaster = true;	/* we are a postmaster subprocess now */
-
-	InitProcessGlobals();
-
-	/*
-	 * make sure stderr is in binary mode before anything can possibly be
-	 * written to it, in case it's actually the syslogger pipe, so the pipe
-	 * chunking protocol isn't disturbed. Non-logpipe data gets translated on
-	 * redirection (e.g. via pg_ctl -l) anyway.
-	 */
-#ifdef WIN32
-	_setmode(fileno(stderr), _O_BINARY);
-#endif
-
-	/* We don't want the postmaster's proc_exit() handlers */
-	on_exit_reset();
-
-	/* Initialize process-local latch support */
-	InitializeLatchSupport();
-	MyLatch = &LocalLatchData;
-	InitLatch(MyLatch);
-
-	/*
-	 * If possible, make this process a group leader, so that the postmaster
-	 * can signal any child processes too. Not all processes will have
-	 * children, but for consistency we make all postmaster child processes do
-	 * this.
-	 */
-#ifdef HAVE_SETSID
-	if (setsid() < 0)
-		elog(FATAL, "setsid() failed: %m");
-#endif
-
-	/* Request a signal if the postmaster dies, if possible. */
-	PostmasterDeathSignalInit();
-}
-
-/*
- * Initialize the basic environment for a standalone process.
- *
- * argv0 has to be suitable to find the program's executable.
- */
-void
-InitStandaloneProcess(const char *argv0)
-{
-	Assert(!IsPostmasterEnvironment);
-
-	InitProcessGlobals();
-
-	/* Initialize process-local latch support */
-	InitializeLatchSupport();
-	MyLatch = &LocalLatchData;
-	InitLatch(MyLatch);
-
-	/* Compute paths, no postmaster to inherit from */
-	if (my_exec_path[0] == '\0')
-	{
-		if (find_my_exec(argv0, my_exec_path) < 0)
-			elog(FATAL, "%s: could not locate my own executable path",
-				 argv0);
-	}
-
-	if (pkglib_path[0] == '\0')
-		get_pkglib_path(my_exec_path, pkglib_path);
-}
-
-void
-SwitchToSharedLatch(void)
-{
-	Assert(MyLatch == &LocalLatchData);
-	Assert(MyProc != NULL);
-
-	MyLatch = &MyProc->procLatch;
-
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
-
-	/*
-	 * Set the shared latch as the local one might have been set. This
-	 * shouldn't normally be necessary as code is supposed to check the
-	 * condition before waiting for the latch, but a bit care can't hurt.
-	 */
-	SetLatch(MyLatch);
-}
-
-void
-SwitchBackToLocalLatch(void)
-{
-	Assert(MyLatch != &LocalLatchData);
-	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
-
-	MyLatch = &LocalLatchData;
-
-	if (FeBeWaitSet)
-		ModifyWaitEvent(FeBeWaitSet, 1, WL_LATCH_SET, MyLatch);
-
-	SetLatch(MyLatch);
-}
 
 /*
  * GetUserId - get the current effective user ID.

@@ -126,6 +126,7 @@
 #include "access/xact.h"
 #include "catalog/pg_database.h"
 #include "commands/async.h"
+#include "common/hashfn.h"
 #include "funcapi.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
@@ -138,7 +139,6 @@
 #include "storage/sinval.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
-#include "utils/hashutils.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
@@ -2225,7 +2225,7 @@ ProcessIncomingNotify(void)
 	if (Trace_notify)
 		elog(DEBUG1, "ProcessIncomingNotify");
 
-	set_ps_display("notify interrupt", false);
+	set_ps_display("notify interrupt");
 
 	/*
 	 * We must run asyncQueueReadAllNotifications inside a transaction, else
@@ -2242,7 +2242,7 @@ ProcessIncomingNotify(void)
 	 */
 	pq_flush();
 
-	set_ps_display("idle", false);
+	set_ps_display("idle");
 
 	if (Trace_notify)
 		elog(DEBUG1, "ProcessIncomingNotify: done");

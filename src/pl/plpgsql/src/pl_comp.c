@@ -507,11 +507,13 @@ do_compile(FunctionCallInfo fcinfo,
 			{
 				if (forValidator)
 				{
-					if (rettypeid == ANYARRAYOID)
+					if (rettypeid == ANYARRAYOID ||
+						rettypeid == ANYCOMPATIBLEARRAYOID)
 						rettypeid = INT4ARRAYOID;
-					else if (rettypeid == ANYRANGEOID)
+					else if (rettypeid == ANYRANGEOID ||
+							 rettypeid == ANYCOMPATIBLERANGEOID)
 						rettypeid = INT4RANGEOID;
-					else		/* ANYELEMENT or ANYNONARRAY */
+					else		/* ANYELEMENT or ANYNONARRAY or ANYCOMPATIBLE */
 						rettypeid = INT4OID;
 					/* XXX what could we use for ANYENUM? */
 				}
@@ -2125,13 +2127,13 @@ build_datatype(HeapTuple typeTup, int32 typmod,
 		 */
 		typ->typisarray = (typeStruct->typlen == -1 &&
 						   OidIsValid(typeStruct->typelem) &&
-						   typeStruct->typstorage != 'p');
+						   typeStruct->typstorage != TYPSTORAGE_PLAIN);
 	}
 	else if (typeStruct->typtype == TYPTYPE_DOMAIN)
 	{
 		/* we can short-circuit looking up base types if it's not varlena */
 		typ->typisarray = (typeStruct->typlen == -1 &&
-						   typeStruct->typstorage != 'p' &&
+						   typeStruct->typstorage != TYPSTORAGE_PLAIN &&
 						   OidIsValid(get_base_element_type(typeStruct->typbasetype)));
 	}
 	else
@@ -2493,12 +2495,16 @@ plpgsql_resolve_polymorphic_argtypes(int numargs,
 				case ANYELEMENTOID:
 				case ANYNONARRAYOID:
 				case ANYENUMOID:	/* XXX dubious */
+				case ANYCOMPATIBLEOID:
+				case ANYCOMPATIBLENONARRAYOID:
 					argtypes[i] = INT4OID;
 					break;
 				case ANYARRAYOID:
+				case ANYCOMPATIBLEARRAYOID:
 					argtypes[i] = INT4ARRAYOID;
 					break;
 				case ANYRANGEOID:
+				case ANYCOMPATIBLERANGEOID:
 					argtypes[i] = INT4RANGEOID;
 					break;
 				default:

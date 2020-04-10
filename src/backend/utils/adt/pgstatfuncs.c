@@ -197,6 +197,22 @@ pg_stat_get_mod_since_analyze(PG_FUNCTION_ARGS)
 
 
 Datum
+pg_stat_get_ins_since_vacuum(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int64		result;
+	PgStat_StatTabEntry *tabentry;
+
+	if ((tabentry = pgstat_fetch_stat_tabentry(relid)) == NULL)
+		result = 0;
+	else
+		result = (int64) (tabentry->inserts_since_vacuum);
+
+	PG_RETURN_INT64(result);
+}
+
+
+Datum
 pg_stat_get_blocks_fetched(PG_FUNCTION_ARGS)
 {
 	Oid			relid = PG_GETARG_OID(0);
@@ -474,6 +490,8 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 		cmdtype = PROGRESS_COMMAND_CLUSTER;
 	else if (pg_strcasecmp(cmd, "CREATE INDEX") == 0)
 		cmdtype = PROGRESS_COMMAND_CREATE_INDEX;
+	else if (pg_strcasecmp(cmd, "BASEBACKUP") == 0)
+		cmdtype = PROGRESS_COMMAND_BASEBACKUP;
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -839,7 +857,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			}
 			else
 				values[17] =
-					CStringGetTextDatum(pgstat_get_backend_desc(beentry->st_backendType));
+					CStringGetTextDatum(GetBackendTypeDesc(beentry->st_backendType));
 
 			/* SSL information */
 			if (beentry->st_ssl)

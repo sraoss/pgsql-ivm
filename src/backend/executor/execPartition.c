@@ -28,6 +28,7 @@
 #include "partitioning/partdesc.h"
 #include "partitioning/partprune.h"
 #include "rewrite/rewriteManip.h"
+#include "utils/acl.h"
 #include "utils/lsyscache.h"
 #include "utils/partcache.h"
 #include "utils/rls.h"
@@ -345,7 +346,8 @@ ExecFindPartition(ModifyTableState *mtstate,
 							RelationGetRelationName(rel)),
 					 val_desc ?
 					 errdetail("Partition key of the failing row contains %s.",
-							   val_desc) : 0));
+							   val_desc) : 0,
+					 errtable(rel)));
 		}
 
 		if (partdesc->is_leaf[partidx])

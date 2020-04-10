@@ -104,6 +104,13 @@ btvalidate(Oid opclassoid)
 											procform->amprocrighttype,
 											BOOLOID, BOOLOID);
 				break;
+			case BTEQUALIMAGE_PROC:
+				ok = check_amproc_signature(procform->amproc, BOOLOID, true,
+											1, 1, OIDOID);
+				break;
+			case BTOPTIONS_PROC:
+				ok = check_amoptsproc_signature(procform->amproc);
+				break;
 			default:
 				ereport(INFO,
 						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -211,8 +218,8 @@ btvalidate(Oid opclassoid)
 
 		/*
 		 * Complain if there seems to be an incomplete set of either operators
-		 * or support functions for this datatype pair.  The only things
-		 * considered optional are the sortsupport and in_range functions.
+		 * or support functions for this datatype pair.  The sortsupport,
+		 * in_range, and equalimage functions are considered optional.
 		 */
 		if (thisgroup->operatorset !=
 			((1 << BTLessStrategyNumber) |

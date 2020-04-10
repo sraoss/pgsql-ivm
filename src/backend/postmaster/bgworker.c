@@ -688,8 +688,8 @@ StartBackgroundWorker(void)
 
 	IsBackgroundWorker = true;
 
-	/* Identify myself via ps */
-	init_ps_display(worker->bgw_name, "", "", "");
+	MyBackendType = B_BG_WORKER;
+	init_ps_display(worker->bgw_name);
 
 	/*
 	 * If we're not supposed to have shared memory access, then detach from
