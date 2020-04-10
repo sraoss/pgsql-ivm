@@ -10,6 +10,14 @@ SELECT '1'::ltree;
 SELECT '1.2'::ltree;
 SELECT '1.2._3'::ltree;
 
+-- empty labels not allowed
+SELECT '.2.3'::ltree;
+SELECT '1..3'::ltree;
+SELECT '1.2.'::ltree;
+
+SELECT repeat('x', 255)::ltree;
+SELECT repeat('x', 256)::ltree;
+
 SELECT ltree2text('1.2.3.34.sdf');
 SELECT text2ltree('1.2.3.34.sdf');
 
@@ -87,7 +95,26 @@ SELECT '1.*.4|3|2.*{1,4}'::lquery;
 SELECT '1.*.4|3|2.*{,4}'::lquery;
 SELECT '1.*.4|3|2.*{1,}'::lquery;
 SELECT '1.*.4|3|2.*{1}'::lquery;
+SELECT 'foo.bar{,}.!a*|b{1,}.c{,44}.d{3,4}'::lquery;
+SELECT 'foo*@@*'::lquery;
 SELECT 'qwerty%@*.tu'::lquery;
+
+-- empty labels not allowed
+SELECT '.2.3'::lquery;
+SELECT '1..3'::lquery;
+SELECT '1.2.'::lquery;
+SELECT '@.2.3'::lquery;
+SELECT '1.@.3'::lquery;
+SELECT '1.2.@'::lquery;
+SELECT '!.2.3'::lquery;
+SELECT '1.!.3'::lquery;
+SELECT '1.2.!'::lquery;
+SELECT '1.2.3|@.4'::lquery;
+
+SELECT (repeat('x', 255) || '*@@*')::lquery;
+SELECT (repeat('x', 256) || '*@@*')::lquery;
+SELECT ('!' || repeat('x', 255))::lquery;
+SELECT ('!' || repeat('x', 256))::lquery;
 
 SELECT nlevel('1.2.3.4');
 SELECT nlevel(('1' || repeat('.1', 65534))::ltree);
@@ -100,6 +127,7 @@ SELECT '*{65536}'::lquery;
 SELECT '*{,65534}'::lquery;
 SELECT '*{,65535}'::lquery;
 SELECT '*{,65536}'::lquery;
+SELECT '*{4,3}'::lquery;
 
 SELECT '1.2'::ltree  < '2.2'::ltree;
 SELECT '1.2'::ltree  <= '2.2'::ltree;
@@ -183,8 +211,22 @@ SELECT 'a.b.c.d.e'::ltree ~ 'a.*{2}.*{2}';
 SELECT 'a.b.c.d.e'::ltree ~ 'a.*{1}.*{2}.e';
 SELECT 'a.b.c.d.e'::ltree ~ 'a.*{1}.*{4}';
 SELECT 'a.b.c.d.e'::ltree ~ 'a.*{5}.*';
+SELECT '5.0.1.0'::ltree ~ '5.!0.!0.0';
+SELECT 'a.b'::ltree ~ '!a.!a';
+
+SELECT 'a.b.c.d.e'::ltree ~ 'a{,}';
+SELECT 'a.b.c.d.e'::ltree ~ 'a{1,}.*';
+SELECT 'a.b.c.d.e'::ltree ~ 'a{,}.!a{,}';
+SELECT 'a.b.c.d.a'::ltree ~ 'a{,}.!a{,}';
+SELECT 'a.b.c.d.a'::ltree ~ 'a{,2}.!a{1,}';
+SELECT 'a.b.c.d.e'::ltree ~ 'a{,2}.!a{1,}';
+SELECT 'a.b.c.d.e'::ltree ~ '!x{,}';
+SELECT 'a.b.c.d.e'::ltree ~ '!c{,}';
+SELECT 'a.b.c.d.e'::ltree ~ '!c{0,3}.!a{2,}';
+SELECT 'a.b.c.d.e'::ltree ~ '!c{0,3}.!d{2,}.*';
 
 SELECT 'QWER_TY'::ltree ~ 'q%@*';
+SELECT 'QWER_TY'::ltree ~ 'q%@*%@*';
 SELECT 'QWER_TY'::ltree ~ 'Q_t%@*';
 SELECT 'QWER_GY'::ltree ~ 'q_t%@*';
 

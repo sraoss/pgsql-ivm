@@ -793,6 +793,19 @@ CREATE VIEW pg_stat_replication AS
         JOIN pg_stat_get_wal_senders() AS W ON (S.pid = W.pid)
         LEFT JOIN pg_authid AS U ON (S.usesysid = U.oid);
 
+CREATE VIEW pg_stat_slru AS
+    SELECT
+            s.name,
+            s.blks_zeroed,
+            s.blks_hit,
+            s.blks_read,
+            s.blks_written,
+            s.blks_exists,
+            s.flushes,
+            s.truncates,
+            s.stats_reset
+    FROM pg_stat_get_slru() s;
+
 CREATE VIEW pg_stat_wal_receiver AS
     SELECT
             s.pid,
@@ -863,7 +876,9 @@ CREATE VIEW pg_replication_slots AS
             L.xmin,
             L.catalog_xmin,
             L.restart_lsn,
-            L.confirmed_flush_lsn
+            L.confirmed_flush_lsn,
+            L.wal_status,
+            L.min_safe_lsn
     FROM pg_get_replication_slots() AS L
             LEFT JOIN pg_database D ON (L.datoid = D.oid);
 
@@ -1387,6 +1402,21 @@ LANGUAGE INTERNAL
 STRICT STABLE PARALLEL SAFE
 AS 'jsonb_path_query_first_tz';
 
+-- default normalization form is NFC, per SQL standard
+CREATE OR REPLACE FUNCTION
+  "normalize"(text, text DEFAULT 'NFC')
+RETURNS text
+LANGUAGE internal
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'unicode_normalize_func';
+
+CREATE OR REPLACE FUNCTION
+  is_normalized(text, text DEFAULT 'NFC')
+RETURNS boolean
+LANGUAGE internal
+STRICT IMMUTABLE PARALLEL SAFE
+AS 'unicode_is_normalized';
+
 --
 -- The default permissions for functions mean that anyone can execute them.
 -- A number of functions shouldn't be executable by just anyone, but rather
@@ -1410,6 +1440,7 @@ REVOKE EXECUTE ON FUNCTION pg_promote(boolean, integer) FROM public;
 
 REVOKE EXECUTE ON FUNCTION pg_stat_reset() FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_shared(text) FROM public;
+REVOKE EXECUTE ON FUNCTION pg_stat_reset_slru(text) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_single_table_counters(oid) FROM public;
 REVOKE EXECUTE ON FUNCTION pg_stat_reset_single_function_counters(oid) FROM public;
 

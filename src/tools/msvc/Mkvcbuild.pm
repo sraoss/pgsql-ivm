@@ -120,8 +120,8 @@ sub mkvcbuild
 	}
 
 	our @pgcommonallfiles = qw(
-	  archive.c
-	  base64.c config_info.c controldata_utils.c d2s.c encnames.c exec.c
+	  archive.c base64.c checksum_helper.c
+      config_info.c controldata_utils.c d2s.c encnames.c exec.c
 	  f2s.c file_perm.c hashfn.c ip.c jsonapi.c
 	  keywords.c kwlookup.c link-canary.c md5.c
 	  pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
@@ -139,8 +139,8 @@ sub mkvcbuild
 	}
 
 	our @pgcommonfrontendfiles = (
-		@pgcommonallfiles, qw(fe_memutils.c file_utils.c
-		  logging.c restricted_token.c));
+		@pgcommonallfiles, qw(fe_archive.c fe_memutils.c
+		  file_utils.c logging.c restricted_token.c));
 
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 

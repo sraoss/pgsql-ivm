@@ -614,6 +614,18 @@ LockHeldByMe(const LOCKTAG *locktag, LOCKMODE lockmode)
 	return (locallock && locallock->nLocks > 0);
 }
 
+#ifdef USE_ASSERT_CHECKING
+/*
+ * GetLockMethodLocalHash -- return the hash of local locks, for modules that
+ *		evaluate assertions based on all locks held.
+ */
+HTAB *
+GetLockMethodLocalHash(void)
+{
+	return LockMethodLocalHash;
+}
+#endif
+
 /*
  * LockHasWaiters -- look up 'locktag' and check if releasing this
  *		lock would wake up other processes waiting for it.
@@ -965,13 +977,10 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			if (locallockp)
 				*locallockp = NULL;
 			if (reportMemoryError)
-			{
-				StandbyParamErrorPauseRecovery();
 				ereport(ERROR,
 						(errcode(ERRCODE_OUT_OF_MEMORY),
 						 errmsg("out of shared memory"),
 						 errhint("You might need to increase max_locks_per_transaction.")));
-			}
 			else
 				return LOCKACQUIRE_NOT_AVAIL;
 		}
@@ -1006,13 +1015,10 @@ LockAcquireExtended(const LOCKTAG *locktag,
 		if (locallockp)
 			*locallockp = NULL;
 		if (reportMemoryError)
-		{
-			StandbyParamErrorPauseRecovery();
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
 					 errhint("You might need to increase max_locks_per_transaction.")));
-		}
 		else
 			return LOCKACQUIRE_NOT_AVAIL;
 	}
@@ -2834,7 +2840,6 @@ FastPathGetRelationLockEntry(LOCALLOCK *locallock)
 		{
 			LWLockRelease(partitionLock);
 			LWLockRelease(&MyProc->backendLock);
-			StandbyParamErrorPauseRecovery();
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),
@@ -4165,7 +4170,6 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 	if (!lock)
 	{
 		LWLockRelease(partitionLock);
-		StandbyParamErrorPauseRecovery();
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
@@ -4231,7 +4235,6 @@ lock_twophase_recover(TransactionId xid, uint16 info,
 				elog(PANIC, "lock table corrupted");
 		}
 		LWLockRelease(partitionLock);
-		StandbyParamErrorPauseRecovery();
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("out of shared memory"),
@@ -4524,7 +4527,6 @@ VirtualXactLock(VirtualTransactionId vxid, bool wait)
 		{
 			LWLockRelease(partitionLock);
 			LWLockRelease(&proc->backendLock);
-			StandbyParamErrorPauseRecovery();
 			ereport(ERROR,
 					(errcode(ERRCODE_OUT_OF_MEMORY),
 					 errmsg("out of shared memory"),

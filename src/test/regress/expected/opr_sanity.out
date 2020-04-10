@@ -194,9 +194,11 @@ WHERE p1.oid != p2.oid AND
 ORDER BY 1, 2;
  prorettype | prorettype 
 ------------+------------
+         20 |       9419
          25 |       1043
        1114 |       1184
-(2 rows)
+       2970 |       8355
+(4 rows)
 
 SELECT DISTINCT p1.proargtypes[0], p2.proargtypes[0]
 FROM pg_proc AS p1, pg_proc AS p2
@@ -210,11 +212,13 @@ WHERE p1.oid != p2.oid AND
 ORDER BY 1, 2;
  proargtypes | proargtypes 
 -------------+-------------
+          20 |        9419
           25 |        1042
           25 |        1043
         1114 |        1184
         1560 |        1562
-(4 rows)
+        2970 |        8355
+(6 rows)
 
 SELECT DISTINCT p1.proargtypes[1], p2.proargtypes[1]
 FROM pg_proc AS p1, pg_proc AS p2
@@ -231,7 +235,8 @@ ORDER BY 1, 2;
           23 |          28
         1114 |        1184
         1560 |        1562
-(3 rows)
+        2970 |        8355
+(4 rows)
 
 SELECT DISTINCT p1.proargtypes[2], p2.proargtypes[2]
 FROM pg_proc AS p1, pg_proc AS p2
@@ -832,6 +837,13 @@ macaddr8_gt(macaddr8,macaddr8)
 macaddr8_ge(macaddr8,macaddr8)
 macaddr8_ne(macaddr8,macaddr8)
 macaddr8_cmp(macaddr8,macaddr8)
+xid8lt(xid8,xid8)
+xid8gt(xid8,xid8)
+xid8le(xid8,xid8)
+xid8ge(xid8,xid8)
+xid8eq(xid8,xid8)
+xid8ne(xid8,xid8)
+xid8cmp(xid8,xid8)
 -- restore normal output mode
 \a\t
 -- List of functions used by libpq's fe-lobj.c
