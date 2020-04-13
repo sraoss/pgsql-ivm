@@ -63,6 +63,7 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/rls.h"
 #include "utils/snapmgr.h"
@@ -94,6 +95,7 @@ static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
 static void check_ivm_restriction_walker(Node *node);
 static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
+static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
 /*
  * create_ctas_internal
@@ -447,11 +449,114 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	rewritten = copyObject(query);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
-	if (rewritten->distinctClause)
+	/* group keys must be in targetlist */
+	if (rewritten->groupClause)
+	{
+		ListCell *lc;
+		foreach(lc, rewritten->groupClause)
+		{
+			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, rewritten->targetList);
+
+			if (tle->resjunk)
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view")));
+		}
+	}
+	else if (!rewritten->hasAggs && rewritten->distinctClause)
 		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
 
+
+	if (rewritten->hasAggs)
+	{
+		ListCell *lc;
+		List *agg_counts = NIL;
+		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
+		Const	*dmy_arg = makeConst(INT4OID,
+									 -1,
+									 InvalidOid,
+									 sizeof(int32),
+									 Int32GetDatum(1),
+									 false,
+									 true); /* pass by value */
+
+		foreach(lc, rewritten->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			TargetEntry *tle_count;
+			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno-1)));
+
+
+			if (IsA(tle->expr, Aggref))
+			{
+				Aggref *aggref = (Aggref *) tle->expr;
+				const char *aggname = get_func_name(aggref->aggfnoid);
+
+				/*
+				 * For aggregate functions except to count, add count func with the same arg parameters.
+				 * Also, add sum func for agv.
+				 *
+				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+				 * of adding new duplicated one.
+				 */
+				if (strcmp(aggname, "count") != 0)
+				{
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_count",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+				if (strcmp(aggname, "avg") == 0)
+				{
+					List *dmy_args = NIL;
+					ListCell *lc;
+					foreach(lc, aggref->aggargtypes)
+					{
+						Oid		typeid = lfirst_oid(lc);
+						Type	type = typeidType(typeid);
+
+						Const *con = makeConst(typeid,
+											   -1,
+											   typeTypeCollation(type),
+											   typeLen(type),
+											   (Datum) 0,
+											   true,
+											   typeByVal(type));
+						dmy_args = lappend(dmy_args, con);
+						ReleaseSysCache(type);
+
+					}
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+					((Aggref *)node)->args = aggref->args;
+
+					tle_count = makeTargetEntry((Expr *) node,
+												next_resno,
+												pstrdup(makeObjectName("__ivm_sum",resname, "_")),
+												false);
+					agg_counts = lappend(agg_counts, tle_count);
+					next_resno++;
+				}
+
+			}
+		}
+		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
+
+	}
+
 	/* Add count(*) for counting algorithm */
-	if (rewritten->distinctClause)
+	if (rewritten->distinctClause || rewritten->hasAggs)
 	{
 		fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 		fn->agg_star = true;
@@ -976,6 +1081,11 @@ check_ivm_restriction_walker(Node *node)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
+					if (qry->hasAggs && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+
 					check_ivm_restriction_walker((Node *) tle->expr);
 				}
 
@@ -1058,8 +1168,35 @@ check_ivm_restriction_walker(Node *node)
 				break;
 			}
 		case T_SubLink:
-		case T_SubPlan:
+			break;
 		case T_Aggref:
+			{
+				/* Check if this supports IVM */
+				Aggref *aggref = (Aggref *) node;
+				const char *aggname = format_procedure(aggref->aggfnoid);
+
+				if (aggref->aggfilter != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with FILTER clause is not supported on incrementally maintainable materialized view")));
+
+				if (aggref->aggdistinct != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with DISTINCT arguments is not supported on incrementally maintainable materialized view")));
+
+				if (aggref->aggorder != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with ORDER clause is not supported on incrementally maintainable materialized view")));
+
+				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
+				break;
+			}
+		case T_SubPlan:
 		case T_GroupingFunc:
 		case T_WindowFunc:
 		case T_FuncExpr:
@@ -1072,6 +1209,91 @@ check_ivm_restriction_walker(Node *node)
 	}
 
 	return;
+}
+
+/*
+ * check_aggregate_supports_ivm
+ *
+ * Check if the given aggregate function is supporting IVM
+ */
+static bool
+check_aggregate_supports_ivm(Oid aggfnoid)
+{
+	switch (aggfnoid)
+	{
+		/* count */
+		case F_COUNT_ANY:
+		case F_COUNT_:
+
+		/* sum */
+		case F_SUM_INT8:
+		case F_SUM_INT4:
+		case F_SUM_INT2:
+		case F_SUM_FLOAT4:
+		case F_SUM_FLOAT8:
+		case F_SUM_MONEY:
+		case F_SUM_INTERVAL:
+		case F_SUM_NUMERIC:
+
+		/* avg */
+		case F_AVG_INT8:
+		case F_AVG_INT4:
+		case F_AVG_INT2:
+		case F_AVG_NUMERIC:
+		case F_AVG_FLOAT4:
+		case F_AVG_FLOAT8:
+		case F_AVG_INTERVAL:
+
+		/* min */
+		case F_MIN_ANYARRAY:
+		case F_MIN_INT8:
+		case F_MIN_INT4:
+		case F_MIN_INT2:
+		case F_MIN_OID:
+		case F_MIN_FLOAT4:
+		case F_MIN_FLOAT8:
+		case F_MIN_DATE:
+		case F_MIN_TIME:
+		case F_MIN_TIMETZ:
+		case F_MIN_MONEY:
+		case F_MIN_TIMESTAMP:
+		case F_MIN_TIMESTAMPTZ:
+		case F_MIN_INTERVAL:
+		case F_MIN_TEXT:
+		case F_MIN_NUMERIC:
+		case F_MIN_BPCHAR:
+		case F_MIN_TID:
+		case F_MIN_ANYENUM:
+		case F_MIN_INET:
+		case F_MIN_PG_LSN:
+
+		/* max */
+		case F_MAX_ANYARRAY:
+		case F_MAX_INT8:
+		case F_MAX_INT4:
+		case F_MAX_INT2:
+		case F_MAX_OID:
+		case F_MAX_FLOAT4:
+		case F_MAX_FLOAT8:
+		case F_MAX_DATE:
+		case F_MAX_TIME:
+		case F_MAX_TIMETZ:
+		case F_MAX_MONEY:
+		case F_MAX_TIMESTAMP:
+		case F_MAX_TIMESTAMPTZ:
+		case F_MAX_INTERVAL:
+		case F_MAX_TEXT:
+		case F_MAX_NUMERIC:
+		case F_MAX_BPCHAR:
+		case F_MAX_TID:
+		case F_MAX_ANYENUM:
+		case F_MAX_INET:
+		case F_MAX_PG_LSN:
+			return true;
+
+		default:
+			return false;
+	}
 }
 
 /*
@@ -1123,7 +1345,32 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 	index->concurrent = false;
 	index->if_not_exists = false;
 
-	if (qry->distinctClause)
+
+	if (qry->groupClause)
+	{
+		/* create unique constraint on GROUP BY expression columns */
+		foreach(lc, qry->groupClause)
+		{
+			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, qry->targetList);
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+			IndexElem  *iparam;
+
+			iparam = makeNode(IndexElem);
+			iparam->name = pstrdup(NameStr(attr->attname));
+			iparam->expr = NULL;
+			iparam->indexcolname = NULL;
+			iparam->collation = NIL;
+			iparam->opclass = NIL;
+			iparam->opclassopts = NIL;
+			iparam->ordering = SORTBY_DEFAULT;
+			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+			index->indexParams = lappend(index->indexParams, iparam);
+		}
+
+		index->isconstraint = true;
+	}
+	else if (qry->distinctClause)
 	{
 		/* create unique constraint on all columns */
 		index->isconstraint = true;
