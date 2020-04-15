@@ -252,19 +252,6 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
 
        <listitem>
         <para>
-         <command>pg_dump</command> and <command>pg_restore</command> do not
-         support IMMVs. IMMVs are dumped as ordinary materialized views.
-        </para>
-       </listitem>
-
-       <listitem>
-        <para>
-         <command>REFRESH MATERIALIZED VIEW</command> does not support IMMVs.
-        </para>
-       </listitem>
-
-       <listitem>
-        <para>
          When TRUNCATE command is executed on a base table, nothing occurs and
          this is not applied to the materialized view.
         </para>
@@ -394,7 +381,8 @@ ERROR:  functions in IMMV must be marked IMMUTABLE
       This clause specifies whether or not the materialized view should be
       populated at creation time.  If not, the materialized view will be
       flagged as unscannable and cannot be queried until <command>REFRESH
-      MATERIALIZED VIEW</command> is used.
+      MATERIALIZED VIEW</command> is used.  Also, if the view is IMMV,
+      triggers for maintaining the view are not created.
      </para>
     </listitem>
    </varlistentry>

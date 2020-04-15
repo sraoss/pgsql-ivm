@@ -1122,11 +1122,11 @@ SELECT word FROM words ORDER BY word &lt;-&gt; 'caterpiler' LIMIT 10;
     immediate and deferred.  In immediate maintenance, views are updated in the
     same transaction where its base table is modified.  In deferred maintenance,
     views are updated after the transaction is committed, for example, when the
-    view is accessed, as a response to user command like <command>REFRESH</command>,
-    or periodically in background, and so on.  <productname>PostgreSQL</productname>
-    currently implements only a kind of immediate maintenance, in which
-    materialized views are updated immediately in AFTER triggers when a base
-    table is modified.
+    view is accessed, as a response to user command like <command>REFRESH
+	MATERIALIAED VIEW</command>, or periodically in background, and so on.
+	<productname>PostgreSQL</productname> currently implements only a kind of
+	immediate maintenance, in which materialized views are updated immediately
+	in AFTER triggers when a base table is modified.
 </para>
 
 <para>
@@ -1193,8 +1193,8 @@ CREATE INDEX ON mv_ivm(aid,bid);
 
 </programlisting>
 
-   Updating a tuple in the normal materialized view is rapid but the 
-   <command>REFRESH</command> command on this view takes a long time:
+   Updating a tuple in the normal materialized view is rapid but the
+   <command>REFRESH MATERIALIZED VIEW</command> command on this view takes a long time:
 
 <programlisting>
 test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
@@ -1208,7 +1208,8 @@ Time: 33533.952 ms (00:33.534)
 
     On the other hand, updating a tuple in <acronym>IMMV</acronym> takes
     more than the normal view, but the contents is updated automatically
-    and this is faster than the <command>REFRESH</command> command.
+    and this is faster than the <command>REFRESH MATERIALIZED VIEW</command>
+	command.
 
 <programlisting>
 test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
@@ -1229,6 +1230,21 @@ UPDATE 1
 Time: 16386.245 ms (00:16.386)
 </programlisting>
 
+</para>
+
+<para>
+    <acronym>IVM</acronym> is effective when we want to keep a materialized
+	view up-to-date and small fraction of a base table is modified in low
+	frequency.  Due to the overhead of immediate maintenance, <acronym>IVM</acronym>
+	is not effective when a base table is modified frequently.  Also, when a
+	large part of a base table is modified or large data is inserted into a
+	base table, <acronym>IVM</acronym> is not effective and the cost of
+	maintenance can be lager than <command>REFRESH MATERIALIZED VIEW</command>
+	command. In such situation, we can use <command>REFRESH MATERIALIZED VIEW</command>
+	with specifying <literal>WITH NO DATA</literal> to disable immediate
+	maintenance before modifying a base table. After a base table modification,
+	execute <command>REFRESH MATERIALIZED VIEW</command> (with <literal>WITH DATA</literal>)
+	command to refresh the view data and enable immediate maintenance.
 </para>
 
 </sect2>
@@ -1544,7 +1560,7 @@ Time: 16386.245 ms (00:16.386)
 <para>
     Physically, <acronym>IMMV</acronym> defined with <literal>DISTINCT</literal>
     contains tuples after eliminating duplicates, and multiplicity of each tuple
-    is stored in a hidden column named <literal>__ivm_count__</literal>. 
+    is stored in a hidden column named <literal>__ivm_count__</literal>.
 </para>
 </sect2>
 
