@@ -3476,7 +3476,7 @@ apply_old_delta_with_count(const char *matviewname, const char *deltaname_old,
 	char   *select_for_recalc = "SELECT";
 	bool	agg_without_groupby = (list_length(keys) == 0);
 
-	Assert(tuptable_recalce != NULL);
+	Assert(tuptable_recalc != NULL);
 	Assert(num_recalc != NULL);
 
 	/* build WHERE condition for searching tuples to be deleted */
