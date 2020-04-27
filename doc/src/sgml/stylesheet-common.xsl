@@ -49,6 +49,10 @@
   <xsl:call-template name="inline.charseq"/>
 </xsl:template>
 
+<!-- Render <returnvalue> with a right arrow then the type name -->
+<!-- Avoid adding unnecessary white space in this template! -->
+<xsl:template match="returnvalue">&#x2192; <xsl:call-template name="inline.monoseq"/></xsl:template>
+
 <xsl:template match="structfield">
   <xsl:call-template name="inline.monoseq"/>
 </xsl:template>
@@ -95,6 +99,13 @@
 
 <xsl:template match="function" mode="xref-to">
   <xsl:apply-templates select="." mode="xref"/>
+</xsl:template>
+
+
+<!-- Support for explicit line breaks <?br?> within table cells -->
+
+<xsl:template match="processing-instruction('br')">
+  <br/>
 </xsl:template>
 
 </xsl:stylesheet>

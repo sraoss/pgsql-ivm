@@ -3639,6 +3639,7 @@ _copyAlterObjectDependsStmt(const AlterObjectDependsStmt *from)
 	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(object);
 	COPY_NODE_FIELD(extname);
+	COPY_SCALAR_FIELD(remove);
 
 	return newnode;
 }
