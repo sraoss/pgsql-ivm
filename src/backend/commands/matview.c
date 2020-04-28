@@ -4536,7 +4536,9 @@ getColumnNameStartWith(RangeTblEntry *rte, char *str, int *attnum)
 bool
 isIvmColumn(const char *s)
 {
-	return (strncmp(s, "__ivm_", 6) == 0);
+	if (s)
+		return (strncmp(s, "__ivm_", 6) == 0);
+	return false;
 }
 
 /*
