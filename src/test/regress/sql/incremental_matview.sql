@@ -1652,6 +1652,9 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm27 AS SELECT * FROM (SELECT i,j FROM
 -- tartget list cannot contain ivm clumn that start with '__ivm'
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FROM mv_base_a;
 
+-- expressions specified in GROUP BY must appear in the target list.
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
+
 -- base table has row level security
 DROP USER IF EXISTS ivm_admin;
 DROP USER IF EXISTS ivm_user;

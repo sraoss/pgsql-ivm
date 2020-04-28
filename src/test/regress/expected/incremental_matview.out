@@ -5664,6 +5664,9 @@ ERROR:  FOR UPDATE/SHARE clause is not supported on incrementally maintainable m
 -- tartget list cannot contain ivm clumn that start with '__ivm'
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FROM mv_base_a;
 ERROR:  column name __ivm_count__ is not supported on incrementally maintainable materialized view
+-- expressions specified in GROUP BY must appear in the target list.
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
+ERROR:  GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view
 -- base table has row level security
 DROP USER IF EXISTS ivm_admin;
 NOTICE:  role "ivm_admin" does not exist, skipping
