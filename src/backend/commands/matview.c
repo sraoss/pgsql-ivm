@@ -2251,7 +2251,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-							 errhint("WHERE clause only support subquery with EXISTS clause")));
+							 errhint("subquery in WHERE clause only supports subquery with EXISTS clause")));
 
 				subselect = (Query *)sublink->subselect;
 				/* raise ERROR if it is CTE */
