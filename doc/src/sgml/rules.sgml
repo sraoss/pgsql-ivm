@@ -1519,7 +1519,13 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
-            targetlist cannot contain hidden columns which name start with <literal>__ivm_</literal>.
+            targetlist cannot contain hidden columns whose name start with <literal>__ivm_</literal>.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
+            targetlist cannot contain expressions which contain an aggregate in it.
           </para>
         </listitem>
 

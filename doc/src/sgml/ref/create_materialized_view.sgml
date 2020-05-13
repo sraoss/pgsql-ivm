@@ -225,7 +225,7 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
       <itemizedlist>
        <listitem>
         <para>
-         Aggregations other than count, sum, avg, min and max.
+         Aggregations other than built-in count, sum, avg, min and max.
         </para>
         </listitem>
        <listitem>
@@ -279,9 +279,15 @@ ERROR:  functions in IMMV must be marked IMMUTABLE
 
        <listitem>
         <para>
+         IMMVs including expressions which contains aggregates in it
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
          IMMVs not supported by logical replication.
         </para>
-        </listitem>
+       </listitem>
 
       </itemizedlist>
 
