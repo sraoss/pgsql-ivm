@@ -1296,31 +1296,6 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
 
 	/*
-	 * Wait for concurrent transactions which update this materialized view at
-	 * READ COMMITED. This is needed to see changes committed in other
-	 * transactions. No wait and raise an error at REPEATABLE READ or
-	 * SERIALIZABLE to prevent update anomalies of matviews.
-	 * XXX: dead-lock is possible here.
-	 */
-	if (!IsolationUsesXactSnapshot())
-		LockRelationOid(matviewOid, ExclusiveLock);
-	else if (!ConditionalLockRelationOid(matviewOid, ExclusiveLock))
-	{
-		/* try to throw error by name; relation could be deleted... */
-		char	   *relname = get_rel_name(matviewOid);
-
-		if (!relname)
-			ereport(ERROR,
-					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-					 errmsg("could not obtain lock on materialized view during incremental maintenance")));
-
-		ereport(ERROR,
-				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-				 errmsg("could not obtain lock on materialized view \"%s\" during incremental maintenance",
-						relname)));
-	}
-
-	/*
 	 * On the first call initialize the hashtable
 	 */
 	if (!mv_trigger_info)
@@ -1481,6 +1456,32 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	/*
 	 * If this is the last AFTER trigger call, continue and update the view.
 	 */
+
+	/*
+	 * Wait for concurrent transactions which update this materialized view at
+	 * READ COMMITED. This is needed to see changes committed in other
+	 * transactions. No wait and raise an error at REPEATABLE READ or
+	 * SERIALIZABLE to prevent update anomalies of matviews.
+	 * XXX: dead-lock is possible here.
+	 */
+	if (!IsolationUsesXactSnapshot())
+		LockRelationOid(matviewOid, ExclusiveLock);
+	else if (!ConditionalLockRelationOid(matviewOid, ExclusiveLock))
+	{
+		/* try to throw error by name; relation could be deleted... */
+		char	   *relname = get_rel_name(matviewOid);
+
+		if (!relname)
+			ereport(ERROR,
+					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+					 errmsg("could not obtain lock on materialized view during incremental maintenance")));
+
+		ereport(ERROR,
+				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+				 errmsg("could not obtain lock on materialized view \"%s\" during incremental maintenance",
+						relname)));
+	}
+
 
 	/*
 	 * Advance command counter to make the updated base table row locally
