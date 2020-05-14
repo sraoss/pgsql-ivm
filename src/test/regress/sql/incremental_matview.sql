@@ -1629,7 +1629,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm18 AS SELECT COUNT(DISTINCT i)  FROM
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm19 AS SELECT array_agg(j ORDER BY i DESC) FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm20 AS SELECT i,SUM(j) FROM mv_base_a GROUP BY GROUPING SETS((i),());
 
--- inheritance parent is not supported with IVM"
+-- inheritance parent is not supported
 BEGIN;
 CREATE TABLE parent (i int, v int);
 CREATE TABLE child_a(options text) INHERITS(parent);
@@ -1655,7 +1655,11 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FR
 -- expressions specified in GROUP BY must appear in the target list.
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
 
--- base table has row level security
+-- experssions containing an aggregate is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_base_a;
+
+-- base table which has row level security
 DROP USER IF EXISTS ivm_admin;
 DROP USER IF EXISTS ivm_user;
 CREATE USER ivm_admin;

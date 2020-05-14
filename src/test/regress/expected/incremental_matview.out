@@ -5640,7 +5640,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm19 AS SELECT array_agg(j ORDER BY i 
 ERROR:  aggregate function with ORDER clause is not supported on incrementally maintainable materialized view
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm20 AS SELECT i,SUM(j) FROM mv_base_a GROUP BY GROUPING SETS((i),());
 ERROR:  GROUPING SETS, ROLLUP, or CUBE clauses is not supported on incrementally maintainable materialized view
--- inheritance parent is not supported with IVM"
+-- inheritance parent is not supported
 BEGIN;
 CREATE TABLE parent (i int, v int);
 CREATE TABLE child_a(options text) INHERITS(parent);
@@ -5667,7 +5667,12 @@ ERROR:  column name __ivm_count__ is not supported on incrementally maintainable
 -- expressions specified in GROUP BY must appear in the target list.
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
 ERROR:  GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view
--- base table has row level security
+-- experssions containing an aggregate is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
+ERROR:  expression containing an aggregate in it is not supported on incrementally maintainable materialized view
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_base_a;
+ERROR:  expression containing an aggregate in it is not supported on incrementally maintainable materialized view
+-- base table which has row level security
 DROP USER IF EXISTS ivm_admin;
 NOTICE:  role "ivm_admin" does not exist, skipping
 DROP USER IF EXISTS ivm_user;
