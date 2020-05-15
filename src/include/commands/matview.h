@@ -15,6 +15,7 @@
 #define MATVIEW_H
 
 #include "catalog/objectaddress.h"
+#include "fmgr.h"
 #include "nodes/params.h"
 #include "nodes/parsenodes.h"
 #include "tcop/dest.h"
