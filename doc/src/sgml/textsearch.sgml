@@ -1891,8 +1891,8 @@ SELECT ts_rewrite('a &amp; b'::tsquery,
    </para>
 
 <synopsis>
-tsvector_update_trigger(<replaceable class="parameter">tsvector_column_name</replaceable>, <replaceable class="parameter">config_name</replaceable>, <replaceable class="parameter">text_column_name</replaceable> <optional>, ... </optional>)
-tsvector_update_trigger_column(<replaceable class="parameter">tsvector_column_name</replaceable>, <replaceable class="parameter">config_column_name</replaceable>, <replaceable class="parameter">text_column_name</replaceable> <optional>, ... </optional>)
+tsvector_update_trigger(<replaceable class="parameter">tsvector_column_name</replaceable>,&zwsp; <replaceable class="parameter">config_name</replaceable>, <replaceable class="parameter">text_column_name</replaceable> <optional>, ... </optional>)
+tsvector_update_trigger_column(<replaceable class="parameter">tsvector_column_name</replaceable>,&zwsp; <replaceable class="parameter">config_column_name</replaceable>, <replaceable class="parameter">text_column_name</replaceable> <optional>, ... </optional>)
 </synopsis>
 
    <para>
@@ -2074,6 +2074,9 @@ LIMIT 10;
   <table id="textsearch-default-parser">
    <title>Default Parser's Token Types</title>
    <tgroup cols="3">
+    <colspec colname="col1" colwidth="2*"/>
+    <colspec colname="col2" colwidth="2*"/>
+    <colspec colname="col3" colwidth="3*"/>
     <thead>
      <row>
       <entry>Alias</entry>

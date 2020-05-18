@@ -178,7 +178,7 @@ typedef struct AlteredTableInfo
 	List	   *changedIndexOids;	/* OIDs of indexes to rebuild */
 	List	   *changedIndexDefs;	/* string definitions of same */
 	char	   *replicaIdentityIndex;	/* index to reset as REPLICA IDENTITY */
-	char	   *clusterOnIndex;	/* index to use for CLUSTER */
+	char	   *clusterOnIndex; /* index to use for CLUSTER */
 } AlteredTableInfo;
 
 /* Struct describing one new constraint to check in Phase 3 scan */
@@ -1266,9 +1266,9 @@ RemoveRelations(DropStmt *drop)
 	if (drop->concurrent)
 	{
 		/*
-		 * Note that for temporary relations this lock may get upgraded
-		 * later on, but as no other session can access a temporary
-		 * relation, this is actually fine.
+		 * Note that for temporary relations this lock may get upgraded later
+		 * on, but as no other session can access a temporary relation, this
+		 * is actually fine.
 		 */
 		lockmode = ShareUpdateExclusiveLock;
 		Assert(drop->removeType == OBJECT_INDEX);
@@ -1621,10 +1621,10 @@ ExecuteTruncate(TruncateStmt *stmt)
 				}
 
 				/*
-				 * Inherited TRUNCATE commands perform access
-				 * permission checks on the parent table only.
-				 * So we skip checking the children's permissions
-				 * and don't call truncate_check_perms() here.
+				 * Inherited TRUNCATE commands perform access permission
+				 * checks on the parent table only. So we skip checking the
+				 * children's permissions and don't call
+				 * truncate_check_perms() here.
 				 */
 				truncate_check_rel(RelationGetRelid(rel), rel->rd_rel);
 				truncate_check_activity(rel);
@@ -2619,12 +2619,56 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 				def->is_local = true;
 				/* Merge of NOT NULL constraints = OR 'em together */
 				def->is_not_null |= newdef->is_not_null;
+
+				/*
+				 * Check for conflicts related to generated columns.
+				 *
+				 * If the parent column is generated, the child column must be
+				 * unadorned and will be made a generated column.  (We could
+				 * in theory allow the child column definition specifying the
+				 * exact same generation expression, but that's a bit
+				 * complicated to implement and doesn't seem very useful.)  We
+				 * also check that the child column doesn't specify a default
+				 * value or identity, which matches the rules for a single
+				 * column in parse_util.c.
+				 */
+				if (def->generated)
+				{
+					if (newdef->generated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+								 errmsg("child column \"%s\" specifies generation expression",
+										def->colname),
+								 errhint("Omit the generation expression in the definition of the child table column to inherit the generation expression from the parent table.")));
+					if (newdef->raw_default && !newdef->generated)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+								 errmsg("column \"%s\" inherits from generated column but specifies default",
+										def->colname)));
+					if (newdef->identity)
+						ereport(ERROR,
+								(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+								 errmsg("column \"%s\" inherits from generated column but specifies identity",
+										def->colname)));
+				}
+
+				/*
+				 * If the parent column is not generated, then take whatever
+				 * the child column definition says.
+				 */
+				else
+				{
+					if (newdef->generated)
+						def->generated = newdef->generated;
+				}
+
 				/* If new def has a default, override previous default */
 				if (newdef->raw_default != NULL)
 				{
 					def->raw_default = newdef->raw_default;
 					def->cooked_default = newdef->cooked_default;
 				}
+
 			}
 			else
 			{
@@ -2710,11 +2754,19 @@ MergeAttributes(List *schema, List *supers, char relpersistence,
 			ColumnDef  *def = lfirst(entry);
 
 			if (def->cooked_default == &bogus_marker)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
-						 errmsg("column \"%s\" inherits conflicting default values",
-								def->colname),
-						 errhint("To resolve the conflict, specify a default explicitly.")));
+			{
+				if (def->generated)
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+							 errmsg("column \"%s\" inherits conflicting generation expressions",
+									def->colname)));
+				else
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_COLUMN_DEFINITION),
+							 errmsg("column \"%s\" inherits conflicting default values",
+									def->colname),
+							 errhint("To resolve the conflict, specify a default explicitly.")));
+			}
 		}
 	}
 
@@ -7392,6 +7444,7 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 	Form_pg_attribute attrtuple;
 	AttrNumber	attnum;
 	ObjectAddress address;
+	ListCell   *lc;
 
 	Assert(IsA(newValue, String));
 	storagemode = strVal(newValue);
@@ -7450,6 +7503,52 @@ ATExecSetStorage(Relation rel, const char *colName, Node *newValue, LOCKMODE loc
 							  attrtuple->attnum);
 
 	heap_freetuple(tuple);
+
+	/*
+	 * Apply the change to indexes as well (only for simple index columns,
+	 * matching behavior of index.c ConstructTupleDescriptor()).
+	 */
+	foreach(lc, RelationGetIndexList(rel))
+	{
+		Oid			indexoid = lfirst_oid(lc);
+		Relation	indrel;
+		AttrNumber	indattnum = 0;
+
+		indrel = index_open(indexoid, lockmode);
+
+		for (int i = 0; i < indrel->rd_index->indnatts; i++)
+		{
+			if (indrel->rd_index->indkey.values[i] == attnum)
+			{
+				indattnum = i + 1;
+				break;
+			}
+		}
+
+		if (indattnum == 0)
+		{
+			index_close(indrel, lockmode);
+			continue;
+		}
+
+		tuple = SearchSysCacheCopyAttNum(RelationGetRelid(indrel), indattnum);
+
+		if (HeapTupleIsValid(tuple))
+		{
+			attrtuple = (Form_pg_attribute) GETSTRUCT(tuple);
+			attrtuple->attstorage = newstorage;
+
+			CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
+
+			InvokeObjectPostAlterHook(RelationRelationId,
+									  RelationGetRelid(rel),
+									  attrtuple->attnum);
+
+			heap_freetuple(tuple);
+		}
+
+		index_close(indrel, lockmode);
+	}
 
 	table_close(attrelation, RowExclusiveLock);
 
@@ -16904,7 +17003,7 @@ static void
 DropClonedTriggersFromPartition(Oid partitionId)
 {
 	ScanKeyData skey;
-	SysScanDesc	scan;
+	SysScanDesc scan;
 	HeapTuple	trigtup;
 	Relation	tgrel;
 	ObjectAddresses *objects;

@@ -3468,6 +3468,16 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         The precise stopping point is also influenced by
         <xref linkend="guc-recovery-target-inclusive"/>.
        </para>
+
+       <para>
+        The value of this parameter is a time stamp in the same format
+        accepted by the <type>timestamp with time zone</type> data type,
+        except that you cannot use a time zone abbreviation (unless the
+        <xref linkend="guc-timezone-abbreviations"/> variable has been set
+        earlier in the configuration file).  Preferred style is to use a
+        numeric offset from UTC, or you can write a full time zone name,
+        e.g. <literal>Europe/Helsinki</literal> not <literal>EEST</literal>.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -6248,6 +6258,10 @@ local0.*    /var/log/postgresql
     <table id="runtime-config-severity-levels">
      <title>Message Severity Levels</title>
      <tgroup cols="4">
+      <colspec colname="col1" colwidth="1*"/>
+      <colspec colname="col2" colwidth="2*"/>
+      <colspec colname="col3" colwidth="1*"/>
+      <colspec colname="col4" colwidth="1*"/>
       <thead>
        <row>
         <entry>Severity</entry>
@@ -6259,7 +6273,7 @@ local0.*    /var/log/postgresql
 
       <tbody>
        <row>
-        <entry><literal>DEBUG1..DEBUG5</literal></entry>
+        <entry><literal>DEBUG1 .. DEBUG5</literal></entry>
         <entry>Provides successively-more-detailed information for use by
          developers.</entry>
         <entry><literal>DEBUG</literal></entry>
@@ -7287,8 +7301,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       These settings control the behavior of the <firstterm>autovacuum</firstterm>
       feature.  Refer to <xref linkend="autovacuum"/> for more information.
       Note that many of these settings can be overridden on a per-table
-      basis; see <xref linkend="sql-createtable-storage-parameters"
-      endterm="sql-createtable-storage-parameters-title"/>.
+      basis; see <xref linkend="sql-createtable-storage-parameters"/>.
      </para>
 
     <variablelist>
@@ -10278,6 +10291,8 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
     <table id="runtime-config-short-table">
      <title>Short Option Key</title>
      <tgroup cols="2">
+      <colspec colname="col1" colwidth="1*"/>
+      <colspec colname="col2" colwidth="2*"/>
       <thead>
        <row>
         <entry>Short Option</entry>

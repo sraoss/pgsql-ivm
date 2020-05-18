@@ -3752,7 +3752,7 @@ EndTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"COMMIT AND CHAIN")));
 			else
@@ -3831,7 +3831,7 @@ EndTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"COMMIT AND CHAIN")));
 			else
@@ -3954,7 +3954,7 @@ UserAbortTransactionBlock(bool chain)
 			if (chain)
 				ereport(ERROR,
 						(errcode(ERRCODE_NO_ACTIVE_SQL_TRANSACTION),
-						 /* translator: %s represents an SQL statement name */
+				/* translator: %s represents an SQL statement name */
 						 errmsg("%s can only be used in transaction blocks",
 								"ROLLBACK AND CHAIN")));
 			else

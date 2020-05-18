@@ -1694,7 +1694,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num
 
 RESET SESSION AUTHORIZATION;
 
-WITH 
+WITH
  x AS (UPDATE rls_tbl SET data = data || '_2' where id in (3,4)),
  y AS (UPDATE num_tbl SET num = num || '_2' where id in (3,4))
 SELECT;
