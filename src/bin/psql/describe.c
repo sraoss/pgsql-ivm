@@ -3080,7 +3080,7 @@ describeOneTableDetails(const char *schemaname,
 					/* Visually distinguish inherited triggers */
 					if (!PQgetisnull(result, i, 4))
 						appendPQExpBuffer(&buf, ", ON TABLE %s",
-								PQgetvalue(result, i, 4));
+										  PQgetvalue(result, i, 4));
 
 					printTableAddFooter(&cont, buf.data);
 				}

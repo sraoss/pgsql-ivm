@@ -347,8 +347,9 @@ ERROR:  functions in IMMV must be marked IMMUTABLE
     <listitem>
      <para>
       This clause specifies optional storage parameters for the new
-      materialized view; see <xref linkend="sql-createtable-storage-parameters"
-      endterm="sql-createtable-storage-parameters-title"/> for more
+      materialized view; see
+      <xref linkend="sql-createtable-storage-parameters"/> in the
+      <xref linkend="sql-createtable"/> documentation for more
       information.  All parameters supported for <literal>CREATE
       TABLE</literal> are also supported for <literal>CREATE MATERIALIZED
       VIEW</literal>.
