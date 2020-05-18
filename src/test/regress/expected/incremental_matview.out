@@ -5715,7 +5715,7 @@ SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
 
 CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num_tbl USING(id);
 RESET SESSION AUTHORIZATION;
-WITH 
+WITH
  x AS (UPDATE rls_tbl SET data = data || '_2' where id in (3,4)),
  y AS (UPDATE num_tbl SET num = num || '_2' where id in (3,4))
 SELECT;
