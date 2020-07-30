@@ -1250,6 +1250,7 @@ LUID
 LVDeadTuples
 LVParallelState
 LVRelStats
+LVSavedErrInfo
 LVShared
 LVSharedIndStats
 LWLock
@@ -1459,7 +1460,6 @@ OffsetVarNodes_context
 Oid
 OidOptions
 OkeysState
-OldSerXidControl
 OldSnapshotControlData
 OldToNewMapping
 OldToNewMappingData
@@ -1659,7 +1659,7 @@ PQconninfoOption
 PQnoticeProcessor
 PQnoticeReceiver
 PQprintOpt
-PQsslKeyPassHook_type
+PQsslKeyPassHook_OpenSSL_type
 PREDICATELOCK
 PREDICATELOCKTAG
 PREDICATELOCKTARGET
@@ -2212,6 +2212,7 @@ SeqScanState
 SeqTable
 SeqTableData
 SerCommitSeqNo
+SerialControl
 SerializableXactHandle
 SerializedActiveRelMaps
 SerializedReindexState
@@ -3291,6 +3292,7 @@ remoteDep
 rendezvousHashEntry
 replace_rte_variables_callback
 replace_rte_variables_context
+ret_type
 rewrite_event
 rijndael_ctx
 rm_detail_t

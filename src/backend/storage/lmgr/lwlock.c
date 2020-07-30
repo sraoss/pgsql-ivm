@@ -111,7 +111,7 @@ extern slock_t *ShmemLock;
  * There are three sorts of LWLock "tranches":
  *
  * 1. The individually-named locks defined in lwlocknames.h each have their
- * own tranche.  The names of these tranches appear in MainLWLockNames[]
+ * own tranche.  The names of these tranches appear in IndividualLWLockNames[]
  * in lwlocknames.c.
  *
  * 2. There are some predefined tranches for built-in groups of locks.
@@ -121,59 +121,63 @@ extern slock_t *ShmemLock;
  * 3. Extensions can create new tranches, via either RequestNamedLWLockTranche
  * or LWLockRegisterTranche.  The names of these that are known in the current
  * process appear in LWLockTrancheNames[].
+ *
+ * All these names are user-visible as wait event names, so choose with care
+ * ... and do not forget to update the documentation's list of wait events.
  */
+extern const char *const IndividualLWLockNames[];	/* in lwlocknames.c */
 
 static const char *const BuiltinTrancheNames[] = {
-	/* LWTRANCHE_CLOG_BUFFERS: */
-	"clog",
-	/* LWTRANCHE_COMMITTS_BUFFERS: */
-	"commit_timestamp",
-	/* LWTRANCHE_SUBTRANS_BUFFERS: */
-	"subtrans",
-	/* LWTRANCHE_MXACTOFFSET_BUFFERS: */
-	"multixact_offset",
-	/* LWTRANCHE_MXACTMEMBER_BUFFERS: */
-	"multixact_member",
-	/* LWTRANCHE_ASYNC_BUFFERS: */
-	"async",
-	/* LWTRANCHE_OLDSERXID_BUFFERS: */
-	"oldserxid",
+	/* LWTRANCHE_XACT_BUFFER: */
+	"XactBuffer",
+	/* LWTRANCHE_COMMITTS_BUFFER: */
+	"CommitTSBuffer",
+	/* LWTRANCHE_SUBTRANS_BUFFER: */
+	"SubtransBuffer",
+	/* LWTRANCHE_MULTIXACTOFFSET_BUFFER: */
+	"MultiXactOffsetBuffer",
+	/* LWTRANCHE_MULTIXACTMEMBER_BUFFER: */
+	"MultiXactMemberBuffer",
+	/* LWTRANCHE_NOTIFY_BUFFER: */
+	"NotifyBuffer",
+	/* LWTRANCHE_SERIAL_BUFFER: */
+	"SerialBuffer",
 	/* LWTRANCHE_WAL_INSERT: */
-	"wal_insert",
+	"WALInsert",
 	/* LWTRANCHE_BUFFER_CONTENT: */
-	"buffer_content",
-	/* LWTRANCHE_BUFFER_IO_IN_PROGRESS: */
-	"buffer_io",
-	/* LWTRANCHE_REPLICATION_ORIGIN: */
-	"replication_origin",
-	/* LWTRANCHE_REPLICATION_SLOT_IO_IN_PROGRESS: */
-	"replication_slot_io",
-	/* LWTRANCHE_PROC: */
-	"proc",
+	"BufferContent",
+	/* LWTRANCHE_BUFFER_IO: */
+	"BufferIO",
+	/* LWTRANCHE_REPLICATION_ORIGIN_STATE: */
+	"ReplicationOriginState",
+	/* LWTRANCHE_REPLICATION_SLOT_IO: */
+	"ReplicationSlotIO",
+	/* LWTRANCHE_LOCK_FASTPATH: */
+	"LockFastPath",
 	/* LWTRANCHE_BUFFER_MAPPING: */
-	"buffer_mapping",
+	"BufferMapping",
 	/* LWTRANCHE_LOCK_MANAGER: */
-	"lock_manager",
+	"LockManager",
 	/* LWTRANCHE_PREDICATE_LOCK_MANAGER: */
-	"predicate_lock_manager",
+	"PredicateLockManager",
 	/* LWTRANCHE_PARALLEL_HASH_JOIN: */
-	"parallel_hash_join",
+	"ParallelHashJoin",
 	/* LWTRANCHE_PARALLEL_QUERY_DSA: */
-	"parallel_query_dsa",
-	/* LWTRANCHE_SESSION_DSA: */
-	"session_dsa",
-	/* LWTRANCHE_SESSION_RECORD_TABLE: */
-	"session_record_table",
-	/* LWTRANCHE_SESSION_TYPMOD_TABLE: */
-	"session_typmod_table",
+	"ParallelQueryDSA",
+	/* LWTRANCHE_PER_SESSION_DSA: */
+	"PerSessionDSA",
+	/* LWTRANCHE_PER_SESSION_RECORD_TYPE: */
+	"PerSessionRecordType",
+	/* LWTRANCHE_PER_SESSION_RECORD_TYPMOD: */
+	"PerSessionRecordTypmod",
 	/* LWTRANCHE_SHARED_TUPLESTORE: */
-	"shared_tuplestore",
-	/* LWTRANCHE_TBM: */
-	"tbm",
+	"SharedTupleStore",
+	/* LWTRANCHE_SHARED_TIDBITMAP: */
+	"SharedTidBitmap",
 	/* LWTRANCHE_PARALLEL_APPEND: */
-	"parallel_append",
-	/* LWTRANCHE_SXACT: */
-	"serializable_xact"
+	"ParallelAppend",
+	/* LWTRANCHE_PER_XACT_PREDICATE_LIST: */
+	"PerXactPredicateList"
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -640,7 +644,10 @@ LWLockNewTrancheId(void)
  *
  * This routine will save a pointer to the tranche name passed as an argument,
  * so the name should be allocated in a backend-lifetime context
- * (TopMemoryContext, static constant, or similar).
+ * (shared memory, TopMemoryContext, static constant, or similar).
+ *
+ * The tranche name will be user-visible as a wait event name, so try to
+ * use a name that fits the style for those.
  */
 void
 LWLockRegisterTranche(int tranche_id, const char *tranche_name)
@@ -690,6 +697,9 @@ LWLockRegisterTranche(int tranche_id, const char *tranche_name)
  * will be ignored.  (We could raise an error, but it seems better to make
  * it a no-op, so that libraries containing such calls can be reloaded if
  * needed.)
+ *
+ * The tranche name will be user-visible as a wait event name, so try to
+ * use a name that fits the style for those.
  */
 void
 RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
@@ -772,7 +782,7 @@ GetLWTrancheName(uint16 trancheId)
 {
 	/* Individual LWLock? */
 	if (trancheId < NUM_INDIVIDUAL_LWLOCKS)
-		return MainLWLockNames[trancheId];
+		return IndividualLWLockNames[trancheId];
 
 	/* Built-in tranche? */
 	if (trancheId < LWTRANCHE_FIRST_USER_DEFINED)

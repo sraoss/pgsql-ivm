@@ -776,17 +776,17 @@ PGPing PQping(const char *conninfo);
      </listitem>
     </varlistentry>
 
-    <varlistentry id="libpq-pqsetsslkeypasshook">
-     <term><function>PQsetSSLKeyPassHook</function><indexterm><primary>PQsetSSLKeyPassHook</primary></indexterm></term>
+    <varlistentry id="libpq-pqsetsslkeypasshook-openssl">
+     <term><function>PQsetSSLKeyPassHook_OpenSSL</function><indexterm><primary>PQsetSSLKeyPassHook_OpenSSL</primary></indexterm></term>
      <listitem>
       <para>
-       <function>PQsetSSLKeyPassHook</function> lets an application override
+       <function>PQsetSSLKeyPassHook_OpenSSL</function> lets an application override
        <literal>libpq</literal>'s <link linkend="libpq-ssl-clientcert">default
        handling of encrypted client certificate key files</link> using
        <xref linkend="libpq-connect-sslpassword"/> or interactive prompting.
 
 <synopsis>
-void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
+void PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook);
 </synopsis>
 
        The application passes a pointer to a callback function with signature:
@@ -794,13 +794,13 @@ void PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook);
 int callback_fn(char *buf, int size, PGconn *conn);
 </programlisting>
        which <literal>libpq</literal> will then call <emphasis>instead of</emphasis>
-       its default <function>PQdefaultSSLKeyPassHook</function> handler. The callback
+       its default <function>PQdefaultSSLKeyPassHook_OpenSSL</function> handler. The callback
        should determine the password for the key and copy it to result-buffer
        <literal>buf</literal> of size <literal>size</literal>. The string in <literal>
        buf</literal> must be null-terminated. The callback must return the length of
        the password stored in <literal>buf</literal> excluding the null terminator.
        On failure, the callback should set <literal>buf[0] = '\0'</literal> and return 0.
-       See <function>PQdefaultSSLKeyPassHook</function> in <literal>libpq</literal>'s
+       See <function>PQdefaultSSLKeyPassHook_OpenSSL</function> in <literal>libpq</literal>'s
        source code for an example.
       </para>
        
@@ -814,7 +814,7 @@ int callback_fn(char *buf, int size, PGconn *conn);
 
       <para>
        The app callback may choose to delegate unhandled cases to
-       <function>PQdefaultSSLKeyPassHook</function>,
+       <function>PQdefaultSSLKeyPassHook_OpenSSL</function>,
        or call it first and try something else if it returns 0, or completely override it.
       </para>
 
@@ -826,16 +826,16 @@ int callback_fn(char *buf, int size, PGconn *conn);
      </listitem>
     </varlistentry>
 
-    <varlistentry id="libpq-pqgetsslkeypasshook">
-     <term><function>PQgetSSLKeyPassHook</function><indexterm><primary>PQgetSSLKeyPassHook</primary></indexterm></term>
+    <varlistentry id="libpq-pqgetsslkeypasshook-openssl">
+     <term><function>PQgetSSLKeyPassHook_OpenSSL</function><indexterm><primary>PQgetSSLKeyPassHook_OpenSSL</primary></indexterm></term>
      <listitem>
       <para>
-       <function>PQgetSSLKeyPassHook</function> returns the current
+       <function>PQgetSSLKeyPassHook_OpenSSL</function> returns the current
        client certificate key password hook, or <literal>NULL</literal>
        if none has been set.
 
 <synopsis>
-PQsslKeyPassHook_type PQgetSSLKeyPassHook(void);
+PQsslKeyPassHook_OpenSSL_type PQgetSSLKeyPassHook_OpenSSL(void);
 </synopsis>
       </para>
 
@@ -925,11 +925,11 @@ postgresql:///mydb?host=localhost&amp;port=5433
    </para>
 
    <para>
-    Connection <acronym>URI</acronym> needs to be encoded with 
-    <ulink url="https://tools.ietf.org/html/rfc3986#section-2.1">Percent-encoding</ulink> 
-    if it includes symbols with special meaning in any of its parts. 
-    Here is an example where equal sign (<literal>=</literal>) is replaced
-    with <literal>%3D</literal> and whitespace character with
+    The connection <acronym>URI</acronym> needs to be encoded with <ulink
+    url="https://tools.ietf.org/html/rfc3986#section-2.1">percent-encoding</ulink>
+    if it includes symbols with special meaning in any of its parts.  Here is
+    an example where the equal sign (<literal>=</literal>) is replaced with
+    <literal>%3D</literal> and the space character with
     <literal>%20</literal>:
 <programlisting>
 postgresql://user@localhost:5433/mydb?options=-c%20synchronous_commit%3Doff
@@ -1745,9 +1745,9 @@ postgresql://%2Fvar%2Flib%2Fpostgresql/dbname
         <literal>TLSv1.1</literal>, <literal>TLSv1.2</literal> and
         <literal>TLSv1.3</literal>. The supported protocols depend on the
         version of <productname>OpenSSL</productname> used, older versions
-        not supporting the most modern protocol versions. If not set, this
-        parameter is ignored and the connection will use the minimum bound
-        defined by the backend.
+        not supporting the most modern protocol versions. If not specified,
+        the default is <literal>TLSv1.2</literal>, which satisfies industry
+        best practices as of this writing.
        </para>
       </listitem>
      </varlistentry>
@@ -7362,7 +7362,7 @@ myEventProc(PGEventId evtId, void *evtInfo, void *passThrough)
    the <literal>host</literal> parameter
    matches <application>libpq</application>'s default socket directory path.
    In a standby server, a database field of <literal>replication</literal>
-   matches streaming replication connections made to the master server.
+   matches streaming replication connections made to the primary server.
    The database field is of limited usefulness otherwise, because users have
    the same password for all databases in the same cluster.
   </para>
@@ -7670,7 +7670,8 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
    OpenSSL with a <literal>Enter PEM pass phrase:</literal>
    prompt if a TTY is available. Applications can override the client certificate
    prompt and the handling of the <literal>sslpassword</literal> parameter by supplying
-   their own key password callback; see <xref linkend="libpq-pqsetsslkeypasshook"/>.
+   their own key password callback; see
+   <xref linkend="libpq-pqsetsslkeypasshook-openssl"/>.
   </para>
 
   <para>
@@ -7915,9 +7916,6 @@ ldap://ldap.acme.com/cn=dbserver,cn=hosts?pgconnectinfo?base?(objectclass=*)
    that the <literal>libssl</literal> and/or <literal>libcrypto</literal> libraries
    have been initialized by your application, so that
    <application>libpq</application> will not also initialize those libraries.
-   See <ulink
-   url="http://h41379.www4.hpe.com/doc/83final/ba554_90007/ch04.html"></ulink>
-   for details on the SSL API.
   </para>
 
   <para>

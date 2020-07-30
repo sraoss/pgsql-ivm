@@ -21,7 +21,7 @@
  *		XLogReadRecord or XLogFindNextRecord; it can be passed in as NULL
  *		otherwise.  The WALRead function can be used as a helper to write
  *		page_read callbacks, but it is not mandatory; callers that use it,
- *		must supply open_segment callbacks.  The close_segment callback
+ *		must supply segment_open callbacks.  The segment_close callback
  *		must always be supplied.
  *
  *		After reading a record with XLogReadRecord(), it's decomposed into
@@ -191,6 +191,8 @@ struct XLogReaderState
 
 	RepOriginId record_origin;
 
+	TransactionId toplevel_xid; /* XID of top-level transaction */
+
 	/* information about blocks referenced by the record. */
 	DecodedBkpBlock blocks[XLR_MAX_BLOCK_ID + 1];
 
@@ -262,10 +264,6 @@ extern XLogReaderRoutine *LocalXLogReaderRoutine(void);
 /* Free an XLogReader */
 extern void XLogReaderFree(XLogReaderState *state);
 
-/* Initialize supporting structures */
-extern void WALOpenSegmentInit(WALOpenSegment *seg, WALSegmentContext *segcxt,
-							   int segsize, const char *waldir);
-
 /* Position the XLogReader to given record */
 extern void XLogBeginRead(XLogReaderState *state, XLogRecPtr RecPtr);
 #ifdef FRONTEND
@@ -308,6 +306,7 @@ extern bool DecodeXLogRecord(XLogReaderState *state, XLogRecord *record,
 #define XLogRecGetRmid(decoder) ((decoder)->decoded_record->xl_rmid)
 #define XLogRecGetXid(decoder) ((decoder)->decoded_record->xl_xid)
 #define XLogRecGetOrigin(decoder) ((decoder)->record_origin)
+#define XLogRecGetTopXid(decoder) ((decoder)->toplevel_xid)
 #define XLogRecGetData(decoder) ((decoder)->main_data)
 #define XLogRecGetDataLen(decoder) ((decoder)->main_data_len)
 #define XLogRecHasAnyBlockRefs(decoder) ((decoder)->max_block_id >= 0)

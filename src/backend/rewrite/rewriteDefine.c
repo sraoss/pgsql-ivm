@@ -1004,6 +1004,8 @@ RenameRewriteRule(RangeVar *relation, const char *oldName,
 
 	CatalogTupleUpdate(pg_rewrite_desc, &ruletup->t_self, ruletup);
 
+	InvokeObjectPostAlterHook(RewriteRelationId, ruleOid, 0);
+
 	heap_freetuple(ruletup);
 	table_close(pg_rewrite_desc, RowExclusiveLock);
 

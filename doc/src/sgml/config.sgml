@@ -697,7 +697,7 @@ include_dir 'conf.d'
 
        <para>
         When running a standby server, you must set this parameter to the
-        same or higher value than on the master server. Otherwise, queries
+        same or higher value than on the primary server. Otherwise, queries
         will not be allowed in the standby server.
        </para>
       </listitem>
@@ -1013,11 +1013,11 @@ include_dir 'conf.d'
       <listitem>
        <para>
         When a password is specified in <xref linkend="sql-createrole"/> or
-        <xref linkend="sql-alterrole"/>, this parameter determines the algorithm
-        to use to encrypt the password. The default value is <literal>md5</literal>,
-        which stores the password as an MD5 hash (<literal>on</literal> is also
-        accepted, as alias for <literal>md5</literal>). Setting this parameter to
-        <literal>scram-sha-256</literal> will encrypt the password with SCRAM-SHA-256.
+        <xref linkend="sql-alterrole"/>, this parameter determines the
+        algorithm to use to encrypt the password.  Possible values are
+        <literal>scram-sha-256</literal>, which will encrypt the password with
+        SCRAM-SHA-256, and <literal>md5</literal>, which stores the password
+        as an MD5 hash.  The default is <literal>scram-sha-256</literal>.
        </para>
        <para>
         Note that older clients might lack support for the SCRAM authentication
@@ -1216,16 +1216,22 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies a list of <acronym>SSL</acronym> cipher suites that are allowed to be
-        used on secure connections.  See
-        the <citerefentry><refentrytitle>ciphers</refentrytitle></citerefentry> manual page
-        in the <application>OpenSSL</application> package for the syntax of this setting
-        and a list of supported values.
-        This parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.
-        The default value is <literal>HIGH:MEDIUM:+3DES:!aNULL</literal>.  The
-        default is usually a reasonable choice unless you have specific
-        security requirements.
+        Specifies a list of <acronym>SSL</acronym> cipher suites that are
+        allowed to be used by SSL connections.  See the
+        <citerefentry><refentrytitle>ciphers</refentrytitle></citerefentry>
+        manual page in the <application>OpenSSL</application> package for the
+        syntax of this setting and a list of supported values.  Only
+        connections using TLS version 1.2 and lower are affected.  There is
+        currently no setting that controls the cipher choices used by TLS
+        version 1.3 connections.  The default value is
+        <literal>HIGH:MEDIUM:+3DES:!aNULL</literal>.  The default is usually a
+        reasonable choice unless you have specific security requirements.
+       </para>
+
+       <para>
+        This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command
+        line.
        </para>
 
        <para>
@@ -1582,6 +1588,33 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-huge-page-size" xreflabel="huge_page_size">
+      <term><varname>huge_page_size</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>huge_page_size</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Controls the size of huge pages, when they are enabled with
+        <xref linkend="guc-huge-pages"/>.
+        The default is zero (<literal>0</literal>).
+        When set to <literal>0</literal>, the default huge page size on the
+        system will be used.
+       </para>
+       <para>
+        Some commonly available page sizes on modern 64 bit server architectures include:
+        <literal>2MB</literal> and <literal>1GB</literal> (Intel and AMD), <literal>16MB</literal> and
+        <literal>16GB</literal> (IBM POWER), and <literal>64kB</literal>, <literal>2MB</literal>,
+        <literal>32MB</literal> and <literal>1GB</literal> (ARM). For more information
+        about usage and support, see <xref linkend="linux-huge-pages"/>.
+       </para>
+       <para>
+        Non-default settings are currently supported only on Linux.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-temp-buffers" xreflabel="temp_buffers">
       <term><varname>temp_buffers</varname> (<type>integer</type>)
       <indexterm>
@@ -1643,7 +1676,7 @@ include_dir 'conf.d'
 
        <para>
         When running a standby server, you must set this parameter to the
-        same or higher value than on the master server. Otherwise, queries
+        same or higher value than on the primary server. Otherwise, queries
         will not be allowed in the standby server.
        </para>
       </listitem>
@@ -2259,7 +2292,7 @@ include_dir 'conf.d'
 
         <para>
          When running a standby server, you must set this parameter to the
-         same or higher value than on the master server. Otherwise, queries
+         same or higher value than on the primary server. Otherwise, queries
          will not be allowed in the standby server.
         </para>
 
@@ -2820,6 +2853,41 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
+      <term><varname>wal_init_zero</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_init_zero</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>on</literal> (the default), this option causes new
+        WAL files to be filled with zeroes.  On some file systems, this ensures
+        that space is allocated before we need to write WAL records.  However,
+        <firstterm>Copy-On-Write</firstterm> (COW) file systems may not benefit
+        from this technique, so the option is given to skip the unnecessary
+        work.  If set to <literal>off</literal>, only the final byte is written
+        when the file is created so that it has the expected size.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
+      <term><varname>wal_recycle</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>wal_recycle</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If set to <literal>on</literal> (the default), this option causes WAL
+        files to be recycled by renaming them, avoiding the need to create new
+        ones.  On COW file systems, it may be faster to create new ones, so the
+        option is given to disable this behavior.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-wal-buffers" xreflabel="wal_buffers">
       <term><varname>wal_buffers</varname> (<type>integer</type>)
       <indexterm>
@@ -3089,7 +3157,7 @@ include_dir 'conf.d'
         checkpoints. This is a soft limit; WAL size can exceed
         <varname>max_wal_size</varname> under special circumstances, such as
         heavy load, a failing <varname>archive_command</varname>, or a high
-        <varname>wal_keep_segments</varname> setting.
+        <varname>wal_keep_size</varname> setting.
         If this value is specified without units, it is taken as megabytes.
         The default is 1 GB.
         Increasing this parameter can increase the amount of time needed for
@@ -3218,7 +3286,7 @@ include_dir 'conf.d'
         <varname>archive_timeout</varname> &mdash; it will bloat your archive
         storage.  <varname>archive_timeout</varname> settings of a minute or so are
         usually reasonable.  You should consider using streaming replication,
-        instead of archiving, if you want data to be copied off the master
+        instead of archiving, if you want data to be copied off the primary
         server more quickly than that.
         If this value is specified without units, it is taken as seconds.
         This parameter can only be set in the
@@ -3643,12 +3711,12 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
      These settings control the behavior of the built-in
      <firstterm>streaming replication</firstterm> feature (see
      <xref linkend="streaming-replication"/>).  Servers will be either a
-     master or a standby server.  Masters can send data, while standbys
+     primary or a standby server.  Primaries can send data, while standbys
      are always receivers of replicated data.  When cascading replication
      (see <xref linkend="cascading-replication"/>) is used, standby servers
      can also be senders, as well as receivers.
      Parameters are mainly for sending and standby servers, though some
-     parameters have meaning only on the master server.  Settings may vary
+     parameters have meaning only on the primary server.  Settings may vary
      across the cluster without problems if that is required.
     </para>
 
@@ -3658,10 +3726,10 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
      <para>
       These parameters can be set on any server that is
       to send replication data to one or more standby servers.
-      The master is always a sending server, so these parameters must
-      always be set on the master.
+      The primary is always a sending server, so these parameters must
+      always be set on the primary.
       The role and meaning of these parameters does not change after a
-      standby becomes the master.
+      standby becomes the primary.
      </para>
 
      <variablelist>
@@ -3689,7 +3757,7 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
 
        <para>
          When running a standby server, you must set this parameter to the
-         same or higher value than on the master server. Otherwise, queries
+         same or higher value than on the primary server. Otherwise, queries
          will not be allowed in the standby server.
         </para>
        </listitem>
@@ -3716,21 +3784,21 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        </listitem>
       </varlistentry>
 
-      <varlistentry id="guc-wal-keep-segments" xreflabel="wal_keep_segments">
-       <term><varname>wal_keep_segments</varname> (<type>integer</type>)
+      <varlistentry id="guc-wal-keep-size" xreflabel="wal_keep_size">
+       <term><varname>wal_keep_size</varname> (<type>integer</type>)
        <indexterm>
-        <primary><varname>wal_keep_segments</varname> configuration parameter</primary>
+        <primary><varname>wal_keep_size</varname> configuration parameter</primary>
        </indexterm>
        </term>
        <listitem>
        <para>
-        Specifies the minimum number of past log file segments kept in the
+        Specifies the minimum size of past log file segments kept in the
         <filename>pg_wal</filename>
         directory, in case a standby server needs to fetch them for streaming
-        replication. Each segment is normally 16 megabytes. If a standby
+        replication. If a standby
         server connected to the sending server falls behind by more than
-        <varname>wal_keep_segments</varname> segments, the sending server might remove
-        a WAL segment still needed by the standby, in which case the
+        <varname>wal_keep_size</varname> megabytes, the sending server might
+        remove a WAL segment still needed by the standby, in which case the
         replication connection will be terminated.  Downstream connections
         will also eventually fail as a result.  (However, the standby
         server can recover by fetching the segment from archive, if WAL
@@ -3738,54 +3806,20 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
        </para>
 
        <para>
-        This sets only the minimum number of segments retained in
+        This sets only the minimum size of segments retained in
         <filename>pg_wal</filename>; the system might need to retain more segments
         for WAL archival or to recover from a checkpoint. If
-        <varname>wal_keep_segments</varname> is zero (the default), the system
+        <varname>wal_keep_size</varname> is zero (the default), the system
         doesn't keep any extra segments for standby purposes, so the number
         of old WAL segments available to standby servers is a function of
         the location of the previous checkpoint and status of WAL
         archiving.
+        If this value is specified without units, it is taken as megabytes.
         This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
        </para>
        </listitem>
       </varlistentry>
-
-     <varlistentry id="guc-wal-init-zero" xreflabel="wal_init_zero">
-      <term><varname>wal_init_zero</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>wal_init_zero</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        If set to <literal>on</literal> (the default), this option causes new
-        WAL files to be filled with zeroes.  On some file systems, this ensures
-        that space is allocated before we need to write WAL records.  However,
-        <firstterm>Copy-On-Write</firstterm> (COW) file systems may not benefit
-        from this technique, so the option is given to skip the unnecessary
-        work.  If set to <literal>off</literal>, only the final byte is written
-        when the file is created so that it has the expected size.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-wal-recycle" xreflabel="wal_recycle">
-      <term><varname>wal_recycle</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>wal_recycle</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        If set to <literal>on</literal> (the default), this option causes WAL
-        files to be recycled by renaming them, avoiding the need to create new
-        ones.  On COW file systems, it may be faster to create new ones, so the
-        option is given to disable this behavior.
-       </para>
-      </listitem>
-     </varlistentry>
 
       <varlistentry id="guc-max-slot-wal-keep-size" xreflabel="max_slot_wal_keep_size">
        <term><varname>max_slot_wal_keep_size</varname> (<type>integer</type>)
@@ -3855,19 +3889,19 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
      </variablelist>
     </sect2>
 
-    <sect2 id="runtime-config-replication-master">
-     <title>Master Server</title>
+    <sect2 id="runtime-config-replication-primary">
+     <title>Primary Server</title>
 
      <para>
-      These parameters can be set on the master/primary server that is
+      These parameters can be set on the primary server that is
       to send replication data to one or more standby servers.
       Note that in addition to these parameters,
-      <xref linkend="guc-wal-level"/> must be set appropriately on the master
+      <xref linkend="guc-wal-level"/> must be set appropriately on the primary
       server, and optionally WAL archiving can be enabled as
       well (see <xref linkend="runtime-config-wal-archiving"/>).
       The values of these parameters on standby servers are irrelevant,
       although you may wish to set them there in preparation for the
-      possibility of a standby becoming the master.
+      possibility of a standby becoming the primary.
      </para>
 
     <variablelist>
@@ -3889,9 +3923,9 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
         The synchronous standbys will be those whose names appear
         in this list, and
         that are both currently connected and streaming data in real-time
-        (as shown by a state of <literal>streaming</literal> in the <link
-        linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
-        view).
+        (as shown by a state of <literal>streaming</literal> in the
+        <link linkend="monitoring-pg-stat-replication-view">
+        <structname>pg_stat_replication</structname></link> view).
         Specifying more than one synchronous standby can allow for very high
         availability and protection against data loss.
        </para>
@@ -4042,7 +4076,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
 
      <para>
       These settings control the behavior of a standby server that is
-      to receive replication data.  Their values on the master server
+      to receive replication data.  Their values on the primary server
       are irrelevant.
      </para>
 
@@ -4083,7 +4117,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           This parameter can only be set in the <filename>postgresql.conf</filename>
           file or on the server command line.
           If this parameter is changed while the WAL receiver process is
-          running, that process is signalled to shut down and expected to
+          running, that process is signaled to shut down and expected to
           restart with the new setting (except if <varname>primary_conninfo</varname>
           is an empty string).
           This setting has no effect if the server is not in standby mode.
@@ -4105,7 +4139,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
           This parameter can only be set in the <filename>postgresql.conf</filename>
           file or on the server command line.
           If this parameter is changed while the WAL receiver process is running,
-          that process is signalled to shut down and expected to restart with the
+          that process is signaled to shut down and expected to restart with the
           new setting.
           This setting has no effect if <varname>primary_conninfo</varname> is not
           set or the server is not in standby mode.
@@ -4227,7 +4261,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         The default is off.  This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
         If this parameter is changed while the WAL receiver process is running,
-        that process is signalled to shut down and expected to restart with
+        that process is signaled to shut down and expected to restart with
         the new setting.
        </para>
       </listitem>
@@ -4244,8 +4278,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        Specifies the minimum frequency for the WAL receiver
        process on the standby to send information about replication progress
        to the primary or upstream standby, where it can be seen using the
-       <link
-       linkend="pg-stat-replication-view"><literal>pg_stat_replication</literal></link>
+       <link linkend="monitoring-pg-stat-replication-view">
+       <structname>pg_stat_replication</structname></link>
        view.  The standby will report
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
@@ -4369,7 +4403,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         of time.  For example, if
         you set this parameter to <literal>5min</literal>, the standby will
         replay each transaction commit only when the system time on the standby
-        is at least five minutes past the commit time reported by the master.
+        is at least five minutes past the commit time reported by the primary.
         If this value is specified without units, it is taken as milliseconds.
         The default is zero, adding no delay.
        </para>
@@ -4377,10 +4411,10 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         It is possible that the replication delay between servers exceeds the
         value of this parameter, in which case no delay is added.
         Note that the delay is calculated between the WAL time stamp as written
-        on master and the current time on the standby. Delays in transfer
+        on primary and the current time on the standby. Delays in transfer
         because of network lag or cascading replication configurations
         may reduce the actual wait time significantly. If the system
-        clocks on master and standby are not synchronized, this may lead to
+        clocks on primary and standby are not synchronized, this may lead to
         recovery applying records earlier than expected; but that is not a
         major issue because useful settings of this parameter are much larger
         than typical time deviations between servers.
@@ -4402,7 +4436,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         except crash recovery.
 
         <varname>hot_standby_feedback</varname> will be delayed by use of this feature
-        which could lead to bloat on the master; use both together with care.
+        which could lead to bloat on the primary; use both together with care.
 
         <warning>
          <para>
@@ -4546,23 +4580,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-groupingsets-hash-disk" xreflabel="enable_groupingsets_hash_disk">
-      <term><varname>enable_groupingsets_hash_disk</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_groupingsets_hash_disk</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables the query planner's use of hashed aggregation plan
-        types for grouping sets when the total size of the hash tables is
-        expected to exceed <varname>work_mem</varname>.  See <xref
-        linkend="queries-grouping-sets"/>.  The default is
-        <literal>off</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-enable-hashagg" xreflabel="enable_hashagg">
       <term><varname>enable_hashagg</varname> (<type>boolean</type>)
       <indexterm>
@@ -4573,21 +4590,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of hashed
         aggregation plan types. The default is <literal>on</literal>.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-enable-hashagg-disk" xreflabel="enable_hashagg_disk">
-      <term><varname>enable_hashagg_disk</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>enable_hashagg_disk</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Enables or disables the query planner's use of hashed aggregation plan
-        types when the memory usage is expected to exceed
-        <varname>work_mem</varname>.  The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -4606,10 +4608,10 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-incrementalsort" xreflabel="enable_incrementalsort">
-      <term><varname>enable_incrementalsort</varname> (<type>boolean</type>)
+     <varlistentry id="guc-enable-incremental-sort" xreflabel="enable_incremental_sort">
+      <term><varname>enable_incremental_sort</varname> (<type>boolean</type>)
       <indexterm>
-       <primary><varname>enable_incrementalsort</varname> configuration parameter</primary>
+       <primary><varname>enable_incremental_sort</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
@@ -4925,7 +4927,8 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         the database is smaller than the total server memory, decreasing
         random_page_cost can be appropriate.  Storage that has a low random
         read cost relative to sequential, e.g. solid-state drives, might
-        also be better modeled with a lower value for random_page_cost.
+        also be better modeled with a lower value for random_page_cost,
+        e.g., <literal>1.1</literal>.
        </para>
 
        <tip>
@@ -5775,7 +5778,7 @@ local0.*    /var/log/postgresql
         by <xref linkend="guc-log-timezone"/>.)
         The supported <literal>%</literal>-escapes are similar to those
         listed in the Open Group's <ulink
-        url="http://pubs.opengroup.org/onlinepubs/009695399/functions/strftime.html">strftime
+        url="https://pubs.opengroup.org/onlinepubs/009695399/functions/strftime.html">strftime
         </ulink> specification.
         Note that the system's <function>strftime</function> is not used
         directly, so platform-specific (nonstandard) extensions do not work.
@@ -6693,8 +6696,10 @@ local0.*    /var/log/postgresql
 
          <para>
           The backend type corresponds to the column
-          <structfield>backend_type</structfield> in the view <xref
-          linkend="pg-stat-activity-view"/>, but additional types can appear
+          <structfield>backend_type</structfield> in the view
+          <link linkend="monitoring-pg-stat-activity-view">
+          <structname>pg_stat_activity</structname></link>,
+          but additional types can appear
           in the log that don't show in that view.
          </para>
 
@@ -7190,7 +7195,8 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
         measure the overhead of timing on your system.
         I/O timing information is
-        displayed in <xref linkend="pg-stat-database-view"/>, in the output of
+        displayed in <link linkend="monitoring-pg-stat-database-view">
+        <structname>pg_stat_database</structname></link>, in the output of
         <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option is
         used, and by <xref linkend="pgstatstatements"/>.  Only superusers can
         change this setting.
@@ -8058,7 +8064,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         treated the timeout as applying to the whole query string.)
         In extended query protocol, the timeout starts running when any
         query-related message (Parse, Bind, Execute, Describe) arrives, and
-        it is cancelled by completion of an Execute or Sync message.
+        it is canceled by completion of an Execute or Sync message.
        </para>
 
        <para>
@@ -9009,7 +9015,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
 
        <para>
         When running a standby server, you must set this parameter to the
-        same or higher value than on the master server. Otherwise, queries
+        same or higher value than on the primary server. Otherwise, queries
         will not be allowed in the standby server.
        </para>
       </listitem>

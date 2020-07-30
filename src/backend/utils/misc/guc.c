@@ -20,11 +20,14 @@
 #include <float.h>
 #include <math.h>
 #include <limits.h>
-#include <unistd.h>
+#ifndef WIN32
+#include <sys/mman.h>
+#endif
 #include <sys/stat.h>
 #ifdef HAVE_SYSLOG
 #include <syslog.h>
 #endif
+#include <unistd.h>
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
@@ -198,6 +201,7 @@ static bool check_max_wal_senders(int *newval, void **extra, GucSource source);
 static bool check_autovacuum_work_mem(int *newval, void **extra, GucSource source);
 static bool check_effective_io_concurrency(int *newval, void **extra, GucSource source);
 static bool check_maintenance_io_concurrency(int *newval, void **extra, GucSource source);
+static bool check_huge_page_size(int *newval, void **extra, GucSource source);
 static void assign_pgstat_temp_directory(const char *newval, void *extra);
 static bool check_application_name(char **newval, void **extra, GucSource source);
 static void assign_application_name(const char *newval, void *extra);
@@ -463,18 +467,9 @@ static const struct config_enum_entry plan_cache_mode_options[] = {
 	{NULL, 0, false}
 };
 
-/*
- * password_encryption used to be a boolean, so accept all the likely
- * variants of "on", too. "off" used to store passwords in plaintext,
- * but we don't support that anymore.
- */
 static const struct config_enum_entry password_encryption_options[] = {
 	{"md5", PASSWORD_TYPE_MD5, false},
 	{"scram-sha-256", PASSWORD_TYPE_SCRAM_SHA_256, false},
-	{"on", PASSWORD_TYPE_MD5, true},
-	{"true", PASSWORD_TYPE_MD5, true},
-	{"yes", PASSWORD_TYPE_MD5, true},
-	{"1", PASSWORD_TYPE_MD5, true},
 	{NULL, 0, false}
 };
 
@@ -585,6 +580,7 @@ int			ssl_renegotiation_limit;
  * need to be duplicated in all the different implementations of pg_shmem.c.
  */
 int			huge_pages;
+int			huge_page_size;
 
 /*
  * These variables are all dummies that don't do anything, except in some
@@ -717,8 +713,8 @@ const char *const config_group_names[] =
 	gettext_noop("Replication"),
 	/* REPLICATION_SENDING */
 	gettext_noop("Replication / Sending Servers"),
-	/* REPLICATION_MASTER */
-	gettext_noop("Replication / Master Server"),
+	/* REPLICATION_PRIMARY */
+	gettext_noop("Replication / Primary Server"),
 	/* REPLICATION_STANDBY */
 	gettext_noop("Replication / Standby Servers"),
 	/* REPLICATION_SUBSCRIBERS */
@@ -992,11 +988,11 @@ static struct config_bool ConfigureNamesBool[] =
 		NULL, NULL, NULL
 	},
 	{
-		{"enable_incrementalsort", PGC_USERSET, QUERY_TUNING_METHOD,
+		{"enable_incremental_sort", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of incremental sort steps."),
 			NULL
 		},
-		&enable_incrementalsort,
+		&enable_incremental_sort,
 		true,
 		NULL, NULL, NULL
 	},
@@ -1008,26 +1004,6 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&enable_hashagg,
 		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_hashagg_disk", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the planner's use of hashed aggregation plans that are expected to exceed work_mem."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&enable_hashagg_disk,
-		true,
-		NULL, NULL, NULL
-	},
-	{
-		{"enable_groupingsets_hash_disk", PGC_USERSET, QUERY_TUNING_METHOD,
-			gettext_noop("Enables the planner's use of hashed aggregation plans for groupingsets when the total size of the hash tables is expected to exceed work_mem."),
-			NULL,
-			GUC_EXPLAIN
-		},
-		&enable_groupingsets_hash_disk,
-		false,
 		NULL, NULL, NULL
 	},
 	{
@@ -2568,7 +2544,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"vacuum_defer_cleanup_age", PGC_SIGHUP, REPLICATION_MASTER,
+		{"vacuum_defer_cleanup_age", PGC_SIGHUP, REPLICATION_PRIMARY,
 			gettext_noop("Number of transactions by which VACUUM and HOT cleanup should be deferred, if any."),
 			NULL
 		},
@@ -2650,12 +2626,13 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
-		{"wal_keep_segments", PGC_SIGHUP, REPLICATION_SENDING,
-			gettext_noop("Sets the number of WAL files held for standby servers."),
-			NULL
+		{"wal_keep_size", PGC_SIGHUP, REPLICATION_SENDING,
+			gettext_noop("Sets the size of WAL files held for standby servers."),
+			NULL,
+			GUC_UNIT_MB
 		},
-		&wal_keep_segments,
-		0, 0, INT_MAX,
+		&wal_keep_size_mb,
+		0, 0, MAX_KILOBYTES,
 		NULL, NULL, NULL
 	},
 
@@ -3400,6 +3377,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, assign_tcp_user_timeout, show_tcp_user_timeout
 	},
 
+	{
+		{"huge_page_size", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("The size of huge page that should be requested."),
+			NULL,
+			GUC_UNIT_KB
+		},
+		&huge_page_size,
+		0, 0, INT_MAX,
+		check_huge_page_size, NULL, NULL
+	},
+
 	/* End-of-list marker */
 	{
 		{NULL, 0, 0, NULL, NULL}, NULL, 0, 0, 0, NULL, NULL, NULL
@@ -3467,7 +3455,7 @@ static struct config_real ConfigureNamesReal[] =
 	{
 		{"parallel_tuple_cost", PGC_USERSET, QUERY_TUNING_COST,
 			gettext_noop("Sets the planner's estimate of the cost of "
-						 "passing each tuple (row) from worker to master backend."),
+						 "passing each tuple (row) from worker to leader backend."),
 			NULL,
 			GUC_EXPLAIN
 		},
@@ -4311,7 +4299,7 @@ static struct config_string ConfigureNamesString[] =
 	},
 
 	{
-		{"synchronous_standby_names", PGC_SIGHUP, REPLICATION_MASTER,
+		{"synchronous_standby_names", PGC_SIGHUP, REPLICATION_PRIMARY,
 			gettext_noop("Number of synchronous standbys and list of names of potential synchronous ones."),
 			NULL,
 			GUC_LIST_INPUT
@@ -4729,13 +4717,11 @@ static struct config_enum ConfigureNamesEnum[] =
 
 	{
 		{"password_encryption", PGC_USERSET, CONN_AUTH_AUTH,
-			gettext_noop("Encrypt passwords."),
-			gettext_noop("When a password is specified in CREATE USER or "
-						 "ALTER USER without writing either ENCRYPTED or UNENCRYPTED, "
-						 "this parameter determines whether the password is to be encrypted.")
+			gettext_noop("Chooses the algorithm for encrypting passwords."),
+			NULL
 		},
 		&Password_encryption,
-		PASSWORD_TYPE_MD5, password_encryption_options,
+		PASSWORD_TYPE_SCRAM_SHA_256, password_encryption_options,
 		NULL, NULL, NULL
 	},
 
@@ -11583,6 +11569,20 @@ check_maintenance_io_concurrency(int *newval, void **extra, GucSource source)
 		return false;
 	}
 #endif							/* USE_PREFETCH */
+	return true;
+}
+
+static bool
+check_huge_page_size(int *newval, void **extra, GucSource source)
+{
+#if !(defined(MAP_HUGE_MASK) && defined(MAP_HUGE_SHIFT))
+	/* Recent enough Linux only, for now.  See GetHugePageSize(). */
+	if (*newval != 0)
+	{
+		GUC_check_errdetail("huge_page_size must be 0 on this platform.");
+		return false;
+	}
+#endif
 	return true;
 }
 

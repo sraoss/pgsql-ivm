@@ -11,7 +11,7 @@
  *	cpu_tuple_cost		Cost of typical CPU time to process a tuple
  *	cpu_index_tuple_cost  Cost of typical CPU time to process an index tuple
  *	cpu_operator_cost	Cost of CPU time to execute an operator or function
- *	parallel_tuple_cost Cost of CPU time to pass a tuple from worker to master backend
+ *	parallel_tuple_cost Cost of CPU time to pass a tuple from worker to leader backend
  *	parallel_setup_cost Cost of setting up shared memory for parallelism
  *
  * We expect that the kernel will typically do some amount of read-ahead
@@ -128,10 +128,8 @@ bool		enable_indexonlyscan = true;
 bool		enable_bitmapscan = true;
 bool		enable_tidscan = true;
 bool		enable_sort = true;
-bool		enable_incrementalsort = true;
+bool		enable_incremental_sort = true;
 bool		enable_hashagg = true;
-bool		enable_hashagg_disk = true;
-bool		enable_groupingsets_hash_disk = false;
 bool		enable_nestloop = true;
 bool		enable_material = true;
 bool		enable_mergejoin = true;
@@ -3257,7 +3255,7 @@ final_cost_mergejoin(PlannerInfo *root, MergePath *path,
 	 * The whole issue is moot if we are working from a unique-ified outer
 	 * input, or if we know we don't need to mark/restore at all.
 	 */
-	if (IsA(outer_path, UniquePath) ||path->skip_mark_restore)
+	if (IsA(outer_path, UniquePath) || path->skip_mark_restore)
 		rescannedtuples = 0;
 	else
 	{
