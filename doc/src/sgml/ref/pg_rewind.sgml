@@ -43,8 +43,8 @@ PostgreSQL documentation
   <para>
    <application>pg_rewind</application> is a tool for synchronizing a PostgreSQL cluster
    with another copy of the same cluster, after the clusters' timelines have
-   diverged. A typical scenario is to bring an old master server back online
-   after failover as a standby that follows the new master.
+   diverged. A typical scenario is to bring an old primary server back online
+   after failover as a standby that follows the new primary.
   </para>
 
   <para>
@@ -179,23 +179,6 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--no-ensure-shutdown</option></term>
-      <listitem>
-       <para>
-        <application>pg_rewind</application> requires that the target server
-        is cleanly shut down before rewinding. By default, if the target server
-        is not shut down cleanly, <application>pg_rewind</application> starts
-        the target server in single-user mode to complete crash recovery first,
-        and stops it.
-        By passing this option, <application>pg_rewind</application> skips
-        this and errors out immediately if the server is not cleanly shut
-        down. Users are expected to handle the situation themselves in that
-        case.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
       <term><option>-R</option></term>
       <term><option>--write-recovery-conf</option></term>
       <listitem>
@@ -264,6 +247,23 @@ PostgreSQL documentation
        <para>
         Print verbose debugging output that is mostly useful for developers
         debugging <application>pg_rewind</application>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>--no-ensure-shutdown</option></term>
+      <listitem>
+       <para>
+        <application>pg_rewind</application> requires that the target server
+        is cleanly shut down before rewinding. By default, if the target server
+        is not shut down cleanly, <application>pg_rewind</application> starts
+        the target server in single-user mode to complete crash recovery first,
+        and stops it.
+        By passing this option, <application>pg_rewind</application> skips
+        this and errors out immediately if the server is not cleanly shut
+        down. Users are expected to handle the situation themselves in that
+        case.
        </para>
       </listitem>
      </varlistentry>

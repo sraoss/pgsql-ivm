@@ -122,7 +122,7 @@ typedef struct ReplicationState
 	int			acquired_by;
 
 	/*
-	 * Condition variable that's signalled when acquired_by changes.
+	 * Condition variable that's signaled when acquired_by changes.
 	 */
 	ConditionVariable origin_cv;
 
@@ -144,7 +144,9 @@ typedef struct ReplicationStateOnDisk
 
 typedef struct ReplicationStateCtl
 {
+	/* Tranche to use for per-origin LWLocks */
 	int			tranche_id;
+	/* Array of length max_replication_slots */
 	ReplicationState states[FLEXIBLE_ARRAY_MEMBER];
 } ReplicationStateCtl;
 
@@ -161,6 +163,10 @@ TimestampTz replorigin_session_origin_timestamp = 0;
  * max_replication_slots?
  */
 static ReplicationState *replication_states;
+
+/*
+ * Actual shared memory block (replication_states[] is now part of this).
+ */
 static ReplicationStateCtl *replication_states_ctl;
 
 /*
@@ -176,11 +182,6 @@ static ReplicationState *session_replication_state = NULL;
 static void
 replorigin_check_prerequisites(bool check_slots, bool recoveryOK)
 {
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("only superusers can query or manipulate replication origins")));
-
 	if (check_slots && max_replication_slots == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
@@ -421,7 +422,7 @@ restart:
 
 
 /*
- * Lookup replication origin via it's oid and return the name.
+ * Lookup replication origin via its oid and return the name.
  *
  * The external name is palloc'd in the calling context.
  *
@@ -476,7 +477,7 @@ ReplicationOriginShmemSize(void)
 	/*
 	 * XXX: max_replication_slots is arguably the wrong thing to use, as here
 	 * we keep the replay state of *remote* transactions. But for now it seems
-	 * sufficient to reuse it, lest we introduce a separate GUC.
+	 * sufficient to reuse it, rather than introduce a separate GUC.
 	 */
 	if (max_replication_slots == 0)
 		return size;
@@ -506,9 +507,9 @@ ReplicationOriginShmemInit(void)
 	{
 		int			i;
 
-		replication_states_ctl->tranche_id = LWTRANCHE_REPLICATION_ORIGIN;
+		MemSet(replication_states_ctl, 0, ReplicationOriginShmemSize());
 
-		MemSet(replication_states, 0, ReplicationOriginShmemSize());
+		replication_states_ctl->tranche_id = LWTRANCHE_REPLICATION_ORIGIN_STATE;
 
 		for (i = 0; i < max_replication_slots; i++)
 		{

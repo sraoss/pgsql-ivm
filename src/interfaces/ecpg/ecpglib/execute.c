@@ -132,7 +132,7 @@ next_insert(char *text, int pos, bool questionmarks, bool std_strings)
 				for (i = p + 1; isdigit((unsigned char) text[i]); i++)
 					 /* empty loop body */ ;
 				if (!isalpha((unsigned char) text[i]) &&
-					isascii((unsigned char) text[i]) &&text[i] != '_')
+					isascii((unsigned char) text[i]) && text[i] != '_')
 					/* not dollar delimited quote */
 					return p;
 			}
@@ -822,8 +822,8 @@ ecpg_store_input(const int lineno, const bool force_indicator, const struct vari
 
 			case ECPGt_bytea:
 				{
-					struct ECPGgeneric_varchar *variable =
-					(struct ECPGgeneric_varchar *) (var->value);
+					struct ECPGgeneric_bytea *variable =
+					(struct ECPGgeneric_bytea *) (var->value);
 
 					if (!(mallocedval = (char *) ecpg_alloc(variable->len, lineno)))
 						return false;
@@ -1401,7 +1401,7 @@ ecpg_build_params(struct statement *stmt)
 
 			if (var->type == ECPGt_bytea)
 			{
-				binary_length = ((struct ECPGgeneric_varchar *) (var->value))->len;
+				binary_length = ((struct ECPGgeneric_bytea *) (var->value))->len;
 				binary_format = true;
 			}
 		}

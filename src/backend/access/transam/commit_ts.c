@@ -235,7 +235,7 @@ SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 	int			slotno;
 	int			i;
 
-	LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 
 	slotno = SimpleLruReadPage(CommitTsCtl, pageno, true, xid);
 
@@ -245,13 +245,13 @@ SetXidCommitTsInPage(TransactionId xid, int nsubxids,
 
 	CommitTsCtl->shared->page_dirty[slotno] = true;
 
-	LWLockRelease(CommitTsControlLock);
+	LWLockRelease(CommitTsSLRULock);
 }
 
 /*
  * Sets the commit timestamp of a single transaction.
  *
- * Must be called with CommitTsControlLock held
+ * Must be called with CommitTsSLRULock held
  */
 static void
 TransactionIdSetCommitTs(TransactionId xid, TimestampTz ts,
@@ -352,7 +352,7 @@ TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
 	if (nodeid)
 		*nodeid = entry.nodeid;
 
-	LWLockRelease(CommitTsControlLock);
+	LWLockRelease(CommitTsSLRULock);
 	return *ts != 0;
 }
 
@@ -361,7 +361,7 @@ TransactionIdGetCommitTsData(TransactionId xid, TimestampTz *ts,
  * is concerned, anyway; it's up to the caller to ensure the value is useful
  * for its purposes.)
  *
- * ts and extra are filled with the corresponding data; they can be passed
+ * ts and nodeid are filled with the corresponding data; they can be passed
  * as NULL if not wanted.
  */
 TransactionId
@@ -392,7 +392,7 @@ error_commit_ts_disabled(void)
 			(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 			 errmsg("could not get commit timestamp data"),
 			 RecoveryInProgress() ?
-			 errhint("Make sure the configuration parameter \"%s\" is set on the master server.",
+			 errhint("Make sure the configuration parameter \"%s\" is set on the primary server.",
 					 "track_commit_timestamp") :
 			 errhint("Make sure the configuration parameter \"%s\" is set.",
 					 "track_commit_timestamp")));
@@ -417,28 +417,38 @@ pg_xact_commit_timestamp(PG_FUNCTION_ARGS)
 }
 
 
+/*
+ * pg_last_committed_xact
+ *
+ * SQL-callable wrapper to obtain some information about the latest
+ * committed transaction: transaction ID, timestamp and replication
+ * origin.
+ */
 Datum
 pg_last_committed_xact(PG_FUNCTION_ARGS)
 {
 	TransactionId xid;
+	RepOriginId nodeid;
 	TimestampTz ts;
-	Datum		values[2];
-	bool		nulls[2];
+	Datum		values[3];
+	bool		nulls[3];
 	TupleDesc	tupdesc;
 	HeapTuple	htup;
 
 	/* and construct a tuple with our data */
-	xid = GetLatestCommitTsData(&ts, NULL);
+	xid = GetLatestCommitTsData(&ts, &nodeid);
 
 	/*
 	 * Construct a tuple descriptor for the result row.  This must match this
 	 * function's pg_proc entry!
 	 */
-	tupdesc = CreateTemplateTupleDesc(2);
+	tupdesc = CreateTemplateTupleDesc(3);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "xid",
 					   XIDOID, -1, 0);
 	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "timestamp",
 					   TIMESTAMPTZOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "roident",
+					   OIDOID, -1, 0);
 	tupdesc = BlessTupleDesc(tupdesc);
 
 	if (!TransactionIdIsNormal(xid))
@@ -452,6 +462,9 @@ pg_last_committed_xact(PG_FUNCTION_ARGS)
 
 		values[1] = TimestampTzGetDatum(ts);
 		nulls[1] = false;
+
+		values[2] = ObjectIdGetDatum((Oid) nodeid);
+		nulls[2] = false;
 	}
 
 	htup = heap_form_tuple(tupdesc, values, nulls);
@@ -459,6 +472,54 @@ pg_last_committed_xact(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
 }
 
+/*
+ * pg_xact_commit_timestamp_origin
+ *
+ * SQL-callable wrapper to obtain commit timestamp and replication origin
+ * of a given transaction.
+ */
+Datum
+pg_xact_commit_timestamp_origin(PG_FUNCTION_ARGS)
+{
+	TransactionId xid = PG_GETARG_UINT32(0);
+	RepOriginId nodeid;
+	TimestampTz ts;
+	Datum		values[2];
+	bool		nulls[2];
+	TupleDesc	tupdesc;
+	HeapTuple	htup;
+	bool		found;
+
+	found = TransactionIdGetCommitTsData(xid, &ts, &nodeid);
+
+	/*
+	 * Construct a tuple descriptor for the result row.  This must match this
+	 * function's pg_proc entry!
+	 */
+	tupdesc = CreateTemplateTupleDesc(2);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "timestamp",
+					   TIMESTAMPTZOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "roident",
+					   OIDOID, -1, 0);
+	tupdesc = BlessTupleDesc(tupdesc);
+
+	if (!found)
+	{
+		memset(nulls, true, sizeof(nulls));
+	}
+	else
+	{
+		values[0] = TimestampTzGetDatum(ts);
+		nulls[0] = false;
+
+		values[1] = ObjectIdGetDatum((Oid) nodeid);
+		nulls[1] = false;
+	}
+
+	htup = heap_form_tuple(tupdesc, values, nulls);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(htup));
+}
 
 /*
  * Number of shared CommitTS buffers.
@@ -492,9 +553,9 @@ CommitTsShmemInit(void)
 	bool		found;
 
 	CommitTsCtl->PagePrecedes = CommitTsPagePrecedes;
-	SimpleLruInit(CommitTsCtl, "commit_timestamp", CommitTsShmemBuffers(), 0,
-				  CommitTsControlLock, "pg_commit_ts",
-				  LWTRANCHE_COMMITTS_BUFFERS);
+	SimpleLruInit(CommitTsCtl, "CommitTs", CommitTsShmemBuffers(), 0,
+				  CommitTsSLRULock, "pg_commit_ts",
+				  LWTRANCHE_COMMITTS_BUFFER);
 
 	commitTsShared = ShmemInitStruct("CommitTs shared",
 									 sizeof(CommitTimestampShared),
@@ -592,12 +653,12 @@ CommitTsParameterChange(bool newvalue, bool oldvalue)
 {
 	/*
 	 * If the commit_ts module is disabled in this server and we get word from
-	 * the master server that it is enabled there, activate it so that we can
+	 * the primary server that it is enabled there, activate it so that we can
 	 * replay future WAL records involving it; also mark it as active on
 	 * pg_control.  If the old value was already set, we already did this, so
 	 * don't do anything.
 	 *
-	 * If the module is disabled in the master, disable it here too, unless
+	 * If the module is disabled in the primary, disable it here too, unless
 	 * the module is enabled locally.
 	 *
 	 * Note this only runs in the recovery process, so an unlocked read is
@@ -616,12 +677,12 @@ CommitTsParameterChange(bool newvalue, bool oldvalue)
  * Activate this module whenever necessary.
  *		This must happen during postmaster or standalone-backend startup,
  *		or during WAL replay anytime the track_commit_timestamp setting is
- *		changed in the master.
+ *		changed in the primary.
  *
  * The reason why this SLRU needs separate activation/deactivation functions is
  * that it can be enabled/disabled during start and the activation/deactivation
- * on master is propagated to standby via replay. Other SLRUs don't have this
- * property and they can be just initialized during normal startup.
+ * on the primary is propagated to the standby via replay. Other SLRUs don't
+ * have this property and they can be just initialized during normal startup.
  *
  * This is in charge of creating the currently active segment, if it's not
  * already there.  The reason for this is that the server might have been
@@ -649,9 +710,9 @@ ActivateCommitTs(void)
 	/*
 	 * Re-Initialize our idea of the latest page number.
 	 */
-	LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 	CommitTsCtl->shared->latest_page_number = pageno;
-	LWLockRelease(CommitTsControlLock);
+	LWLockRelease(CommitTsSLRULock);
 
 	/*
 	 * If CommitTs is enabled, but it wasn't in the previous server run, we
@@ -679,11 +740,11 @@ ActivateCommitTs(void)
 	{
 		int			slotno;
 
-		LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+		LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 		slotno = ZeroCommitTsPage(pageno, false);
 		SimpleLruWritePage(CommitTsCtl, slotno);
 		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
-		LWLockRelease(CommitTsControlLock);
+		LWLockRelease(CommitTsSLRULock);
 	}
 
 	/* Change the activation status in shared memory. */
@@ -732,9 +793,9 @@ DeactivateCommitTs(void)
 	 * be overwritten anyway when we wrap around, but it seems better to be
 	 * tidy.)
 	 */
-	LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 	(void) SlruScanDirectory(CommitTsCtl, SlruScanDirCbDeleteAll, NULL);
-	LWLockRelease(CommitTsControlLock);
+	LWLockRelease(CommitTsSLRULock);
 }
 
 /*
@@ -804,12 +865,12 @@ ExtendCommitTs(TransactionId newestXact)
 
 	pageno = TransactionIdToCTsPage(newestXact);
 
-	LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+	LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 
 	/* Zero the page and make an XLOG entry about it */
 	ZeroCommitTsPage(pageno, !InRecovery);
 
-	LWLockRelease(CommitTsControlLock);
+	LWLockRelease(CommitTsSLRULock);
 }
 
 /*
@@ -974,13 +1035,13 @@ commit_ts_redo(XLogReaderState *record)
 
 		memcpy(&pageno, XLogRecGetData(record), sizeof(int));
 
-		LWLockAcquire(CommitTsControlLock, LW_EXCLUSIVE);
+		LWLockAcquire(CommitTsSLRULock, LW_EXCLUSIVE);
 
 		slotno = ZeroCommitTsPage(pageno, false);
 		SimpleLruWritePage(CommitTsCtl, slotno);
 		Assert(!CommitTsCtl->shared->page_dirty[slotno]);
 
-		LWLockRelease(CommitTsControlLock);
+		LWLockRelease(CommitTsSLRULock);
 	}
 	else if (info == COMMIT_TS_TRUNCATE)
 	{

@@ -79,6 +79,9 @@ typedef struct ReplicationSlotPersistentData
 	/* oldest LSN that might be required by this replication slot */
 	XLogRecPtr	restart_lsn;
 
+	/* restart_lsn is copied here when the slot is invalidated */
+	XLogRecPtr	invalidated_at;
+
 	/*
 	 * Oldest LSN that the client has acked receipt for.  This is used as the
 	 * start_lsn point in case the client doesn't specify one, and also as a
@@ -142,7 +145,7 @@ typedef struct ReplicationSlot
 	/* is somebody performing io on this slot? */
 	LWLock		io_in_progress_lock;
 
-	/* Condition variable signalled when active_pid changes */
+	/* Condition variable signaled when active_pid changes */
 	ConditionVariable active_cv;
 
 	/* all the remaining data is only used for logical slots */
@@ -158,8 +161,8 @@ typedef struct ReplicationSlot
 	XLogRecPtr	candidate_restart_lsn;
 } ReplicationSlot;
 
-#define SlotIsPhysical(slot) (slot->data.database == InvalidOid)
-#define SlotIsLogical(slot) (slot->data.database != InvalidOid)
+#define SlotIsPhysical(slot) ((slot)->data.database == InvalidOid)
+#define SlotIsLogical(slot) ((slot)->data.database != InvalidOid)
 
 /*
  * Shared memory control area for all of replication slots.

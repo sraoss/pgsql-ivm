@@ -1638,7 +1638,7 @@ vac_truncate_clog(TransactionId frozenXID,
 	 * Update the wrap limit for GetNewTransactionId and creation of new
 	 * MultiXactIds.  Note: these functions will also signal the postmaster
 	 * for an(other) autovac cycle if needed.   XXX should we avoid possibly
-	 * signalling twice?
+	 * signaling twice?
 	 */
 	SetTransactionIdLimit(frozenXID, oldestxid_datoid);
 	SetMultiXactIdLimit(minMulti, minmulti_datoid, false);
@@ -1897,7 +1897,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
 
 	/*
 	 * If the relation has a secondary toast rel, vacuum that too while we
-	 * still hold the session lock on the master table.  Note however that
+	 * still hold the session lock on the main table.  Note however that
 	 * "analyze" will not get done on the toast table.  This is good, because
 	 * the toaster always uses hardcoded index access and statistics are
 	 * totally unimportant for toast relations.
@@ -1906,7 +1906,7 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams *params)
 		vacuum_rel(toast_relid, NULL, params);
 
 	/*
-	 * Now release the session-level lock on the master table.
+	 * Now release the session-level lock on the main table.
 	 */
 	UnlockRelationIdForSession(&onerelid, lmode);
 

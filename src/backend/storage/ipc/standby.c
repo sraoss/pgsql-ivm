@@ -61,7 +61,7 @@ typedef struct RecoveryLockListsEntry
 
 /*
  * InitRecoveryTransactionEnvironment
- *		Initialize tracking of in-progress transactions in master
+ *		Initialize tracking of our primary's in-progress transactions.
  *
  * We need to issue shared invalidations and hold locks. Holding locks
  * means others may want to wait on us, so we need to make a lock table
@@ -92,7 +92,7 @@ InitRecoveryTransactionEnvironment(void)
 	/*
 	 * Initialize shared invalidation management for Startup process, being
 	 * careful to register ourselves as a sendOnly process so we don't need to
-	 * read messages, nor will we get signalled when the queue starts filling
+	 * read messages, nor will we get signaled when the queue starts filling
 	 * up.
 	 */
 	SharedInvalBackendInit(true);

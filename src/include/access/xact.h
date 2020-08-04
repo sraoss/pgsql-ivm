@@ -146,7 +146,7 @@ typedef void (*SubXactCallback) (SubXactEvent event, SubTransactionId mySubid,
 #define XLOG_XACT_COMMIT_PREPARED	0x30
 #define XLOG_XACT_ABORT_PREPARED	0x40
 #define XLOG_XACT_ASSIGNMENT		0x50
-/* free opcode 0x60 */
+#define XLOG_XACT_INVALIDATIONS		0x60
 /* free opcode 0x70 */
 
 /* mask for filtering opcodes out of xl_info */
@@ -204,7 +204,7 @@ typedef struct xl_xact_assignment
  *
  * A minimal commit/abort record only consists of a xl_xact_commit/abort
  * struct. The presence of additional information is indicated by bits set in
- * 'xl_xact_xinfo->xinfo'. The presence of the xinfo field itself is signalled
+ * 'xl_xact_xinfo->xinfo'. The presence of the xinfo field itself is signaled
  * by a set XLOG_XACT_HAS_INFO bit in the xl_info field.
  *
  * NB: All the individual data chunks should be sized to multiples of
@@ -428,13 +428,16 @@ extern void UnregisterXactCallback(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
 
+extern bool IsSubTransactionAssignmentPending(void);
+extern void MarkSubTransactionAssigned(void);
+
 extern int	xactGetCommittedChildren(TransactionId **ptr);
 
 extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
 									  int nsubxacts, TransactionId *subxacts,
 									  int nrels, RelFileNode *rels,
 									  int nmsgs, SharedInvalidationMessage *msgs,
-									  bool relcacheInval, bool forceSync,
+									  bool relcacheInval,
 									  int xactflags,
 									  TransactionId twophase_xid,
 									  const char *twophase_gid);

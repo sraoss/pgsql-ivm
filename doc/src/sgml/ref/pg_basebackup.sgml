@@ -9,7 +9,7 @@ PostgreSQL documentation
  </indexterm>
 
  <refmeta>
-  <refentrytitle>pg_basebackup</refentrytitle>
+  <refentrytitle><application>pg_basebackup</application></refentrytitle>
   <manvolnum>1</manvolnum>
   <refmiscinfo>Application</refmiscinfo>
  </refmeta>
@@ -27,9 +27,7 @@ PostgreSQL documentation
  </refsynopsisdiv>
 
  <refsect1>
-  <title>
-   Description
-  </title>
+  <title>Description</title>
   <para>
    <application>pg_basebackup</application> is used to take base backups of
    a running <productname>PostgreSQL</productname> database cluster. These
@@ -67,11 +65,11 @@ PostgreSQL documentation
 
   <para>
    <application>pg_basebackup</application> can make a base backup from
-   not only the master but also the standby. To take a backup from the standby,
+   not only the primary but also the standby. To take a backup from the standby,
    set up the standby so that it can accept replication connections (that is, set
    <varname>max_wal_senders</varname> and <xref linkend="guc-hot-standby"/>,
    and configure <link linkend="auth-pg-hba-conf">host-based authentication</link>).
-   You will also need to enable <xref linkend="guc-full-page-writes"/> on the master.
+   You will also need to enable <xref linkend="guc-full-page-writes"/> on the primary.
   </para>
 
   <para>
@@ -91,13 +89,13 @@ PostgreSQL documentation
     </listitem>
     <listitem>
      <para>
-      If the standby is promoted to the master during online backup, the backup fails.
+      If the standby is promoted to the primary during online backup, the backup fails.
      </para>
     </listitem>
     <listitem>
      <para>
       All WAL records required for the backup must contain sufficient full-page writes,
-      which requires you to enable <varname>full_page_writes</varname> on the master and
+      which requires you to enable <varname>full_page_writes</varname> on the primary and
       not to use a tool like <application>pg_compresslog</application> as
       <varname>archive_command</varname> to remove full-page writes from WAL files.
      </para>
@@ -307,7 +305,7 @@ PostgreSQL documentation
            <para>
             The write-ahead log files are collected at the end of the backup.
             Therefore, it is necessary for the
-            <xref linkend="guc-wal-keep-segments"/> parameter to be set high
+            <xref linkend="guc-wal-keep-size"/> parameter to be set high
              enough that the log is not removed before the end of the backup.
              If the log has been rotated when it's time to transfer it, the
              backup will fail and be unusable.
@@ -330,7 +328,7 @@ PostgreSQL documentation
             it will use up two connections configured by the
             <xref linkend="guc-max-wal-senders"/> parameter. As long as the
              client can keep up with write-ahead log received, using this mode
-             requires no extra write-ahead logs to be saved on the master.
+             requires no extra write-ahead logs to be saved on the primary.
            </para>
            <para>
             When tar format mode is used, the write-ahead log files will be
@@ -343,8 +341,7 @@ PostgreSQL documentation
            </para>
           </listitem>
          </varlistentry>
-        </variablelist>
-       </para>
+        </variablelist></para>
       </listitem>
      </varlistentry>
 
@@ -502,38 +499,51 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--no-slot</option></term>
+      <term><option>--manifest-checksums=<replaceable class="parameter">algorithm</replaceable></option></term>
       <listitem>
        <para>
-        This option prevents the creation of a temporary replication slot
-        during the backup even if it's supported by the server.
+        Specifies the checksum algorithm that should be applied to each file
+        included in the backup manifest. Currently, the available
+        algorithms are <literal>NONE</literal>, <literal>CRC32C</literal>,
+        <literal>SHA224</literal>, <literal>SHA256</literal>,
+        <literal>SHA384</literal>, and <literal>SHA512</literal>.
+        The default is <literal>CRC32C</literal>.
        </para>
        <para>
-        Temporary replication slots are created by default if no slot name
-        is given with the option <option>-S</option> when using log streaming.
+        If <literal>NONE</literal> is selected, the backup manifest will
+        not contain any checksums. Otherwise, it will contain a checksum
+        of each file in the backup using the specified algorithm. In addition,
+        the manifest will always contain a <literal>SHA256</literal>
+        checksum of its own contents. The <literal>SHA</literal> algorithms
+        are significantly more CPU-intensive than <literal>CRC32C</literal>,
+        so selecting one of them may increase the time required to complete
+        the backup.
        </para>
        <para>
-        The main purpose of this option is to allow taking a base backup when
-        the server is out of free replication slots.  Using replication slots
-        is almost always preferred, because it prevents needed WAL from being
-        removed by the server during the backup.
+        Using a SHA hash function provides a cryptographically secure digest
+        of each file for users who wish to verify that the backup has not been
+        tampered with, while the CRC32C algorithm provides a checksum which is
+        much faster to calculate and good at catching errors due to accidental
+        changes but is not resistant to targeted modifications.  Note that, to
+        be useful against an adversary who has access to the backup, the backup
+        manifest would need to be stored securely elsewhere or otherwise
+        verified not to have been modified since the backup was taken.
+       </para>
+       <para>
+        <xref linkend="app-pgverifybackup" /> can be used to check the
+        integrity of a backup against the backup manifest.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--no-verify-checksums</option></term>
+      <term><option>--manifest-force-encode</option></term>
       <listitem>
        <para>
-        Disables verification of checksums, if they are enabled on the server
-        the base backup is taken from.
-       </para>
-       <para>
-        By default, checksums are verified and checksum failures will result
-        in a non-zero exit status. However, the base backup will not be
-        removed in such a case, as if the <option>--no-clean</option> option
-        had been used.  Checksum verifications failures will also be reported
-        in the <xref linkend="pg-stat-database-view"/> view.
+        Forces all filenames in the backup manifest to be hex-encoded.
+        If this option is not specified, only non-UTF8 filenames are
+        hex-encoded. This option is mostly intended to test that tools which
+        read a backup manifest file properly handle this case.
        </para>
       </listitem>
      </varlistentry>
@@ -577,51 +587,39 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
-      <term><option>--manifest-force-encode</option></term>
+      <term><option>--no-slot</option></term>
       <listitem>
        <para>
-        Forces all filenames in the backup manifest to be hex-encoded.
-        If this option is not specified, only non-UTF8 filenames are
-        hex-encoded. This option is mostly intended to test that tools which
-        read a backup manifest file properly handle this case.
+        This option prevents the creation of a temporary replication slot
+        during the backup even if it's supported by the server.
+       </para>
+       <para>
+        Temporary replication slots are created by default if no slot name
+        is given with the option <option>-S</option> when using log streaming.
+       </para>
+       <para>
+        The main purpose of this option is to allow taking a base backup when
+        the server is out of free replication slots.  Using replication slots
+        is almost always preferred, because it prevents needed WAL from being
+        removed by the server during the backup.
        </para>
       </listitem>
      </varlistentry>
 
      <varlistentry>
-      <term><option>--manifest-checksums=<replaceable class="parameter">algorithm</replaceable></option></term>
+      <term><option>--no-verify-checksums</option></term>
       <listitem>
        <para>
-        Specifies the checksum algorithm that should be applied to each file
-        included in the backup manifest. Currently, the available
-        algorithms are <literal>NONE</literal>, <literal>CRC32C</literal>,
-        <literal>SHA224</literal>, <literal>SHA256</literal>,
-        <literal>SHA384</literal>, and <literal>SHA512</literal>.
-        The default is <literal>CRC32C</literal>.
+        Disables verification of checksums, if they are enabled on the server
+        the base backup is taken from.
        </para>
        <para>
-        If <literal>NONE</literal> is selected, the backup manifest will
-        not contain any checksums. Otherwise, it will contain a checksum
-        of each file in the backup using the specified algorithm. In addition,
-        the manifest will always contain a <literal>SHA256</literal>
-        checksum of its own contents. The <literal>SHA</literal> algorithms
-        are significantly more CPU-intensive than <literal>CRC32C</literal>,
-        so selecting one of them may increase the time required to complete
-        the backup.
-       </para>
-       <para>
-        Using a SHA hash function provides a cryptographically secure digest
-        of each file for users who wish to verify that the backup has not been
-        tampered with, while the CRC32C algorithm provides a checksum which is
-        much faster to calculate and good at catching errors due to accidental
-        changes but is not resistant to targeted modifications.  Note that, to
-        be useful against an adversary who has access to the backup, the backup
-        manifest would need to be stored securely elsewhere or otherwise
-        verified not to have been modified since the backup was taken.
-       </para>
-       <para>
-        <xref linkend="app-pgverifybackup" /> can be used to check the
-        integrity of a backup against the backup manifest.
+        By default, checksums are verified and checksum failures will result
+        in a non-zero exit status. However, the base backup will not be
+        removed in such a case, as if the <option>--no-clean</option> option
+        had been used.  Checksum verifications failures will also be reported
+        in the <link linkend="monitoring-pg-stat-database-view">
+        <structname>pg_stat_database</structname></link> view.
        </para>
       </listitem>
      </varlistentry>
@@ -879,8 +877,7 @@ PostgreSQL documentation
    to <filename>./backup/ts</filename>:
 <screen>
 <prompt>$</prompt> <userinput>pg_basebackup -D backup/data -T /opt/ts=$(pwd)/backup/ts</userinput>
-</screen>
-  </para>
+</screen></para>
  </refsect1>
 
  <refsect1>

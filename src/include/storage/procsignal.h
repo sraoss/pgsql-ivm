@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * procsignal.h
- *	  Routines for interprocess signalling
+ *	  Routines for interprocess signaling
  *
  *
  * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
@@ -18,7 +18,7 @@
 
 
 /*
- * Reasons for signalling a Postgres child process (a backend or an auxiliary
+ * Reasons for signaling a Postgres child process (a backend or an auxiliary
  * process, like checkpointer).  We can cope with concurrent signals for different
  * reasons.  However, if the same reason is signaled multiple times in quick
  * succession, the process is likely to observe only one notification of it.
@@ -33,6 +33,7 @@ typedef enum
 	PROCSIG_NOTIFY_INTERRUPT,	/* listen/notify interrupt */
 	PROCSIG_PARALLEL_MESSAGE,	/* message from cooperating parallel backend */
 	PROCSIG_WALSND_INIT_STOPPING,	/* ask walsenders to prepare for shutdown  */
+	PROCSIG_BARRIER,			/* global barrier interrupt  */
 
 	/* Recovery conflict reasons */
 	PROCSIG_RECOVERY_CONFLICT_DATABASE,
