@@ -10953,7 +10953,6 @@
 { oid => '4351', descr => 'check Unicode normalization',
   proname => 'is_normalized', prorettype => 'bool', proargtypes => 'text text',
   prosrc => 'unicode_is_normalized' },
-<<<<<<< HEAD
 
 # IVM
 { oid => '786', descr => 'ivm trigger (before)',
@@ -10962,7 +10961,5 @@
 { oid => '787', descr => 'ivm trigger (after)',
   proname => 'IVM_immediate_maintenance', provolatile => 'v', prorettype => 'trigger',
   proargtypes => '', prosrc => 'IVM_immediate_maintenance' },
-=======
->>>>>>> master
 
 ]

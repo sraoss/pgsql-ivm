@@ -1570,7 +1570,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		SetTuplestoreDestReceiverParams(dest_old,
 									old_tuplestore,
 									TopTransactionContext,
-									false);
+									false,
+									NULL,
+									NULL);
 
 		MemoryContextSwitchTo(oldcxt);
 	}
@@ -1583,7 +1585,9 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		SetTuplestoreDestReceiverParams(dest_new,
 									new_tuplestore,
 									TopTransactionContext,
-									false);
+									false,
+									NULL,
+									NULL);
 		MemoryContextSwitchTo(oldcxt);
 	}
 
