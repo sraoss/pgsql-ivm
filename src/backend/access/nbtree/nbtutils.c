@@ -1744,7 +1744,7 @@ _bt_killitems(IndexScanDesc scan)
 		 * LSN.
 		 */
 		droppedpin = false;
-		LockBuffer(so->currPos.buf, BT_READ);
+		_bt_lockbuf(scan->indexRelation, so->currPos.buf, BT_READ);
 
 		page = BufferGetPage(so->currPos.buf);
 	}
@@ -1854,7 +1854,15 @@ _bt_killitems(IndexScanDesc scan)
 			else if (ItemPointerEquals(&ituple->t_tid, &kitem->heapTid))
 				killtuple = true;
 
-			if (killtuple)
+			/*
+			 * Mark index item as dead, if it isn't already.  Since this
+			 * happens while holding a buffer lock possibly in shared mode,
+			 * it's possible that multiple processes attempt to do this
+			 * simultaneously, leading to multiple full-page images being sent
+			 * to WAL (if wal_log_hints or data checksums are enabled), which
+			 * is undesirable.
+			 */
+			if (killtuple && !ItemIdIsDead(iid))
 			{
 				/* found the item/all posting list items */
 				ItemIdMarkDead(iid);
@@ -1877,7 +1885,7 @@ _bt_killitems(IndexScanDesc scan)
 		MarkBufferDirtyHint(so->currPos.buf, true);
 	}
 
-	LockBuffer(so->currPos.buf, BUFFER_LOCK_UNLOCK);
+	_bt_unlockbuf(scan->indexRelation, so->currPos.buf);
 }
 
 

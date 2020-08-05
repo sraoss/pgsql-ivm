@@ -101,7 +101,7 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_NODE_FIELD(paramExecTypes);
 	COPY_NODE_FIELD(utilityStmt);
 	COPY_LOCATION_FIELD(stmt_location);
-	COPY_LOCATION_FIELD(stmt_len);
+	COPY_SCALAR_FIELD(stmt_len);
 
 	return newnode;
 }
@@ -3091,7 +3091,7 @@ _copyQuery(const Query *from)
 	COPY_NODE_FIELD(constraintDeps);
 	COPY_NODE_FIELD(withCheckOptions);
 	COPY_LOCATION_FIELD(stmt_location);
-	COPY_LOCATION_FIELD(stmt_len);
+	COPY_SCALAR_FIELD(stmt_len);
 
 	return newnode;
 }
@@ -3103,7 +3103,7 @@ _copyRawStmt(const RawStmt *from)
 
 	COPY_NODE_FIELD(stmt);
 	COPY_LOCATION_FIELD(stmt_location);
-	COPY_LOCATION_FIELD(stmt_len);
+	COPY_SCALAR_FIELD(stmt_len);
 
 	return newnode;
 }
@@ -3205,7 +3205,7 @@ _copyAlterTableStmt(const AlterTableStmt *from)
 
 	COPY_NODE_FIELD(relation);
 	COPY_NODE_FIELD(cmds);
-	COPY_SCALAR_FIELD(relkind);
+	COPY_SCALAR_FIELD(objtype);
 	COPY_SCALAR_FIELD(missing_ok);
 
 	return newnode;
@@ -3981,7 +3981,7 @@ _copyCreateTableAsStmt(const CreateTableAsStmt *from)
 
 	COPY_NODE_FIELD(query);
 	COPY_NODE_FIELD(into);
-	COPY_SCALAR_FIELD(relkind);
+	COPY_SCALAR_FIELD(objtype);
 	COPY_SCALAR_FIELD(is_select_into);
 	COPY_SCALAR_FIELD(if_not_exists);
 

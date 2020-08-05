@@ -18,6 +18,7 @@
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
+#include "catalog/objectaccess.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -107,36 +108,11 @@ CreateAccessMethod(CreateAmStmt *stmt)
 
 	recordDependencyOnCurrentExtension(&myself, false);
 
+	InvokeObjectPostCreateHook(AccessMethodRelationId, amoid, 0);
+
 	table_close(rel, RowExclusiveLock);
 
 	return myself;
-}
-
-/*
- * Guts of access method deletion.
- */
-void
-RemoveAccessMethodById(Oid amOid)
-{
-	Relation	relation;
-	HeapTuple	tup;
-
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to drop access methods")));
-
-	relation = table_open(AccessMethodRelationId, RowExclusiveLock);
-
-	tup = SearchSysCache1(AMOID, ObjectIdGetDatum(amOid));
-	if (!HeapTupleIsValid(tup))
-		elog(ERROR, "cache lookup failed for access method %u", amOid);
-
-	CatalogTupleDelete(relation, &tup->t_self);
-
-	ReleaseSysCache(tup);
-
-	table_close(relation, RowExclusiveLock);
 }
 
 /*

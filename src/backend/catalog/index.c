@@ -1031,9 +1031,7 @@ index_create(Relation heapRelation,
 		ObjectAddress myself,
 					referenced;
 
-		myself.classId = RelationRelationId;
-		myself.objectId = indexRelationId;
-		myself.objectSubId = 0;
+		ObjectAddressSet(myself, RelationRelationId, indexRelationId);
 
 		if ((flags & INDEX_CREATE_ADD_CONSTRAINT) != 0)
 		{
@@ -1073,12 +1071,10 @@ index_create(Relation heapRelation,
 			{
 				if (indexInfo->ii_IndexAttrNumbers[i] != 0)
 				{
-					referenced.classId = RelationRelationId;
-					referenced.objectId = heapRelationId;
-					referenced.objectSubId = indexInfo->ii_IndexAttrNumbers[i];
-
+					ObjectAddressSubSet(referenced, RelationRelationId,
+										heapRelationId,
+										indexInfo->ii_IndexAttrNumbers[i]);
 					recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
-
 					have_simple_col = true;
 				}
 			}
@@ -1091,10 +1087,8 @@ index_create(Relation heapRelation,
 			 */
 			if (!have_simple_col)
 			{
-				referenced.classId = RelationRelationId;
-				referenced.objectId = heapRelationId;
-				referenced.objectSubId = 0;
-
+				ObjectAddressSet(referenced, RelationRelationId,
+								 heapRelationId);
 				recordDependencyOn(&myself, &referenced, DEPENDENCY_AUTO);
 			}
 		}
@@ -1107,16 +1101,10 @@ index_create(Relation heapRelation,
 		 */
 		if (OidIsValid(parentIndexRelid))
 		{
-			referenced.classId = RelationRelationId;
-			referenced.objectId = parentIndexRelid;
-			referenced.objectSubId = 0;
-
+			ObjectAddressSet(referenced, RelationRelationId, parentIndexRelid);
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_PRI);
 
-			referenced.classId = RelationRelationId;
-			referenced.objectId = heapRelationId;
-			referenced.objectSubId = 0;
-
+			ObjectAddressSet(referenced, RelationRelationId, heapRelationId);
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_PARTITION_SEC);
 		}
 
@@ -1127,10 +1115,8 @@ index_create(Relation heapRelation,
 			if (OidIsValid(collationObjectId[i]) &&
 				collationObjectId[i] != DEFAULT_COLLATION_OID)
 			{
-				referenced.classId = CollationRelationId;
-				referenced.objectId = collationObjectId[i];
-				referenced.objectSubId = 0;
-
+				ObjectAddressSet(referenced, CollationRelationId,
+								 collationObjectId[i]);
 				recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 			}
 		}
@@ -1138,10 +1124,7 @@ index_create(Relation heapRelation,
 		/* Store dependency on operator classes */
 		for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
 		{
-			referenced.classId = OperatorClassRelationId;
-			referenced.objectId = classObjectId[i];
-			referenced.objectSubId = 0;
-
+			ObjectAddressSet(referenced, OperatorClassRelationId, classObjectId[i]);
 			recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 		}
 
@@ -1538,6 +1521,10 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	oldIndexForm->indisexclusion = false;
 	newIndexForm->indimmediate = oldIndexForm->indimmediate;
 	oldIndexForm->indimmediate = true;
+
+	/* Preserve indisreplident in the new index */
+	newIndexForm->indisreplident = oldIndexForm->indisreplident;
+	oldIndexForm->indisreplident = false;
 
 	/* Preserve indisclustered in the new index */
 	newIndexForm->indisclustered = oldIndexForm->indisclustered;
@@ -3779,7 +3766,7 @@ reindex_relation(Oid relid, int flags, int options)
 
 	/*
 	 * If the relation has a secondary toast rel, reindex that too while we
-	 * still hold the lock on the master table.
+	 * still hold the lock on the main table.
 	 */
 	if ((flags & REINDEX_REL_PROCESS_TOAST) && OidIsValid(toast_relid))
 		result |= reindex_relation(toast_relid, flags, options);

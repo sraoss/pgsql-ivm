@@ -9,7 +9,7 @@ PostgreSQL documentation
  </indexterm>
 
  <refmeta>
-  <refentrytitle>initdb</refentrytitle>
+  <refentrytitle><application>initdb</application></refentrytitle>
   <manvolnum>1</manvolnum>
   <refmiscinfo>Application</refmiscinfo>
  </refmeta>
@@ -34,9 +34,7 @@ PostgreSQL documentation
  </refsynopsisdiv>
 
  <refsect1 id="r1-app-initdb-1">
-  <title>
-   Description
-  </title>
+  <title>Description</title>
   <para>
    <command>initdb</command> creates a new
    <productname>PostgreSQL</productname> database cluster.  A database
@@ -219,7 +217,8 @@ PostgreSQL documentation
         may incur a noticeable performance penalty. If set, checksums
         are calculated for all objects, in all databases. All checksum
         failures will be reported in the
-        <xref linkend="pg-stat-database-view"/> view.
+        <link linkend="monitoring-pg-stat-database-view">
+        <structname>pg_stat_database</structname></link> view.
        </para>
       </listitem>
      </varlistentry>

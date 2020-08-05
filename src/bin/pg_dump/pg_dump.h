@@ -626,6 +626,7 @@ typedef struct _SubscriptionInfo
 	char	   *rolname;
 	char	   *subconninfo;
 	char	   *subslotname;
+	char	   *subbinary;
 	char	   *subsynccommit;
 	char	   *subpublications;
 } SubscriptionInfo;
@@ -639,10 +640,6 @@ typedef struct _extensionMemberId
 	CatalogId	catId;			/* tableoid+oid of some member object */
 	ExtensionInfo *ext;			/* owning extension */
 } ExtensionMemberId;
-
-/* placeholders for comment starting and ending delimiters */
-extern char g_comment_start[10];
-extern char g_comment_end[10];
 
 /*
  *	common utility functions

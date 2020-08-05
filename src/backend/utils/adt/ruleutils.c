@@ -3554,11 +3554,6 @@ set_rtable_names(deparse_namespace *dpns, List *parent_namespaces,
 					hentry->counter++;
 					for (;;)
 					{
-						/*
-						 * We avoid using %.*s here because it can misbehave
-						 * if the data is not valid in what libc thinks is the
-						 * prevailing encoding.
-						 */
 						memcpy(modname, refname, refnamelen);
 						sprintf(modname + refnamelen, "_%d", hentry->counter);
 						if (strlen(modname) < NAMEDATALEN)
@@ -4438,11 +4433,6 @@ make_colname_unique(char *colname, deparse_namespace *dpns,
 			i++;
 			for (;;)
 			{
-				/*
-				 * We avoid using %.*s here because it can misbehave if the
-				 * data is not valid in what libc thinks is the prevailing
-				 * encoding.
-				 */
 				memcpy(modname, colname, colnamelen);
 				sprintf(modname + colnamelen, "_%d", i);
 				if (strlen(modname) < NAMEDATALEN)
@@ -5829,8 +5819,8 @@ get_rule_sortgroupclause(Index ref, List *tlist, bool force_colno,
 		 */
 		bool		need_paren = (PRETTY_PAREN(context)
 								  || IsA(expr, FuncExpr)
-								  ||IsA(expr, Aggref)
-								  ||IsA(expr, WindowFunc));
+								  || IsA(expr, Aggref)
+								  || IsA(expr, WindowFunc));
 
 		if (need_paren)
 			appendStringInfoChar(context->buf, '(');
@@ -10317,7 +10307,7 @@ get_from_clause_item(Node *jtnode, Query *query, deparse_context *context)
 
 		need_paren_on_right = PRETTY_PAREN(context) &&
 			!IsA(j->rarg, RangeTblRef) &&
-			!(IsA(j->rarg, JoinExpr) &&((JoinExpr *) j->rarg)->alias != NULL);
+			!(IsA(j->rarg, JoinExpr) && ((JoinExpr *) j->rarg)->alias != NULL);
 
 		if (!PRETTY_PAREN(context) || j->alias != NULL)
 			appendStringInfoChar(buf, '(');

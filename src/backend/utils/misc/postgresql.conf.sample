@@ -88,7 +88,7 @@
 # - Authentication -
 
 #authentication_timeout = 1min		# 1s-600s
-#password_encryption = md5		# md5 or scram-sha-256
+#password_encryption = scram-sha-256	# scram-sha-256 or md5
 #db_user_namespace = off
 
 # GSSAPI using Kerberos
@@ -122,6 +122,8 @@
 					# (change requires restart)
 #huge_pages = try			# on, off, or try
 					# (change requires restart)
+#huge_page_size = 0			# zero for system default
+					# (change requires restart)
 #temp_buffers = 8MB			# min 800kB
 #max_prepared_transactions = 0		# zero disables the feature
 					# (change requires restart)
@@ -149,7 +151,7 @@
 # - Disk -
 
 #temp_file_limit = -1			# limits per-process temp file space
-					# in kB, or -1 for no limit
+					# in kilobytes, or -1 for no limit
 
 # - Kernel Resources -
 
@@ -284,12 +286,12 @@
 
 # - Sending Servers -
 
-# Set these on the master and on any standby that will send replication data.
+# Set these on the primary and on any standby that will send replication data.
 
 #max_wal_senders = 10		# max number of walsender processes
 				# (change requires restart)
-#wal_keep_segments = 0		# in logfile segments; 0 disables
-#max_slot_wal_keep_size = -1	# measured in bytes; -1 disables
+#wal_keep_size = 0		# in megabytes; 0 disables
+#max_slot_wal_keep_size = -1	# in megabytes; -1 disables
 #wal_sender_timeout = 60s	# in milliseconds; 0 disables
 
 #max_replication_slots = 10	# max number of replication slots
@@ -297,7 +299,7 @@
 #track_commit_timestamp = off	# collect timestamp of transaction commit
 				# (change requires restart)
 
-# - Master Server -
+# - Primary Server -
 
 # These settings are ignored on a standby server.
 
@@ -309,7 +311,7 @@
 
 # - Standby Servers -
 
-# These settings are ignored on a master server.
+# These settings are ignored on a primary server.
 
 #primary_conninfo = ''			# connection string to sending server
 #primary_slot_name = ''			# replication slot on sending server
@@ -322,14 +324,14 @@
 #max_standby_streaming_delay = 30s	# max delay before canceling queries
 					# when reading streaming WAL;
 					# -1 allows indefinite delay
-#wal_receiver_create_temp_slot = off	# Create temp slot if primary_slot_name
-					# is not set.
+#wal_receiver_create_temp_slot = off	# create temp slot if primary_slot_name
+					# is not set
 #wal_receiver_status_interval = 10s	# send replies at least this often
 					# 0 disables
 #hot_standby_feedback = off		# send info from standby to prevent
 					# query conflicts
 #wal_receiver_timeout = 60s		# time that receiver waits for
-					# communication from master
+					# communication from primary
 					# in milliseconds; 0 disables
 #wal_retrieve_retry_interval = 5s	# time to wait before retrying to
 					# retrieve WAL after a failed attempt
@@ -361,7 +363,7 @@
 #enable_parallel_append = on
 #enable_seqscan = on
 #enable_sort = on
-#enable_incrementalsort = on
+#enable_incremental_sort = on
 #enable_tidscan = on
 #enable_partitionwise_join = off
 #enable_partitionwise_aggregate = off
@@ -498,20 +500,20 @@
 					# statements running at least this number
 					# of milliseconds
 
-#log_min_duration_sample = -1	# -1 is disabled, 0 logs a sample of statements
+#log_min_duration_sample = -1		# -1 is disabled, 0 logs a sample of statements
 					# and their durations, > 0 logs only a sample of
 					# statements running at least this number
-					# of milliseconds
-					# Sample fraction is determined by log_statement_sample_rate
+					# of milliseconds;
+					# sample fraction is determined by log_statement_sample_rate
 
-#log_statement_sample_rate = 1.0   # Fraction of logged statements exceeding
-                   # log_min_duration_sample to be logged.
-                   # 1.0 logs all such statements, 0.0 never logs.
+#log_statement_sample_rate = 1.0	# fraction of logged statements exceeding
+					# log_min_duration_sample to be logged;
+					# 1.0 logs all such statements, 0.0 never logs
 
 
-#log_transaction_sample_rate = 0.0	# Fraction of transactions whose statements
-					# are logged regardless of their duration. 1.0 logs all
-					# statements from all transactions, 0.0 never logs.
+#log_transaction_sample_rate = 0.0	# fraction of transactions whose statements
+					# are logged regardless of their duration; 1.0 logs all
+					# statements from all transactions, 0.0 never logs
 
 # - What to Log -
 
@@ -608,7 +610,7 @@
 #autovacuum_vacuum_threshold = 50	# min number of row updates before
 					# vacuum
 #autovacuum_vacuum_insert_threshold = 1000	# min number of row inserts
-					# before vacuum. -1 disables insert
+					# before vacuum; -1 disables insert
 					# vacuums
 #autovacuum_analyze_threshold = 50	# min number of row updates before
 					# analyze

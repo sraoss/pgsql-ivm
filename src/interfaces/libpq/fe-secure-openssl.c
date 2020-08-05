@@ -95,7 +95,7 @@ static long win32_ssl_create_mutex = 0;
 #endif
 #endif							/* ENABLE_THREAD_SAFETY */
 
-static PQsslKeyPassHook_type PQsslKeyPassHook = NULL;
+static PQsslKeyPassHook_OpenSSL_type PQsslKeyPassHook = NULL;
 static int	ssl_protocol_version_to_openssl(const char *protocol);
 
 /* ------------------------------------------------------------ */
@@ -513,7 +513,7 @@ pgtls_verify_peer_name_matches_certificate_guts(PGconn *conn,
 												int *names_examined,
 												char **first_name)
 {
-	STACK_OF(GENERAL_NAME) *peer_san;
+	STACK_OF(GENERAL_NAME) * peer_san;
 	int			i;
 	int			rc = 0;
 
@@ -851,7 +851,7 @@ initialize_SSL(PGconn *conn)
 		if (ssl_min_ver == -1)
 		{
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid value \"%s\" for minimum version of SSL protocol\n"),
+							  libpq_gettext("invalid value \"%s\" for minimum SSL protocol version\n"),
 							  conn->ssl_min_protocol_version);
 			SSL_CTX_free(SSL_context);
 			return -1;
@@ -862,7 +862,7 @@ initialize_SSL(PGconn *conn)
 			char	   *err = SSLerrmessage(ERR_get_error());
 
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("could not set minimum version of SSL protocol: %s\n"),
+							  libpq_gettext("could not set minimum SSL protocol version: %s\n"),
 							  err);
 			SSLerrfree(err);
 			SSL_CTX_free(SSL_context);
@@ -880,7 +880,7 @@ initialize_SSL(PGconn *conn)
 		if (ssl_max_ver == -1)
 		{
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("invalid value \"%s\" for maximum version of SSL protocol\n"),
+							  libpq_gettext("invalid value \"%s\" for maximum SSL protocol version\n"),
 							  conn->ssl_max_protocol_version);
 			SSL_CTX_free(SSL_context);
 			return -1;
@@ -891,7 +891,7 @@ initialize_SSL(PGconn *conn)
 			char	   *err = SSLerrmessage(ERR_get_error());
 
 			printfPQExpBuffer(&conn->errorMessage,
-							  libpq_gettext("could not set maximum version of SSL protocol: %s\n"),
+							  libpq_gettext("could not set maximum SSL protocol version: %s\n"),
 							  err);
 			SSLerrfree(err);
 			SSL_CTX_free(SSL_context);
@@ -1304,6 +1304,47 @@ open_client_SSL(PGconn *conn)
 									  libpq_gettext("SSL error: %s\n"),
 									  err);
 					SSLerrfree(err);
+					switch (ERR_GET_REASON(ecode))
+					{
+							/*
+							 * UNSUPPORTED_PROTOCOL, WRONG_VERSION_NUMBER, and
+							 * TLSV1_ALERT_PROTOCOL_VERSION have been observed
+							 * when trying to communicate with an old OpenSSL
+							 * library, or when the client and server specify
+							 * disjoint protocol ranges.
+							 * NO_PROTOCOLS_AVAILABLE occurs if there's a
+							 * local misconfiguration (which can happen
+							 * despite our checks, if openssl.cnf injects a
+							 * limit we didn't account for).  It's not very
+							 * clear what would make OpenSSL return the other
+							 * codes listed here, but a hint about protocol
+							 * versions seems like it's appropriate for all.
+							 */
+						case SSL_R_NO_PROTOCOLS_AVAILABLE:
+						case SSL_R_UNSUPPORTED_PROTOCOL:
+						case SSL_R_BAD_PROTOCOL_VERSION_NUMBER:
+						case SSL_R_UNKNOWN_PROTOCOL:
+						case SSL_R_UNKNOWN_SSL_VERSION:
+						case SSL_R_UNSUPPORTED_SSL_VERSION:
+						case SSL_R_WRONG_SSL_VERSION:
+						case SSL_R_WRONG_VERSION_NUMBER:
+						case SSL_R_TLSV1_ALERT_PROTOCOL_VERSION:
+#ifdef SSL_R_VERSION_TOO_HIGH
+						case SSL_R_VERSION_TOO_HIGH:
+						case SSL_R_VERSION_TOO_LOW:
+#endif
+							appendPQExpBuffer(&conn->errorMessage,
+											  libpq_gettext("This may indicate that the server does not support any SSL protocol version between %s and %s.\n"),
+											  conn->ssl_min_protocol_version ?
+											  conn->ssl_min_protocol_version :
+											  MIN_OPENSSL_TLS_VERSION,
+											  conn->ssl_max_protocol_version ?
+											  conn->ssl_max_protocol_version :
+											  MAX_OPENSSL_TLS_VERSION);
+							break;
+						default:
+							break;
+					}
 					pgtls_close(conn);
 					return PGRES_POLLING_FAILED;
 				}
@@ -1669,7 +1710,7 @@ err:
  * prevent openssl from ever prompting on stdin.
  */
 int
-PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn)
+PQdefaultSSLKeyPassHook_OpenSSL(char *buf, int size, PGconn *conn)
 {
 	if (conn->sslpassword)
 	{
@@ -1686,14 +1727,14 @@ PQdefaultSSLKeyPassHook(char *buf, int size, PGconn *conn)
 	}
 }
 
-PQsslKeyPassHook_type
-PQgetSSLKeyPassHook(void)
+PQsslKeyPassHook_OpenSSL_type
+PQgetSSLKeyPassHook_OpenSSL(void)
 {
 	return PQsslKeyPassHook;
 }
 
 void
-PQsetSSLKeyPassHook(PQsslKeyPassHook_type hook)
+PQsetSSLKeyPassHook_OpenSSL(PQsslKeyPassHook_OpenSSL_type hook)
 {
 	PQsslKeyPassHook = hook;
 }
@@ -1711,7 +1752,7 @@ PQssl_passwd_cb(char *buf, int size, int rwflag, void *userdata)
 	if (PQsslKeyPassHook)
 		return PQsslKeyPassHook(buf, size, conn);
 	else
-		return PQdefaultSSLKeyPassHook(buf, size, conn);
+		return PQdefaultSSLKeyPassHook_OpenSSL(buf, size, conn);
 }
 
 /*

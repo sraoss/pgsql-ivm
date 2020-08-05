@@ -146,8 +146,7 @@ psql &lt;&lt;EOF
 \x
 SELECT * FROM foo;
 EOF
-</programlisting>
-      </para>
+</programlisting></para>
       </listitem>
     </varlistentry>
 
@@ -983,9 +982,15 @@ testdb=&gt;
       </varlistentry>
 
       <varlistentry id="app-psql-meta-commands-copy">
+        <term><literal>\copy { <replaceable class="parameter">table</replaceable> [ ( <replaceable class="parameter">column_list</replaceable> ) ] }
+        <literal>from</literal>
+        { <replaceable class="parameter">'filename'</replaceable> | program <replaceable class="parameter">'command'</replaceable> | stdin | pstdin }
+        [ [ with ] ( <replaceable class="parameter">option</replaceable> [, ...] ) ]
+        [ where <replaceable class="parameter">condition</replaceable> ]</literal></term>
+
         <term><literal>\copy { <replaceable class="parameter">table</replaceable> [ ( <replaceable class="parameter">column_list</replaceable> ) ] | ( <replaceable class="parameter">query</replaceable> ) }
-        { <literal>from</literal> | <literal>to</literal> }
-        { <replaceable class="parameter">'filename'</replaceable> | program <replaceable class="parameter">'command'</replaceable> | stdin | stdout | pstdin | pstdout }
+        <literal>to</literal>
+        { <replaceable class="parameter">'filename'</replaceable> | program <replaceable class="parameter">'command'</replaceable> | stdout | pstdout }
         [ [ with ] ( <replaceable class="parameter">option</replaceable> [, ...] ) ]</literal></term>
 
         <listitem>
@@ -1309,7 +1314,7 @@ testdb=&gt;
         </term>
         <listitem>
         <para>
-        Lists procedures associated with operator families
+        Lists functions associated with operator families
         (<xref linkend="catalog-pg-amproc"/>).
         If <replaceable class="parameter">access-method-pattern</replaceable>
         is specified, only members of operator families associated with access
@@ -4825,7 +4830,6 @@ peter@localhost testdb=&gt; SELECT * FROM my_table;
      3 | three
      4 | four
 (4 rows)
-
 </programlisting>
   You can display tables in different ways by using the
   <command>\pset</command> command:
@@ -4955,9 +4959,7 @@ testdb(&gt; <userinput>\crosstabview "A" "B" "AxB" ord</userinput>
  2 | 202 | 204 | 206 | 208
  1 | 101 | 102 | 103 | 104
 (4 rows)
-</programlisting>
-
-</para>
+</programlisting></para>
 
  </refsect1>
 
