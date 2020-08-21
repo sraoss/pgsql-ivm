@@ -3374,6 +3374,10 @@ typedef struct AfterTriggerEventList
  * end of the list, so it is relatively easy to discard them.  The event
  * list chunks themselves are stored in event_cxt.
  *
+ * prolonged_tuplestored is a list of transition table tuplestores whose
+ * life are prolonged to the end of the outmost query instead of each nested
+ * query.
+ *
  * query_depth is the current depth of nested AfterTriggerBeginQuery calls
  * (-1 when the stack is empty).
  *
@@ -3439,12 +3443,12 @@ typedef struct AfterTriggersData
 	SetConstraintState state;	/* the active S C state */
 	AfterTriggerEventList events;	/* deferred-event list */
 	MemoryContext event_cxt;	/* memory context for events, if any */
+	List   *prolonged_tuplestores;	/* list of prolonged tuplestores */
 
 	/* per-query-level data: */
 	AfterTriggersQueryData *query_stack;	/* array of structs shown below */
 	int			query_depth;	/* current index in above array */
 	int			maxquerydepth;	/* allocated len of above array */
-	List	   *prolonged_tuplestores;
 
 	/* per-subtransaction-level data: */
 	AfterTriggersTransData *trans_stack;	/* array of structs shown below */
@@ -3475,7 +3479,7 @@ struct AfterTriggersTableData
 	bool		closed;			/* true when no longer OK to add tuples */
 	bool		before_trig_done;	/* did we already queue BS triggers? */
 	bool		after_trig_done;	/* did we already queue AS triggers? */
-	bool		prolonged;
+	bool		prolonged;			/* are transition tables prolonged? */
 	AfterTriggerEventList after_trig_events;	/* if so, saved list pointer */
 	Tuplestorestate *old_tuplestore;	/* "old" transition table, if any */
 	Tuplestorestate *new_tuplestore;	/* "new" transition table, if any */
@@ -4237,6 +4241,16 @@ afterTriggerInvokeEvents(AfterTriggerEventList *events,
 	return all_fired;
 }
 
+
+/*
+ * SetTransitionTablePreserved
+ *
+ * Prolong lifespan of transition tables corresponding specified relid and
+ * command type to the end of the outmost query instead of each nested query.
+ * This enables to use nested AFTER trigger's transition tables from outer
+ * query's triggers.  Currently, only immediate incremental view maintenance
+ * uses this.
+ */
 void
 SetTransitionTablePreserved(Oid relid, CmdType cmdType)
 {
@@ -4260,12 +4274,12 @@ SetTransitionTablePreserved(Oid relid, CmdType cmdType)
 			table->prolonged = true;
 			found = true;
 		}
-
 	}
 
 	if (!found)
 		elog(ERROR,"could not find table with OID %d and command type %d", relid, cmdType);
 }
+
 
 /*
  * GetAfterTriggersTableData
@@ -4629,6 +4643,7 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 	qs->tables = NIL;
 	list_free_deep(tables);
 
+	/* Release prolonged tuplestores at the end of the outmost query */
 	if (afterTriggers.query_depth == 0)
 	{
 		foreach(lc, afterTriggers.prolonged_tuplestores)
@@ -5724,9 +5739,6 @@ AfterTriggerSaveEvent(EState *estate, ResultRelInfo *relinfo,
 		else
 			new_shared.ats_table = NULL;
 		new_shared.ats_modifiedcols = modifiedCols;
-
-		if (new_shared.ats_table != NULL && trigger->tgfoid == F_IVM_IMMEDIATE_MAINTENANCE)
-			new_shared.ats_table->prolonged = true;
 
 		afterTriggerAddEvent(&afterTriggers.query_stack[afterTriggers.query_depth].events,
 							 &new_event, &new_shared);
