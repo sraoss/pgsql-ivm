@@ -1386,7 +1386,7 @@ is_equijoin_condition(OpExpr *op)
 /*
  * check_aggregate_supports_ivm
  *
- * Check if the given aggregate function is supporting
+ * Check if the given aggregate function is supporting IVM
  */
 static bool
 check_aggregate_supports_ivm(Oid aggfnoid)

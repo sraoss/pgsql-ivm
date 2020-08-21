@@ -1464,6 +1464,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		else
 			elog(ERROR,"unsupported trigger type");
 
+		/* Prolong lifespan of transition tables to the end of the last AFTER trigger */
 		SetTransitionTablePreserved(relid, cmd);
 	}
 
