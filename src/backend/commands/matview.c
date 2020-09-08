@@ -1626,8 +1626,11 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 					{
 						int attnum;
 						count_colname = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
-						use_count = true;
-						in_exists = true;
+						if (count_colname)
+						{
+							use_count = true;
+							in_exists = true;
+						}
 					}
 				}
 			}
