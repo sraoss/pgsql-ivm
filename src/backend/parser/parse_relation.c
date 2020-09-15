@@ -2899,7 +2899,7 @@ expandTupleDesc(TupleDesc tupdesc, Alias *eref, int count, int offset,
 	{
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, varattno);
 
-		if (is_ivm && isIvmColumn(NameStr(attr->attname)) && !MatViewIncrementalMaintenanceIsEnabled())
+		if (is_ivm && isIvmName(NameStr(attr->attname)) && !MatViewIncrementalMaintenanceIsEnabled())
 			continue;
 
 		if (attr->attisdropped)
@@ -3048,7 +3048,7 @@ expandNSItemAttrs(ParseState *pstate, ParseNamespaceItem *nsitem,
 		TargetEntry *te;
 
 		/* if transform * into columnlist with IMMV, remove IVM columns */
-		if (rte->relisivm && isIvmColumn(label) && !MatViewIncrementalMaintenanceIsEnabled())
+		if (rte->relisivm && isIvmName(label) && !MatViewIncrementalMaintenanceIsEnabled())
 			continue;
 
 		te = makeTargetEntry((Expr *) varnode,

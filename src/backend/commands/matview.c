@@ -636,7 +636,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	{
 		Relids	relids = NULL;
 
-		CreateIvmTriggersOnBaseTables(dataQuery, (Node *)dataQuery->jointree, matviewOid, &relids);
+		CreateIvmTriggersOnBaseTables(dataQuery, (Node *)dataQuery, matviewOid, &relids);
 		bms_free(relids);
 	}
 
@@ -1728,6 +1728,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 	int num_rte = list_length(query->rtable);
 	int i;
 
+
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
 
@@ -1737,6 +1738,20 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 
 	// XXX: Is necessary? Is this right timing?
 	AcquireRewriteLocks(query, true, false);
+
+	/* convert CTEs to subqueries */
+	foreach (lc, query->cteList)
+	{
+		PlannerInfo root;
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (cte->cterefcount == 0)
+			continue;
+
+		root.parse = query;
+		inline_cte(&root, cte);
+	}
+	query->cteList = NIL;
 
 	i = 1;
 	foreach(lc, query->rtable)
@@ -1960,7 +1975,7 @@ make_delta_enr_name(const char *prefix, Oid relid, int count)
 	char buf[NAMEDATALEN];
 	char *name;
 
-	snprintf(buf, NAMEDATALEN, "%s_%u_%u", prefix, relid, count);
+	snprintf(buf, NAMEDATALEN, "__ivm_%s_%u_%u", prefix, relid, count);
 	name = pstrdup(buf);
 
 	return name;
@@ -2141,7 +2156,6 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 			int attnum;
 
 			/* search ivm_exists_count_X__ column in RangeTblEntry */
-			pstate->p_rtable = query->rtable;
 			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 			if (columnName == NULL)
 				continue;
@@ -2261,7 +2275,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				if (subselect->cteList)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
+							 errmsg("CTE in EXIST clause is not supported on incrementally maintainable materialized view")));
 
 				pstate = make_parsestate(NULL);
 				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
@@ -4532,12 +4546,12 @@ getColumnNameStartWith(RangeTblEntry *rte, char *str, int *attnum)
 }
 
 /*
- * isIvmColumn
+ * isIvmName
  *
  * Check if this is a IVM hidden column from the name.
  */
 bool
-isIvmColumn(const char *s)
+isIvmName(const char *s)
 {
 	if (s)
 		return (strncmp(s, "__ivm_", 6) == 0);

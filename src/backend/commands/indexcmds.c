@@ -1045,7 +1045,7 @@ DefineIndex(Oid relationId,
 			if (attno > 0)
 			{
 				char *name = NameStr(TupleDescAttr(rel->rd_att, attno - 1)->attname);
-				if (name && isIvmColumn(name))
+				if (name && isIvmName(name))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("unique index creation on IVM columns is not supported")));
@@ -1063,7 +1063,7 @@ DefineIndex(Oid relationId,
 			{
 				int attno = varno + FirstLowInvalidHeapAttributeNumber;
 				char *name = NameStr(TupleDescAttr(rel->rd_att, attno - 1)->attname);
-				if (name && isIvmColumn(name))
+				if (name && isIvmName(name))
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("unique index creation on IVM columns is not supported")));
