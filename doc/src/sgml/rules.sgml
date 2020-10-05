@@ -1131,7 +1131,7 @@ SELECT word FROM words ORDER BY word &lt;-&gt; 'caterpiler' LIMIT 10;
 
 <para>
     To create materialized views supporting <acronym>IVM</acronym>, use the
-    <command>CRATE INCREMENTAL MATERIALIZED VIEW</command>, for example:
+    <command>CREATE INCREMENTAL MATERIALIZED VIEW</command>, for example:
 <programlisting>
 CREATE <emphasis>INCREMENTAL</emphasis> MATERIALIZED VIEW mymatview AS SELECT * FROM mytab;
 </programlisting>
@@ -1153,7 +1153,7 @@ postgres=# SELECT * FROM m;
 
 postgres=# INSERT INTO t0 VALUES (4);
 INSERT 0 1
-postgres=# SELECt * FROM m; -- automatically updated
+postgres=# SELECT * FROM m; -- automatically updated
  i
 ---
  1
@@ -1164,7 +1164,7 @@ postgres=# SELECt * FROM m; -- automatically updated
 </programlisting>
     <acronym>IMMV</acronym>s can have hidden columns which are added
     automatically when a materialized view is created. Their name start
-    with <literal>__ivm_</literal> and they contains information required
+    with <literal>__ivm_</literal> and they contain information required
     for maintaining <acronym>IMMV</acronym>. Such columns are not visible
     when <acronym>IMMV</acronym> is accessed by <literal>SELECT *</literal>
     but visible if the column name is explicitly specified in the target
@@ -1176,7 +1176,7 @@ postgres=# SELECt * FROM m; -- automatically updated
     In general, <acronym>IMMV</acronym> allows faster update of materialized
     views at a price of slower update of base tables because triggers will
     be invoked and the view is updated in triggers per modification statement.
-    For exmaple, here are two materialized views based on the same view
+    For example, here are two materialized views based on the same view
     definition but one is a normal materialized view and another is
     <acronym>IMMV</acronym>:
 
@@ -1239,7 +1239,7 @@ Time: 16386.245 ms (00:16.386)
     is not effective when a base table is modified frequently.  Also, when a
     large part of a base table is modified or large data is inserted into a
     base table, <acronym>IVM</acronym> is not effective and the cost of
-    maintenance can be lager than <command>REFRESH MATERIALIZED VIEW</command>
+    maintenance can be larger than <command>REFRESH MATERIALIZED VIEW</command>
     command. In such situation, we can use <command>REFRESH MATERIALIZED VIEW</command>
     with specifying <literal>WITH NO DATA</literal> to disable immediate
     maintenance before modifying a base table. After a base table modification,
