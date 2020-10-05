@@ -121,6 +121,11 @@ extern void extract_query_dependencies(Node *query,
 									   List **invalItems,
 									   bool *hasRowSecurity);
 
+/* in plan/subselect.c: */
+
+extern void
+inline_cte(PlannerInfo *root, CommonTableExpr *cte);
+
 /* in prep/prepqual.c: */
 
 extern Node *negate_clause(Node *node);
@@ -186,5 +191,6 @@ extern bool contain_vars_of_level(Node *node, int levelsup);
 extern int	locate_var_of_level(Node *node, int levelsup);
 extern List *pull_var_clause(Node *node, int flags);
 extern Node *flatten_join_alias_vars(Query *query, Node *node);
+
 
 #endif							/* OPTIMIZER_H */

@@ -210,6 +210,12 @@ a.i &gt; 5;
 
        <listitem>
         <para>
+         Simple CTEs which do not contain aggregates or DISTINCT.
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
          Some of aggregations (count, sum, avg, min, max) without HAVING
          clause.  However, aggregate functions in subquery is not supported:
          <programlisting>
@@ -235,7 +241,7 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
         </listitem>
        <listitem>
         <para>
-         CTE, WINDOW, LIMIT and OFFSET clause.
+         WINDOW, LIMIT and OFFSET clause.
         </para>
        </listitem>
       </itemizedlist>

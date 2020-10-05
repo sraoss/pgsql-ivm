@@ -3053,7 +3053,7 @@ renameatt_internal(Oid myrelid,
 	/*
 	 * Don't rename IVM columns.
 	 */
-	if (RelationIsIVM(targetrelation) && isIvmColumn(oldattname))
+	if (RelationIsIVM(targetrelation) && isIvmName(oldattname))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("IVM column can not be renamed")));

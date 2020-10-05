@@ -1377,7 +1377,7 @@ Time: 16386.245 ms (00:16.386)
 <title>Subqueries</title>
 <para>
     Currently, subqueries using <literal>EXISTS</literal> and simple
-     subqueries in <literal>FROM</literal> clause are supported.
+    subqueries in <literal>FROM</literal> clause are supported.
 </para>
 
     <sect4>
@@ -1445,13 +1445,41 @@ Time: 16386.245 ms (00:16.386)
 </sect3>
 
 <sect3>
+<title>CTEs</title>
+<para>
+    Currently, simple <literal>CTE</literal> in <literal>FROM</literal> clause are supported.
+</para>
+
+    <sect4>
+    <title>Restrictions on CTEs</title>
+    <para>
+        There are the following restrictions:
+    <itemizedlist>
+        <listitem>
+        <para>
+            Aggregate functions cannot be used in a CTE.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>DISTINCT</literal> cannot be contained in a CTE.
+        </para>
+        </listitem>
+
+    </itemizedlist>
+    </para>
+    </sect4>
+</sect3>
+
+<sect3>
 <title>Other General Restrictions</title>
 <para>
     There are other restrictions which generally apply to <acronym>IMMV</acronym>:
     <itemizedlist>
         <listitem>
           <para>
-           <literal>CTE</literal> or window functions cannot be used.
+           window functions cannot be used.
           </para>
         </listitem>
 

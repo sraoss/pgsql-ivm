@@ -187,6 +187,7 @@ UPDATE ri1 SET i=10 where i=1;
 DELETE FROM ri1 WHERE i=2;
 SELECT * FROM mv_ri ORDER BY i2;
 ROLLBACK;
+
 -- support subquery for using EXISTS()
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
@@ -224,6 +225,7 @@ SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
 SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
 SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery4 ORDER BY i, j;
 ROLLBACK;
+
 -- support simple subquery in FROM cluase
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_subquery AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
@@ -243,6 +245,50 @@ WITH
 SELECT;
 SELECT * FROM mv_ivm_join_subquery ORDER BY i,j,k;
 
+ROLLBACK;
+
+-- support simple CTE
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
+    WITH b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM mv_base_a a, b WHERE a.i = b.i;
+INSERT INTO mv_base_a VALUES(2,20);
+INSERT INTO mv_base_b VALUES(3,300);
+SELECT * FROM mv_cte ORDER BY i,j;
+ROLLBACK;
+
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
+    WITH a AS (SELECT * FROM mv_base_a), b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM a, b WHERE a.i = b.i;
+INSERT INTO mv_base_a VALUES(2,20);
+INSERT INTO mv_base_b VALUES(3,300);
+SELECT * FROM mv_cte ORDER BY i,j;
+ROLLBACK;
+
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
+    WITH b AS ( SELECT * FROM mv_base_b) SELECT v.i,v.j FROM (WITH a AS (SELECT * FROM mv_base_a) SELECT a.i,a.j FROM a, b WHERE a.i = b.i) v;
+INSERT INTO mv_base_a VALUES(2,20);
+INSERT INTO mv_base_b VALUES(3,300);
+SELECT * FROM mv_cte ORDER BY i,j;
+ROLLBACK;
+
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
+    SELECT * FROM (WITH a AS (SELECT * FROM mv_base_a), b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM a, b WHERE a.i = b.i) v;
+INSERT INTO mv_base_a VALUES(2,20);
+INSERT INTO mv_base_b VALUES(3,300);
+SELECT * FROM mv_cte ORDER BY i,j;
+ROLLBACK;
+
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
+    WITH x AS ( SELECT i, a.j, b.k FROM mv_base_b b INNER JOIN mv_base_a a USING(i)) SELECT * FROM x;
+WITH
+ ai AS (INSERT INTO mv_base_a VALUES (1,11),(2,22) RETURNING 0),
+ bi AS (INSERT INTO mv_base_b VALUES (1,111),(3,133) RETURNING 0),
+ bd AS (DELETE FROM mv_base_b WHERE i = 4 RETURNING 0)
+SELECT;
+SELECT * FROM mv_cte ORDER BY i,j,k;
 ROLLBACK;
 
 -- views including NULL
@@ -1592,8 +1638,6 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHER
 -- targetlist or WHERE clause without EXISTS contain subquery
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
--- contain CTE
-CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm06 AS WITH b AS (SELECT i,k FROM mv_base_b WHERE k < 103) SELECT a.i,a.j FROM mv_base_a a,b WHERE a.i = b.i;
 -- contain ORDER BY
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm07 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) ORDER BY i,j,k;
 -- contain HAVING

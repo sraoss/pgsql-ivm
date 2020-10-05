@@ -270,6 +270,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
+	Query	   *query_immv = NULL;
 
 	if (stmt->if_not_exists)
 	{
@@ -338,6 +339,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 		check_ivm_restriction_walker((Node *) query, &ctx, 0);
 		query = rewriteQueryForIMMV(query, into->colNames);
+		query_immv = copyObject(query);
 	}
 
 	if (into->skipData)
@@ -438,7 +440,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 			if (!into->skipData)
 			{
-				CreateIvmTriggersOnBaseTables(query, (Node *)query->jointree, matviewOid, &relids);
+				Assert(query_immv != NULL);
+				CreateIvmTriggersOnBaseTables(query_immv, (Node *)query_immv, matviewOid, &relids);
 				bms_free(relids);
 			}
 			table_close(matviewRel, NoLock);
@@ -636,13 +639,26 @@ rewriteQueryForIMMV(Query *query, List *colNames)
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
 void
-CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *relids)
+CreateIvmTriggersOnBaseTables(Query *qry, Node *node, Oid matviewOid, Relids *relids)
 {
-	if (jtnode == NULL)
+	if (node == NULL)
 		return;
-	if (IsA(jtnode, RangeTblRef))
+	if (IsA(node, Query))
 	{
-		int			rti = ((RangeTblRef *) jtnode)->rtindex;
+		Query *query = (Query *) node;
+		ListCell *lc;
+
+		CreateIvmTriggersOnBaseTables(qry, (Node *)query->jointree, matviewOid, relids);
+		foreach(lc, query->cteList)
+		{
+			CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+			Assert(IsA(cte->ctequery, Query));
+			CreateIvmTriggersOnBaseTables((Query *) cte->ctequery, cte->ctequery, matviewOid, relids);
+		}
+	}
+	else if (IsA(node, RangeTblRef))
+	{
+		int			rti = ((RangeTblRef *) node)->rtindex;
 		RangeTblEntry *rte = rt_fetch(rti, qry->rtable);
 
 		if (rte->rtekind == RTE_RELATION)
@@ -664,26 +680,26 @@ CreateIvmTriggersOnBaseTables(Query *qry, Node *jtnode, Oid matviewOid, Relids *
 			Query *subquery = rte->subquery;
 			Assert(rte->subquery != NULL);
 
-			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery->jointree, matviewOid, relids);
+			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery, matviewOid, relids);
 		}
 	}
-	else if (IsA(jtnode, FromExpr))
+	else if (IsA(node, FromExpr))
 	{
-		FromExpr   *f = (FromExpr *) jtnode;
+		FromExpr   *f = (FromExpr *) node;
 		ListCell   *l;
 
 		foreach(l, f->fromlist)
 			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, relids);
 	}
-	else if (IsA(jtnode, JoinExpr))
+	else if (IsA(node, JoinExpr))
 	{
-		JoinExpr   *j = (JoinExpr *) jtnode;
+		JoinExpr   *j = (JoinExpr *) node;
 
 		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, relids);
 		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, relids);
 	}
 	else
-		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(jtnode));
+		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
 }
 
 /*
@@ -964,7 +980,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 		if (type == TRIGGER_TYPE_INSERT || type == TRIGGER_TYPE_UPDATE)
 		{
 			TriggerTransition *n = makeNode(TriggerTransition);
-			n->name = "ivm_newtable";
+			n->name = "__ivm_newtable";
 			n->isNew = true;
 			n->isTable = true;
 
@@ -973,7 +989,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 		if (type == TRIGGER_TYPE_DELETE || type == TRIGGER_TYPE_UPDATE)
 		{
 			TriggerTransition *n = makeNode(TriggerTransition);
-			n->name = "ivm_oldtable";
+			n->name = "__ivm_oldtable";
 			n->isNew = false;
 			n->isTable = true;
 
@@ -1022,11 +1038,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				Query *qry = (Query *)node;
 				ListCell   *lc;
-				/* if contained CTE, return error */
-				if (qry->cteList != NIL)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
+
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1064,6 +1076,25 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("FOR UPDATE/SHARE clause is not supported on incrementally maintainable materialized view")));
 
+				/* CTE restrictions */
+				if (qry->hasRecursive)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("recursive CTE is not supported on incrementally maintainable materialized view")));
+
+				foreach(lc, qry->cteList)
+				{
+					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+					Query	*subquery = (Query *) cte->ctequery;;
+
+					if (isIvmName(cte->ctename))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("CTE name %s is not supported on incrementally maintainable materialized view", cte->ctename)));
+
+					check_ivm_restriction_walker((Node *) subquery, ctx, depth + 1);
+				}
+
 				/* subquery restrictions */
 				if (depth > 0 && qry->distinctClause != NIL)
 					ereport(ERROR,
@@ -1076,7 +1107,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 				ctx->has_agg = qry->hasAggs;
 
-				/* if contained VIEW or subquery into RTE, return error */
+				/* restrictions for rtable */
 				foreach(lc, qry->rtable)
 				{
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
@@ -1086,14 +1117,14 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
 					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
-							ereport(ERROR,
-									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
 					if (rte->relkind == RELKIND_VIEW ||
-							rte->relkind == RELKIND_MATVIEW)
-							ereport(ERROR,
-									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
+						rte->relkind == RELKIND_MATVIEW)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
 
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
@@ -1101,9 +1132,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-									 errhint("subquery is not supported with outer join")));
+									 errhint("subquery or CTE is not supported with outer join")));
 
 						ctx->has_subquery = true;
+
 						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
 					}
 				}
@@ -1115,7 +1147,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				foreach(lc, qry->targetList)
 				{
 					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					if (isIvmColumn(tle->resname))
+					if (isIvmName(tle->resname))
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
@@ -1201,7 +1233,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-								 errhint("subquery is not supported with outer join")));
+								 errhint("subquery or CTE is not supported with outer join")));
 					if (ctx->has_agg)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
