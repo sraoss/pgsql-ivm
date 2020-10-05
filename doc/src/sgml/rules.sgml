@@ -1535,6 +1535,12 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
+            VALUES clause cannnot be used.
+          </para>
+        </listitem>
+
+        <listitem>
+          <para>
             <literal>GROUPING SETS</literal> and <literal>FILTER</literal> clauses cannot be used.
           </para>
         </listitem>

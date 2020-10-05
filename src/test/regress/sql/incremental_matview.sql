@@ -46,8 +46,6 @@ CREATE FUNCTION ivm_func() RETURNS int LANGUAGE 'sql'
        AS 'SELECT 1' IMMUTABLE;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_func AS SELECT * FROM ivm_func();
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_no_tbl AS SELECT 1;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values2 AS SELECT * FROM (values(1)) AS tmp;
 ROLLBACK;
 
 -- result of materliazied view have DISTINCT clause or the duplicate result.
@@ -1702,6 +1700,10 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a
 -- experssions containing an aggregate is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_base_a;
+
+-- VALUES is not supported
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values2 AS SELECT * FROM (values(1)) AS tmp;
 
 -- base table which has row level security
 DROP USER IF EXISTS ivm_admin;
