@@ -15694,6 +15694,7 @@ bare_label_keyword:
 			| INCLUDE
 			| INCLUDING
 			| INCREMENT
+			| INCREMENTAL
 			| INDEX
 			| INDEXES
 			| INHERIT
