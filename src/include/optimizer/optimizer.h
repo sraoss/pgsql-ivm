@@ -192,5 +192,4 @@ extern int	locate_var_of_level(Node *node, int levelsup);
 extern List *pull_var_clause(Node *node, int flags);
 extern Node *flatten_join_alias_vars(Query *query, Node *node);
 
-
 #endif							/* OPTIMIZER_H */

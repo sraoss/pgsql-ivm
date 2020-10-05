@@ -66,9 +66,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
-
-
-
 typedef struct
 {
 	DestReceiver pub;			/* publicly-known function pointers */
