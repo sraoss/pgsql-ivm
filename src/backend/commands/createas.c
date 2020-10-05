@@ -1126,6 +1126,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
 
+					if (rte->rtekind ==  RTE_VALUES)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("VALUES is not supported on incrementally maintainable materialized view")));
+
 					if (rte->rtekind ==  RTE_SUBQUERY)
 					{
 						if (ctx->has_outerjoin)

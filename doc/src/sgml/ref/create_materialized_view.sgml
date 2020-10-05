@@ -241,7 +241,7 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
         </listitem>
        <listitem>
         <para>
-         WINDOW, LIMIT and OFFSET clause.
+         DISTINCT ON, WINDOW, VALUES, LIMIT and OFFSET clause.
         </para>
        </listitem>
       </itemizedlist>
