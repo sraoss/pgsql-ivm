@@ -1060,11 +1060,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				Query *qry = (Query *)node;
 				ListCell   *lc;
-				/* if contained CTE, return error */
-				if (qry->cteList != NIL)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
+
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1101,6 +1097,25 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("FOR UPDATE/SHARE clause is not supported on incrementally maintainable materialized view")));
+
+				/* CTE restrictions */
+				if (qry->hasRecursive)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("recursive CTE is not supported on incrementally maintainable materialized view")));
+
+				foreach(lc, qry->cteList)
+				{
+					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+					Query	*subquery = (Query *) cte->ctequery;;
+
+					if (isIvmName(cte->ctename))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("CTE name %s is not supported on incrementally maintainable materialized view", cte->ctename)));
+
+					check_ivm_restriction_walker((Node *) subquery, ctx, depth + 1);
+				}
 
 				/* subquery restrictions */
 				if (depth > 0 && qry->distinctClause != NIL)
@@ -1144,9 +1159,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-									 errhint("subquery is not supported with outer join")));
+									 errhint("subquery or CTE is not supported with outer join")));
 
 						ctx->has_subquery = true;
+
 						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
 					}
 				}
@@ -1278,7 +1294,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-								 errhint("subquery is not supported with outer join")));
+								 errhint("subquery or CTE is not supported with outer join")));
 					if (ctx->has_agg)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1749,6 +1765,20 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
+
+	/* convert CTEs to subqueries */
+	foreach (lc, query->cteList)
+	{
+		PlannerInfo root;
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (cte->cterefcount == 0)
+			continue;
+
+		root.parse = query;
+		inline_cte(&root, cte);
+	}
+	query->cteList = NIL;
 
 	/*
 	 * Collect primary key attributes from all tables used in query. The attributes
