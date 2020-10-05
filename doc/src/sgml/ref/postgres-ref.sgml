@@ -338,10 +338,10 @@ PostgreSQL documentation
       <term><option>-S</option> <replaceable class="parameter">work-mem</replaceable></term>
       <listitem>
        <para>
-        Specifies the amount of memory to be used by internal sorts and hashes
-        before resorting to temporary disk files.  See the description of the
-        <varname>work_mem</varname> configuration parameter in <xref
-        linkend="runtime-config-resource-memory"/>.
+        Specifies the base amount of memory to be used by sorts and
+        hash tables before resorting to temporary disk files.  See the
+        description of the <varname>work_mem</varname> configuration
+        parameter in <xref linkend="runtime-config-resource-memory"/>.
        </para>
       </listitem>
      </varlistentry>
@@ -821,7 +821,7 @@ PostgreSQL documentation
 
   <para>
    To start <command>postgres</command> with a specific
-   port, e.g. 1234:
+   port, e.g., 1234:
 <screen>
 <prompt>$</prompt> <userinput>postgres -p 1234</userinput>
 </screen>

@@ -76,6 +76,7 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/relmapper.h"
+#include "utils/pg_rusage.h"
 #include "utils/snapmgr.h"
 #include "utils/timestamp.h"
 
@@ -298,9 +299,6 @@ bool		wal_receiver_create_temp_slot = false;
 
 /* are we currently in standby mode? */
 bool		StandbyMode = false;
-
-/* whether request for fast promotion has been made yet */
-static bool fast_promote = false;
 
 /*
  * if recoveryStopsBefore/After returns true, it saves information of the stop
@@ -604,7 +602,7 @@ typedef struct XLogCtlData
 	/* Protected by info_lck: */
 	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
-	FullTransactionId ckptFullXid;	/* nextFullXid of latest checkpoint */
+	FullTransactionId ckptFullXid;	/* nextXid of latest checkpoint */
 	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort */
 	XLogRecPtr	replicationSlotMinLSN;	/* oldest LSN needed by any slot */
 
@@ -5242,7 +5240,7 @@ BootStrapXLOG(void)
 	checkPoint.ThisTimeLineID = ThisTimeLineID;
 	checkPoint.PrevTimeLineID = ThisTimeLineID;
 	checkPoint.fullPageWrites = fullPageWrites;
-	checkPoint.nextFullXid =
+	checkPoint.nextXid =
 		FullTransactionIdFromEpochAndXid(0, FirstNormalTransactionId);
 	checkPoint.nextOid = FirstBootstrapObjectId;
 	checkPoint.nextMulti = FirstMultiXactId;
@@ -5256,7 +5254,7 @@ BootStrapXLOG(void)
 	checkPoint.time = (pg_time_t) time(NULL);
 	checkPoint.oldestActiveXid = InvalidTransactionId;
 
-	ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
+	ShmemVariableCache->nextXid = checkPoint.nextXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
@@ -6322,7 +6320,7 @@ StartupXLOG(void)
 	DBState		dbstate_at_startup;
 	XLogReaderState *xlogreader;
 	XLogPageReadPrivate private;
-	bool		fast_promoted = false;
+	bool		promoted = false;
 	struct stat st;
 
 	/*
@@ -6744,7 +6742,7 @@ StartupXLOG(void)
 							 wasShutdown ? "true" : "false")));
 	ereport(DEBUG1,
 			(errmsg_internal("next transaction ID: " UINT64_FORMAT "; next OID: %u",
-							 U64FromFullTransactionId(checkPoint.nextFullXid),
+							 U64FromFullTransactionId(checkPoint.nextXid),
 							 checkPoint.nextOid)));
 	ereport(DEBUG1,
 			(errmsg_internal("next MultiXactId: %u; next MultiXactOffset: %u",
@@ -6759,12 +6757,12 @@ StartupXLOG(void)
 			(errmsg_internal("commit timestamp Xid oldest/newest: %u/%u",
 							 checkPoint.oldestCommitTsXid,
 							 checkPoint.newestCommitTsXid)));
-	if (!TransactionIdIsNormal(XidFromFullTransactionId(checkPoint.nextFullXid)))
+	if (!TransactionIdIsNormal(XidFromFullTransactionId(checkPoint.nextXid)))
 		ereport(PANIC,
 				(errmsg("invalid next transaction ID")));
 
 	/* initialize shared memory variables from the checkpoint record */
-	ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
+	ShmemVariableCache->nextXid = checkPoint.nextXid;
 	ShmemVariableCache->nextOid = checkPoint.nextOid;
 	ShmemVariableCache->oidCount = 0;
 	MultiXactSetNextMXact(checkPoint.nextMulti, checkPoint.nextMultiOffset);
@@ -6773,7 +6771,7 @@ StartupXLOG(void)
 	SetMultiXactIdLimit(checkPoint.oldestMulti, checkPoint.oldestMultiDB, true);
 	SetCommitTsLimit(checkPoint.oldestCommitTsXid,
 					 checkPoint.newestCommitTsXid);
-	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
+	XLogCtl->ckptFullXid = checkPoint.nextXid;
 
 	/*
 	 * Initialize replication slots, before there's a chance to remove
@@ -7054,7 +7052,7 @@ StartupXLOG(void)
 			Assert(TransactionIdIsValid(oldestActiveXID));
 
 			/* Tell procarray about the range of xids it has to deal with */
-			ProcArrayInitRecovery(XidFromFullTransactionId(ShmemVariableCache->nextFullXid));
+			ProcArrayInitRecovery(XidFromFullTransactionId(ShmemVariableCache->nextXid));
 
 			/*
 			 * Startup commit log and subtrans only.  MultiXact and commit
@@ -7084,9 +7082,9 @@ StartupXLOG(void)
 				running.xcnt = nxids;
 				running.subxcnt = 0;
 				running.subxid_overflow = false;
-				running.nextXid = XidFromFullTransactionId(checkPoint.nextFullXid);
+				running.nextXid = XidFromFullTransactionId(checkPoint.nextXid);
 				running.oldestRunningXid = oldestActiveXID;
-				latestCompletedXid = XidFromFullTransactionId(checkPoint.nextFullXid);
+				latestCompletedXid = XidFromFullTransactionId(checkPoint.nextXid);
 				TransactionIdRetreat(latestCompletedXid);
 				Assert(TransactionIdIsNormal(latestCompletedXid));
 				running.latestCompletedXid = latestCompletedXid;
@@ -7172,6 +7170,9 @@ StartupXLOG(void)
 		{
 			ErrorContextCallback errcallback;
 			TimestampTz xtime;
+			PGRUsage	ru0;
+
+			pg_rusage_init(&ru0);
 
 			InRedo = true;
 
@@ -7257,7 +7258,7 @@ StartupXLOG(void)
 				error_context_stack = &errcallback;
 
 				/*
-				 * ShmemVariableCache->nextFullXid must be beyond record's
+				 * ShmemVariableCache->nextXid must be beyond record's
 				 * xid.
 				 */
 				AdvanceNextFullTransactionIdPastXid(record->xl_xid);
@@ -7438,8 +7439,9 @@ StartupXLOG(void)
 			}
 
 			ereport(LOG,
-					(errmsg("redo done at %X/%X",
-							(uint32) (ReadRecPtr >> 32), (uint32) ReadRecPtr)));
+					(errmsg("redo done at %X/%X system usage: %s",
+							(uint32) (ReadRecPtr >> 32), (uint32) ReadRecPtr,
+							pg_rusage_show(&ru0))));
 			xtime = GetLatestXTime();
 			if (xtime)
 				ereport(LOG,
@@ -7727,14 +7729,14 @@ StartupXLOG(void)
 		 * the rule that TLI only changes in shutdown checkpoints, which
 		 * allows some extra error checking in xlog_redo.
 		 *
-		 * In fast promotion, only create a lightweight end-of-recovery record
+		 * In promotion, only create a lightweight end-of-recovery record
 		 * instead of a full checkpoint. A checkpoint is requested later,
 		 * after we're fully out of recovery mode and already accepting
 		 * queries.
 		 */
 		if (bgwriterLaunched)
 		{
-			if (fast_promote)
+			if (LocalPromoteIsTriggered)
 			{
 				checkPointLoc = ControlFile->checkPoint;
 
@@ -7745,7 +7747,7 @@ StartupXLOG(void)
 				record = ReadCheckpointRecord(xlogreader, checkPointLoc, 1, false);
 				if (record != NULL)
 				{
-					fast_promoted = true;
+					promoted = true;
 
 					/*
 					 * Insert a special WAL record to mark the end of
@@ -7762,7 +7764,7 @@ StartupXLOG(void)
 				}
 			}
 
-			if (!fast_promoted)
+			if (!promoted)
 				RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
 								  CHECKPOINT_IMMEDIATE |
 								  CHECKPOINT_WAIT);
@@ -7868,8 +7870,8 @@ StartupXLOG(void)
 
 	/* also initialize latestCompletedXid, to nextXid - 1 */
 	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
-	ShmemVariableCache->latestCompletedXid = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
-	TransactionIdRetreat(ShmemVariableCache->latestCompletedXid);
+	ShmemVariableCache->latestCompletedXid = ShmemVariableCache->nextXid;
+	FullTransactionIdRetreat(&ShmemVariableCache->latestCompletedXid);
 	LWLockRelease(ProcArrayLock);
 
 	/*
@@ -7953,12 +7955,12 @@ StartupXLOG(void)
 	WalSndWakeup();
 
 	/*
-	 * If this was a fast promotion, request an (online) checkpoint now. This
+	 * If this was a promotion, request an (online) checkpoint now. This
 	 * isn't required for consistency, but the last restartpoint might be far
 	 * back, and in case of a crash, recovering from it might take a longer
 	 * than is appropriate now that we're not in standby mode anymore.
 	 */
-	if (fast_promoted)
+	if (promoted)
 		RequestCheckpoint(CHECKPOINT_FORCE);
 }
 
@@ -8526,10 +8528,6 @@ ShutdownXLOG(int code, Datum arg)
 
 		CreateCheckPoint(CHECKPOINT_IS_SHUTDOWN | CHECKPOINT_IMMEDIATE);
 	}
-	ShutdownCLOG();
-	ShutdownCommitTs();
-	ShutdownSUBTRANS();
-	ShutdownMultiXact();
 }
 
 /*
@@ -8900,7 +8898,7 @@ CreateCheckPoint(int flags)
 	 * there.
 	 */
 	LWLockAcquire(XidGenLock, LW_SHARED);
-	checkPoint.nextFullXid = ShmemVariableCache->nextFullXid;
+	checkPoint.nextXid = ShmemVariableCache->nextXid;
 	checkPoint.oldestXid = ShmemVariableCache->oldestXid;
 	checkPoint.oldestXidDB = ShmemVariableCache->oldestXidDB;
 	LWLockRelease(XidGenLock);
@@ -9053,7 +9051,7 @@ CreateCheckPoint(int flags)
 
 	/* Update shared-memory copy of checkpoint XID/epoch */
 	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->ckptFullXid = checkPoint.nextFullXid;
+	XLogCtl->ckptFullXid = checkPoint.nextXid;
 	SpinLockRelease(&XLogCtl->info_lck);
 
 	/*
@@ -9099,7 +9097,7 @@ CreateCheckPoint(int flags)
 	 * StartupSUBTRANS hasn't been called yet.
 	 */
 	if (!RecoveryInProgress())
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
 
 	/* Real work is done, but log and update stats before releasing lock. */
 	LogCheckpointEnd(false);
@@ -9174,17 +9172,29 @@ CreateEndOfRecoveryRecord(void)
 static void
 CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 {
+	CheckPointRelationMap();
+	CheckPointReplicationSlots();
+	CheckPointSnapBuild();
+	CheckPointLogicalRewriteHeap();
+	CheckPointReplicationOrigin();
+
+	/* Write out all dirty data in SLRUs and the main buffer pool */
+	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_START(flags);
+	CheckpointStats.ckpt_write_t = GetCurrentTimestamp();
 	CheckPointCLOG();
 	CheckPointCommitTs();
 	CheckPointSUBTRANS();
 	CheckPointMultiXact();
 	CheckPointPredicate();
-	CheckPointRelationMap();
-	CheckPointReplicationSlots();
-	CheckPointSnapBuild();
-	CheckPointLogicalRewriteHeap();
-	CheckPointBuffers(flags);	/* performs all required fsyncs */
-	CheckPointReplicationOrigin();
+	CheckPointBuffers(flags);
+
+	/* Perform all queued up fsyncs */
+	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_SYNC_START();
+	CheckpointStats.ckpt_sync_t = GetCurrentTimestamp();
+	ProcessSyncRequests();
+	CheckpointStats.ckpt_sync_end_t = GetCurrentTimestamp();
+	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_DONE();
+
 	/* We deliberately delay 2PC checkpointing as long as possible */
 	CheckPointTwoPhase(checkPointRedo);
 }
@@ -9459,7 +9469,7 @@ CreateRestartPoint(int flags)
 	 * this because StartupSUBTRANS hasn't been called yet.
 	 */
 	if (EnableHotStandby)
-		TruncateSUBTRANS(GetOldestXmin(NULL, PROCARRAY_FLAGS_DEFAULT));
+		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
 
 	/* Real work is done, but log and update before releasing lock. */
 	LogCheckpointEnd(true);
@@ -9929,7 +9939,7 @@ xlog_redo(XLogReaderState *record)
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In a SHUTDOWN checkpoint, believe the counters exactly */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-		ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
+		ShmemVariableCache->nextXid = checkPoint.nextXid;
 		LWLockRelease(XidGenLock);
 		LWLockAcquire(OidGenLock, LW_EXCLUSIVE);
 		ShmemVariableCache->nextOid = checkPoint.nextOid;
@@ -9983,9 +9993,9 @@ xlog_redo(XLogReaderState *record)
 			running.xcnt = nxids;
 			running.subxcnt = 0;
 			running.subxid_overflow = false;
-			running.nextXid = XidFromFullTransactionId(checkPoint.nextFullXid);
+			running.nextXid = XidFromFullTransactionId(checkPoint.nextXid);
 			running.oldestRunningXid = oldestActiveXID;
-			latestCompletedXid = XidFromFullTransactionId(checkPoint.nextFullXid);
+			latestCompletedXid = XidFromFullTransactionId(checkPoint.nextXid);
 			TransactionIdRetreat(latestCompletedXid);
 			Assert(TransactionIdIsNormal(latestCompletedXid));
 			running.latestCompletedXid = latestCompletedXid;
@@ -9998,12 +10008,12 @@ xlog_redo(XLogReaderState *record)
 
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-		ControlFile->checkPointCopy.nextFullXid = checkPoint.nextFullXid;
+		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		LWLockRelease(ControlFileLock);
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptFullXid = checkPoint.nextFullXid;
+		XLogCtl->ckptFullXid = checkPoint.nextXid;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/*
@@ -10024,9 +10034,9 @@ xlog_redo(XLogReaderState *record)
 		memcpy(&checkPoint, XLogRecGetData(record), sizeof(CheckPoint));
 		/* In an ONLINE checkpoint, treat the XID counter as a minimum */
 		LWLockAcquire(XidGenLock, LW_EXCLUSIVE);
-		if (FullTransactionIdPrecedes(ShmemVariableCache->nextFullXid,
-									  checkPoint.nextFullXid))
-			ShmemVariableCache->nextFullXid = checkPoint.nextFullXid;
+		if (FullTransactionIdPrecedes(ShmemVariableCache->nextXid,
+									  checkPoint.nextXid))
+			ShmemVariableCache->nextXid = checkPoint.nextXid;
 		LWLockRelease(XidGenLock);
 
 		/*
@@ -10057,12 +10067,12 @@ xlog_redo(XLogReaderState *record)
 								  checkPoint.oldestXidDB);
 		/* ControlFile->checkPointCopy always tracks the latest ckpt XID */
 		LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
-		ControlFile->checkPointCopy.nextFullXid = checkPoint.nextFullXid;
+		ControlFile->checkPointCopy.nextXid = checkPoint.nextXid;
 		LWLockRelease(ControlFileLock);
 
 		/* Update shared-memory copy of checkpoint XID/epoch */
 		SpinLockAcquire(&XLogCtl->info_lck);
-		XLogCtl->ckptFullXid = checkPoint.nextFullXid;
+		XLogCtl->ckptFullXid = checkPoint.nextXid;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/* TLI should not change in an on-line checkpoint */
@@ -12507,7 +12517,7 @@ StartupRequestWalReceiverRestart(void)
 	if (currentSource == XLOG_FROM_STREAM && WalRcvRunning())
 	{
 		ereport(LOG,
-				(errmsg("wal receiver process shutdown requested")));
+				(errmsg("WAL receiver process shutdown requested")));
 
 		pendingWalRcvRestart = true;
 	}
@@ -12592,29 +12602,10 @@ CheckForStandbyTrigger(void)
 	if (LocalPromoteIsTriggered)
 		return true;
 
-	if (IsPromoteSignaled())
+	if (IsPromoteSignaled() && CheckPromoteSignal())
 	{
-		/*
-		 * In 9.1 and 9.2 the postmaster unlinked the promote file inside the
-		 * signal handler. It now leaves the file in place and lets the
-		 * Startup process do the unlink. This allows Startup to know whether
-		 * it should create a full checkpoint before starting up (fallback
-		 * mode). Fast promotion takes precedence.
-		 */
-		if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
-		{
-			unlink(PROMOTE_SIGNAL_FILE);
-			unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
-			fast_promote = true;
-		}
-		else if (stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
-		{
-			unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
-			fast_promote = false;
-		}
-
 		ereport(LOG, (errmsg("received promote request")));
-
+		RemovePromoteSignalFiles();
 		ResetPromoteSignaled();
 		SetPromoteIsTriggered();
 		return true;
@@ -12629,7 +12620,6 @@ CheckForStandbyTrigger(void)
 				(errmsg("promote trigger file found: %s", PromoteTriggerFile)));
 		unlink(PromoteTriggerFile);
 		SetPromoteIsTriggered();
-		fast_promote = true;
 		return true;
 	}
 	else if (errno != ENOENT)
@@ -12648,20 +12638,17 @@ void
 RemovePromoteSignalFiles(void)
 {
 	unlink(PROMOTE_SIGNAL_FILE);
-	unlink(FALLBACK_PROMOTE_SIGNAL_FILE);
 }
 
 /*
- * Check to see if a promote request has arrived. Should be
- * called by postmaster after receiving SIGUSR1.
+ * Check to see if a promote request has arrived.
  */
 bool
 CheckPromoteSignal(void)
 {
 	struct stat stat_buf;
 
-	if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0 ||
-		stat(FALLBACK_PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
+	if (stat(PROMOTE_SIGNAL_FILE, &stat_buf) == 0)
 		return true;
 
 	return false;

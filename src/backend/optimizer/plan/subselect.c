@@ -69,7 +69,7 @@ typedef struct inline_cte_walker_context
 static Node *build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 						   List *plan_params,
 						   SubLinkType subLinkType, int subLinkId,
-						   Node *testexpr, bool adjust_testexpr,
+						   Node *testexpr, List *testexpr_paramids,
 						   bool unknownEqFalse);
 static List *generate_subquery_params(PlannerInfo *root, List *tlist,
 									  List **paramIds);
@@ -81,7 +81,9 @@ static Node *convert_testexpr(PlannerInfo *root,
 static Node *convert_testexpr_mutator(Node *node,
 									  convert_testexpr_context *context);
 static bool subplan_is_hashable(Plan *plan);
-static bool testexpr_is_hashable(Node *testexpr);
+static bool subpath_is_hashable(Path *path);
+static bool testexpr_is_hashable(Node *testexpr, List *param_ids);
+static bool test_opexpr_is_hashable(OpExpr *testexpr, List *param_ids);
 static bool hash_ok_operator(OpExpr *expr);
 static bool contain_dml(Node *node);
 static bool contain_dml_walker(Node *node, void *context);
@@ -199,7 +201,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	 * XXX If an ANY subplan is uncorrelated, build_subplan may decide to hash
 	 * its output.  In that case it would've been better to specify full
 	 * retrieval.  At present, however, we can only check hashability after
-	 * we've made the subplan :-(.  (Determining whether it'll fit in work_mem
+	 * we've made the subplan :-(.  (Determining whether it'll fit in hash_mem
 	 * is the really hard part.)  Therefore, we don't want to be too
 	 * optimistic about the percentage of tuples retrieved, for fear of
 	 * selecting a plan that's bad for the materialization case.
@@ -236,7 +238,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	/* And convert to SubPlan or InitPlan format. */
 	result = build_subplan(root, plan, subroot, plan_params,
 						   subLinkType, subLinkId,
-						   testexpr, true, isTopQual);
+						   testexpr, NIL, isTopQual);
 
 	/*
 	 * If it's a correlated EXISTS with an unimportant targetlist, we might be
@@ -245,7 +247,7 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 	 * likely to be better (it depends on the expected number of executions of
 	 * the EXISTS qual, and we are much too early in planning the outer query
 	 * to be able to guess that).  So we generate both plans, if possible, and
-	 * leave it to the executor to decide which to use.
+	 * leave it to setrefs.c to decide which to use.
 	 */
 	if (simple_exists && IsA(result, SubPlan))
 	{
@@ -271,36 +273,36 @@ make_subplan(PlannerInfo *root, Query *orig_subquery,
 			plan_params = root->plan_params;
 			root->plan_params = NIL;
 
-			/* Select best Path and turn it into a Plan */
+			/* Select best Path */
 			final_rel = fetch_upper_rel(subroot, UPPERREL_FINAL, NULL);
 			best_path = final_rel->cheapest_total_path;
 
-			plan = create_plan(subroot, best_path);
-
-			/* Now we can check if it'll fit in work_mem */
-			/* XXX can we check this at the Path stage? */
-			if (subplan_is_hashable(plan))
+			/* Now we can check if it'll fit in hash_mem */
+			if (subpath_is_hashable(best_path))
 			{
 				SubPlan    *hashplan;
 				AlternativeSubPlan *asplan;
 
-				/* OK, convert to SubPlan format. */
+				/* OK, finish planning the ANY subquery */
+				plan = create_plan(subroot, best_path);
+
+				/* ... and convert to SubPlan format */
 				hashplan = castNode(SubPlan,
 									build_subplan(root, plan, subroot,
 												  plan_params,
 												  ANY_SUBLINK, 0,
 												  newtestexpr,
-												  false, true));
+												  paramIds,
+												  true));
 				/* Check we got what we expected */
 				Assert(hashplan->parParam == NIL);
 				Assert(hashplan->useHashTable);
-				/* build_subplan won't have filled in paramIds */
-				hashplan->paramIds = paramIds;
 
-				/* Leave it to the executor to decide which plan to use */
+				/* Leave it to setrefs.c to decide which plan to use */
 				asplan = makeNode(AlternativeSubPlan);
 				asplan->subplans = list_make2(result, hashplan);
 				result = (Node *) asplan;
+				root->hasAlternativeSubPlans = true;
 			}
 		}
 	}
@@ -318,7 +320,7 @@ static Node *
 build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 			  List *plan_params,
 			  SubLinkType subLinkType, int subLinkId,
-			  Node *testexpr, bool adjust_testexpr,
+			  Node *testexpr, List *testexpr_paramids,
 			  bool unknownEqFalse)
 {
 	Node	   *result;
@@ -483,10 +485,10 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 	else
 	{
 		/*
-		 * Adjust the Params in the testexpr, unless caller said it's not
-		 * needed.
+		 * Adjust the Params in the testexpr, unless caller already took care
+		 * of it (as indicated by passing a list of Param IDs).
 		 */
-		if (testexpr && adjust_testexpr)
+		if (testexpr && testexpr_paramids == NIL)
 		{
 			List	   *params;
 
@@ -498,7 +500,10 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 											   params);
 		}
 		else
+		{
 			splan->testexpr = testexpr;
+			splan->paramIds = testexpr_paramids;
+		}
 
 		/*
 		 * We can't convert subplans of ALL_SUBLINK or ANY_SUBLINK types to
@@ -510,7 +515,7 @@ build_subplan(PlannerInfo *root, Plan *plan, PlannerInfo *subroot,
 		if (subLinkType == ANY_SUBLINK &&
 			splan->parParam == NIL &&
 			subplan_is_hashable(plan) &&
-			testexpr_is_hashable(splan->testexpr))
+			testexpr_is_hashable(splan->testexpr, splan->paramIds))
 			splan->useHashTable = true;
 
 		/*
@@ -710,21 +715,50 @@ convert_testexpr_mutator(Node *node,
 
 /*
  * subplan_is_hashable: can we implement an ANY subplan by hashing?
+ *
+ * This is not responsible for checking whether the combining testexpr
+ * is suitable for hashing.  We only look at the subquery itself.
  */
 static bool
 subplan_is_hashable(Plan *plan)
 {
 	double		subquery_size;
+	int			hash_mem = get_hash_mem();
 
 	/*
-	 * The estimated size of the subquery result must fit in work_mem. (Note:
+	 * The estimated size of the subquery result must fit in hash_mem. (Note:
 	 * we use heap tuple overhead here even though the tuples will actually be
 	 * stored as MinimalTuples; this provides some fudge factor for hashtable
 	 * overhead.)
 	 */
 	subquery_size = plan->plan_rows *
 		(MAXALIGN(plan->plan_width) + MAXALIGN(SizeofHeapTupleHeader));
-	if (subquery_size > work_mem * 1024L)
+	if (subquery_size > hash_mem * 1024L)
+		return false;
+
+	return true;
+}
+
+/*
+ * subpath_is_hashable: can we implement an ANY subplan by hashing?
+ *
+ * Identical to subplan_is_hashable, but work from a Path for the subplan.
+ */
+static bool
+subpath_is_hashable(Path *path)
+{
+	double		subquery_size;
+	int			hash_mem = get_hash_mem();
+
+	/*
+	 * The estimated size of the subquery result must fit in hash_mem. (Note:
+	 * we use heap tuple overhead here even though the tuples will actually be
+	 * stored as MinimalTuples; this provides some fudge factor for hashtable
+	 * overhead.)
+	 */
+	subquery_size = path->rows *
+		(MAXALIGN(path->pathtarget->width) + MAXALIGN(SizeofHeapTupleHeader));
+	if (subquery_size > hash_mem * 1024L)
 		return false;
 
 	return true;
@@ -732,24 +766,20 @@ subplan_is_hashable(Plan *plan)
 
 /*
  * testexpr_is_hashable: is an ANY SubLink's test expression hashable?
+ *
+ * To identify LHS vs RHS of the hash expression, we must be given the
+ * list of output Param IDs of the SubLink's subquery.
  */
 static bool
-testexpr_is_hashable(Node *testexpr)
+testexpr_is_hashable(Node *testexpr, List *param_ids)
 {
 	/*
 	 * The testexpr must be a single OpExpr, or an AND-clause containing only
-	 * OpExprs.
-	 *
-	 * The combining operators must be hashable and strict. The need for
-	 * hashability is obvious, since we want to use hashing. Without
-	 * strictness, behavior in the presence of nulls is too unpredictable.  We
-	 * actually must assume even more than plain strictness: they can't yield
-	 * NULL for non-null inputs, either (see nodeSubplan.c).  However, hash
-	 * indexes and hash joins assume that too.
+	 * OpExprs, each of which satisfy test_opexpr_is_hashable().
 	 */
 	if (testexpr && IsA(testexpr, OpExpr))
 	{
-		if (hash_ok_operator((OpExpr *) testexpr))
+		if (test_opexpr_is_hashable((OpExpr *) testexpr, param_ids))
 			return true;
 	}
 	else if (is_andclause(testexpr))
@@ -762,13 +792,47 @@ testexpr_is_hashable(Node *testexpr)
 
 			if (!IsA(andarg, OpExpr))
 				return false;
-			if (!hash_ok_operator((OpExpr *) andarg))
+			if (!test_opexpr_is_hashable((OpExpr *) andarg, param_ids))
 				return false;
 		}
 		return true;
 	}
 
 	return false;
+}
+
+static bool
+test_opexpr_is_hashable(OpExpr *testexpr, List *param_ids)
+{
+	/*
+	 * The combining operator must be hashable and strict.  The need for
+	 * hashability is obvious, since we want to use hashing.  Without
+	 * strictness, behavior in the presence of nulls is too unpredictable.  We
+	 * actually must assume even more than plain strictness: it can't yield
+	 * NULL for non-null inputs, either (see nodeSubplan.c).  However, hash
+	 * indexes and hash joins assume that too.
+	 */
+	if (!hash_ok_operator(testexpr))
+		return false;
+
+	/*
+	 * The left and right inputs must belong to the outer and inner queries
+	 * respectively; hence Params that will be supplied by the subquery must
+	 * not appear in the LHS, and Vars of the outer query must not appear in
+	 * the RHS.  (Ordinarily, this must be true because of the way that the
+	 * parser builds an ANY SubLink's testexpr ... but inlining of functions
+	 * could have changed the expression's structure, so we have to check.
+	 * Such cases do not occur often enough to be worth trying to optimize, so
+	 * we don't worry about trying to commute the clause or anything like
+	 * that; we just need to be sure not to build an invalid plan.)
+	 */
+	if (list_length(testexpr->args) != 2)
+		return false;
+	if (contain_exec_param((Node *) linitial(testexpr->args), param_ids))
+		return false;
+	if (contain_var_clause((Node *) lsecond(testexpr->args)))
+		return false;
+	return true;
 }
 
 /*

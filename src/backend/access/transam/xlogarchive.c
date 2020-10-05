@@ -202,10 +202,10 @@ RestoreArchivedFile(char *path, const char *xlogfname,
 				else
 					elevel = FATAL;
 				ereport(elevel,
-						(errmsg("archive file \"%s\" has wrong size: %lu instead of %lu",
+						(errmsg("archive file \"%s\" has wrong size: %lld instead of %lld",
 								xlogfname,
-								(unsigned long) stat_buf.st_size,
-								(unsigned long) expectedSize)));
+								(long long int) stat_buf.st_size,
+								(long long int) expectedSize)));
 				return false;
 			}
 			else
@@ -323,7 +323,7 @@ ExecuteRecoveryCommand(const char *command, const char *commandName, bool failOn
 				case 'r':
 					/* %r: filename of last restartpoint */
 					sp++;
-					StrNCpy(dp, lastRestartPointFname, endp - dp);
+					strlcpy(dp, lastRestartPointFname, endp - dp);
 					dp += strlen(dp);
 					break;
 				case '%':

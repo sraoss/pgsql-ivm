@@ -330,6 +330,9 @@ do { \
 
 /*
  * Assembly instructions for schema queries
+ *
+ * Note that toast tables are not included in those queries to avoid
+ * unnecessary bloat in the completions generated.
  */
 
 static const SchemaQuery Query_for_list_of_aggregates[] = {
@@ -573,8 +576,14 @@ static const SchemaQuery Query_for_list_of_indexables = {
 	.result = "pg_catalog.quote_ident(c.relname)",
 };
 
-/* Relations supporting VACUUM */
-static const SchemaQuery Query_for_list_of_vacuumables = {
+/*
+ * Relations supporting VACUUM are currently same as those supporting
+ * indexing.
+ */
+#define Query_for_list_of_vacuumables Query_for_list_of_indexables
+
+/* Relations supporting CLUSTER */
+static const SchemaQuery Query_for_list_of_clusterables = {
 	.catname = "pg_catalog.pg_class c",
 	.selcondition =
 	"c.relkind IN (" CppAsString2(RELKIND_RELATION) ", "
@@ -583,9 +592,6 @@ static const SchemaQuery Query_for_list_of_vacuumables = {
 	.namespace = "c.relnamespace",
 	.result = "pg_catalog.quote_ident(c.relname)",
 };
-
-/* Relations supporting CLUSTER are currently same as those supporting VACUUM */
-#define Query_for_list_of_clusterables Query_for_list_of_vacuumables
 
 static const SchemaQuery Query_for_list_of_constraints_with_schema = {
 	.catname = "pg_catalog.pg_constraint c",
@@ -2909,7 +2915,8 @@ psql_completion(const char *text, int start, int end)
 
 /* DEALLOCATE */
 	else if (Matches("DEALLOCATE"))
-		COMPLETE_WITH_QUERY(Query_for_list_of_prepared_statements);
+		COMPLETE_WITH_QUERY(Query_for_list_of_prepared_statements
+							" UNION SELECT 'ALL'");
 
 /* DECLARE */
 	else if (Matches("DECLARE", MatchAny))
@@ -3291,6 +3298,17 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("FOREIGN SCHEMA");
 	else if (Matches("IMPORT", "FOREIGN"))
 		COMPLETE_WITH("SCHEMA");
+	else if (Matches("IMPORT", "FOREIGN", "SCHEMA", MatchAny))
+		COMPLETE_WITH("EXCEPT (", "FROM SERVER", "LIMIT TO (");
+	else if (TailMatches("LIMIT", "TO", "(*)") ||
+			 TailMatches("EXCEPT", "(*)"))
+		COMPLETE_WITH("FROM SERVER");
+	else if (TailMatches("FROM", "SERVER", MatchAny))
+		COMPLETE_WITH("INTO");
+	else if (TailMatches("FROM", "SERVER", MatchAny, "INTO"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_schemas);
+	else if (TailMatches("FROM", "SERVER", MatchAny, "INTO", MatchAny))
+		COMPLETE_WITH("OPTIONS (");
 
 /* INSERT --- can be inside EXPLAIN, RULE, etc */
 	/* Complete INSERT with "INTO" */
@@ -3428,28 +3446,48 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("DATA");
 
 /* REINDEX */
-	else if (Matches("REINDEX"))
+	else if (Matches("REINDEX") ||
+			 Matches("REINDEX", "(*)"))
 		COMPLETE_WITH("TABLE", "INDEX", "SYSTEM", "SCHEMA", "DATABASE");
-	else if (Matches("REINDEX", "TABLE"))
+	else if (Matches("REINDEX", "TABLE") ||
+			 Matches("REINDEX", "(*)", "TABLE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_indexables,
 								   " UNION SELECT 'CONCURRENTLY'");
-	else if (Matches("REINDEX", "INDEX"))
+	else if (Matches("REINDEX", "INDEX") ||
+			 Matches("REINDEX", "(*)", "INDEX"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_indexes,
 								   " UNION SELECT 'CONCURRENTLY'");
-	else if (Matches("REINDEX", "SCHEMA"))
+	else if (Matches("REINDEX", "SCHEMA") ||
+			 Matches("REINDEX", "(*)", "SCHEMA"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_schemas
 							" UNION SELECT 'CONCURRENTLY'");
-	else if (Matches("REINDEX", "SYSTEM|DATABASE"))
+	else if (Matches("REINDEX", "SYSTEM|DATABASE") ||
+			 Matches("REINDEX", "(*)", "SYSTEM|DATABASE"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_databases
 							" UNION SELECT 'CONCURRENTLY'");
-	else if (Matches("REINDEX", "TABLE", "CONCURRENTLY"))
+	else if (Matches("REINDEX", "TABLE", "CONCURRENTLY") ||
+			 Matches("REINDEX", "(*)", "TABLE", "CONCURRENTLY"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_indexables, NULL);
-	else if (Matches("REINDEX", "INDEX", "CONCURRENTLY"))
+	else if (Matches("REINDEX", "INDEX", "CONCURRENTLY") ||
+			 Matches("REINDEX", "(*)", "INDEX", "CONCURRENTLY"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_indexes, NULL);
-	else if (Matches("REINDEX", "SCHEMA", "CONCURRENTLY"))
+	else if (Matches("REINDEX", "SCHEMA", "CONCURRENTLY") ||
+			 Matches("REINDEX", "(*)", "SCHEMA", "CONCURRENTLY"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_schemas);
-	else if (Matches("REINDEX", "SYSTEM|DATABASE", "CONCURRENTLY"))
+	else if (Matches("REINDEX", "SYSTEM|DATABASE", "CONCURRENTLY") ||
+			 Matches("REINDEX", "(*)", "SYSTEM|DATABASE", "CONCURRENTLY"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_databases);
+	else if (HeadMatches("REINDEX", "(*") &&
+			 !HeadMatches("REINDEX", "(*)"))
+	{
+		/*
+		 * This fires if we're in an unfinished parenthesized option list.
+		 * get_previous_words treats a completed parenthesized option list as
+		 * one word, so the above test is correct.
+		 */
+		if (ends_with(prev_wd, '(') || ends_with(prev_wd, ','))
+			COMPLETE_WITH("VERBOSE");
+	}
 
 /* SECURITY LABEL */
 	else if (Matches("SECURITY"))

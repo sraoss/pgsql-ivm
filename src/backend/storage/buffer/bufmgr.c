@@ -2636,14 +2636,7 @@ PrintBufferLeakWarning(Buffer buffer)
 void
 CheckPointBuffers(int flags)
 {
-	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_START(flags);
-	CheckpointStats.ckpt_write_t = GetCurrentTimestamp();
 	BufferSync(flags);
-	CheckpointStats.ckpt_sync_t = GetCurrentTimestamp();
-	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_SYNC_START();
-	ProcessSyncRequests();
-	CheckpointStats.ckpt_sync_end_t = GetCurrentTimestamp();
-	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_DONE();
 }
 
 
@@ -3578,7 +3571,7 @@ IncrBufferRefCount(Buffer buffer)
  * This is essentially the same as MarkBufferDirty, except:
  *
  * 1. The caller does not write WAL; so if checksums are enabled, we may need
- *	  to write an XLOG_FPI WAL record to protect against torn pages.
+ *	  to write an XLOG_FPI_FOR_HINT WAL record to protect against torn pages.
  * 2. The caller might have only share-lock instead of exclusive-lock on the
  *	  buffer's content lock.
  * 3. This function does not guarantee that the buffer is always marked dirty

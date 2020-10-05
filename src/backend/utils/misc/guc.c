@@ -2231,6 +2231,17 @@ static struct config_int ConfigureNamesInt[] =
 		NULL, NULL, NULL
 	},
 
+	{
+		{"min_dynamic_shared_memory", PGC_POSTMASTER, RESOURCES_MEM,
+			gettext_noop("Amount of dynamic shared memory reserved at startup."),
+			NULL,
+			GUC_UNIT_MB
+		},
+		&min_dynamic_shared_memory,
+		0, 0, (int) Min((size_t) INT_MAX, SIZE_MAX / (1024 * 1024)),
+		NULL, NULL, NULL
+	},
+
 	/*
 	 * We sometimes multiply the number of shared buffers by two without
 	 * checking for overflow, so we mustn't allow more than INT_MAX / 2.
@@ -2826,7 +2837,7 @@ static struct config_int ConfigureNamesInt[] =
 			gettext_noop("Sets the minimum execution time above which "
 						 "a sample of statements will be logged."
 						 " Sampling is determined by log_statement_sample_rate."),
-			gettext_noop("Zero log a sample of all queries. -1 turns this feature off."),
+			gettext_noop("Zero logs a sample of all queries. -1 turns this feature off."),
 			GUC_UNIT_MS
 		},
 		&log_min_duration_sample,
@@ -3129,7 +3140,7 @@ static struct config_int ConfigureNamesInt[] =
 	},
 	{
 		{"autovacuum_vacuum_insert_threshold", PGC_SIGHUP, AUTOVACUUM,
-			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums"),
+			gettext_noop("Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums."),
 			NULL
 		},
 		&autovacuum_vac_ins_thresh,
@@ -3543,6 +3554,17 @@ static struct config_real ConfigureNamesReal[] =
 	},
 
 	{
+		{"hash_mem_multiplier", PGC_USERSET, RESOURCES_MEM,
+			gettext_noop("Multiple of work_mem to use for hash tables."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&hash_mem_multiplier,
+		1.0, 1.0, 1000.0,
+		NULL, NULL, NULL
+	},
+
+	{
 		{"bgwriter_lru_multiplier", PGC_SIGHUP, RESOURCES_BGWRITER,
 			gettext_noop("Multiple of the average buffer usage to free per round."),
 			NULL
@@ -3678,7 +3700,7 @@ static struct config_string ConfigureNamesString[] =
 
 	{
 		{"restore_command", PGC_POSTMASTER, WAL_ARCHIVE_RECOVERY,
-			gettext_noop("Sets the shell command that will retrieve an archived WAL file."),
+			gettext_noop("Sets the shell command that will be called to retrieve an archived WAL file."),
 			NULL
 		},
 		&recoveryRestoreCommand,

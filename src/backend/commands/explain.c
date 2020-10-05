@@ -116,7 +116,8 @@ static void show_instrumentation_count(const char *qlabel, int which,
 static void show_foreignscan_info(ForeignScanState *fsstate, ExplainState *es);
 static void show_eval_params(Bitmapset *bms_params, ExplainState *es);
 static const char *explain_get_index_name(Oid indexId);
-static void show_buffer_usage(ExplainState *es, const BufferUsage *usage);
+static void show_buffer_usage(ExplainState *es, const BufferUsage *usage,
+							  bool planning);
 static void show_wal_usage(ExplainState *es, const WalUsage *usage);
 static void ExplainIndexScanDetails(Oid indexid, ScanDirection indexorderdir,
 									ExplainState *es);
@@ -220,11 +221,6 @@ ExplainQuery(ParseState *pstate, ExplainStmt *stmt,
 							opt->defname),
 					 parser_errposition(pstate, opt->location)));
 	}
-
-	if (es->buffers && !es->analyze)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("EXPLAIN option BUFFERS requires ANALYZE")));
 
 	if (es->wal && !es->analyze)
 		ereport(ERROR,
@@ -586,8 +582,13 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 	/* Create textual dump of plan tree */
 	ExplainPrintPlan(es, queryDesc);
 
-	if (es->summary && (planduration || bufusage))
+	/* Show buffer usage in planning */
+	if (bufusage)
+	{
 		ExplainOpenGroup("Planning", "Planning", true, es);
+		show_buffer_usage(es, bufusage, true);
+		ExplainCloseGroup("Planning", "Planning", true, es);
+	}
 
 	if (es->summary && planduration)
 	{
@@ -595,19 +596,6 @@ ExplainOnePlan(PlannedStmt *plannedstmt, IntoClause *into, ExplainState *es,
 
 		ExplainPropertyFloat("Planning Time", "ms", 1000.0 * plantime, 3, es);
 	}
-
-	/* Show buffer usage */
-	if (es->summary && bufusage)
-	{
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-			es->indent++;
-		show_buffer_usage(es, bufusage);
-		if (es->format == EXPLAIN_FORMAT_TEXT)
-			es->indent--;
-	}
-
-	if (es->summary && (planduration || bufusage))
-		ExplainCloseGroup("Planning", "Planning", true, es);
 
 	/* Print info about runtime of triggers */
 	if (es->analyze)
@@ -1996,7 +1984,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 	/* Show buffer/WAL usage */
 	if (es->buffers && planstate->instrument)
-		show_buffer_usage(es, &planstate->instrument->bufusage);
+		show_buffer_usage(es, &planstate->instrument->bufusage, false);
 	if (es->wal && planstate->instrument)
 		show_wal_usage(es, &planstate->instrument->walusage);
 
@@ -2015,7 +2003,7 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 			ExplainOpenWorker(n, es);
 			if (es->buffers)
-				show_buffer_usage(es, &instrument->bufusage);
+				show_buffer_usage(es, &instrument->bufusage, false);
 			if (es->wal)
 				show_wal_usage(es, &instrument->walusage);
 			ExplainCloseWorker(n, es);
@@ -2676,7 +2664,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 		TuplesortInstrumentation stats;
 		const char *sortMethod;
 		const char *spaceType;
-		long		spaceUsed;
+		int64		spaceUsed;
 
 		tuplesort_get_stats(state, &stats);
 		sortMethod = tuplesort_method_name(stats.sortMethod);
@@ -2686,7 +2674,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 		if (es->format == EXPLAIN_FORMAT_TEXT)
 		{
 			ExplainIndentText(es);
-			appendStringInfo(es->str, "Sort Method: %s  %s: %ldkB\n",
+			appendStringInfo(es->str, "Sort Method: %s  %s: " INT64_FORMAT "kB\n",
 							 sortMethod, spaceType, spaceUsed);
 		}
 		else
@@ -2715,7 +2703,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			TuplesortInstrumentation *sinstrument;
 			const char *sortMethod;
 			const char *spaceType;
-			long		spaceUsed;
+			int64		spaceUsed;
 
 			sinstrument = &sortstate->shared_info->sinstrument[n];
 			if (sinstrument->sortMethod == SORT_TYPE_STILL_IN_PROGRESS)
@@ -2731,7 +2719,7 @@ show_sort_info(SortState *sortstate, ExplainState *es)
 			{
 				ExplainIndentText(es);
 				appendStringInfo(es->str,
-								 "Sort Method: %s  %s: %ldkB\n",
+								 "Sort Method: %s  %s: " INT64_FORMAT "kB\n",
 								 sortMethod, spaceType, spaceUsed);
 			}
 			else
@@ -2795,23 +2783,23 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 
 		if (groupInfo->maxMemorySpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 
 			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_MEMORY);
-			appendStringInfo(es->str, "  Average %s: %ldkB  Peak %s: %ldkB",
+			appendStringInfo(es->str, "  Average %s: " INT64_FORMAT "kB  Peak %s: " INT64_FORMAT "kB",
 							 spaceTypeName, avgSpace,
 							 spaceTypeName, groupInfo->maxMemorySpaceUsed);
 		}
 
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
 
 			const char *spaceTypeName;
 
 			spaceTypeName = tuplesort_space_type_name(SORT_SPACE_TYPE_DISK);
-			appendStringInfo(es->str, "  Average %s: %ldkB  Peak %s: %ldkB",
+			appendStringInfo(es->str, "  Average %s: " INT64_FORMAT "kB  Peak %s: " INT64_FORMAT "kB",
 							 spaceTypeName, avgSpace,
 							 spaceTypeName, groupInfo->maxDiskSpaceUsed);
 		}
@@ -2829,7 +2817,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 
 		if (groupInfo->maxMemorySpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalMemorySpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 			StringInfoData memoryName;
 
@@ -2846,7 +2834,7 @@ show_incremental_sort_group_info(IncrementalSortGroupInfo *groupInfo,
 		}
 		if (groupInfo->maxDiskSpaceUsed > 0)
 		{
-			long		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
+			int64		avgSpace = groupInfo->totalDiskSpaceUsed / groupInfo->groupCount;
 			const char *spaceTypeName;
 			StringInfoData diskName;
 
@@ -3059,21 +3047,23 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 	if (es->format != EXPLAIN_FORMAT_TEXT)
 	{
 
-		if (es->costs && aggstate->hash_planned_partitions > 0)
-		{
+		if (es->costs)
 			ExplainPropertyInteger("Planned Partitions", NULL,
 								   aggstate->hash_planned_partitions, es);
+
+		/*
+		 * During parallel query the leader may have not helped out.  We
+		 * detect this by checking how much memory it used.  If we find it
+		 * didn't do any work then we don't show its properties.
+		 */
+		if (es->analyze && aggstate->hash_mem_peak > 0)
+		{
+			ExplainPropertyInteger("HashAgg Batches", NULL,
+								   aggstate->hash_batches_used, es);
+			ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb, es);
+			ExplainPropertyInteger("Disk Usage", "kB",
+								   aggstate->hash_disk_used, es);
 		}
-
-		if (!es->analyze)
-			return;
-
-		/* EXPLAIN ANALYZE */
-		ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb, es);
-		ExplainPropertyInteger("Disk Usage", "kB",
-							   aggstate->hash_disk_used, es);
-		ExplainPropertyInteger("HashAgg Batches", NULL,
-							   aggstate->hash_batches_used, es);
 	}
 	else
 	{
@@ -3087,26 +3077,32 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 			gotone = true;
 		}
 
-		if (!es->analyze)
+		/*
+		 * During parallel query the leader may have not helped out.  We
+		 * detect this by checking how much memory it used.  If we find it
+		 * didn't do any work then we don't show its properties.
+		 */
+		if (es->analyze && aggstate->hash_mem_peak > 0)
 		{
-			if (gotone)
-				appendStringInfoChar(es->str, '\n');
-			return;
+			if (!gotone)
+				ExplainIndentText(es);
+			else
+				appendStringInfoString(es->str, "  ");
+
+			appendStringInfo(es->str, "Batches: %d  Memory Usage: " INT64_FORMAT "kB",
+							 aggstate->hash_batches_used, memPeakKb);
+			gotone = true;
+
+			/* Only display disk usage if we spilled to disk */
+			if (aggstate->hash_batches_used > 1)
+			{
+				appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
+					aggstate->hash_disk_used);
+			}
 		}
 
-		if (!gotone)
-			ExplainIndentText(es);
-		else
-			appendStringInfoString(es->str, "  ");
-
-		appendStringInfo(es->str, "Peak Memory Usage: " INT64_FORMAT "kB",
-						 memPeakKb);
-
-		if (aggstate->hash_batches_used > 0)
-			appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB  HashAgg Batches: %d",
-							 aggstate->hash_disk_used,
-							 aggstate->hash_batches_used);
-		appendStringInfoChar(es->str, '\n');
+		if (gotone)
+			appendStringInfoChar(es->str, '\n');
 	}
 
 	/* Display stats for each parallel worker */
@@ -3119,6 +3115,9 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 			int			hash_batches_used;
 
 			sinstrument = &aggstate->shared_info->sinstrument[n];
+			/* Skip workers that didn't do anything */
+			if (sinstrument->hash_mem_peak == 0)
+				continue;
 			hash_disk_used = sinstrument->hash_disk_used;
 			hash_batches_used = sinstrument->hash_batches_used;
 			memPeakKb = (sinstrument->hash_mem_peak + 1023) / 1024;
@@ -3130,21 +3129,22 @@ show_hashagg_info(AggState *aggstate, ExplainState *es)
 			{
 				ExplainIndentText(es);
 
-				appendStringInfo(es->str, "Peak Memory Usage: " INT64_FORMAT "kB",
-								 memPeakKb);
+				appendStringInfo(es->str, "Batches: %d  Memory Usage: " INT64_FORMAT "kB",
+								 hash_batches_used, memPeakKb);
 
-				if (hash_batches_used > 0)
-					appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB  HashAgg Batches: %d",
-									 hash_disk_used, hash_batches_used);
+				/* Only display disk usage if we spilled to disk */
+				if (hash_batches_used > 1)
+					appendStringInfo(es->str, "  Disk Usage: " UINT64_FORMAT "kB",
+									 hash_disk_used);
 				appendStringInfoChar(es->str, '\n');
 			}
 			else
 			{
+				ExplainPropertyInteger("HashAgg Batches", NULL,
+									   hash_batches_used, es);
 				ExplainPropertyInteger("Peak Memory Usage", "kB", memPeakKb,
 									   es);
 				ExplainPropertyInteger("Disk Usage", "kB", hash_disk_used, es);
-				ExplainPropertyInteger("HashAgg Batches", NULL,
-									   hash_batches_used, es);
 			}
 
 			if (es->workers_state)
@@ -3289,7 +3289,7 @@ explain_get_index_name(Oid indexId)
  * Show buffer usage details.
  */
 static void
-show_buffer_usage(ExplainState *es, const BufferUsage *usage)
+show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 {
 	if (es->format == EXPLAIN_FORMAT_TEXT)
 	{
@@ -3305,6 +3305,15 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 								usage->temp_blks_written > 0);
 		bool		has_timing = (!INSTR_TIME_IS_ZERO(usage->blk_read_time) ||
 								  !INSTR_TIME_IS_ZERO(usage->blk_write_time));
+		bool		show_planning = (planning && (has_shared ||
+												  has_local || has_temp || has_timing));
+
+		if (show_planning)
+		{
+			ExplainIndentText(es);
+			appendStringInfoString(es->str, "Planning:\n");
+			es->indent++;
+		}
 
 		/* Show only positive counter values. */
 		if (has_shared || has_local || has_temp)
@@ -3374,6 +3383,9 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage)
 								 INSTR_TIME_GET_MILLISEC(usage->blk_write_time));
 			appendStringInfoChar(es->str, '\n');
 		}
+
+		if (show_planning)
+			es->indent--;
 	}
 	else
 	{

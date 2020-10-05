@@ -799,6 +799,10 @@ describeOperators(const char *pattern, bool verbose, bool showSystem)
 	 * anyway, for now, because (1) third-party modules may still be following
 	 * the old convention, and (2) we'd need to do it anyway when talking to a
 	 * pre-9.1 server.
+	 *
+	 * The support for postfix operators in this query is dead code as of
+	 * Postgres 14, but we need to keep it for as long as we support talking
+	 * to pre-v14 servers.
 	 */
 
 	printfPQExpBuffer(&buf,
@@ -2689,8 +2693,13 @@ describeOneTableDetails(const char *schemaname,
 							  "        a.attnum = s.attnum AND NOT attisdropped)) AS columns,\n"
 							  "  'd' = any(stxkind) AS ndist_enabled,\n"
 							  "  'f' = any(stxkind) AS deps_enabled,\n"
-							  "  'm' = any(stxkind) AS mcv_enabled\n"
-							  "FROM pg_catalog.pg_statistic_ext stat "
+							  "  'm' = any(stxkind) AS mcv_enabled,\n");
+
+			if (pset.sversion >= 130000)
+				appendPQExpBufferStr(&buf, "  stxstattarget\n");
+			else
+				appendPQExpBufferStr(&buf, "  -1 AS stxstattarget\n");
+			appendPQExpBuffer(&buf, "FROM pg_catalog.pg_statistic_ext stat\n"
 							  "WHERE stxrelid = '%s'\n"
 							  "ORDER BY 1;",
 							  oid);
@@ -2737,6 +2746,11 @@ describeOneTableDetails(const char *schemaname,
 					appendPQExpBuffer(&buf, ") ON %s FROM %s",
 									  PQgetvalue(result, i, 4),
 									  PQgetvalue(result, i, 1));
+
+					/* Show the stats target if it's not default */
+					if (strcmp(PQgetvalue(result, i, 8), "-1") != 0)
+						appendPQExpBuffer(&buf, "; STATISTICS %s",
+									  PQgetvalue(result, i, 8));
 
 					printTableAddFooter(&cont, buf.data);
 				}
@@ -3690,7 +3704,7 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	int			cols_so_far;
-	bool		translate_columns[] = {false, false, true, false, false, false, false, false};
+	bool		translate_columns[] = {false, false, true, false, false, false, false, false, false};
 
 	/* If tabtypes is empty, we default to \dtvmsE (but see also command.c) */
 	if (!(showTables || showIndexes || showViews || showMatViews || showSeq || showForeign))
@@ -3764,6 +3778,16 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 		 */
 
 		/*
+		 * Access methods exist for tables, materialized views and indexes.
+		 * This has been introduced in PostgreSQL 12 for tables.
+		 */
+		if (pset.sversion >= 120000 && !pset.hide_tableam &&
+			(showTables || showMatViews || showIndexes))
+			appendPQExpBuffer(&buf,
+							  ",\n  am.amname as \"%s\"",
+							  gettext_noop("Access Method"));
+
+		/*
 		 * As of PostgreSQL 9.0, use pg_table_size() to show a more accurate
 		 * size of a table, including FSM, VM and TOAST tables.
 		 */
@@ -3784,6 +3808,12 @@ listTables(const char *tabtypes, const char *pattern, bool verbose, bool showSys
 	appendPQExpBufferStr(&buf,
 						 "\nFROM pg_catalog.pg_class c"
 						 "\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace");
+
+	if (pset.sversion >= 120000 && !pset.hide_tableam &&
+		(showTables || showMatViews || showIndexes))
+		appendPQExpBufferStr(&buf,
+							 "\n     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam");
+
 	if (showIndexes)
 		appendPQExpBufferStr(&buf,
 							 "\n     LEFT JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid"
@@ -5975,7 +6005,7 @@ describeSubscriptions(const char *pattern, bool verbose)
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	static const bool translate_columns[] = {false, false, false, false,
-	false, false, false};
+	false, false, false, false};
 
 	if (pset.sversion < 100000)
 	{
@@ -6001,11 +6031,13 @@ describeSubscriptions(const char *pattern, bool verbose)
 
 	if (verbose)
 	{
-		/* Binary mode is only supported in v14 and higher */
+		/* Binary mode and streaming are only supported in v14 and higher */
 		if (pset.sversion >= 140000)
 			appendPQExpBuffer(&buf,
-							  ", subbinary AS \"%s\"\n",
-							  gettext_noop("Binary"));
+							  ", subbinary AS \"%s\"\n"
+							  ", substream AS \"%s\"\n",
+							  gettext_noop("Binary"),
+							  gettext_noop("Streaming"));
 
 		appendPQExpBuffer(&buf,
 						  ",  subsynccommit AS \"%s\"\n"
@@ -6068,7 +6100,7 @@ printACLColumn(PQExpBuffer buf, const char *colname)
  * \dAc
  * Lists operator classes
  *
- * Takes an optional regexps to filter by index access method and type.
+ * Takes optional regexps to filter by index access method and input data type.
  */
 bool
 listOperatorClasses(const char *access_method_pattern,
@@ -6083,7 +6115,7 @@ listOperatorClasses(const char *access_method_pattern,
 	initPQExpBuffer(&buf);
 
 	printfPQExpBuffer(&buf,
-					  "SELECT DISTINCT"
+					  "SELECT\n"
 					  "  am.amname AS \"%s\",\n"
 					  "  pg_catalog.format_type(c.opcintype, NULL) AS \"%s\",\n"
 					  "  CASE\n"
@@ -6122,6 +6154,7 @@ listOperatorClasses(const char *access_method_pattern,
 					  "  LEFT JOIN pg_catalog.pg_am am on am.oid = c.opcmethod\n"
 					  "  LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.opcnamespace\n"
 					  "  LEFT JOIN pg_catalog.pg_type t ON t.oid = c.opcintype\n"
+					  "  LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace\n"
 		);
 	if (verbose)
 		appendPQExpBuffer(&buf,
@@ -6132,8 +6165,13 @@ listOperatorClasses(const char *access_method_pattern,
 		have_where = processSQLNamePattern(pset.db, &buf, access_method_pattern,
 										   false, false, NULL, "am.amname", NULL, NULL);
 	if (type_pattern)
+	{
+		/* Match type name pattern against either internal or external name */
 		processSQLNamePattern(pset.db, &buf, type_pattern, have_where, false,
-							  NULL, "t.typname", NULL, NULL);
+							  "tn.nspname", "t.typname",
+							  "pg_catalog.format_type(t.oid, NULL)",
+							  "pg_catalog.pg_type_is_visible(t.oid)");
+	}
 
 	appendPQExpBufferStr(&buf, "ORDER BY 1, 2, 4;");
 	res = PSQLexec(buf.data);
@@ -6157,7 +6195,7 @@ listOperatorClasses(const char *access_method_pattern,
  * \dAf
  * Lists operator families
  *
- * Takes an optional regexps to filter by index access method and type.
+ * Takes optional regexps to filter by index access method and input data type.
  */
 bool
 listOperatorFamilies(const char *access_method_pattern,
@@ -6172,7 +6210,7 @@ listOperatorFamilies(const char *access_method_pattern,
 	initPQExpBuffer(&buf);
 
 	printfPQExpBuffer(&buf,
-					  "SELECT DISTINCT"
+					  "SELECT\n"
 					  "  am.amname AS \"%s\",\n"
 					  "  CASE\n"
 					  "    WHEN pg_catalog.pg_opfamily_is_visible(f.oid)\n"
@@ -6202,15 +6240,19 @@ listOperatorFamilies(const char *access_method_pattern,
 	if (type_pattern)
 	{
 		appendPQExpBuffer(&buf,
-						  "\n  %s EXISTS (\n"
+						  "  %s EXISTS (\n"
 						  "    SELECT 1\n"
 						  "    FROM pg_catalog.pg_type t\n"
 						  "    JOIN pg_catalog.pg_opclass oc ON oc.opcintype = t.oid\n"
-						  "    WHERE oc.opcfamily = f.oid",
+						  "    LEFT JOIN pg_catalog.pg_namespace tn ON tn.oid = t.typnamespace\n"
+						  "    WHERE oc.opcfamily = f.oid\n",
 						  have_where ? "AND" : "WHERE");
+		/* Match type name pattern against either internal or external name */
 		processSQLNamePattern(pset.db, &buf, type_pattern, true, false,
-							  NULL, "t.typname", NULL, NULL);
-		appendPQExpBuffer(&buf, ")");
+							  "tn.nspname", "t.typname",
+							  "pg_catalog.format_type(t.oid, NULL)",
+							  "pg_catalog.pg_type_is_visible(t.oid)");
+		appendPQExpBuffer(&buf, "  )\n");
 	}
 
 	appendPQExpBufferStr(&buf, "ORDER BY 1, 2;");
@@ -6235,7 +6277,7 @@ listOperatorFamilies(const char *access_method_pattern,
  * \dAo
  * Lists operators of operator families
  *
- * Takes an optional regexps to filter by index access method and operator
+ * Takes optional regexps to filter by index access method and operator
  * family.
  */
 bool
@@ -6322,7 +6364,7 @@ listOpFamilyOperators(const char *access_method_pattern,
  * \dAp
  * Lists support functions of operator families
  *
- * Takes an optional regexps to filter by index access method and operator
+ * Takes optional regexps to filter by index access method and operator
  * family.
  */
 bool

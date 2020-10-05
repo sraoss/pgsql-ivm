@@ -3940,6 +3940,9 @@ pgstat_get_wait_io(WaitEventIO w)
 		case WAIT_EVENT_BUFFILE_WRITE:
 			event_name = "BufFileWrite";
 			break;
+		case WAIT_EVENT_BUFFILE_TRUNCATE:
+			event_name = "BufFileTruncate";
+			break;
 		case WAIT_EVENT_CONTROL_FILE_READ:
 			event_name = "ControlFileRead";
 			break;
@@ -4137,6 +4140,18 @@ pgstat_get_wait_io(WaitEventIO w)
 			break;
 		case WAIT_EVENT_WAL_WRITE:
 			event_name = "WALWrite";
+			break;
+		case WAIT_EVENT_LOGICAL_CHANGES_READ:
+			event_name = "LogicalChangesRead";
+			break;
+		case WAIT_EVENT_LOGICAL_CHANGES_WRITE:
+			event_name = "LogicalChangesWrite";
+			break;
+		case WAIT_EVENT_LOGICAL_SUBXACT_READ:
+			event_name = "LogicalSubxactRead";
+			break;
+		case WAIT_EVENT_LOGICAL_SUBXACT_WRITE:
+			event_name = "LogicalSubxactWrite";
 			break;
 
 			/* no default case, so that compiler will warn */
@@ -4367,7 +4382,7 @@ pgstat_send_archiver(const char *xlog, bool failed)
 	 */
 	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_ARCHIVER);
 	msg.m_failed = failed;
-	StrNCpy(msg.m_xlog, xlog, sizeof(msg.m_xlog));
+	strlcpy(msg.m_xlog, xlog, sizeof(msg.m_xlog));
 	msg.m_timestamp = GetCurrentTimestamp();
 	pgstat_send(&msg, sizeof(msg));
 }
@@ -4458,6 +4473,8 @@ PgstatCollectorMain(int argc, char *argv[])
 	int			len;
 	PgStat_Msg	msg;
 	int			wr;
+	WaitEvent	event;
+	WaitEventSet *wes;
 
 	/*
 	 * Ignore all signals usually bound to some action in the postmaster,
@@ -4484,6 +4501,12 @@ PgstatCollectorMain(int argc, char *argv[])
 	 */
 	pgStatRunningInCollector = true;
 	pgStatDBHash = pgstat_read_statsfiles(InvalidOid, true, true);
+
+	/* Prepare to wait for our latch or data in our socket. */
+	wes = CreateWaitEventSet(CurrentMemoryContext, 3);
+	AddWaitEventToSet(wes, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch, NULL);
+	AddWaitEventToSet(wes, WL_POSTMASTER_DEATH, PGINVALID_SOCKET, NULL, NULL);
+	AddWaitEventToSet(wes, WL_SOCKET_READABLE, pgStatSock, NULL, NULL);
 
 	/*
 	 * Loop to process messages until we get SIGQUIT or detect ungraceful
@@ -4672,10 +4695,7 @@ PgstatCollectorMain(int argc, char *argv[])
 
 		/* Sleep until there's something to do */
 #ifndef WIN32
-		wr = WaitLatchOrSocket(MyLatch,
-							   WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_SOCKET_READABLE,
-							   pgStatSock, -1L,
-							   WAIT_EVENT_PGSTAT_MAIN);
+		wr = WaitEventSetWait(wes, -1L, &event, 1, WAIT_EVENT_PGSTAT_MAIN);
 #else
 
 		/*
@@ -4688,18 +4708,15 @@ PgstatCollectorMain(int argc, char *argv[])
 		 * to not provoke "using stale statistics" complaints from
 		 * backend_read_statsfile.
 		 */
-		wr = WaitLatchOrSocket(MyLatch,
-							   WL_LATCH_SET | WL_POSTMASTER_DEATH | WL_SOCKET_READABLE | WL_TIMEOUT,
-							   pgStatSock,
-							   2 * 1000L /* msec */ ,
-							   WAIT_EVENT_PGSTAT_MAIN);
+		wr = WaitEventSetWait(wes, 2 * 1000L /* msec */ , &event, 1,
+							  WAIT_EVENT_PGSTAT_MAIN);
 #endif
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
 		 * necessity for manual cleanup of all postmaster children.
 		 */
-		if (wr & WL_POSTMASTER_DEATH)
+		if (wr == 1 && event.events == WL_POSTMASTER_DEATH)
 			break;
 	}							/* end of outer loop */
 
@@ -4707,6 +4724,8 @@ PgstatCollectorMain(int argc, char *argv[])
 	 * Save the final stats to reuse at next startup.
 	 */
 	pgstat_write_statsfiles(true, true);
+
+	FreeWaitEventSet(wes);
 
 	exit(0);
 }
@@ -5538,7 +5557,8 @@ done:
  * pgstat_read_db_statsfile_timestamp() -
  *
  *	Attempt to determine the timestamp of the last db statfile write.
- *	Returns true if successful; the timestamp is stored in *ts.
+ *	Returns true if successful; the timestamp is stored in *ts. The caller must
+ *	rely on timestamp stored in *ts iff the function returns true.
  *
  *	This needs to be careful about handling databases for which no stats file
  *	exists, such as databases without a stat entry or those not yet written:
@@ -5646,7 +5666,8 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 					ereport(pgStatRunningInCollector ? LOG : WARNING,
 							(errmsg("corrupted statistics file \"%s\"",
 									statfile)));
-					goto done;
+					FreeFile(fpin);
+					return false;
 				}
 
 				/*
@@ -5665,10 +5686,13 @@ pgstat_read_db_statsfile_timestamp(Oid databaseid, bool permanent,
 				goto done;
 
 			default:
-				ereport(pgStatRunningInCollector ? LOG : WARNING,
-						(errmsg("corrupted statistics file \"%s\"",
-								statfile)));
-				goto done;
+				{
+					ereport(pgStatRunningInCollector ? LOG : WARNING,
+							(errmsg("corrupted statistics file \"%s\"",
+									statfile)));
+					FreeFile(fpin);
+					return false;
+				}
 		}
 	}
 

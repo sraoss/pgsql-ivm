@@ -50,7 +50,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 										 xlogfname, NULL);
 	if (xlogRestoreCmd == NULL)
 	{
-		pg_log_fatal("could not use restore_command with %%r alias");
+		pg_log_fatal("cannot use restore_command with %%r placeholder");
 		exit(1);
 	}
 
@@ -71,9 +71,9 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 		{
 			if (expectedSize > 0 && stat_buf.st_size != expectedSize)
 			{
-				pg_log_fatal("unexpected file size for \"%s\": %lu instead of %lu",
-							 xlogfname, (unsigned long) stat_buf.st_size,
-							 (unsigned long) expectedSize);
+				pg_log_fatal("unexpected file size for \"%s\": %lld instead of %lld",
+							 xlogfname, (long long int) stat_buf.st_size,
+							 (long long int) expectedSize);
 				exit(1);
 			}
 			else
@@ -109,7 +109,7 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 	 */
 	if (wait_result_is_any_signal(rc, true))
 	{
-		pg_log_fatal("restore_command failed due to the signal: %s",
+		pg_log_fatal("restore_command failed: %s",
 					 wait_result_to_str(rc));
 		exit(1);
 	}
