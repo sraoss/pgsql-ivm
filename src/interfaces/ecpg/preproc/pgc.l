@@ -505,9 +505,9 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 <SQL>{
 {xbstart}		{
 					token_start = yytext;
+					state_before_str_start = YYSTATE;
 					BEGIN(xb);
 					startlit();
-					addlitchar('b');
 				}
 } /* <SQL> */
 
@@ -519,9 +519,9 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 
 <SQL>{xhstart}	{
 					token_start = yytext;
+					state_before_str_start = YYSTATE;
 					BEGIN(xh);
 					startlit();
-					addlitchar('x');
 				}
 <xh><<EOF>>		{ mmfatal(PARSE_ERROR, "unterminated hexadecimal string literal"); }
 
@@ -597,12 +597,14 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					switch (state_before_str_stop)
 					{
 						case xb:
-							if (literalbuf[strspn(literalbuf, "01") + 1] != '\0')
+							if (literalbuf[strspn(literalbuf, "01")] != '\0')
 								mmerror(PARSE_ERROR, ET_ERROR, "invalid bit string literal");
-							base_yylval.str = mm_strdup(literalbuf);
+							base_yylval.str = psprintf("b'%s'", literalbuf);
 							return BCONST;
 						case xh:
-							base_yylval.str = mm_strdup(literalbuf);
+							if (literalbuf[strspn(literalbuf, "0123456789abcdefABCDEF")] != '\0')
+								mmerror(PARSE_ERROR, ET_ERROR, "invalid hex string literal");
+							base_yylval.str = psprintf("x'%s'", literalbuf);
 							return XCONST;
 						case xq:
 							/* fallthrough */
@@ -623,11 +625,8 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					}
 				}
 
-<xq,xe,xn,xus>{xqdouble}	{ addlitchar('\''); }
-<xqc>{xqcquote}	{
-					addlitchar('\\');
-					addlitchar('\'');
-				}
+<xq,xe,xn,xus>{xqdouble}	{ addlit(yytext, yyleng); }
+<xqc>{xqcquote}				{ addlit(yytext, yyleng); }
 <xq,xqc,xn,xus>{xqinside}	{ addlit(yytext, yyleng); }
 <xe>{xeinside}  {
 					addlit(yytext, yyleng);
@@ -718,7 +717,14 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					BEGIN(state_before_str_start);
 					if (literallen == 0)
 						mmerror(PARSE_ERROR, ET_ERROR, "zero-length delimited identifier");
-					/* The backend will truncate the identifier here. We do not as it does not change the result. */
+					/*
+					 * The server will truncate the identifier here.  We do
+					 * not, as (1) it does not change the result; (2) we don't
+					 * know what NAMEDATALEN the server might use; (3) this
+					 * code path is also taken for literal query strings in
+					 * PREPARE and EXECUTE IMMEDIATE, which can certainly be
+					 * longer than NAMEDATALEN.
+					 */
 					base_yylval.str = mm_strdup(literalbuf);
 					return CSTRING;
 				}
@@ -736,7 +742,7 @@ cppline			{space}*#([^i][A-Za-z]*|{if}|{ifdef}|{ifndef}|{import})((\/\*[^*/]*\*+
 					return UIDENT;
 				}
 <xd,xui>{xddouble}	{
-					addlitchar('"');
+					addlit(yytext, yyleng);
 				}
 <xd,xui>{xdinside}	{
 					addlit(yytext, yyleng);

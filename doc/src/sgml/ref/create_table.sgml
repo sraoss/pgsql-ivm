@@ -171,8 +171,9 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       If specified, the table is created as a temporary table.
       Temporary tables are automatically dropped at the end of a
       session, or optionally at the end of the current transaction
-      (see <literal>ON COMMIT</literal> below).  Existing permanent
-      tables with the same name are not visible to the current session
+      (see <literal>ON COMMIT</literal> below).  The default
+      search_path includes the temporary schema first and so identically
+      named existing permanent tables are not chosen for new plans
       while the temporary table exists, unless they are referenced
       with schema-qualified names. Any indexes created on a temporary
       table are automatically temporary as well.
@@ -1152,7 +1153,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       constraint that is not deferrable will be checked immediately
       after every command.  Checking of constraints that are
       deferrable can be postponed until the end of the transaction
-      (using the <xref linkend="sql-set-constraints"/> command).
+      (using the <link linkend="sql-set-constraints"><command>SET CONSTRAINTS</command></link> command).
       <literal>NOT DEFERRABLE</literal> is the default.
       Currently, only <literal>UNIQUE</literal>, <literal>PRIMARY KEY</literal>,
       <literal>EXCLUDE</literal>, and
@@ -1176,7 +1177,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       statement. This is the default.  If the constraint is
       <literal>INITIALLY DEFERRED</literal>, it is checked only at the
       end of the transaction.  The constraint check time can be
-      altered with the <xref linkend="sql-set-constraints"/> command.
+      altered with the <link linkend="sql-set-constraints"><command>SET CONSTRAINTS</command></link> command.
      </para>
     </listitem>
    </varlistentry>
@@ -1244,8 +1245,8 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
         <listitem>
          <para>
           All rows in the temporary table will be deleted at the end
-          of each transaction block.  Essentially, an automatic <xref
-          linkend="sql-truncate"/> is done
+          of each transaction block.  Essentially, an automatic <link
+          linkend="sql-truncate"><command>TRUNCATE</command></link> is done
           at each commit.  When used on a partitioned table, this
           is not cascaded to its partitions.
          </para>
@@ -1359,10 +1360,11 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     <listitem>
      <para>
       The toast_tuple_target specifies the minimum tuple length required before
-      we try to move long column values into TOAST tables, and is also the
-      target length we try to reduce the length below once toasting begins.
-      This only affects columns marked as either External or Extended
-      and applies only to new tuples; there is no effect on existing rows.
+      we try to compress and/or move long column values into TOAST tables, and
+      is also the target length we try to reduce the length below once toasting
+      begins. This affects columns marked as External (for move),
+      Main (for compression), or Extended (for both) and applies only to new
+      tuples. There is no effect on existing rows.
       By default this parameter is set to allow at least 4 tuples per block,
       which with the default block size will be 2040 bytes. Valid values are
       between 128 bytes and the (block size - header), by default 8160 bytes.
@@ -1430,7 +1432,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       Disabling index cleanup can speed up <command>VACUUM</command> very
       significantly, but may also lead to severely bloated indexes if table
       modifications are frequent.  The <literal>INDEX_CLEANUP</literal>
-      parameter of <xref linkend="sql-vacuum"/>, if specified, overrides
+      parameter of <link linkend="sql-vacuum"><command>VACUUM</command></link>, if specified, overrides
       the value of this option.
      </para>
     </listitem>
@@ -1451,7 +1453,7 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
       the truncated pages is returned to the operating system.
       Note that the truncation requires <literal>ACCESS EXCLUSIVE</literal>
       lock on the table. The <literal>TRUNCATE</literal> parameter
-      of <xref linkend="sql-vacuum"/>, if specified, overrides the value
+      of <link linkend="sql-vacuum"><command>VACUUM</command></link>, if specified, overrides the value
       of this option.
      </para>
     </listitem>

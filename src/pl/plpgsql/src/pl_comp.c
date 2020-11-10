@@ -458,6 +458,7 @@ do_compile(FunctionCallInfo fcinfo,
 				/* Remember arguments in appropriate arrays */
 				if (argmode == PROARGMODE_IN ||
 					argmode == PROARGMODE_INOUT ||
+					(argmode == PROARGMODE_OUT && function->fn_prokind == PROKIND_PROCEDURE) ||
 					argmode == PROARGMODE_VARIADIC)
 					in_arg_varnos[num_in_args++] = argvariable->dno;
 				if (argmode == PROARGMODE_OUT ||
@@ -550,7 +551,7 @@ do_compile(FunctionCallInfo fcinfo,
 				if (rettypeid == VOIDOID ||
 					rettypeid == RECORDOID)
 					 /* okay */ ;
-				else if (rettypeid == TRIGGEROID || rettypeid == EVTTRIGGEROID)
+				else if (rettypeid == TRIGGEROID || rettypeid == EVENT_TRIGGEROID)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("trigger functions can only be called as triggers")));

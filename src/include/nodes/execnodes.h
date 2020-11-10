@@ -33,7 +33,6 @@
 #include "utils/tuplestore.h"
 
 struct PlanState;				/* forward references in this file */
-struct PartitionRoutingInfo;
 struct ParallelHashJoinState;
 struct ExecRowMark;
 struct ExprState;
@@ -480,11 +479,24 @@ typedef struct ResultRelInfo
 	/* partition check expression state (NULL if not set up yet) */
 	ExprState  *ri_PartitionCheckExpr;
 
-	/* relation descriptor for partitioned table's root, if any */
+	/*
+	 * Information needed by tuple routing target relations
+	 *
+	 * PartitionRoot gives the target relation mentioned in the query.
+	 * RootToPartitionMap and PartitionTupleSlot, initialized by
+	 * ExecInitRoutingInfo, are non-NULL if partition has a different tuple
+	 * format than the root table.
+	 */
 	Relation	ri_PartitionRoot;
+	TupleConversionMap *ri_RootToPartitionMap;
+	TupleTableSlot *ri_PartitionTupleSlot;
 
-	/* info for partition tuple routing (NULL if not set up yet) */
-	struct PartitionRoutingInfo *ri_PartitionInfo;
+	/*
+	 * Map to convert child result relation tuples to the format of the table
+	 * actually mentioned in the query (called "root").  Set only if
+	 * transition tuple capture or update partition row movement is active.
+	 */
+	TupleConversionMap *ri_ChildToRootMap;
 
 	/* for use by copy.c when performing multi-inserts */
 	struct CopyMultiInsertBuffer *ri_CopyMultiInsertBuffer;
@@ -519,23 +531,18 @@ typedef struct EState
 	CommandId	es_output_cid;
 
 	/* Info about target table(s) for insert/update/delete queries: */
-	ResultRelInfo *es_result_relations; /* array of ResultRelInfos */
-	int			es_num_result_relations;	/* length of array */
-	ResultRelInfo *es_result_relation_info; /* currently active array elt */
+	ResultRelInfo **es_result_relations;	/* Array of per-range-table-entry
+											 * ResultRelInfo pointers, or NULL
+											 * if not a target table */
+	List	   *es_opened_result_relations; /* List of non-NULL entries in
+											 * es_result_relations in no
+											 * specific order */
 
-	/*
-	 * Info about the partition root table(s) for insert/update/delete queries
-	 * targeting partitioned tables.  Only leaf partitions are mentioned in
-	 * es_result_relations, but we need access to the roots for firing
-	 * triggers and for runtime tuple routing.
-	 */
-	ResultRelInfo *es_root_result_relations;	/* array of ResultRelInfos */
-	int			es_num_root_result_relations;	/* length of the array */
 	PartitionDirectory es_partition_directory;	/* for PartitionDesc lookup */
 
 	/*
 	 * The following list contains ResultRelInfos created by the tuple routing
-	 * code for partitions that don't already have one.
+	 * code for partitions that aren't found in the es_result_relations array.
 	 */
 	List	   *es_tuple_routing_result_relations;
 
@@ -1159,8 +1166,13 @@ typedef struct ModifyTableState
 	TupleTableSlot **mt_scans;	/* input tuple corresponding to underlying
 								 * plans */
 	ResultRelInfo *resultRelInfo;	/* per-subplan target relations */
-	ResultRelInfo *rootResultRelInfo;	/* root target relation (partitioned
-										 * table root) */
+
+	/*
+	 * Target relation mentioned in the original statement, used to fire
+	 * statement-level triggers and as the root for tuple routing.
+	 */
+	ResultRelInfo *rootResultRelInfo;
+
 	List	  **mt_arowmarks;	/* per-subplan ExecAuxRowMark lists */
 	EPQState	mt_epqstate;	/* for evaluating EvalPlanQual rechecks */
 	bool		fireBSTriggers; /* do we need to fire stmt triggers? */
@@ -1179,9 +1191,6 @@ typedef struct ModifyTableState
 
 	/* controls transition table population for INSERT...ON CONFLICT UPDATE */
 	struct TransitionCaptureState *mt_oc_transition_capture;
-
-	/* Per plan map for tuple conversion from child to root */
-	TupleConversionMap **mt_per_subplan_tupconv_maps;
 } ModifyTableState;
 
 /* ----------------
@@ -1781,6 +1790,7 @@ typedef struct ForeignScanState
 	ScanState	ss;				/* its first field is NodeTag */
 	ExprState  *fdw_recheck_quals;	/* original quals not in ss.ps.qual */
 	Size		pscan_len;		/* size of parallel coordination information */
+	ResultRelInfo *resultRelInfo;	/* result rel info, if UPDATE or DELETE */
 	/* use struct pointer to avoid including fdwapi.h here */
 	struct FdwRoutine *fdwroutine;
 	void	   *fdw_state;		/* foreign-data wrapper can keep state here */

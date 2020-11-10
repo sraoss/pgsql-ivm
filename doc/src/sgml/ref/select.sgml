@@ -38,7 +38,7 @@ SELECT [ ALL | DISTINCT [ ON ( <replaceable class="parameter">expression</replac
     [ FROM <replaceable class="parameter">from_item</replaceable> [, ...] ]
     [ WHERE <replaceable class="parameter">condition</replaceable> ]
     [ GROUP BY <replaceable class="parameter">grouping_element</replaceable> [, ...] ]
-    [ HAVING <replaceable class="parameter">condition</replaceable> [, ...] ]
+    [ HAVING <replaceable class="parameter">condition</replaceable> ]
     [ WINDOW <replaceable class="parameter">window_name</replaceable> AS ( <replaceable class="parameter">window_definition</replaceable> ) [, ...] ]
     [ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] <replaceable class="parameter">select</replaceable> ]
     [ ORDER BY <replaceable class="parameter">expression</replaceable> [ ASC | DESC | USING <replaceable class="parameter">operator</replaceable> ] [ NULLS { FIRST | LAST } ] [, ...] ]
@@ -446,7 +446,7 @@ TABLE [ ONLY ] <replaceable class="parameter">table_name</replaceable> [ * ]
         sub-<command>SELECT</command> must be surrounded by
         parentheses, and an alias <emphasis>must</emphasis> be
         provided for it.  A
-        <xref linkend="sql-values"/> command
+        <link linkend="sql-values"><command>VALUES</command></link> command
         can also be used here.
        </para>
       </listitem>
@@ -1534,7 +1534,7 @@ KEY SHARE
     to the row-level lock(s) &mdash; the required <literal>ROW SHARE</literal>
     table-level lock is still taken in the ordinary way (see
     <xref linkend="mvcc"/>).  You can use
-    <xref linkend="sql-lock"/>
+    <link linkend="sql-lock"><command>LOCK</command></link>
     with the <literal>NOWAIT</literal> option first,
     if you need to acquire the table-level lock without waiting.
    </para>

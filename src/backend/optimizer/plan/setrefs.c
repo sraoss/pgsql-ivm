@@ -438,9 +438,9 @@ flatten_rtes_walker(Node *node, PlannerGlobal *glob)
  * In the flat rangetable, we zero out substructure pointers that are not
  * needed by the executor; this reduces the storage space and copying cost
  * for cached plans.  We keep only the ctename, alias and eref Alias fields,
- * which are needed by EXPLAIN, and the selectedCols, insertedCols and
- * updatedCols bitmaps, which are needed for executor-startup permissions
- * checking and for trigger event checking.
+ * which are needed by EXPLAIN, and the selectedCols, insertedCols,
+ * updatedCols, and extraUpdatedCols bitmaps, which are needed for
+ * executor-startup permissions checking and for trigger event checking.
  */
 static void
 add_rte_to_flat_rtable(PlannerGlobal *glob, RangeTblEntry *rte)
@@ -975,26 +975,15 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 
 				/*
 				 * Append this ModifyTable node's final result relation RT
-				 * index(es) to the global list for the plan, and set its
-				 * resultRelIndex to reflect their starting position in the
-				 * global list.
+				 * index(es) to the global list for the plan.
 				 */
-				splan->resultRelIndex = list_length(root->glob->resultRelations);
 				root->glob->resultRelations =
 					list_concat(root->glob->resultRelations,
 								splan->resultRelations);
-
-				/*
-				 * If the main target relation is a partitioned table, also
-				 * add the partition root's RT index to rootResultRelations,
-				 * and remember its index in that list in rootResultRelIndex.
-				 */
 				if (splan->rootRelation)
 				{
-					splan->rootResultRelIndex =
-						list_length(root->glob->rootResultRelations);
-					root->glob->rootResultRelations =
-						lappend_int(root->glob->rootResultRelations,
+					root->glob->resultRelations =
+						lappend_int(root->glob->resultRelations,
 									splan->rootRelation);
 				}
 			}
@@ -1321,6 +1310,10 @@ set_foreignscan_references(PlannerInfo *root,
 	}
 
 	fscan->fs_relids = offset_relid_set(fscan->fs_relids, rtoffset);
+
+	/* Adjust resultRelation if it's valid */
+	if (fscan->resultRelation > 0)
+		fscan->resultRelation += rtoffset;
 }
 
 /*

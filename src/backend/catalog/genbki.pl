@@ -588,9 +588,13 @@ EOM
 		}
 
 		# Special hack to generate OID symbols for pg_type entries
-		# that lack one.
-		if ($catname eq 'pg_type' and !exists $bki_values{oid_symbol})
+		if ($catname eq 'pg_type')
 		{
+			die sprintf
+			  "custom OID symbols are not allowed for pg_type entries: '%s'",
+			  $bki_values{oid_symbol}
+			  if defined $bki_values{oid_symbol};
+
 			my $symbol = form_pg_type_symbol($bki_values{typname});
 			$bki_values{oid_symbol} = $symbol
 			  if defined $symbol;
@@ -602,6 +606,13 @@ EOM
 		# Emit OID symbol
 		if (defined $bki_values{oid_symbol})
 		{
+			# OID symbols for builtin functions are handled automatically
+			# by utils/Gen_fmgrtab.pl
+			die sprintf
+			  "custom OID symbols are not allowed for pg_proc entries: '%s'",
+			  $bki_values{oid_symbol}
+			  if $catname eq 'pg_proc';
+
 			printf $def "#define %s %s\n",
 			  $bki_values{oid_symbol}, $bki_values{oid};
 		}
@@ -845,17 +856,15 @@ sub print_bki_insert
 		# since that represents a NUL char in C code.
 		$bki_value = '' if $bki_value eq '\0';
 
-		# Handle single quotes by doubling them, and double quotes by
-		# converting them to octal escapes, because that's what the
+		# Handle single quotes by doubling them, because that's what the
 		# bootstrap scanner requires.  We do not process backslashes
 		# specially; this allows escape-string-style backslash escapes
 		# to be used in catalog data.
 		$bki_value =~ s/'/''/g;
-		$bki_value =~ s/"/\\042/g;
 
 		# Quote value if needed.  We need not quote values that satisfy
 		# the "id" pattern in bootscanner.l, currently "[-A-Za-z0-9_]+".
-		$bki_value = sprintf(qq'"%s"', $bki_value)
+		$bki_value = sprintf("'%s'", $bki_value)
 		  if length($bki_value) == 0
 		  or $bki_value =~ /[^-A-Za-z0-9_]/;
 

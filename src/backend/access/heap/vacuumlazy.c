@@ -471,7 +471,6 @@ heap_vacuum_rel(Relation onerel, VacuumParams *params,
 						  params->freeze_table_age,
 						  params->multixact_freeze_min_age,
 						  params->multixact_freeze_table_age,
-						  true, /* we must be a top-level command */
 						  &OldestXmin, &FreezeLimit, &xidFullScanLimit,
 						  &MultiXactCutoff, &mxactFullScanLimit);
 
@@ -2433,7 +2432,6 @@ lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
 				  LVDeadTuples *dead_tuples, double reltuples, LVRelStats *vacrelstats)
 {
 	IndexVacuumInfo ivinfo;
-	const char *msg;
 	PGRUsage	ru0;
 	LVSavedErrInfo saved_err_info;
 
@@ -2463,13 +2461,8 @@ lazy_vacuum_index(Relation indrel, IndexBulkDeleteResult **stats,
 	*stats = index_bulk_delete(&ivinfo, *stats,
 							   lazy_tid_reaped, (void *) dead_tuples);
 
-	if (IsParallelWorker())
-		msg = gettext_noop("scanned index \"%s\" to remove %d row versions by parallel vacuum worker");
-	else
-		msg = gettext_noop("scanned index \"%s\" to remove %d row versions");
-
 	ereport(elevel,
-			(errmsg(msg,
+			(errmsg("scanned index \"%s\" to remove %d row versions",
 					vacrelstats->indname,
 					dead_tuples->num_tuples),
 			 errdetail_internal("%s", pg_rusage_show(&ru0))));
@@ -2492,7 +2485,6 @@ lazy_cleanup_index(Relation indrel,
 				   double reltuples, bool estimated_count, LVRelStats *vacrelstats)
 {
 	IndexVacuumInfo ivinfo;
-	const char *msg;
 	PGRUsage	ru0;
 	LVSavedErrInfo saved_err_info;
 
@@ -2523,13 +2515,8 @@ lazy_cleanup_index(Relation indrel,
 
 	if (*stats)
 	{
-		if (IsParallelWorker())
-			msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages as reported by parallel vacuum worker");
-		else
-			msg = gettext_noop("index \"%s\" now contains %.0f row versions in %u pages");
-
 		ereport(elevel,
-				(errmsg(msg,
+				(errmsg("index \"%s\" now contains %.0f row versions in %u pages",
 						RelationGetRelationName(indrel),
 						(*stats)->num_index_tuples,
 						(*stats)->num_pages),
@@ -3238,7 +3225,6 @@ begin_parallel_vacuum(Oid relid, Relation *Irel, LVRelStats *vacrelstats,
 	WalUsage   *wal_usage;
 	bool	   *can_parallel_vacuum;
 	long		maxtuples;
-	char	   *sharedquery;
 	Size		est_shared;
 	Size		est_deadtuples;
 	int			nindexes_mwm = 0;
@@ -3335,9 +3321,14 @@ begin_parallel_vacuum(Oid relid, Relation *Irel, LVRelStats *vacrelstats,
 	shm_toc_estimate_keys(&pcxt->estimator, 1);
 
 	/* Finally, estimate PARALLEL_VACUUM_KEY_QUERY_TEXT space */
-	querylen = strlen(debug_query_string);
-	shm_toc_estimate_chunk(&pcxt->estimator, querylen + 1);
-	shm_toc_estimate_keys(&pcxt->estimator, 1);
+	if (debug_query_string)
+	{
+		querylen = strlen(debug_query_string);
+		shm_toc_estimate_chunk(&pcxt->estimator, querylen + 1);
+		shm_toc_estimate_keys(&pcxt->estimator, 1);
+	}
+	else
+		querylen = 0;			/* keep compiler quiet */
 
 	InitializeParallelDSM(pcxt);
 
@@ -3382,10 +3373,16 @@ begin_parallel_vacuum(Oid relid, Relation *Irel, LVRelStats *vacrelstats,
 	lps->wal_usage = wal_usage;
 
 	/* Store query string for workers */
-	sharedquery = (char *) shm_toc_allocate(pcxt->toc, querylen + 1);
-	memcpy(sharedquery, debug_query_string, querylen + 1);
-	sharedquery[querylen] = '\0';
-	shm_toc_insert(pcxt->toc, PARALLEL_VACUUM_KEY_QUERY_TEXT, sharedquery);
+	if (debug_query_string)
+	{
+		char	   *sharedquery;
+
+		sharedquery = (char *) shm_toc_allocate(pcxt->toc, querylen + 1);
+		memcpy(sharedquery, debug_query_string, querylen + 1);
+		sharedquery[querylen] = '\0';
+		shm_toc_insert(pcxt->toc,
+					   PARALLEL_VACUUM_KEY_QUERY_TEXT, sharedquery);
+	}
 
 	pfree(can_parallel_vacuum);
 	return lps;
@@ -3528,7 +3525,7 @@ parallel_vacuum_main(dsm_segment *seg, shm_toc *toc)
 		elog(DEBUG1, "starting parallel vacuum worker for bulk delete");
 
 	/* Set debug_query_string for individual workers */
-	sharedquery = shm_toc_lookup(toc, PARALLEL_VACUUM_KEY_QUERY_TEXT, false);
+	sharedquery = shm_toc_lookup(toc, PARALLEL_VACUUM_KEY_QUERY_TEXT, true);
 	debug_query_string = sharedquery;
 	pgstat_report_activity(STATE_RUNNING, debug_query_string);
 

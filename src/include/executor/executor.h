@@ -156,6 +156,9 @@ extern void ResetTupleHashTable(TupleHashTable hashtable);
  */
 extern JunkFilter *ExecInitJunkFilter(List *targetList,
 									  TupleTableSlot *slot);
+extern JunkFilter *ExecInitJunkFilterInsertion(List *targetList,
+											   TupleDesc cleanTupType,
+											   TupleTableSlot *slot);
 extern JunkFilter *ExecInitJunkFilterConversion(List *targetList,
 												TupleDesc cleanTupType,
 												TupleTableSlot *slot);
@@ -191,7 +194,6 @@ extern void InitResultRelInfo(ResultRelInfo *resultRelInfo,
 							  Relation partition_root,
 							  int instrument_options);
 extern ResultRelInfo *ExecGetTriggerResultRel(EState *estate, Oid relid);
-extern void ExecCleanUpTriggerState(EState *estate);
 extern void ExecConstraints(ResultRelInfo *resultRelInfo,
 							TupleTableSlot *slot, EState *estate);
 extern bool ExecPartitionCheck(ResultRelInfo *resultRelInfo,
@@ -538,6 +540,8 @@ extern bool ExecRelationIsTargetRelation(EState *estate, Index scanrelid);
 extern Relation ExecOpenScanRelation(EState *estate, Index scanrelid, int eflags);
 
 extern void ExecInitRangeTable(EState *estate, List *rangeTable);
+extern void ExecCloseRangeTableRelations(EState *estate);
+extern void ExecCloseResultRelations(EState *estate);
 
 static inline RangeTblEntry *
 exec_rt_fetch(Index rti, EState *estate)
@@ -546,6 +550,8 @@ exec_rt_fetch(Index rti, EState *estate)
 }
 
 extern Relation ExecGetRangeTableRelation(EState *estate, Index rti);
+extern void ExecInitResultRelation(EState *estate, ResultRelInfo *resultRelInfo,
+								   Index rti);
 
 extern int	executor_errposition(EState *estate, int location);
 
@@ -573,10 +579,14 @@ extern TupleTableSlot *ExecGetReturningSlot(EState *estate, ResultRelInfo *relIn
  */
 extern void ExecOpenIndices(ResultRelInfo *resultRelInfo, bool speculative);
 extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
-extern List *ExecInsertIndexTuples(TupleTableSlot *slot, EState *estate, bool noDupErr,
+extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
+								   TupleTableSlot *slot, EState *estate,
+								   bool noDupErr,
 								   bool *specConflict, List *arbiterIndexes);
-extern bool ExecCheckIndexConstraints(TupleTableSlot *slot, EState *estate,
-									  ItemPointer conflictTid, List *arbiterIndexes);
+extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
+									  TupleTableSlot *slot,
+									  EState *estate, ItemPointer conflictTid,
+									  List *arbiterIndexes);
 extern void check_exclusion_constraint(Relation heap, Relation index,
 									   IndexInfo *indexInfo,
 									   ItemPointer tupleid,
@@ -593,10 +603,13 @@ extern bool RelationFindReplTupleByIndex(Relation rel, Oid idxoid,
 extern bool RelationFindReplTupleSeq(Relation rel, LockTupleMode lockmode,
 									 TupleTableSlot *searchslot, TupleTableSlot *outslot);
 
-extern void ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot);
-extern void ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
+extern void ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
+									 EState *estate, TupleTableSlot *slot);
+extern void ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
+									 EState *estate, EPQState *epqstate,
 									 TupleTableSlot *searchslot, TupleTableSlot *slot);
-extern void ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
+extern void ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
+									 EState *estate, EPQState *epqstate,
 									 TupleTableSlot *searchslot);
 extern void CheckCmdReplicaIdentity(Relation rel, CmdType cmd);
 

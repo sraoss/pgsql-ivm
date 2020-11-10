@@ -1807,6 +1807,7 @@ if test "$PORTNAME" = "win32"; then
   AC_LIBOBJ(win32error)
   AC_LIBOBJ(win32security)
   AC_LIBOBJ(win32setlocale)
+  AC_LIBOBJ(win32stat)
   AC_DEFINE([HAVE_SYMLINK], 1,
             [Define to 1 if you have the `symlink' function.])
   AC_CHECK_TYPES(MINIDUMP_TYPE, [pgac_minidump_type=yes], [pgac_minidump_type=no], [
@@ -2294,20 +2295,18 @@ AC_MSG_CHECKING([thread safety of required library functions])
 
 _CFLAGS="$CFLAGS"
 _LIBS="$LIBS"
-CFLAGS="$CFLAGS $PTHREAD_CFLAGS -DIN_CONFIGURE"
+CFLAGS="$CFLAGS $PTHREAD_CFLAGS"
 LIBS="$LIBS $PTHREAD_LIBS"
 AC_RUN_IFELSE(
-  [AC_LANG_SOURCE([[#include "$srcdir/src/test/thread/thread_test.c"]])],
+  [AC_LANG_SOURCE([[#include "$srcdir/config/thread_test.c"]])],
   [AC_MSG_RESULT(yes)],
   [AC_MSG_RESULT(no)
   AC_MSG_ERROR([thread test program failed
-This platform is not thread-safe.  Check the file 'config.log' or compile
-and run src/test/thread/thread_test for the exact reason.
-Use --disable-thread-safety to disable thread safety.])],
+This platform is not thread-safe.  Check the file 'config.log' for the
+exact reason, or use --disable-thread-safety to disable thread safety.])],
   [AC_MSG_RESULT(maybe)
   AC_MSG_WARN([
 *** Skipping thread test program because of cross-compile build.
-*** Run the program in src/test/thread on the target machine.
 ])])
 CFLAGS="$_CFLAGS"
 LIBS="$_LIBS"

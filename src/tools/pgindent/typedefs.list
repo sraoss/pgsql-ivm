@@ -1020,6 +1020,7 @@ HbaToken
 HeadlineJsonState
 HeadlineParsedText
 HeadlineWordEntry
+HeapCheckContext
 HeapScanDesc
 HeapTuple
 HeapTupleData
@@ -1832,7 +1833,9 @@ PgStat_MsgFuncstat
 PgStat_MsgHdr
 PgStat_MsgInquiry
 PgStat_MsgRecoveryConflict
+PgStat_MsgReplSlot
 PgStat_MsgResetcounter
+PgStat_MsgResetreplslotcounter
 PgStat_MsgResetsharedcounter
 PgStat_MsgResetsinglecounter
 PgStat_MsgResetslrucounter
@@ -1841,6 +1844,8 @@ PgStat_MsgTabpurge
 PgStat_MsgTabstat
 PgStat_MsgTempFile
 PgStat_MsgVacuum
+PgStat_MsgWal
+PgStat_ReplSlotStats
 PgStat_SLRUStats
 PgStat_Shared_Reset_Target
 PgStat_Single_Reset_Type
@@ -1852,6 +1857,7 @@ PgStat_TableCounts
 PgStat_TableEntry
 PgStat_TableStatus
 PgStat_TableXactStatus
+PgStat_WalStats
 PgXmlErrorContext
 PgXmlStrictness
 Pg_finfo_record
@@ -2285,6 +2291,7 @@ SimpleStringList
 SimpleStringListCell
 SingleBoundSortItem
 Size
+SkipPages
 SlabBlock
 SlabChunk
 SlabContext
@@ -2786,6 +2793,8 @@ XactCallback
 XactCallbackItem
 XactEvent
 XactLockTableWaitInfo
+XidBoundsViolation
+XidCommitStatus
 XidHorizonPrefetchState
 XidStatus
 XmlExpr
@@ -2904,6 +2913,8 @@ dlist_head
 dlist_iter
 dlist_mutable_iter
 dlist_node
+do_collation_version_check_context
+do_collation_version_update_context
 ds_state
 dsa_area
 dsa_area_control
@@ -2945,9 +2956,11 @@ f_smgr
 fd_set
 fe_scram_state
 fe_scram_state_enum
+fetch_range_request
 file_action_t
 file_entry_t
 file_type_t
+filehash_hash
 filemap_t
 fill_string_relopt
 finalize_primnode_context
@@ -3073,11 +3086,13 @@ lclContext
 lclTocEntry
 leafSegmentInfo
 leaf_item
+libpq_source
 line_t
 lineno_t
 list_sort_comparator
 local_relopt
 local_relopts
+local_source
 locale_t
 locate_agg_of_level_context
 locate_var_of_level_context
@@ -3186,6 +3201,7 @@ pg_tz
 pg_tz_cache
 pg_tzenum
 pg_unicode_decomposition
+pg_unicode_norminfo
 pg_unicode_normprops
 pg_utf_to_local_combined
 pg_uuid_t
@@ -3300,6 +3316,7 @@ rendezvousHashEntry
 replace_rte_variables_callback
 replace_rte_variables_context
 ret_type
+rewind_source
 rewrite_event
 rijndael_ctx
 rm_detail_t

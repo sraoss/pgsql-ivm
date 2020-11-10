@@ -180,9 +180,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	MemoryContext oldcxt = CurrentMemoryContext;
 	int			fillfactor;
 	Oid			SortSupportFnOids[INDEX_MAX_KEYS];
-	bool		hasallsortsupports;
-	int			keyscount = IndexRelationGetNumberOfKeyAttributes(index);
-	GiSTOptions *options = NULL;
+	GiSTOptions *options = (GiSTOptions *) index->rd_options;
 
 	/*
 	 * We expect to be called exactly once for any index relation. If that's
@@ -191,9 +189,6 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	if (RelationGetNumberOfBlocks(index) != 0)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
-
-	if (index->rd_options)
-		options = (GiSTOptions *) index->rd_options;
 
 	buildstate.indexrel = index;
 	buildstate.heaprel = heap;
@@ -208,38 +203,44 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 	buildstate.giststate->tempCxt = createTempGistContext();
 
 	/*
-	 * Choose build strategy. If all keys support sorting, do that. Otherwise
-	 * the default strategy is switch to buffering mode when the index grows
-	 * too large to fit in cache.
+	 * Choose build strategy.  First check whether the user specified to use
+	 * buffering mode.  (The use-case for that in the field is somewhat
+	 * questionable perhaps, but it's important for testing purposes.)
 	 */
-	hasallsortsupports = true;
-	for (int i = 0; i < keyscount; i++)
-	{
-		SortSupportFnOids[i] = index_getprocid(index, i + 1,
-											   GIST_SORTSUPPORT_PROC);
-		if (!OidIsValid(SortSupportFnOids[i]))
-		{
-			hasallsortsupports = false;
-			break;
-		}
-	}
-
-	if (hasallsortsupports)
-	{
-		buildstate.buildMode = GIST_SORTED_BUILD;
-	}
-	else if (options)
+	if (options)
 	{
 		if (options->buffering_mode == GIST_OPTION_BUFFERING_ON)
 			buildstate.buildMode = GIST_BUFFERING_STATS;
 		else if (options->buffering_mode == GIST_OPTION_BUFFERING_OFF)
 			buildstate.buildMode = GIST_BUFFERING_DISABLED;
-		else
+		else					/* must be "auto" */
 			buildstate.buildMode = GIST_BUFFERING_AUTO;
 	}
 	else
 	{
 		buildstate.buildMode = GIST_BUFFERING_AUTO;
+	}
+
+	/*
+	 * Unless buffering mode was forced, see if we can use sorting instead.
+	 */
+	if (buildstate.buildMode != GIST_BUFFERING_STATS)
+	{
+		bool		hasallsortsupports = true;
+		int			keyscount = IndexRelationGetNumberOfKeyAttributes(index);
+
+		for (int i = 0; i < keyscount; i++)
+		{
+			SortSupportFnOids[i] = index_getprocid(index, i + 1,
+												   GIST_SORTSUPPORT_PROC);
+			if (!OidIsValid(SortSupportFnOids[i]))
+			{
+				hasallsortsupports = false;
+				break;
+			}
+		}
+		if (hasallsortsupports)
+			buildstate.buildMode = GIST_SORTED_BUILD;
 	}
 
 	/*
@@ -540,6 +541,19 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	/* Re-initialize the page buffer for next page on this level. */
 	pagestate->page = palloc(BLCKSZ);
 	gistinitpage(pagestate->page, isleaf ? F_LEAF : 0);
+
+	/*
+	 * Set the right link to point to the previous page. This is just for
+	 * debugging purposes: GiST only follows the right link if a page is split
+	 * concurrently to a scan, and that cannot happen during index build.
+	 *
+	 * It's a bit counterintuitive that we set the right link on the new page
+	 * to point to the previous page, and not the other way round. But GiST
+	 * pages are not ordered like B-tree pages are, so as long as the
+	 * right-links form a chain through all the pages in the same level, the
+	 * order doesn't matter.
+	 */
+	GistPageGetOpaque(pagestate->page)->rightlink = blkno;
 }
 
 static void
@@ -839,7 +853,10 @@ gistBuildCallback(Relation index,
 	 * and switch to buffering mode if it has.
 	 *
 	 * To avoid excessive calls to smgrnblocks(), only check this every
-	 * BUFFERING_MODE_SWITCH_CHECK_STEP index tuples
+	 * BUFFERING_MODE_SWITCH_CHECK_STEP index tuples.
+	 *
+	 * In 'stats' state, switch as soon as we have seen enough tuples to have
+	 * some idea of the average tuple size.
 	 */
 	if ((buildstate->buildMode == GIST_BUFFERING_AUTO &&
 		 buildstate->indtuples % BUFFERING_MODE_SWITCH_CHECK_STEP == 0 &&

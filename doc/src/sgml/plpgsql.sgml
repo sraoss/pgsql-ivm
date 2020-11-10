@@ -479,6 +479,14 @@ $$ LANGUAGE plpgsql;
      </para>
 
      <para>
+      To call a function with <literal>OUT</literal> parameters, omit the
+      output parameter in the function call:
+<programlisting>
+SELECT sales_tax(100.00);
+</programlisting>
+     </para>
+
+     <para>
       Output parameters are most useful when returning multiple values.
       A trivial example is:
 
@@ -489,12 +497,42 @@ BEGIN
     prod := x * y;
 END;
 $$ LANGUAGE plpgsql;
+
+SELECT * FROM sum_n_product(2, 4);
+ sum | prod
+-----+------
+   6 |    8
 </programlisting>
 
       As discussed in <xref linkend="xfunc-output-parameters"/>, this
       effectively creates an anonymous record type for the function's
       results.  If a <literal>RETURNS</literal> clause is given, it must say
       <literal>RETURNS record</literal>.
+     </para>
+
+     <para>
+      This also works with procedures, for example:
+
+<programlisting>
+CREATE PROCEDURE sum_n_product(x int, y int, OUT sum int, OUT prod int) AS $$
+BEGIN
+    sum := x + y;
+    prod := x * y;
+END;
+$$ LANGUAGE plpgsql;
+</programlisting>
+
+      In a call to a procedure, all the parameters must be specified.  For
+      output parameters, <literal>NULL</literal> may be specified.
+<programlisting>
+CALL sum_n_product(2, 4, NULL, NULL);
+ sum | prod
+-----+------
+   6 |    8
+</programlisting>
+      Output parameters in procedures become more interesting in nested calls,
+      where they can be assigned to variables.  See <xref
+      linkend="plpgsql-statements-calling-procedure"/> for details.
      </para>
 
      <para>
@@ -1143,7 +1181,7 @@ BEGIN
     SELECT users.userid INTO STRICT userid
         FROM users WHERE users.username = get_userid.username;
     RETURN userid;
-END
+END;
 $$ LANGUAGE plpgsql;
 </programlisting>
      On failure, this function might produce an error message such as
@@ -1299,7 +1337,7 @@ EXECUTE format('SELECT count(*) FROM %I '
     <para>
      The <application>PL/pgSQL</application>
      <command>EXECUTE</command> statement is not related to the
-     <xref linkend="sql-execute"/> SQL
+     <link linkend="sql-execute"><command>EXECUTE</command></link> SQL
      statement supported by the
      <productname>PostgreSQL</productname> server. The server's
      <command>EXECUTE</command> statement cannot be used directly within
@@ -1816,7 +1854,7 @@ BEGIN
         RETURN NEXT r; -- return current row of SELECT
     END LOOP;
     RETURN;
-END
+END;
 $BODY$
 LANGUAGE plpgsql;
 
@@ -1844,7 +1882,7 @@ BEGIN
     END IF;
 
     RETURN;
- END
+ END;
 $BODY$
 LANGUAGE plpgsql;
 
@@ -1918,7 +1956,7 @@ DECLARE myvar int := 5;
 BEGIN
   CALL triple(myvar);
   RAISE NOTICE 'myvar = %', myvar;  -- prints 15
-END
+END;
 $$;
 </programlisting>
     </para>
@@ -2632,8 +2670,8 @@ NOTICE:  row = {10,11,12}
 
     <para>
      By default, any error occurring in a <application>PL/pgSQL</application>
-     function aborts execution of the function, and indeed of the
-     surrounding transaction as well.  You can trap errors and recover
+     function aborts execution of the function and the
+     surrounding transaction.  You can trap errors and recover
      from them by using a <command>BEGIN</command> block with an
      <literal>EXCEPTION</literal> clause.  The syntax is an extension of the
      normal syntax for a <command>BEGIN</command> block:
@@ -3521,7 +3559,7 @@ BEGIN
             ROLLBACK;
         END IF;
     END LOOP;
-END
+END;
 $$;
 
 CALL transaction_test1();
@@ -5175,7 +5213,7 @@ DECLARE
 f1 int;
 BEGIN
 RETURN f1;
-END
+END;
 $$ LANGUAGE plpgsql;
 WARNING:  variable "f1" shadows a previously defined variable
 LINE 3: f1 int;

@@ -99,6 +99,28 @@ extern void pgfnames_cleanup(char **filenames);
 )
 #endif
 
+/*
+ * This macro provides a centralized list of all errnos that identify
+ * hard failure of a previously-established network connection.
+ * The macro is intended to be used in a switch statement, in the form
+ * "case ALL_CONNECTION_FAILURE_ERRNOS:".
+ *
+ * Note: this groups EPIPE and ECONNRESET, which we take to indicate a
+ * probable server crash, with other errors that indicate loss of network
+ * connectivity without proving much about the server's state.  Places that
+ * are actually reporting errors typically single out EPIPE and ECONNRESET,
+ * while allowing the network failures to be reported generically.
+ */
+#define ALL_CONNECTION_FAILURE_ERRNOS \
+	EPIPE: \
+	case ECONNRESET: \
+	case ECONNABORTED: \
+	case EHOSTDOWN: \
+	case EHOSTUNREACH: \
+	case ENETDOWN: \
+	case ENETRESET: \
+	case ENETUNREACH
+
 /* Portable locale initialization (in exec.c) */
 extern void set_pglocale_pgservice(const char *argv0, const char *app);
 
@@ -491,6 +513,7 @@ extern char *pg_inet_net_ntop(int af, const void *src, int bits,
 							  char *dst, size_t size);
 
 /* port/pg_strong_random.c */
+extern void pg_strong_random_init(void);
 extern bool pg_strong_random(void *buf, size_t len);
 
 /*

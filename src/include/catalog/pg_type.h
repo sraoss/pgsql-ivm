@@ -254,6 +254,13 @@ CATALOG(pg_type,1247,TypeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71,TypeRelati
  */
 typedef FormData_pg_type *Form_pg_type;
 
+DECLARE_TOAST(pg_type, 4171, 4172);
+
+DECLARE_UNIQUE_INDEX(pg_type_oid_index, 2703, on pg_type using btree(oid oid_ops));
+#define TypeOidIndexId	2703
+DECLARE_UNIQUE_INDEX(pg_type_typname_nsp_index, 2704, on pg_type using btree(typname name_ops, typnamespace oid_ops));
+#define TypeNameNspIndexId	2704
+
 #ifdef EXPOSE_TO_CLIENT_CODE
 
 /*
@@ -312,6 +319,13 @@ typedef FormData_pg_type *Form_pg_type;
 	 (typid) == ANYCOMPATIBLENONARRAYOID || \
 	 (typid) == ANYCOMPATIBLERANGEOID)
 
+/*
+ * Backwards compatibility for ancient random spellings of pg_type OID macros.
+ * Don't use these names in new code.
+ */
+#define CASHOID	MONEYOID
+#define LSNOID	PG_LSNOID
+
 #endif							/* EXPOSE_TO_CLIENT_CODE */
 
 
@@ -360,6 +374,8 @@ extern void GenerateTypeDependencies(HeapTuple typeTuple,
 									 bool isImplicitArray,
 									 bool isDependentType,
 									 bool rebuild);
+
+extern List *GetTypeCollations(Oid typeObjectid);
 
 extern void RenameTypeInternal(Oid typeOid, const char *newTypeName,
 							   Oid typeNamespace);
