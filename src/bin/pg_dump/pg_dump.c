@@ -6174,7 +6174,7 @@ getTables(Archive *fout, int *numTables)
 			relhasoids = "'f'::bool";
 
 		/* The information about incremental view maintenance */
-		if (fout->remoteVersion >= 130000)
+		if (fout->remoteVersion >= 140000)
 			isivm = "c.relisivm";
 
 		/*
