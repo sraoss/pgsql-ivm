@@ -6354,6 +6354,7 @@ getTables(Archive *fout, int *numTables)
 	int			i_relacl;
 	int			i_acldefault;
 	int			i_ispartition;
+	int			i_isivm;
 
 	/*
 	 * Find all the tables and table-like objects.
@@ -6456,10 +6457,17 @@ getTables(Archive *fout, int *numTables)
 
 	if (fout->remoteVersion >= 100000)
 		appendPQExpBufferStr(query,
-							 "c.relispartition AS ispartition ");
+							 "c.relispartition AS ispartition, ");
 	else
 		appendPQExpBufferStr(query,
-							 "false AS ispartition ");
+							 "false AS ispartition, ");
+
+	if (fout->remoteVersion >= 170000)
+		appendPQExpBufferStr(query,
+							 "c.relisivm AS isivm ");
+	else
+		appendPQExpBufferStr(query,
+							 "false AS isivm ");
 
 	/*
 	 * Left join to pg_depend to pick up dependency info linking sequences to
@@ -6568,6 +6576,7 @@ getTables(Archive *fout, int *numTables)
 	i_relacl = PQfnumber(res, "relacl");
 	i_acldefault = PQfnumber(res, "acldefault");
 	i_ispartition = PQfnumber(res, "ispartition");
+	i_isivm = PQfnumber(res, "isivm");
 
 	if (dopt->lockWaitTimeout)
 	{
@@ -6647,6 +6656,7 @@ getTables(Archive *fout, int *numTables)
 			tblinfo[i].amname = pg_strdup(PQgetvalue(res, i, i_amname));
 		tblinfo[i].is_identity_sequence = (strcmp(PQgetvalue(res, i, i_is_identity_sequence), "t") == 0);
 		tblinfo[i].ispartition = (strcmp(PQgetvalue(res, i, i_ispartition), "t") == 0);
+		tblinfo[i].isivm = (strcmp(PQgetvalue(res, i, i_isivm), "t") == 0);
 
 		/* other fields were zeroed above */
 
@@ -15737,9 +15747,11 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 			binary_upgrade_set_pg_class_oids(fout, q,
 											 tbinfo->dobj.catId.oid, false);
 
-		appendPQExpBuffer(q, "CREATE %s%s %s",
+		appendPQExpBuffer(q, "CREATE %s%s%s %s",
 						  tbinfo->relpersistence == RELPERSISTENCE_UNLOGGED ?
 						  "UNLOGGED " : "",
+						  tbinfo->relkind == RELKIND_MATVIEW && tbinfo->isivm ?
+						  "INCREMENTAL " : "",
 						  reltypename,
 						  qualrelname);
 

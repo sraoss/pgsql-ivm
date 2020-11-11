@@ -324,6 +324,8 @@ typedef struct _tableInfo
 	int			numParents;		/* number of (immediate) parent tables */
 	struct _tableInfo **parents;	/* TableInfos of immediate parents */
 
+	bool		isivm;			/* is incrementally maintainable materialized view? */
+
 	/*
 	 * These fields are computed only if we decide the table is interesting
 	 * (it's either a table to dump, or a direct parent of a dumpable table).
