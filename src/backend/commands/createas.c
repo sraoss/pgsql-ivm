@@ -1096,7 +1096,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 				if (depth > 0 && qry->distinctClause != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DISTINCT cluase in nested query are not supported on incrementally maintainable materialized view")));
+							 errmsg("DISTINCT clause in nested query are not supported on incrementally maintainable materialized view")));
 				if (depth > 0 && qry->hasAggs)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

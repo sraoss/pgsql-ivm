@@ -67,7 +67,7 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
      </para>
      <para>
       There are restrictions of query definitions allowed to use this
-      option. Followings are supported query definitions for IMMV:
+      option. The following are supported in query definitions for IMMV:
       <itemizedlist>
 
        <listitem>
@@ -78,12 +78,12 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
 
        <listitem>
         <para>
-         Outer joins with following restrictions:
+         Outer joins with the following restrictions:
 
          <itemizedlist>
           <listitem>
            <para>
-            Outer join view's targetlist must contain attributes used in the
+            Outer join view's targetlist must contain all attributes used in the
             join conditions.
             <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT
@@ -95,7 +95,7 @@ ERROR:  targetlist must contain vars in the join condition for IVM with outer jo
 
           <listitem>
            <para>
-            Outer join view's targetlist cannot contain non strict functions.
+            Outer join view's targetlist cannot contain non-strict functions.
             <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i, b.i, (k > 10 OR k = -1)
 FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
@@ -135,7 +135,7 @@ ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer jo
 
           <listitem>
            <para>
-            Aggregate is not supported with outer join.
+            Aggregates are not supported with outer join.
             <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,v) AS SELECT a.i, b.i, sum(k) FROM
 mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i GROUP BY a.i, b.i;
@@ -165,7 +165,7 @@ ERROR:  subquery is not supported by IVM together with outer join
 
        <listitem>
         <para>
-         Subqueries. However following forms are not supported.
+         Subqueries. However, the following forms are not supported.
         </para>
 
         <para>
@@ -176,14 +176,14 @@ mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k &lt; 103 );
          </programlisting>
         </para>
         <para>
-         subqueries in target list is not supported:
+         subqueries in the target list are not supported:
          <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm05 AS SELECT i,j, (SELECT k
 FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
          </programlisting>
         </para>
         <para>
-         Nested EXISTS subqueries is not supported:
+         Nested EXISTS subqueries are not supported:
          <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm11 AS SELECT a.i,a.j FROM
 mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT
@@ -210,14 +210,14 @@ a.i &gt; 5;
 
        <listitem>
         <para>
-         Simple CTEs which do not contain aggregates or DISTINCT.
+         Simple CTEs that do not contain aggregates or DISTINCT.
         </para>
        </listitem>
 
        <listitem>
         <para>
-         Some of aggregations (count, sum, avg, min, max) without HAVING
-         clause.  However, aggregate functions in subquery is not supported:
+         Some aggregate functions (count, sum, avg, min, max) without a HAVING
+         clause.  However, aggregate functions in subquery are not supported:
          <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a
 a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
@@ -226,17 +226,17 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
         </listitem>
       </itemizedlist>
 
-      Unsupported queries with this option include followings:
+      Unsupported queries with this option include the following:
 
       <itemizedlist>
        <listitem>
         <para>
-         Aggregations other than built-in count, sum, avg, min and max.
+         Aggregate functions other than built-in count, sum, avg, min and max.
         </para>
         </listitem>
        <listitem>
         <para>
-         Aggregations with HAVING clause.
+         Aggregate functions with a HAVING clause.
         </para>
         </listitem>
        <listitem>
@@ -251,21 +251,21 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
 
        <listitem>
         <para>
-         IMMVs must be based on simple base tables. Views or materialized views
-         are not allowed to create IMMV on them.
+         IMMVs must be based on simple base tables. It's not supported to
+         create them on top of views or materialized views.
         </para>
        </listitem>
 
        <listitem>
         <para>
-         When TRUNCATE command is executed on a base table, nothing occurs and
-         this is not applied to the materialized view.
+         When the TRUNCATE command is executed on a base table,
+         no changes are made to the materialized view.
         </para>
        </listitem>
 
        <listitem>
         <para>
-         IMMV including system columns is not supported.
+         It is not supported to include system columns in an IMMV.
          <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
 ERROR:  system column is not supported with IVM
@@ -275,7 +275,7 @@ ERROR:  system column is not supported with IVM
 
        <listitem>
         <para>
-         IMMV including non-immutable functions is not supported.
+         Non-immutable functions are not supported.
          <programlisting>
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm12 AS SELECT i,j FROM mv_base_a WHERE i = random()::int;
 ERROR:  functions in IMMV must be marked IMMUTABLE
@@ -285,13 +285,13 @@ ERROR:  functions in IMMV must be marked IMMUTABLE
 
        <listitem>
         <para>
-         IMMVs including expressions which contains aggregates in it
+         IMMVs do not support expressions that contains aggregates
         </para>
        </listitem>
 
        <listitem>
         <para>
-         IMMVs not supported by logical replication.
+         Logical replication does not support IMMVs.
         </para>
        </listitem>
 

@@ -1114,16 +1114,16 @@ SELECT word FROM words ORDER BY word &lt;-&gt; 'caterpiler' LIMIT 10;
     and applied on views rather than recomputing the contents from scratch as
     <command>REFRESH MATERIALIZED VIEW</command> does.  <acronym>IVM</acronym>
     can update materialized views more efficiently than recomputation when only
-    small part of the view need updates.
+    small parts of the view are changed.
 </para>
 
 <para>
     There are two approaches with regard to timing of view maintenance:
     immediate and deferred.  In immediate maintenance, views are updated in the
-    same transaction where its base table is modified.  In deferred maintenance,
+    same transaction that its base table is modified.  In deferred maintenance,
     views are updated after the transaction is committed, for example, when the
     view is accessed, as a response to user command like <command>REFRESH
-    MATERIALIAED VIEW</command>, or periodically in background, and so on.
+    MATERIALIZED VIEW</command>, or periodically in background, and so on.
     <productname>PostgreSQL</productname> currently implements only a kind of
     immediate maintenance, in which materialized views are updated immediately
     in AFTER triggers when a base table is modified.
@@ -1136,9 +1136,9 @@ SELECT word FROM words ORDER BY word &lt;-&gt; 'caterpiler' LIMIT 10;
 CREATE <emphasis>INCREMENTAL</emphasis> MATERIALIZED VIEW mymatview AS SELECT * FROM mytab;
 </programlisting>
     When a materialized view is created with the <literal>INCREMENTAL</literal>
-    keyword, some triggers are automatically created so that its contents are
+    keyword, some triggers are automatically created so that the view's contents are
     immediately updated when its base tables are modified. We call this form
-    of materialized view as Incrementally Maintainable Materialized View
+    of materialized view an Incrementally Maintainable Materialized View
     (<acronym>IMMV</acronym>).
 <programlisting>
 postgres=# CREATE INCREMENTAL MATERIALIZED VIEW m AS SELECT * FROM t0;
@@ -1163,21 +1163,21 @@ postgres=# SELECT * FROM m; -- automatically updated
 (4 rows)
 </programlisting>
     <acronym>IMMV</acronym>s can have hidden columns which are added
-    automatically when a materialized view is created. Their name start
+    automatically when a materialized view is created. Their name starts
     with <literal>__ivm_</literal> and they contain information required
-    for maintaining <acronym>IMMV</acronym>. Such columns are not visible
-    when <acronym>IMMV</acronym> is accessed by <literal>SELECT *</literal>
-    but visible if the column name is explicitly specified in the target
-    list. We can also see the hidden columns by <literal>\d</literal>
-     meta-commands of <command>psql</command> commands.
+    for maintaining the <acronym>IMMV</acronym>. Such columns are not visible
+    when the <acronym>IMMV</acronym> is accessed by <literal>SELECT *</literal>
+    but are visible if the column name is explicitly specified in the target
+    list. We can also see the hidden columns in <literal>\d</literal>
+    meta-commands of <command>psql</command> commands.
 </para>
 
 <para>
-    In general, <acronym>IMMV</acronym> allows faster update of materialized
-    views at a price of slower update of base tables because triggers will
+    In general, <acronym>IMMV</acronym>s allow faster updates of materialized
+    views at the price of slower updates to their base tables because triggers will
     be invoked and the view is updated in triggers per modification statement.
     For example, here are two materialized views based on the same view
-    definition but one is a normal materialized view and another is
+    definition but one is a normal materialized view and the other is an
     <acronym>IMMV</acronym>:
 
 <programlisting>
@@ -1207,7 +1207,7 @@ Time: 33533.952 ms (00:33.534)
 </programlisting>
 
     On the other hand, updating a tuple in <acronym>IMMV</acronym> takes
-    more than the normal view, but the contents is updated automatically
+    more than the normal view, but its content is updated automatically
     and this is faster than the <command>REFRESH MATERIALIZED VIEW</command>
     command.
 
@@ -1220,10 +1220,10 @@ Time: 13.068 ms
 </para>
 
 <para>
-    An appropriate indexes on <acronym>IMMV</acronym> are necessary for
+    Appropriate indexes on <acronym>IMMV</acronym>s are necessary for
     efficient <acronym>IVM</acronym> because it looks for tuples to be
-    updated in <acronym>IMMV</acronym>.  If there is no indexes, it
-    take a long time. Here is an example after dropping the index:
+    updated in <acronym>IMMV</acronym>.  If there are no indexes, it
+    will take a long time. Here is an example after dropping the index:
 <programlisting>
 test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
 UPDATE 1
@@ -1234,16 +1234,16 @@ Time: 16386.245 ms (00:16.386)
 
 <para>
     <acronym>IVM</acronym> is effective when we want to keep a materialized
-    view up-to-date and small fraction of a base table is modified in low
-    frequency.  Due to the overhead of immediate maintenance, <acronym>IVM</acronym>
+    view up-to-date and small fraction of a base table is modified
+    infrequently.  Due to the overhead of immediate maintenance, <acronym>IVM</acronym>
     is not effective when a base table is modified frequently.  Also, when a
     large part of a base table is modified or large data is inserted into a
     base table, <acronym>IVM</acronym> is not effective and the cost of
-    maintenance can be larger than <command>REFRESH MATERIALIZED VIEW</command>
+    maintenance can be larger than the <command>REFRESH MATERIALIZED VIEW</command>
     command. In such situation, we can use <command>REFRESH MATERIALIZED VIEW</command>
-    with specifying <literal>WITH NO DATA</literal> to disable immediate
+    and specify <literal>WITH NO DATA</literal> to disable immediate
     maintenance before modifying a base table. After a base table modification,
-    execute <command>REFRESH MATERIALIZED VIEW</command> (with <literal>WITH DATA</literal>)
+    execute the <command>REFRESH MATERIALIZED VIEW</command> (with <literal>WITH DATA</literal>)
     command to refresh the view data and enable immediate maintenance.
 </para>
 
@@ -1253,7 +1253,7 @@ Time: 16386.245 ms (00:16.386)
 <title>Supported View Definitions and Restrictions</title>
 
 <para>
-    Currently, we can create <acronym>IMMV</acronym> using inner and outer
+    Currently, we can create <acronym>IMMV</acronym>s using inner and outer
     joins, some aggregates, and some subqueries. However, several restrictions
     apply to the definition of IMMV.
 </para>
@@ -1280,7 +1280,7 @@ Time: 16386.245 ms (00:16.386)
         <listitem>
         <para>
             All attributes used in join conditions must be contained in the target list.
-               These attributes are used as scan keys for searching tuples in
+               These attributes are used as scan keys for searching tuples in the
                <acronym>IMMV</acronym>, so indexes on them are required for efficient
                <acronym>IVM</acronym>.
         </para>
@@ -1296,7 +1296,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
         <para>
-            <literal>WHERE</literal> clause cannot contain non null-rejecting
+            <literal>WHERE</literal> clauses cannot contain non null-rejecting
             predicates that can return true for NULL inputs.  For example,
             <literal>IS NULL</literal> cannot be used.
         </para>
@@ -1310,7 +1310,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
         <para>
-            Subquery cannot be used with outer join.
+            Subqueries cannot be used with outer join.
         </para>
         </listitem>
     </itemizedlist>
@@ -1324,16 +1324,16 @@ Time: 16386.245 ms (00:16.386)
     Supported aggregate functions are <function>count</function>, <function>sum</function>,
     <function>avg</function>, <function>min</function>, and <function>max</function>.
     Currently, only built-in aggregate functions are supported and user defined
-    aggregates can not be used.  When a base table is modified, the new aggregated
-     values are incrementally calculated using the old aggregated values and values
-     of related hidden columns stored in <acronym>IMMV</acronym>.
+    aggregates cannot be used.  When a base table is modified, the new aggregated
+    values are incrementally calculated using the old aggregated values and values
+    of related hidden columns stored in <acronym>IMMV</acronym>.
 </para>
 
 <para>
      Note that for <function>min</function> or <function>max</function>, the new values
      could be re-calculated from base tables with regard to the affected groups when a
      tuple containing the current minimal or maximal values are deleted from a base table.
-     Therefore, it can takes a long time for updating <acronym>IMMV</acronym> containing
+     Therefore, it can takes a long time to update an <acronym>IMMV</acronym> containing
      these functions.
 </para>
 
@@ -1342,7 +1342,7 @@ Time: 16386.245 ms (00:16.386)
     <type>real</type> (<type>float4</type>) type or <type>double precision</type>
     (<type>float8</type>) type in <acronym>IMMV</acronym> is unsafe. This is
     because aggregated values in <acronym>IMMV</acronym> can become different from
-    results calculated from base tables due to the limitted precision of these types.
+    results calculated from base tables due to the limited precision of these types.
     To avoid this problem, use the <type>numeric</type> type instead.
 </para>
 
@@ -1353,11 +1353,10 @@ Time: 16386.245 ms (00:16.386)
     <itemizedlist>
         <listitem>
         <para>
-            If we have <literal>GROUP BY</literal> clause, expressions specified in
+            If we have a <literal>GROUP BY</literal> clause, expressions specified in
                <literal>GROUP BY</literal> must appear in the target list.  This is
-               because tuples to be updated in <acronym>IMMV</acronym> are identified
-               by them.
-               These attributes are used as scan keys for searching tuples in
+               how tuples to be updated in the <acronym>IMMV</acronym> are identified.
+               These attributes are used as scan keys for searching tuples in the
                <acronym>IMMV</acronym>, so indexes on them are required for efficient
                <acronym>IVM</acronym>.
         </para>
@@ -1387,7 +1386,7 @@ Time: 16386.245 ms (00:16.386)
     <itemizedlist>
         <listitem>
         <para>
-            Only <literal>EXISTS</literal> subquery is allowed to used in
+            Only <literal>EXISTS</literal> subquery is allowed in the
               <literal>WHERE</literal> clause. For example, <literal>IN</literal>
               clause cannot be used.
         </para>
@@ -1396,8 +1395,8 @@ Time: 16386.245 ms (00:16.386)
         <listitem>
         <para>
             <literal>EXISTS</literal> subquery must be used with <literal>AND</literal>.
-              <literal>OR EXISTS (...)</literal> or <literal>NOT EXISTS (...)</literal>
-              is not allowed.
+              <literal>OR EXISTS (...)</literal> and <literal>NOT EXISTS (...)</literal>
+              are not allowed.
         </para>
         </listitem>
 
@@ -1409,13 +1408,13 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
         <para>
-            Nested <literal>EXISTS</literal> subqueries is not supported.
+            Nested <literal>EXISTS</literal> subqueries are not supported.
         </para>
         </listitem>
 
         <listitem>
         <para>
-            <literal>EXISTS</literal> subquery cannot be used if <acronym>IMMV</acronym>
+            <literal>EXISTS</literal> subqueries cannot be used if <acronym>IMMV</acronym>
                uses aggregate functions.
         </para>
         </listitem>
@@ -1434,7 +1433,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
         <para>
-            subqueres containing table join are only allowed in FROM clause.
+            Subqueries containing joins are only allowed in the FROM clause.
         </para>
         </listitem>
 
@@ -1447,7 +1446,7 @@ Time: 16386.245 ms (00:16.386)
 <sect3>
 <title>CTEs</title>
 <para>
-    Currently, simple <literal>CTE</literal> in <literal>FROM</literal> clause are supported.
+    Currently, simple <literal>CTE</literal> in the <literal>FROM</literal> clause are supported.
 </para>
 
     <sect4>
@@ -1479,45 +1478,44 @@ Time: 16386.245 ms (00:16.386)
     <itemizedlist>
         <listitem>
           <para>
-           window functions cannot be used.
+           Window functions cannot be used.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            <acronym>IMMV</acronym>s must be based on simple base tables. Views or
-               materialized views are not allowed to create <acronym>IMMV</acronym>
-               on them.
+            <acronym>IMMV</acronym>s must be based on simple base tables.  It's not
+               supported to create them on top of views or materialized views.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            LIMIT and OFFSET clause cannot be used.
+            LIMIT and OFFSET clauses cannot be used.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            <acronym>IMMV</acronym> cannot contain system columns.
+            <acronym>IMMV</acronym>s cannot contain system columns.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            <acronym>IMMV</acronym> cannot contain non-immutable functions.
+            <acronym>IMMV</acronym>s cannot contain non-immutable functions.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            UNION/INTERSECT/EXCEPT clause cannnot be used.
+            UNION/INTERSECT/EXCEPT clauses cannnot be used.
           </para>
         </listitem>
 
         <listitem>
           <para>
-            DISTINCT ON clause cannot be used.
+            DISTINCT ON clauses cannot be used.
           </para>
         </listitem>
 
@@ -1529,7 +1527,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
-            inheritance parent table cannnot be used.
+            inheritance parent tables cannnot be used.
           </para>
         </listitem>
 
@@ -1573,8 +1571,8 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
-            When <literal>TRUNCATE</literal> command is executed on a base table,
-               nothing occurs and this is not applied to <acronym>IMMV</acronym>.
+            When the <literal>TRUNCATE</literal> command is executed on a base table,
+               nothing is changed on the <acronym>IMMV</acronym>.
           </para>
         </listitem>
 
@@ -1590,16 +1588,16 @@ Time: 16386.245 ms (00:16.386)
 <para>
     <productname>PostgreSQL</productname> supports <acronym>IMMV</acronym> with
     <literal>DISTINCT</literal>.  For example, suppose a <acronym>IMMV</acronym>
-    defined with <literal>DISTINCT</literal> on a base table containing duplicated
+    defined with <literal>DISTINCT</literal> on a base table containing duplicate
     tuples.  When tuples are deleted from the base table, a tuple in the view is
-    deleted if and only when the multiplicity of the tuple becomes zero.  Moreover,
+    deleted if and only if the multiplicity of the tuple becomes zero.  Moreover,
     when tuples are inserted into the base table, a tuple is inserted into the
-    view only if the same tuple doesn't exist in it.
+    view only if the same tuple doesn't already exist in it.
 </para>
 
 <para>
-    Physically, <acronym>IMMV</acronym> defined with <literal>DISTINCT</literal>
-    contains tuples after eliminating duplicates, and multiplicity of each tuple
+    Physically, an <acronym>IMMV</acronym> defined with <literal>DISTINCT</literal>
+    contains tuples after eliminating duplicates, and the multiplicity of each tuple
     is stored in a hidden column named <literal>__ivm_count__</literal>.
 </para>
 </sect2>
@@ -1607,28 +1605,28 @@ Time: 16386.245 ms (00:16.386)
 <sect2>
 <title>Concurrent Transactions</title>
 <para>
-    Suppose a <acronym>IMMV</acronym> is defined on two base tables and each
-    table was modified in different concurrent transactions simultaneously.
+    Suppose an <acronym>IMMV</acronym> is defined on two base tables and each
+    table was modified in different a concurrent transaction simultaneously.
     In the transaction which was committed first, <acronym>IMMV</acronym> can
     be updated considering only the change which happened in this transaction.
     On the other hand, in order to update the view correctly in the transaction
     which was committed later, we need to know the changes occurred in
     both transactions.  For this reason, <literal>ExclusiveLock</literal>
-    is held on <acronym>IMMV</acronym> immediately after a base table is
+    is held on an <acronym>IMMV</acronym> immediately after a base table is
     modified in <literal>READ COMMITTED</literal> mode to make sure that
     the <acronym>IMMV</acronym> is updated in the latter transaction after
     the former transaction is committed.  In <literal>REPEATABLE READ</literal>
     or <literal>SERIALIZABLE</literal> mode, an error is raised immediately
-    when the lock is failed to acquire because any changes occurred in
-    other transactions must not be visible in these modes and
-    <acronym>IMMV</acronym> can not be updated correctly in such situations.
+    if lock acquisition fails because any changes which occurred in
+    other transactions are not be visible in these modes and
+    <acronym>IMMV</acronym> cannot be updated correctly in such situations.
 </para>
 </sect2>
 
 <sect2>
 <title>Row Level Security</title>
 <para>
-    If some base tables have row level security policy, rows that are not invisible
+    If some base tables have row level security policy, rows that are not visible
     to the materialized view's owner are excluded from the result.  In addition, such
     rows are excluded as well when views are incrementally maintained.  However, if a
     new policy is defined or policies are changed after the materialized view was created,

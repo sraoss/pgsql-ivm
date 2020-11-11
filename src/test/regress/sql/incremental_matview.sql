@@ -17,7 +17,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a I
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 REFRESH MATERIALIZED VIEW mv_ivm_1;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
--- immediaite maintenance
+-- immediate maintenance
 BEGIN;
 INSERT INTO mv_base_b VALUES(5,105);
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
@@ -48,7 +48,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_func AS SELECT * FROM ivm_func();
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_no_tbl AS SELECT 1;
 ROLLBACK;
 
--- result of materliazied view have DISTINCT clause or the duplicate result.
+-- result of materialized view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_distinct AS SELECT DISTINCT j FROM mv_base_a;
@@ -172,7 +172,7 @@ SELECT NULL;
 SELECT * FROM mv ORDER BY v1;
 ROLLBACK;
 
--- support foreign reference constrains
+-- support foreign reference constraints
 BEGIN;
 CREATE TABLE ri1 (i int PRIMARY KEY);
 CREATE TABLE ri2 (i int PRIMARY KEY REFERENCES ri1(i) ON UPDATE CASCADE ON DELETE CASCADE, v int);
@@ -224,7 +224,7 @@ SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subq
 SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery4 ORDER BY i, j;
 ROLLBACK;
 
--- support simple subquery in FROM cluase
+-- support simple subquery in FROM clause
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_subquery AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
 INSERT INTO mv_base_a VALUES(2,20);
@@ -233,7 +233,7 @@ SELECT * FROM mv_ivm_subquery ORDER BY i,j;
 
 ROLLBACK;
 
--- support join subquery in FROM cluase
+-- support join subquery in FROM clause
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_join_subquery AS SELECT i, j, k FROM ( SELECT i, a.j, b.k FROM mv_base_b b INNER JOIN mv_base_a a USING(i)) tmp;
 WITH
@@ -1681,7 +1681,7 @@ ROLLBACK;
 -- UNION statement is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm22 AS SELECT i,j FROM mv_base_a UNION ALL SELECT i,k FROM mv_base_b;;
 
--- DISTINCT cluase in nested query are not supported
+-- DISTINCT clause in nested query are not supported
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm23 AS SELECT * FROM (SELECT DISTINCT i,j FROM mv_base_a) AS tmp;
 
 -- empty target list is not allowed with IVM
@@ -1691,7 +1691,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm25 AS SELECT FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm26 AS SELECT i,j FROM mv_base_a FOR UPDATE;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm27 AS SELECT * FROM (SELECT i,j FROM mv_base_a FOR UPDATE) AS tmp;
 
--- tartget list cannot contain ivm clumn that start with '__ivm'
+-- tartget list cannot contain ivm column that start with '__ivm'
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FROM mv_base_a;
 
 -- expressions specified in GROUP BY must appear in the target list.
