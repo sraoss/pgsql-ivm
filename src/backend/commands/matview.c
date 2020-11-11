@@ -1826,7 +1826,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 
 			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
 			rte = nsitem->p_rte;
-			/* if base table has RLS, set secuirty condition to enr */
+			/* if base table has RLS, set security condition to enr */
 			rte->securityQuals = get_securityQuals(table->table_id, list_length(query->rtable) + 1, query);
 
 			query->rtable = lappend(query->rtable, rte);
@@ -1853,7 +1853,7 @@ register_delta_ENRs(ParseState *pstate, Query *query, List *tables)
 
 			nsitem = addRangeTableEntryForENR(pstate, makeRangeVar(NULL, enr->md.name, -1), true);
 			rte = nsitem->p_rte;
-			/* if base table has RLS, set secuirty condition to enr*/
+			/* if base table has RLS, set security condition to enr*/
 			rte->securityQuals = get_securityQuals(table->table_id, list_length(query->rtable) + 1, query);
 
 			query->rtable = lappend(query->rtable, rte);
@@ -2038,7 +2038,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 	rte->insertedCols = NULL;
 	rte->updatedCols = NULL;
 	rte->extraUpdatedCols = NULL;
-	/* if base table has RLS, set secuirty condition to enr*/
+	/* if base table has RLS, set security condition to enr*/
 	enr_rte = (RangeTblEntry *)linitial(sub->rtable);
 	/* rt_index is always 1, bacause subquery has enr_rte only */
 	enr_rte->securityQuals = get_securityQuals(relid, 1, sub);
@@ -2662,7 +2662,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 /*
  * update_maintenance_graph
  *
- * Update each term's status about effect of a table modifying. Temrs including
+ * Update each term's status about effect of a table modifying. Terms including
  * this table is affected directly. Terms whose parents are affected directly is
  * affected indirectly (e.i. dangling tuples on this terms may be inserted or
  * deleted). Other terms are not affected by this modification.
@@ -3099,7 +3099,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 			apply_old_delta(matviewname, OLD_DELTA_ENRNAME, keys);
 
 		/*
-		 * If we have min or max, we migth have to recalculate aggregate values from base tables
+		 * If we have min or max, we might have to recalculate aggregate values from base tables
 		 * on some tuples. TIDs and keys such tuples are returned as a result of the above query.
 		 */
 		if (minmax_list && tuptable_recalc)
@@ -3858,7 +3858,7 @@ recalc_and_set_values(SPITupleTable *tuptable_recalc, int64 num_tuples,
 		keyTypes = palloc(sizeof(Oid) * num_keys);
 		keyNulls = palloc(sizeof(char) * num_keys);
 		keyVals = palloc(sizeof(Datum) * num_keys);
-		/* a tuple contains keys to be recalculaetd and ctid to be updated*/
+		/* a tuple contains keys to be recalculated and ctid to be updated*/
 		Assert(tupdesc_recalc->natts == num_keys + 1);
 
 		/* Types of key attributes  */
@@ -3895,7 +3895,7 @@ recalc_and_set_values(SPITupleTable *tuptable_recalc, int64 num_tuples,
 
 		/*
 		 * Get recalculated values from base tables. The result must be
-		 * only one tuple thich contains the new values for speified keys.
+		 * only one tuple thich contains the new values for specified keys.
 		 */
 		plan = get_plan_for_recalc(matviewOid, namelist, keys, keyTypes);
 		if (SPI_execute_plan(plan, keyVals, keyNulls, false, 0) != SPI_OK_SELECT)
