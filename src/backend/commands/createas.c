@@ -560,7 +560,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 				 */
 				if (strcmp(aggname, "count") != 0)
 				{
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
@@ -593,7 +593,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 						ReleaseSysCache(type);
 
 					}
-					fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
@@ -616,7 +616,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	/* Add count(*) for counting algorithm */
 	if (rewritten->distinctClause || rewritten->hasAggs)
 	{
-		fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+		fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 		fn->agg_star = true;
 
 		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
@@ -1428,73 +1428,73 @@ check_aggregate_supports_ivm(Oid aggfnoid)
 	switch (aggfnoid)
 	{
 		/* count */
-		case F_AGG_COUNT_ANY:
-		case F_AGG_COUNT_:
+		case F_COUNT_ANY:
+		case F_COUNT_:
 
 		/* sum */
-		case F_AGG_SUM_INT8:
-		case F_AGG_SUM_INT4:
-		case F_AGG_SUM_INT2:
-		case F_AGG_SUM_FLOAT4:
-		case F_AGG_SUM_FLOAT8:
-		case F_AGG_SUM_MONEY:
-		case F_AGG_SUM_INTERVAL:
-		case F_AGG_SUM_NUMERIC:
+		case F_SUM_INT8:
+		case F_SUM_INT4:
+		case F_SUM_INT2:
+		case F_SUM_FLOAT4:
+		case F_SUM_FLOAT8:
+		case F_SUM_MONEY:
+		case F_SUM_INTERVAL:
+		case F_SUM_NUMERIC:
 
 		/* avg */
-		case F_AGG_AVG_INT8:
-		case F_AGG_AVG_INT4:
-		case F_AGG_AVG_INT2:
-		case F_AGG_AVG_NUMERIC:
-		case F_AGG_AVG_FLOAT4:
-		case F_AGG_AVG_FLOAT8:
-		case F_AGG_AVG_INTERVAL:
+		case F_AVG_INT8:
+		case F_AVG_INT4:
+		case F_AVG_INT2:
+		case F_AVG_NUMERIC:
+		case F_AVG_FLOAT4:
+		case F_AVG_FLOAT8:
+		case F_AVG_INTERVAL:
 
 		/* min */
-		case F_AGG_MIN_ANYARRAY:
-		case F_AGG_MIN_INT8:
-		case F_AGG_MIN_INT4:
-		case F_AGG_MIN_INT2:
-		case F_AGG_MIN_OID:
-		case F_AGG_MIN_FLOAT4:
-		case F_AGG_MIN_FLOAT8:
-		case F_AGG_MIN_DATE:
-		case F_AGG_MIN_TIME:
-		case F_AGG_MIN_TIMETZ:
-		case F_AGG_MIN_MONEY:
-		case F_AGG_MIN_TIMESTAMP:
-		case F_AGG_MIN_TIMESTAMPTZ:
-		case F_AGG_MIN_INTERVAL:
-		case F_AGG_MIN_TEXT:
-		case F_AGG_MIN_NUMERIC:
-		case F_AGG_MIN_BPCHAR:
-		case F_AGG_MIN_TID:
-		case F_AGG_MIN_ANYENUM:
-		case F_AGG_MIN_INET:
-		case F_AGG_MIN_PG_LSN:
+		case F_MIN_ANYARRAY:
+		case F_MIN_INT8:
+		case F_MIN_INT4:
+		case F_MIN_INT2:
+		case F_MIN_OID:
+		case F_MIN_FLOAT4:
+		case F_MIN_FLOAT8:
+		case F_MIN_DATE:
+		case F_MIN_TIME:
+		case F_MIN_TIMETZ:
+		case F_MIN_MONEY:
+		case F_MIN_TIMESTAMP:
+		case F_MIN_TIMESTAMPTZ:
+		case F_MIN_INTERVAL:
+		case F_MIN_TEXT:
+		case F_MIN_NUMERIC:
+		case F_MIN_BPCHAR:
+		case F_MIN_TID:
+		case F_MIN_ANYENUM:
+		case F_MIN_INET:
+		case F_MIN_PG_LSN:
 
 		/* max */
-		case F_AGG_MAX_ANYARRAY:
-		case F_AGG_MAX_INT8:
-		case F_AGG_MAX_INT4:
-		case F_AGG_MAX_INT2:
-		case F_AGG_MAX_OID:
-		case F_AGG_MAX_FLOAT4:
-		case F_AGG_MAX_FLOAT8:
-		case F_AGG_MAX_DATE:
-		case F_AGG_MAX_TIME:
-		case F_AGG_MAX_TIMETZ:
-		case F_AGG_MAX_MONEY:
-		case F_AGG_MAX_TIMESTAMP:
-		case F_AGG_MAX_TIMESTAMPTZ:
-		case F_AGG_MAX_INTERVAL:
-		case F_AGG_MAX_TEXT:
-		case F_AGG_MAX_NUMERIC:
-		case F_AGG_MAX_BPCHAR:
-		case F_AGG_MAX_TID:
-		case F_AGG_MAX_ANYENUM:
-		case F_AGG_MAX_INET:
-		case F_AGG_MAX_PG_LSN:
+		case F_MAX_ANYARRAY:
+		case F_MAX_INT8:
+		case F_MAX_INT4:
+		case F_MAX_INT2:
+		case F_MAX_OID:
+		case F_MAX_FLOAT4:
+		case F_MAX_FLOAT8:
+		case F_MAX_DATE:
+		case F_MAX_TIME:
+		case F_MAX_TIMETZ:
+		case F_MAX_MONEY:
+		case F_MAX_TIMESTAMP:
+		case F_MAX_TIMESTAMPTZ:
+		case F_MAX_INTERVAL:
+		case F_MAX_TEXT:
+		case F_MAX_NUMERIC:
+		case F_MAX_BPCHAR:
+		case F_MAX_TID:
+		case F_MAX_ANYENUM:
+		case F_MAX_INET:
+		case F_MAX_PG_LSN:
 			return true;
 
 		default:

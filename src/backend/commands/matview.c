@@ -2093,7 +2093,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 				 */
 				if (strcmp(aggname, "count") != 0)
 				{
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
@@ -2126,7 +2126,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 						ReleaseSysCache(type);
 
 					}
-					fn = makeFuncCall(list_make1(makeString("sum")), NIL, -1);
+					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
@@ -2174,7 +2174,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	}
 
 	/* Add count(*) for counting distinct tuples in views */
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 	fn->agg_star = true;
 	if (!query->groupClause && !query->hasAggs)
 		query->groupClause = transformDistinctClause(NULL, &query->targetList, query->sortClause, false);
@@ -2288,7 +2288,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				snprintf(columnName, sizeof(columnName), "__ivm_exists_count_%d__", *count);
 
 				/* add COUNT(*) for counting exists condition */
-				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 				fn->agg_star = true;
 				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
 				tle_count = makeTargetEntry((Expr *) fn_node,
@@ -2314,7 +2314,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
 
 
-				fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+				fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 				fn->agg_star = true;
 
 				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
@@ -2721,7 +2721,7 @@ rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph)
 
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
 
-	fn = makeFuncCall(list_make1(makeString("count")), NIL, -1);
+	fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 	fn->agg_distinct = true;
 
 	/* Rewrite join type for outer join delta */
@@ -2773,7 +2773,7 @@ rewrite_query_for_outerjoin(Query *query, int index, IvmMaintenanceGraph *graph)
 	}
 
 	/* Store all the count for each base table in a JSONB object */
-	fn = makeFuncCall(list_make1(makeString("json_build_object")), NIL, -1);
+	fn = makeFuncCall(list_make1(makeString("json_build_object")), NIL, COERCE_EXPLICIT_CALL, -1);
 	node = ParseFuncOrColumn(pstate, fn->funcname, args, NULL, fn, false, -1);
 	node = coerce_type(pstate, node, JSONOID, JSONBOID, -1, COERCION_EXPLICIT, COERCE_EXPLICIT_CAST, -1);
 	assign_expr_collations(pstate, node);
