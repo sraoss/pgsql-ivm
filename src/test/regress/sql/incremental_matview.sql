@@ -1705,6 +1705,9 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_ba
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values2 AS SELECT * FROM (values(1)) AS tmp;
 
+-- column of parent query specified in EXISTS clause must appear in the target list.
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm32 AS SELECT a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+
 -- base table which has row level security
 DROP USER IF EXISTS ivm_admin;
 DROP USER IF EXISTS ivm_user;
