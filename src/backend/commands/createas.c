@@ -32,6 +32,8 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "catalog/namespace.h"
+#include "catalog/index.h"
+#include "catalog/pg_constraint.h"
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
@@ -41,6 +43,7 @@
 #include "commands/matview.h"
 #include "commands/prepare.h"
 #include "commands/tablecmds.h"
+#include "commands/tablespace.h"
 #include "commands/trigger.h"
 #include "commands/view.h"
 #include "miscadmin.h"
@@ -100,6 +103,8 @@ static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
+static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
+static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
 
 /*
  * create_ctas_internal
@@ -423,7 +428,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		/* Restore userid and security context */
 		SetUserIdAndSecContext(save_userid, save_sec_context);
 
-
 		if (into->ivm)
 		{
 			Oid matviewOid = address.objectId;
@@ -435,6 +439,10 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			 */
 			SetMatViewIVMState(matviewRel, true);
 
+			/* Create an index on incremental maintainable materialized view, if possible */
+			CreateIndexOnIMMV((Query *)into->viewQuery, matviewRel);
+
+			/* Create triggers on incremental maintainable materialized view */
 			if (!into->skipData)
 			{
 				Assert(query_immv != NULL);
@@ -1500,4 +1508,263 @@ check_aggregate_supports_ivm(Oid aggfnoid)
 		default:
 			return false;
 	}
+}
+
+/*
+ * CreateindexOnIMMV
+ *
+ * Create a unique index on incremental maintainable materialized view.
+ * If the view definition query has a GROUP BY clause, the index is created
+ * on the columns of GROUP BY expressions. Otherwise, if the view contains
+ * all primary key attritubes of its base tables in the target list, the index
+ * is created on these attritubes. In other cases, no index is created.
+ */
+static void
+CreateIndexOnIMMV(Query *query, Relation matviewRel)
+{
+	Query *qry = (Query *) copyObject(query);
+	ListCell *lc;
+	IndexStmt  *index;
+	ObjectAddress address;
+	List *constraintList = NIL;
+	char		idxname[NAMEDATALEN];
+
+	snprintf(idxname, sizeof(idxname), "%s_index", RelationGetRelationName(matviewRel));
+
+	index = makeNode(IndexStmt);
+
+	index->unique = true;
+	index->primary = false;
+	index->isconstraint = false;
+	index->deferrable = false;
+	index->initdeferred = false;
+	index->idxname = idxname;
+	index->relation =
+		makeRangeVar(get_namespace_name(RelationGetNamespace(matviewRel)),
+					 pstrdup(RelationGetRelationName(matviewRel)),
+					 -1);
+	index->accessMethod = DEFAULT_INDEX_TYPE;
+	index->options = NIL;
+	index->tableSpace = get_tablespace_name(matviewRel->rd_rel->reltablespace);
+	index->whereClause = NULL;
+	index->indexParams = NIL;
+	index->indexIncludingParams = NIL;
+	index->excludeOpNames = NIL;
+	index->idxcomment = NULL;
+	index->indexOid = InvalidOid;
+	index->oldNode = InvalidOid;
+	index->oldCreateSubid = InvalidSubTransactionId;
+	index->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
+	index->transformed = true;
+	index->concurrent = false;
+	index->if_not_exists = false;
+
+
+	if (qry->groupClause)
+	{
+		/* create index on GROUP BY expression columns */
+		foreach(lc, qry->groupClause)
+		{
+			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, qry->targetList);
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+			IndexElem  *iparam;
+
+			iparam = makeNode(IndexElem);
+			iparam->name = pstrdup(NameStr(attr->attname));
+			iparam->expr = NULL;
+			iparam->indexcolname = NULL;
+			iparam->collation = NIL;
+			iparam->opclass = NIL;
+			iparam->opclassopts = NIL;
+			iparam->ordering = SORTBY_DEFAULT;
+			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+			index->indexParams = lappend(index->indexParams, iparam);
+		}
+	}
+	else
+	{
+		Bitmapset *key_attnos;
+
+		/* create index on the base tables' primary key columns */
+		key_attnos = get_primary_key_attnos_from_query(qry, &constraintList);
+		if (key_attnos)
+		{
+			foreach(lc, qry->targetList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+
+				if (bms_is_member(tle->resno - FirstLowInvalidHeapAttributeNumber, key_attnos))
+				{
+					IndexElem  *iparam;
+
+					iparam = makeNode(IndexElem);
+					iparam->name = pstrdup(NameStr(attr->attname));
+					iparam->expr = NULL;
+					iparam->indexcolname = NULL;
+					iparam->collation = NIL;
+					iparam->opclass = NIL;
+					iparam->opclassopts = NIL;
+					iparam->ordering = SORTBY_DEFAULT;
+					iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+					index->indexParams = lappend(index->indexParams, iparam);
+				}
+			}
+
+		}
+		else
+		{
+			/* create no index, just notice that an appropriate index is necessary for effcient IVM */
+			ereport(NOTICE,
+					(errmsg("could not create an index on materialized view \"%s\" automatically",
+							RelationGetRelationName(matviewRel)),
+					errhint("Create an index on the materialized view for effcient incremental maintenance.")));
+			return;
+		}
+	}
+
+	address = DefineIndex(RelationGetRelid(matviewRel),
+						  index,
+						  InvalidOid,
+						  InvalidOid,
+						  InvalidOid,
+						  false, true, false, false, true);
+
+	ereport(NOTICE,
+			(errmsg("created index \"%s\" on materialized view \"%s\"",
+					idxname, RelationGetRelationName(matviewRel))));
+
+
+	/*
+	 * Make dependencies so that the index is dropped if any base tables's
+	 * primary key is dropped.
+	 */
+	foreach(lc, constraintList)
+	{
+		Oid constraintOid = lfirst_oid(lc);
+		ObjectAddress	refaddr;
+
+		refaddr.classId = ConstraintRelationId;
+		refaddr.objectId = constraintOid;
+		refaddr.objectSubId = 0;
+
+		recordDependencyOn(&address, &refaddr, DEPENDENCY_NORMAL);
+	}
+}
+
+
+/*
+ * get_primary_key_attnos_from_query
+ *
+ * Identify the columns in base tables' primary keys in the target list.
+ *
+ * Returns a Bitmapset of the column attnos of the primary key's columns of
+ * tables that used in the query.  The attnos are offset by
+ * FirstLowInvalidHeapAttributeNumber as same as get_primary_key_attnos.
+ *
+ * If any table has no primary key or any primary key's columns is not in
+ * the target list, return NULL.  We also return NULL if any pkey constraint
+ * is deferrable.
+ *
+ * constraintList is set to a list of the OIDs of the pkey constraints.
+ */
+static Bitmapset *
+get_primary_key_attnos_from_query(Query *query, List **constraintList)
+{
+	List *key_attnos_list = NIL;
+	ListCell *lc;
+	int num_rte = list_length(query->rtable);
+	int i;
+	Bitmapset *keys = NULL;
+	Relids	rels_in_from;
+
+
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	/* convert CTEs to subqueries */
+	foreach (lc, query->cteList)
+	{
+		PlannerInfo root;
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (cte->cterefcount == 0)
+			continue;
+
+		root.parse = query;
+		inline_cte(&root, cte);
+	}
+	query->cteList = NIL;
+
+	/*
+	 * Collect primary key attributes from all tables used in query. The attributes
+	 * sets for each table are stored in key_attnos_list in order by RTE index.
+	 */
+	i = 1;
+	foreach(lc, query->rtable)
+	{
+		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
+		Bitmapset *key_attnos;
+
+		/* for subqueries, scan recursively */
+		if (r->rtekind == RTE_SUBQUERY)
+			key_attnos = get_primary_key_attnos_from_query(r->subquery, constraintList);
+
+		/* for tables, call get_primary_key_attnos */
+		else if (r->rtekind == RTE_RELATION)
+		{
+			Oid constraintOid;
+			key_attnos = get_primary_key_attnos(r->relid, false, &constraintOid);
+			*constraintList = lappend_oid(*constraintList, constraintOid);
+		}
+
+		/* If any table has no primary key or its pkey constraint is deferrable, return NULL. */
+		if (!key_attnos)
+			return NULL;
+
+		key_attnos_list = lappend(key_attnos_list, key_attnos);
+
+		/* finish the loop if we processed all RTE included in the original query */
+		if (i++ >= num_rte)
+			break;
+	}
+
+	/* Collect attnos that is derived primary key attributes from the target list */
+	i = 1;
+	foreach(lc, query->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) flatten_join_alias_vars(query, lfirst(lc));
+
+		if (IsA(tle->expr, Var))
+		{
+			Var *var = (Var*) tle->expr;
+			Bitmapset *attnos = list_nth(key_attnos_list, var->varno - 1);
+
+			if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber, attnos))
+			{
+				bms_del_member(attnos, var->varattno - FirstLowInvalidHeapAttributeNumber);
+				keys = bms_add_member(keys, i - FirstLowInvalidHeapAttributeNumber);
+			}
+		}
+		i++;
+	}
+
+	/*
+	 * If any primary key attribute that is derived from a table used in FROM clause
+	 * does not exist in the target, return NULL.
+	 */
+
+	rels_in_from = pull_varnos_of_level((Node *)query->jointree, 0);
+
+	i=1;
+	foreach(lc, key_attnos_list)
+	{
+		Bitmapset *bms = (Bitmapset *)lfirst(lc);
+		if (!bms_is_empty(bms) && bms_is_member(i, rels_in_from))
+			return NULL;
+		i++;
+	}
+
+	return keys;
 }
