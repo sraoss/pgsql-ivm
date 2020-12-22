@@ -50,7 +50,6 @@ AggStatePerPhase
 AggStatePerTrans
 AggStrategy
 Aggref
-AggrefExprState
 AlenState
 Alias
 AllocBlock
@@ -1025,6 +1024,7 @@ HeapScanDesc
 HeapTuple
 HeapTupleData
 HeapTupleFields
+HeapTupleForceOption
 HeapTupleHeader
 HeapTupleHeaderData
 HeapTupleTableSlot
@@ -1218,6 +1218,7 @@ LLVMJitHandle
 LLVMMemoryBufferRef
 LLVMModuleRef
 LLVMOrcJITStackRef
+LLVMOrcLookupStateRef
 LLVMOrcModuleHandle
 LLVMOrcTargetAddress
 LLVMPassManagerBuilderRef
@@ -1394,6 +1395,9 @@ MultiXactMember
 MultiXactOffset
 MultiXactStateData
 MultiXactStatus
+MultirangeIOData
+MultirangeParseState
+MultirangeType
 NDBOX
 NODE
 NUMCacheEntry
@@ -2391,8 +2395,8 @@ SubPlanState
 SubTransactionId
 SubXactCallback
 SubXactCallbackItem
-SubXactInfo
 SubXactEvent
+SubXactInfo
 SubplanResultRelHashElem
 SubqueryScan
 SubqueryScanPath
@@ -2503,6 +2507,7 @@ Tcl_Obj
 Tcl_Time
 TempNamespaceStatus
 TestDecodingData
+TestDecodingTxnData
 TestSpec
 TextFreq
 TextPositionState
@@ -3137,6 +3142,7 @@ mp_small
 mp_usmall
 mp_word
 mpz_t
+multirange_bsearch_comparison
 mxact
 mxtruncinfo
 needs_fmgr_hook_type
@@ -3177,6 +3183,9 @@ pg_conn_host_type
 pg_conv_map
 pg_crc32
 pg_crc32c
+pg_cryptohash_ctx
+pg_cryptohash_state
+pg_cryptohash_type
 pg_ctype_cache
 pg_enc
 pg_enc2gettext
@@ -3187,6 +3196,7 @@ pg_int64
 pg_local_to_utf_combined
 pg_locale_t
 pg_mb_radix_tree
+pg_md5_ctx
 pg_on_exit_callback
 pg_re_flags
 pg_saslprep_rc
@@ -3213,6 +3223,7 @@ pgpid_t
 pgsocket
 pgsql_thing_t
 pgssEntry
+pgssGlobalStats
 pgssHashKey
 pgssJumbleState
 pgssLocationLen
@@ -3596,4 +3607,3 @@ yyscan_t
 z_stream
 z_streamp
 zic_t
-HeapTupleForceOption

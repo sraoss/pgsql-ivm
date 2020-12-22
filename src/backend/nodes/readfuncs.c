@@ -615,6 +615,8 @@ _readAggref(void)
 	READ_CHAR_FIELD(aggkind);
 	READ_UINT_FIELD(agglevelsup);
 	READ_ENUM_FIELD(aggsplit, AggSplit);
+	READ_INT_FIELD(aggno);
+	READ_INT_FIELD(aggtransno);
 	READ_LOCATION_FIELD(location);
 
 	READ_DONE();
@@ -669,6 +671,7 @@ _readSubscriptingRef(void)
 
 	READ_OID_FIELD(refcontainertype);
 	READ_OID_FIELD(refelemtype);
+	READ_OID_FIELD(refrestype);
 	READ_INT_FIELD(reftypmod);
 	READ_OID_FIELD(refcollid);
 	READ_NODE_FIELD(refupperindexpr);

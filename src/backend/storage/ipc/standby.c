@@ -81,7 +81,6 @@ InitRecoveryTransactionEnvironment(void)
 	 * Initialize the hash table for tracking the list of locks held by each
 	 * transaction.
 	 */
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(TransactionId);
 	hash_ctl.entrysize = sizeof(RecoveryLockListsEntry);
 	RecoveryLockLists = hash_create("RecoveryLockLists",
@@ -520,7 +519,14 @@ ResolveRecoveryConflictWithBufferPin(void)
 		enable_timeouts(timeouts, 2);
 	}
 
-	/* Wait to be signaled by UnpinBuffer() */
+	/*
+	 * Wait to be signaled by UnpinBuffer().
+	 *
+	 * We assume that only UnpinBuffer() and the timeout requests established
+	 * above can wake us up here. WakeupRecovery() called by walreceiver or
+	 * SIGHUP signal handler, etc cannot do that because it uses the different
+	 * latch from that ProcWaitForSignal() waits on.
+	 */
 	ProcWaitForSignal(PG_WAIT_BUFFER_PIN);
 
 	/*

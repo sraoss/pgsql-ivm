@@ -39,6 +39,9 @@
 /* default selectivity estimate for range inequalities "A > b AND A < c" */
 #define DEFAULT_RANGE_INEQ_SEL	0.005
 
+/* default selectivity estimate for multirange inequalities "A > b AND A < c" */
+#define DEFAULT_MULTIRANGE_INEQ_SEL	0.005
+
 /* default selectivity estimate for pattern-match operators such as LIKE */
 #define DEFAULT_MATCH_SEL	0.005
 
@@ -200,7 +203,7 @@ extern void estimate_hash_bucket_stats(PlannerInfo *root,
 									   Node *hashkey, double nbuckets,
 									   Selectivity *mcv_freq,
 									   Selectivity *bucketsize_frac);
-extern double estimate_hashagg_tablesize(Path *path,
+extern double estimate_hashagg_tablesize(PlannerInfo *root, Path *path,
 										 const AggClauseCosts *agg_costs,
 										 double dNumGroups);
 

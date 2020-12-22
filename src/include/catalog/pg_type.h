@@ -101,15 +101,21 @@ CATALOG(pg_type,1247,TypeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(71,TypeRelati
 	Oid			typrelid BKI_DEFAULT(0) BKI_ARRAY_DEFAULT(0) BKI_LOOKUP(pg_class);
 
 	/*
-	 * If typelem is not 0 then it identifies another row in pg_type. The
-	 * current type can then be subscripted like an array yielding values of
-	 * type typelem. A non-zero typelem does not guarantee this type to be a
-	 * "real" array type; some ordinary fixed-length types can also be
-	 * subscripted (e.g., name, point). Variable-length types can *not* be
-	 * turned into pseudo-arrays like that. Hence, the way to determine
-	 * whether a type is a "true" array type is if:
-	 *
-	 * typelem != 0 and typlen == -1.
+	 * Type-specific subscripting handler.  If typsubscript is 0, it means
+	 * that this type doesn't support subscripting.  Note that various parts
+	 * of the system deem types to be "true" array types only if their
+	 * typsubscript is array_subscript_handler.
+	 */
+	regproc		typsubscript BKI_DEFAULT(-) BKI_ARRAY_DEFAULT(array_subscript_handler) BKI_LOOKUP(pg_proc);
+
+	/*
+	 * If typelem is not 0 then it identifies another row in pg_type, defining
+	 * the type yielded by subscripting.  This should be 0 if typsubscript is
+	 * 0.  However, it can be 0 when typsubscript isn't 0, if the handler
+	 * doesn't need typelem to determine the subscripting result type.  Note
+	 * that a typelem dependency is considered to imply physical containment
+	 * of the element type in this type; so DDL changes on the element type
+	 * might be restricted by the presence of this type.
 	 */
 	Oid			typelem BKI_DEFAULT(0) BKI_LOOKUP(pg_type);
 
@@ -270,6 +276,7 @@ DECLARE_UNIQUE_INDEX(pg_type_typname_nsp_index, 2704, on pg_type using btree(typ
 #define  TYPTYPE_COMPOSITE	'c' /* composite (e.g., table's rowtype) */
 #define  TYPTYPE_DOMAIN		'd' /* domain over another type */
 #define  TYPTYPE_ENUM		'e' /* enumerated type */
+#define  TYPTYPE_MULTIRANGE	'm' /* multirange type */
 #define  TYPTYPE_PSEUDO		'p' /* pseudo-type */
 #define  TYPTYPE_RANGE		'r' /* range type */
 
@@ -311,13 +318,20 @@ DECLARE_UNIQUE_INDEX(pg_type_typname_nsp_index, 2704, on pg_type using btree(typ
 	 (typid) == ANYARRAYOID || \
 	 (typid) == ANYNONARRAYOID || \
 	 (typid) == ANYENUMOID || \
-	 (typid) == ANYRANGEOID)
+	 (typid) == ANYRANGEOID || \
+	 (typid) == ANYMULTIRANGEOID)
 
 #define IsPolymorphicTypeFamily2(typid)  \
 	((typid) == ANYCOMPATIBLEOID || \
 	 (typid) == ANYCOMPATIBLEARRAYOID || \
 	 (typid) == ANYCOMPATIBLENONARRAYOID || \
-	 (typid) == ANYCOMPATIBLERANGEOID)
+	 (typid) == ANYCOMPATIBLERANGEOID || \
+	 (typid) == ANYCOMPATIBLEMULTIRANGEOID)
+
+/* Is this a "true" array type?  (Requires fmgroids.h) */
+#define IsTrueArrayType(typeForm)  \
+	(OidIsValid((typeForm)->typelem) && \
+	 (typeForm)->typsubscript == F_ARRAY_SUBSCRIPT_HANDLER)
 
 /*
  * Backwards compatibility for ancient random spellings of pg_type OID macros.
@@ -351,6 +365,7 @@ extern ObjectAddress TypeCreate(Oid newTypeOid,
 								Oid typmodinProcedure,
 								Oid typmodoutProcedure,
 								Oid analyzeProcedure,
+								Oid subscriptProcedure,
 								Oid elementType,
 								bool isImplicitArray,
 								Oid arrayType,
@@ -384,5 +399,8 @@ extern char *makeArrayTypeName(const char *typeName, Oid typeNamespace);
 
 extern bool moveArrayTypeName(Oid typeOid, const char *typeName,
 							  Oid typeNamespace);
+
+extern char *makeMultirangeTypeName(const char *rangeTypeName,
+									Oid typeNamespace);
 
 #endif							/* PG_TYPE_H */

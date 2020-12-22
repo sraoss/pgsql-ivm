@@ -81,6 +81,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
+#include "utils/timestamp.h"
 
 PG_MODULE_MAGIC;
 
@@ -98,7 +99,7 @@ PG_MODULE_MAGIC;
 #define PGSS_TEXT_FILE	PG_STAT_TMP_DIR "/pgss_query_texts.stat"
 
 /* Magic number identifying the stats file format */
-static const uint32 PGSS_FILE_HEADER = 0x20171004;
+static const uint32 PGSS_FILE_HEADER = 0x20201218;
 
 /* PostgreSQL major version number, changes in which invalidate all entries */
 static const uint32 PGSS_PG_MAJOR_VERSION = PG_VERSION_NUM / 100;
@@ -194,6 +195,15 @@ typedef struct Counters
 } Counters;
 
 /*
+ * Global statistics for pg_stat_statements
+ */
+typedef struct pgssGlobalStats
+{
+	int64		dealloc;		/* # of times entries were deallocated */
+	TimestampTz stats_reset;	/* timestamp with all stats reset */
+} pgssGlobalStats;
+
+/*
  * Statistics per statement
  *
  * Note: in event of a failure in garbage collection of the query text file,
@@ -222,6 +232,7 @@ typedef struct pgssSharedState
 	Size		extent;			/* current extent of query file */
 	int			n_writers;		/* number of active writers to query file */
 	int			gc_count;		/* query file garbage collection cycle count */
+	pgssGlobalStats stats;		/* global statistics for pgss */
 } pgssSharedState;
 
 /*
@@ -327,6 +338,7 @@ PG_FUNCTION_INFO_V1(pg_stat_statements_1_2);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_3);
 PG_FUNCTION_INFO_V1(pg_stat_statements_1_8);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
+PG_FUNCTION_INFO_V1(pg_stat_statements_info);
 
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
@@ -554,9 +566,10 @@ pgss_shmem_startup(void)
 		pgss->extent = 0;
 		pgss->n_writers = 0;
 		pgss->gc_count = 0;
+		pgss->stats.dealloc = 0;
+		pgss->stats.stats_reset = GetCurrentTimestamp();
 	}
 
-	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(pgssHashKey);
 	info.entrysize = sizeof(pgssEntry);
 	pgss_hash = ShmemInitHash("pg_stat_statements hash",
@@ -672,6 +685,10 @@ pgss_shmem_startup(void)
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
 	}
+
+	/* Read global statistics for pg_stat_statements */
+	if (fread(&pgss->stats, sizeof(pgssGlobalStats), 1, file) != 1)
+		goto read_error;
 
 	pfree(buffer);
 	FreeFile(file);
@@ -793,6 +810,10 @@ pgss_shmem_shutdown(int code, Datum arg)
 			goto error;
 		}
 	}
+
+	/* Dump global statistics for pg_stat_statements */
+	if (fwrite(&pgss->stats, sizeof(pgssGlobalStats), 1, file) != 1)
+		goto error;
 
 	free(qbuffer);
 	qbuffer = NULL;
@@ -1171,13 +1192,14 @@ pgss_ProcessUtility(PlannedStmt *pstmt, const char *queryString,
 		INSTR_TIME_SUBTRACT(duration, start);
 
 		/*
-		 * Track the total number of rows retrieved or affected by
-		 * the utility statements of COPY, FETCH, CREATE TABLE AS,
-		 * CREATE MATERIALIZED VIEW and SELECT INTO.
+		 * Track the total number of rows retrieved or affected by the utility
+		 * statements of COPY, FETCH, CREATE TABLE AS, CREATE MATERIALIZED
+		 * VIEW, REFRESH MATERIALIZED VIEW and SELECT INTO.
 		 */
 		rows = (qc && (qc->commandTag == CMDTAG_COPY ||
 					   qc->commandTag == CMDTAG_FETCH ||
-					   qc->commandTag == CMDTAG_SELECT)) ?
+					   qc->commandTag == CMDTAG_SELECT ||
+					   qc->commandTag == CMDTAG_REFRESH_MATERIALIZED_VIEW)) ?
 			qc->nprocessed : 0;
 
 		/* calc differences of buffer counters. */
@@ -1862,6 +1884,42 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 	tuplestore_donestoring(tupstore);
 }
 
+/* Number of output arguments (columns) for pg_stat_statements_info */
+#define PG_STAT_STATEMENTS_INFO_COLS	2
+
+/*
+ * Return statistics of pg_stat_statements.
+ */
+Datum
+pg_stat_statements_info(PG_FUNCTION_ARGS)
+{
+	pgssGlobalStats stats;
+	TupleDesc	tupdesc;
+	Datum		values[PG_STAT_STATEMENTS_INFO_COLS];
+	bool		nulls[PG_STAT_STATEMENTS_INFO_COLS];
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	MemSet(values, 0, sizeof(values));
+	MemSet(nulls, 0, sizeof(nulls));
+
+	/* Read global statistics for pg_stat_statements */
+	{
+		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
+
+		SpinLockAcquire(&s->mutex);
+		stats = s->stats;
+		SpinLockRelease(&s->mutex);
+	}
+
+	values[0] = Int64GetDatum(stats.dealloc);
+	values[1] = TimestampTzGetDatum(stats.stats_reset);
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
 /*
  * Estimate shared memory space needed.
  */
@@ -2017,6 +2075,15 @@ entry_dealloc(void)
 	}
 
 	pfree(entries);
+
+	/* Increment the number of times entries are deallocated */
+	{
+		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
+
+		SpinLockAcquire(&s->mutex);
+		s->stats.dealloc += 1;
+		SpinLockRelease(&s->mutex);
+	}
 }
 
 /*
@@ -2508,6 +2575,20 @@ entry_reset(Oid userid, Oid dbid, uint64 queryid)
 	/* All entries are removed? */
 	if (num_entries != num_remove)
 		goto release_lock;
+
+	/*
+	 * Reset global statistics for pg_stat_statements since all entries are
+	 * removed.
+	 */
+	{
+		volatile pgssSharedState *s = (volatile pgssSharedState *) pgss;
+		TimestampTz stats_reset = GetCurrentTimestamp();
+
+		SpinLockAcquire(&s->mutex);
+		s->stats.dealloc = 0;
+		s->stats.stats_reset = stats_reset;
+		SpinLockRelease(&s->mutex);
+	}
 
 	/*
 	 * Write new empty query file, perhaps even creating a new one to recover

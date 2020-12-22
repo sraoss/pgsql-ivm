@@ -184,6 +184,8 @@ normal_rand(PG_FUNCTION_ARGS)
 	/* stuff done only on the first call of the function */
 	if (SRF_IS_FIRSTCALL())
 	{
+		int32		num_tuples;
+
 		/* create a function context for cross-call persistence */
 		funcctx = SRF_FIRSTCALL_INIT();
 
@@ -193,7 +195,12 @@ normal_rand(PG_FUNCTION_ARGS)
 		oldcontext = MemoryContextSwitchTo(funcctx->multi_call_memory_ctx);
 
 		/* total number of tuples to be returned */
-		funcctx->max_calls = PG_GETARG_UINT32(0);
+		num_tuples = PG_GETARG_INT32(0);
+		if (num_tuples < 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("number of rows cannot be negative")));
+		funcctx->max_calls = num_tuples;
 
 		/* allocate memory for user context */
 		fctx = (normal_rand_fctx *) palloc(sizeof(normal_rand_fctx));
@@ -707,7 +714,6 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	MemoryContext SPIcontext;
 
 	/* initialize the category hash table */
-	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = MAX_CATNAME_LEN;
 	ctl.entrysize = sizeof(crosstab_HashEnt);
 	ctl.hcxt = per_query_ctx;
@@ -719,7 +725,7 @@ load_categories_hash(char *cats_sql, MemoryContext per_query_ctx)
 	crosstab_hash = hash_create("crosstab hash",
 								INIT_CATS,
 								&ctl,
-								HASH_ELEM | HASH_CONTEXT);
+								HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 
 	/* Connect to SPI manager */
 	if ((ret = SPI_connect()) < 0)

@@ -402,6 +402,7 @@ ReorderBufferGetTXN(ReorderBuffer *rb)
 
 	/* InvalidCommandId is not zero, so set it explicitly */
 	txn->command_id = InvalidCommandId;
+	txn->output_plugin_private = NULL;
 
 	return txn;
 }
@@ -782,7 +783,8 @@ ReorderBufferQueueChange(ReorderBuffer *rb, TransactionId xid, XLogRecPtr lsn,
 }
 
 /*
- * Queue message into a transaction so it can be processed upon commit.
+ * A transactional message is queued to be processed upon commit and a
+ * non-transactional message gets processed immediately.
  */
 void
 ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
@@ -1618,8 +1620,6 @@ ReorderBufferBuildTupleCidHash(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	if (!rbtxn_has_catalog_changes(txn) || dlist_is_empty(&txn->tuplecids))
 		return;
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
-
 	hash_ctl.keysize = sizeof(ReorderBufferTupleCidKey);
 	hash_ctl.entrysize = sizeof(ReorderBufferTupleCidEnt);
 	hash_ctl.hcxt = rb->context;
@@ -1890,6 +1890,8 @@ ReorderBufferSaveTXNSnapshot(ReorderBuffer *rb, ReorderBufferTXN *txn,
  * Helper function for ReorderBufferProcessTXN to handle the concurrent
  * abort of the streaming transaction.  This resets the TXN such that it
  * can be used to stream the remaining data of transaction being processed.
+ * This can happen when the subtransaction is aborted and we still want to
+ * continue processing the main or other subtransactions data.
  */
 static void
 ReorderBufferResetTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
@@ -3460,6 +3462,10 @@ ReorderBufferCanStartStreaming(ReorderBuffer *rb)
 	LogicalDecodingContext *ctx = rb->private_data;
 	SnapBuild  *builder = ctx->snapshot_builder;
 
+	/* We can't start streaming unless a consistent state is reached. */
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_CONSISTENT)
+		return false;
+
 	/*
 	 * We can't start streaming immediately even if the streaming is enabled
 	 * because we previously decoded this transaction and now just are
@@ -3467,11 +3473,7 @@ ReorderBufferCanStartStreaming(ReorderBuffer *rb)
 	 */
 	if (ReorderBufferCanStream(rb) &&
 		!SnapBuildXactNeedsSkip(builder, ctx->reader->EndRecPtr))
-	{
-		/* We must have a consistent snapshot by this time */
-		Assert(SnapBuildCurrentState(builder) == SNAPBUILD_CONSISTENT);
 		return true;
-	}
 
 	return false;
 }
@@ -4113,7 +4115,6 @@ ReorderBufferToastInitHash(ReorderBuffer *rb, ReorderBufferTXN *txn)
 
 	Assert(txn->toast_hash == NULL);
 
-	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(ReorderBufferToastEnt);
 	hash_ctl.hcxt = rb->context;

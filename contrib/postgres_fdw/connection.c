@@ -119,14 +119,11 @@ GetConnection(UserMapping *user, bool will_prep_stmt)
 	{
 		HASHCTL		ctl;
 
-		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(ConnCacheKey);
 		ctl.entrysize = sizeof(ConnCacheEntry);
-		/* allocate ConnectionHash in the cache context */
-		ctl.hcxt = CacheMemoryContext;
 		ConnectionHash = hash_create("postgres_fdw connections", 8,
 									 &ctl,
-									 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+									 HASH_ELEM | HASH_BLOBS);
 
 		/*
 		 * Register some callback functions that manage connection cleanup.
@@ -777,6 +774,10 @@ pgfdw_report_error(int elevel, PGresult *res, PGconn *conn,
 
 /*
  * pgfdw_xact_callback --- cleanup at main-transaction end.
+ *
+ * This runs just late enough that it must not enter user-defined code
+ * locally.  (Entering such code on the remote side is fine.  Its remote
+ * COMMIT TRANSACTION may run deferred triggers.)
  */
 static void
 pgfdw_xact_callback(XactEvent event, void *arg)
@@ -1267,20 +1268,15 @@ pgfdw_get_cleanup_result(PGconn *conn, TimestampTz endtime, PGresult **result)
 			{
 				int			wc;
 				TimestampTz now = GetCurrentTimestamp();
-				long		secs;
-				int			microsecs;
 				long		cur_timeout;
 
 				/* If timeout has expired, give up, else get sleep time. */
-				if (now >= endtime)
+				cur_timeout = TimestampDifferenceMilliseconds(now, endtime);
+				if (cur_timeout <= 0)
 				{
 					timed_out = true;
 					goto exit;
 				}
-				TimestampDifference(now, endtime, &secs, &microsecs);
-
-				/* To protect against clock skew, limit sleep to one minute. */
-				cur_timeout = Min(60000, secs * USECS_PER_SEC + microsecs);
 
 				/* Sleep until there's something to do */
 				wc = WaitLatchOrSocket(MyLatch,

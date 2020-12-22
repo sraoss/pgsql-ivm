@@ -496,7 +496,7 @@ SendTimeLineHistory(TimeLineHistoryCmd *cmd)
 	pq_sendstring(&buf, "content"); /* col name */
 	pq_sendint32(&buf, 0);		/* table oid */
 	pq_sendint16(&buf, 0);		/* attnum */
-	pq_sendint32(&buf, BYTEAOID);	/* type oid */
+	pq_sendint32(&buf, TEXTOID);	/* type oid */
 	pq_sendint16(&buf, -1);		/* typlen */
 	pq_sendint32(&buf, 0);		/* typmod */
 	pq_sendint16(&buf, 0);		/* format code */
@@ -1719,7 +1719,12 @@ ProcessRepliesIfAny(void)
 
 	last_processing = GetCurrentTimestamp();
 
-	for (;;)
+	/*
+	 * If we already received a CopyDone from the frontend, any subsequent
+	 * message is the beginning of a new command, and should be processed in
+	 * the main processing loop.
+	 */
+	while (!streamingDoneReceiving)
 	{
 		pq_startmsgread();
 		r = pq_getbyte_if_available(&firstchar);
@@ -1747,19 +1752,6 @@ ProcessRepliesIfAny(void)
 					 errmsg("unexpected EOF on standby connection")));
 			proc_exit(0);
 		}
-
-		/*
-		 * If we already received a CopyDone from the frontend, the frontend
-		 * should not send us anything until we've closed our end of the COPY.
-		 * XXX: In theory, the frontend could already send the next command
-		 * before receiving the CopyDone, but libpq doesn't currently allow
-		 * that.
-		 */
-		if (streamingDoneReceiving && firstchar != 'X')
-			ereport(FATAL,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("unexpected standby message type \"%c\", after receiving CopyDone",
-							firstchar)));
 
 		/* Handle the very limited subset of commands expected in this phase */
 		switch (firstchar)
@@ -1900,7 +1892,7 @@ ProcessStandbyReplyMessage(void)
 	replyTime = pq_getmsgint64(&reply_message);
 	replyRequested = pq_getmsgbyte(&reply_message);
 
-	if (log_min_messages <= DEBUG2)
+	if (message_level_is_interesting(DEBUG2))
 	{
 		char	   *replyTimeStr;
 
@@ -2082,7 +2074,7 @@ ProcessStandbyHSFeedbackMessage(void)
 	feedbackCatalogXmin = pq_getmsgint(&reply_message, 4);
 	feedbackCatalogEpoch = pq_getmsgint(&reply_message, 4);
 
-	if (log_min_messages <= DEBUG2)
+	if (message_level_is_interesting(DEBUG2))
 	{
 		char	   *replyTimeStr;
 
@@ -2194,8 +2186,6 @@ WalSndComputeSleeptime(TimestampTz now)
 	if (wal_sender_timeout > 0 && last_reply_timestamp > 0)
 	{
 		TimestampTz wakeup_time;
-		long		sec_to_timeout;
-		int			microsec_to_timeout;
 
 		/*
 		 * At the latest stop sleeping once wal_sender_timeout has been
@@ -2214,11 +2204,7 @@ WalSndComputeSleeptime(TimestampTz now)
 													  wal_sender_timeout / 2);
 
 		/* Compute relative time until wakeup. */
-		TimestampDifference(now, wakeup_time,
-							&sec_to_timeout, &microsec_to_timeout);
-
-		sleeptime = sec_to_timeout * 1000 +
-			microsec_to_timeout / 1000;
+		sleeptime = TimestampDifferenceMilliseconds(now, wakeup_time);
 	}
 
 	return sleeptime;
@@ -2368,8 +2354,10 @@ WalSndLoop(WalSndSendDataCallback send_data)
 			long		sleeptime;
 			int			wakeEvents;
 
-			wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT |
-				WL_SOCKET_READABLE;
+			wakeEvents = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT;
+
+			if (!streamingDoneReceiving)
+				wakeEvents |= WL_SOCKET_READABLE;
 
 			/*
 			 * Use fresh timestamp, not last_processing, to reduce the chance

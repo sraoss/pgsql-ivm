@@ -372,7 +372,6 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 	{
 		HASHCTL		ctl;
 
-		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(struct tablesync_start_time_mapping);
 		last_start_times = hash_create("Logical replication table sync worker start times",
@@ -749,7 +748,7 @@ copy_table(Relation rel)
 	LogicalRepRelation lrel;
 	WalRcvExecResult *res;
 	StringInfoData cmd;
-	CopyState	cstate;
+	CopyFromState cstate;
 	List	   *attnamelist;
 	ParseState *pstate;
 
@@ -800,7 +799,7 @@ copy_table(Relation rel)
 										 NULL, false, false);
 
 	attnamelist = make_copy_attnamelist(relmapentry);
-	cstate = BeginCopyFrom(pstate, rel, NULL, false, copy_read_data, attnamelist, NIL);
+	cstate = BeginCopyFrom(pstate, rel, NULL, NULL, false, copy_read_data, attnamelist, NIL);
 
 	/* Do the copy */
 	(void) CopyFrom(cstate);

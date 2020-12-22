@@ -26,6 +26,7 @@
 #include "parser/parse_type.h"
 #include "plpgsql.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -514,6 +515,8 @@ do_compile(FunctionCallInfo fcinfo,
 					else if (rettypeid == ANYRANGEOID ||
 							 rettypeid == ANYCOMPATIBLERANGEOID)
 						rettypeid = INT4RANGEOID;
+					else if (rettypeid == ANYMULTIRANGEOID)
+						rettypeid = INT4MULTIRANGEOID;
 					else		/* ANYELEMENT or ANYNONARRAY or ANYCOMPATIBLE */
 						rettypeid = INT4OID;
 					/* XXX what could we use for ANYENUM? */
@@ -2108,6 +2111,7 @@ build_datatype(HeapTuple typeTup, int32 typmod,
 		case TYPTYPE_BASE:
 		case TYPTYPE_ENUM:
 		case TYPTYPE_RANGE:
+		case TYPTYPE_MULTIRANGE:
 			typ->ttype = PLPGSQL_TTYPE_SCALAR;
 			break;
 		case TYPTYPE_COMPOSITE:
@@ -2144,8 +2148,7 @@ build_datatype(HeapTuple typeTup, int32 typmod,
 		 * This test should include what get_element_type() checks.  We also
 		 * disallow non-toastable array types (i.e. oidvector and int2vector).
 		 */
-		typ->typisarray = (typeStruct->typlen == -1 &&
-						   OidIsValid(typeStruct->typelem) &&
+		typ->typisarray = (IsTrueArrayType(typeStruct) &&
 						   typeStruct->typstorage != TYPSTORAGE_PLAIN);
 	}
 	else if (typeStruct->typtype == TYPTYPE_DOMAIN)
@@ -2526,6 +2529,9 @@ plpgsql_resolve_polymorphic_argtypes(int numargs,
 				case ANYCOMPATIBLERANGEOID:
 					argtypes[i] = INT4RANGEOID;
 					break;
+				case ANYMULTIRANGEOID:
+					argtypes[i] = INT4MULTIRANGEOID;
+					break;
 				default:
 					break;
 			}
@@ -2567,7 +2573,6 @@ plpgsql_HashTableInit(void)
 	/* don't allow double-initialization */
 	Assert(plpgsql_HashTable == NULL);
 
-	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(PLpgSQL_func_hashkey);
 	ctl.entrysize = sizeof(plpgsql_HashEnt);
 	plpgsql_HashTable = hash_create("PLpgSQL function hash",

@@ -76,6 +76,8 @@
   opfmethod => 'hash', opfname => 'oidvector_ops' },
 { oid => '2994',
   opfmethod => 'btree', opfname => 'record_ops' },
+{ oid => '9611',
+  opfmethod => 'hash', opfname => 'record_ops' },
 { oid => '3194',
   opfmethod => 'btree', opfname => 'record_image_ops' },
 { oid => '1994', oid_symbol => 'TEXT_BTREE_FAM_OID',
@@ -230,5 +232,9 @@
   opfmethod => 'spgist', opfname => 'box_ops' },
 { oid => '5008',
   opfmethod => 'spgist', opfname => 'poly_ops' },
+{ oid => '4199',
+  opfmethod => 'btree', opfname => 'multirange_ops' },
+{ oid => '4225',
+  opfmethod => 'hash', opfname => 'multirange_ops' },
 
 ]

@@ -26,6 +26,7 @@
 #include "miscadmin.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/hsearch.h"
 #include "utils/json.h"
 #include "utils/jsonb.h"
@@ -3011,7 +3012,7 @@ prepare_column_cache(ColumnIOData *column,
 		column->io.composite.base_typmod = typmod;
 		column->io.composite.domain_info = NULL;
 	}
-	else if (type->typlen == -1 && OidIsValid(type->typelem))
+	else if (IsTrueArrayType(type))
 	{
 		column->typcat = TYPECAT_ARRAY;
 		column->io.array.element_info = MemoryContextAllocZero(mcxt,
@@ -3438,14 +3439,13 @@ get_json_object_as_hash(char *json, int len, const char *funcname)
 	JsonLexContext *lex = makeJsonLexContextCstringLen(json, len, GetDatabaseEncoding(), true);
 	JsonSemAction *sem;
 
-	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(JsonHashEntry);
 	ctl.hcxt = CurrentMemoryContext;
 	tab = hash_create("json object hashtable",
 					  100,
 					  &ctl,
-					  HASH_ELEM | HASH_CONTEXT);
+					  HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 
 	state = palloc0(sizeof(JHashState));
 	sem = palloc0(sizeof(JsonSemAction));
@@ -3830,14 +3830,13 @@ populate_recordset_object_start(void *state)
 		return;
 
 	/* Object at level 1: set up a new hash table for this object */
-	memset(&ctl, 0, sizeof(ctl));
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(JsonHashEntry);
 	ctl.hcxt = CurrentMemoryContext;
 	_state->json_hash = hash_create("json object hashtable",
 									100,
 									&ctl,
-									HASH_ELEM | HASH_CONTEXT);
+									HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
 
 static void

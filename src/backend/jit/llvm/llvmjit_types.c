@@ -48,6 +48,9 @@
 PGFunction	TypePGFunction;
 size_t		TypeSizeT;
 bool		TypeStorageBool;
+ExprStateEvalFunc TypeExprStateEvalFunc;
+ExecEvalSubroutine TypeExecEvalSubroutine;
+ExecEvalBoolSubroutine TypeExecEvalBoolSubroutine;
 
 NullableDatum StructNullableDatum;
 AggState	StructAggState;
@@ -124,10 +127,6 @@ void	   *referenced_functions[] =
 	ExecEvalSQLValueFunction,
 	ExecEvalScalarArrayOp,
 	ExecEvalSubPlan,
-	ExecEvalSubscriptingRef,
-	ExecEvalSubscriptingRefAssign,
-	ExecEvalSubscriptingRefFetch,
-	ExecEvalSubscriptingRefOld,
 	ExecEvalSysVar,
 	ExecEvalWholeRowVar,
 	ExecEvalXmlExpr,
