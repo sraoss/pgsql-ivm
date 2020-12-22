@@ -1562,11 +1562,35 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 
 	if (qry->groupClause)
 	{
-		/* create index on GROUP BY expression columns */
+		/* create unique constraint on GROUP BY expression columns */
 		foreach(lc, qry->groupClause)
 		{
 			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
 			TargetEntry *tle = get_sortgroupclause_tle(scl, qry->targetList);
+			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+			IndexElem  *iparam;
+
+			iparam = makeNode(IndexElem);
+			iparam->name = pstrdup(NameStr(attr->attname));
+			iparam->expr = NULL;
+			iparam->indexcolname = NULL;
+			iparam->collation = NIL;
+			iparam->opclass = NIL;
+			iparam->opclassopts = NIL;
+			iparam->ordering = SORTBY_DEFAULT;
+			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+			index->indexParams = lappend(index->indexParams, iparam);
+		}
+
+		index->isconstraint = true;
+	}
+	else if (qry->distinctClause)
+	{
+		/* create unique constraint on all columns */
+		index->isconstraint = true;
+		foreach(lc, qry->targetList)
+		{
+			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
 			IndexElem  *iparam;
 
