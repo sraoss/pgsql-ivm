@@ -1283,37 +1283,50 @@ Datum
 IVM_immediate_before(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
-	char   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
-	Oid		matviewOid;
+	char	   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
+	Oid			matviewOid;
+	Relation	matviewRel;
 	MV_TriggerHashEntry *entry;
 	bool	found;
+	Query	*query;
+	RangeTblEntry *rte;
 
 	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
 
-	/*
-	 * Wait for concurrent transactions which update this materialized view at
-	 * READ COMMITED. This is needed to see changes committed in other
-	 * transactions. No wait and raise an error at REPEATABLE READ or
-	 * SERIALIZABLE to prevent update anomalies of matviews.
-	 * XXX: dead-lock is possible here.
-	 */
-	if (!IsolationUsesXactSnapshot())
-		LockRelationOid(matviewOid, ExclusiveLock);
-	else if (!ConditionalLockRelationOid(matviewOid, ExclusiveLock))
-	{
-		/* try to throw error by name; relation could be deleted... */
-		char	   *relname = get_rel_name(matviewOid);
+	matviewRel = table_open(matviewOid, RowExclusiveLock);
+	query = get_matview_query(matviewRel);
+	rte = list_nth(query->rtable, PRS2_NEW_VARNO);
 
-		if (!relname)
+	/* If the view has only one table, we can use a weaker lock. */
+	if (list_length(query->rtable) > PRS2_NEW_VARNO + 1 &&
+		rte->rtekind != RTE_RELATION)
+	{
+		/*
+		 * Wait for concurrent transactions which update this materialized view at
+		 * READ COMMITED. This is needed to see changes committed in other
+		 * transactions. No wait and raise an error at REPEATABLE READ or
+		 * SERIALIZABLE to prevent update anomalies of matviews.
+		 * XXX: dead-lock is possible here.
+		 */
+		if (!IsolationUsesXactSnapshot())
+			LockRelationOid(matviewOid, ExclusiveLock);
+		else if (!ConditionalLockRelationOid(matviewOid, ExclusiveLock))
+		{
+			/* try to throw error by name; relation could be deleted... */
+			char	   *relname = get_rel_name(matviewOid);
+
+			if (!relname)
+				ereport(ERROR,
+						(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
+						errmsg("could not obtain lock on materialized view during incremental maintenance")));
+
 			ereport(ERROR,
 					(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-					 errmsg("could not obtain lock on materialized view during incremental maintenance")));
-
-		ereport(ERROR,
-				(errcode(ERRCODE_LOCK_NOT_AVAILABLE),
-				 errmsg("could not obtain lock on materialized view \"%s\" during incremental maintenance",
-						relname)));
+					errmsg("could not obtain lock on materialized view \"%s\" during incremental maintenance",
+							relname)));
+		}
 	}
+	table_close(matviewRel, NoLock);
 
 	/*
 	 * On the first call initialize the hashtable
@@ -1736,7 +1749,7 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 	if (rte_path == NIL)
 		register_delta_ENRs(pstate, query, tables);
 
-	// XXX: Is necessary? Is this right timing?
+	/* XXX: Is necessary? Is this right timing? */
 	AcquireRewriteLocks(query, true, false);
 
 	/* convert CTEs to subqueries */
