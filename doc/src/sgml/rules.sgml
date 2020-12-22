@@ -1142,6 +1142,8 @@ CREATE <emphasis>INCREMENTAL</emphasis> MATERIALIZED VIEW mymatview AS SELECT * 
     (<acronym>IMMV</acronym>).
 <programlisting>
 postgres=# CREATE INCREMENTAL MATERIALIZED VIEW m AS SELECT * FROM t0;
+NOTICE:  could not create an index on materialized view "m" automatically
+HINT:  Create an index on the materialized view for effcient incremental maintenance.
 SELECT 3
 postgres=# SELECT * FROM m;
  i
@@ -1162,7 +1164,10 @@ postgres=# SELECT * FROM m; -- automatically updated
  4
 (4 rows)
 </programlisting>
-    <acronym>IMMV</acronym>s can have hidden columns which are added
+</para>
+
+<para>
+    Some <acronym>IMMV</acronym>s have hidden columns which are added
     automatically when a materialized view is created. Their name starts
     with <literal>__ivm_</literal> and they contain information required
     for maintaining the <acronym>IMMV</acronym>. Such columns are not visible
@@ -1174,26 +1179,23 @@ postgres=# SELECT * FROM m; -- automatically updated
 
 <para>
     In general, <acronym>IMMV</acronym>s allow faster updates of materialized
-    views at the price of slower updates to their base tables because triggers will
-    be invoked and the view is updated in triggers per modification statement.
-    For example, here are two materialized views based on the same view
-    definition but one is a normal materialized view and the other is an
-    <acronym>IMMV</acronym>:
+    views at the price of slower updates to their base tables. Updates of
+    <acronym>IMMV</acronym> is slower because triggers will be invoked and the
+    view is updated in triggers per modification statement.
+</para>
+
+<para>
+    For example, suppose a normal materialized view defined as below:
 
 <programlisting>
-CREATE MATERIALIZED VIEW mv_normal AS
-  SELECT aid, bid, abalance, bbalance
-  FROM pgbench_accounts JOIN pgbench_branches USING(bid);
-
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm AS
-  SELECT aid, bid, abalance, bbalance
-  FROM pgbench_accounts JOIN pgbench_branches USING(bid);
-
-CREATE INDEX ON mv_ivm(aid,bid);
+test=# CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm AS
+        SELECT a.aid, b.bid, a.abalance, b.bbalance
+        FROM pgbench_accounts a JOIN pgbench_branches b USING(bid);
+SELECT 10000000
 
 </programlisting>
 
-   Updating a tuple in the normal materialized view is rapid but the
+    Updating a tuple in a base table of this materialized view is rapid but the
    <command>REFRESH MATERIALIZED VIEW</command> command on this view takes a long time:
 
 <programlisting>
@@ -1205,11 +1207,23 @@ test=# REFRESH MATERIALIZED VIEW mv_normal ;
 REFRESH MATERIALIZED VIEW
 Time: 33533.952 ms (00:33.534)
 </programlisting>
+</para>
 
-    On the other hand, updating a tuple in <acronym>IMMV</acronym> takes
-    more than the normal view, but its content is updated automatically
-    and this is faster than the <command>REFRESH MATERIALIZED VIEW</command>
-    command.
+<para>
+    On the other hand, after creating <acronym>IMMV</acronym> with the same view
+    definition as below:
+
+<programlisting>
+test=# CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm AS
+        SELECT a.aid, b.bid, a.abalance, b.bbalance
+        FROM pgbench_accounts a JOIN pgbench_branches b USING(bid);
+test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
+NOTICE:  created index "mv_ivm_index" on materialized view "mv_ivm"
+</programlisting>
+
+    updating a tuple in a base table takes more than the normal view,
+    but its content is updated automatically and this is faster than the
+    <command>REFRESH MATERIALIZED VIEW</command> command.
 
 <programlisting>
 test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
@@ -1223,8 +1237,26 @@ Time: 13.068 ms
     Appropriate indexes on <acronym>IMMV</acronym>s are necessary for
     efficient <acronym>IVM</acronym> because it looks for tuples to be
     updated in <acronym>IMMV</acronym>.  If there are no indexes, it
-    will take a long time. Here is an example after dropping the index:
+    will take a long time.
+</para>
+
+<para>
+    Therefore, when <acronym>IMMV</acronym> is defined, a unique index is created on the view
+    automatically if possible.  If the view definition query has a GROUP BY clause, a unique
+    index is created on the columns of GROUP BY expressions.  Otherwise, if the view contains
+    all primary key attritubes of its base tables in the target list, a unique index
+    is created on these attritubes.  In other cases, no index is created.
+</para>
+
+<para>
+    In the previous example, a unique index "mv_ivm_index" is created on aid and bid
+    columns of materialized view "mv_ivm", and this enables the rapid update of the view.
+    Dropping this index make updating the view take a loger time.
 <programlisting>
+test=# DROP INDEX mv_ivm_index;
+DROP INDEX
+Time: 67.081 ms
+
 test=# UPDATE pgbench_accounts SET abalance = 1000 WHERE aid = 1;
 UPDATE 1
 Time: 16386.245 ms (00:16.386)
@@ -1551,7 +1583,7 @@ Time: 16386.245 ms (00:16.386)
 
         <listitem>
           <para>
-            targetlist cannot contain hidden columns whose name start with <literal>__ivm_</literal>.
+            targetlist cannot contain columns whose name start with <literal>__ivm_</literal>.
           </para>
         </listitem>
 
