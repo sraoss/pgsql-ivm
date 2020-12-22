@@ -1358,7 +1358,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				/* Now, EXISTS clause is supported only */
 				SubLink	*sublink = (SubLink *) node;
-				Query *subselect = (Query *)sublink->subselect;
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1731,7 +1730,6 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 {
 	List *key_attnos_list = NIL;
 	ListCell *lc;
-	int num_rte = list_length(query->rtable);
 	int i;
 	Bitmapset *keys = NULL;
 	Relids	rels_in_from;
@@ -1762,29 +1760,29 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	foreach(lc, query->rtable)
 	{
 		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
-		Bitmapset *key_attnos;
+		Bitmapset *key_attnos = NULL;
+		bool	has_pkey = true;
 
 		/* for subqueries, scan recursively */
 		if (r->rtekind == RTE_SUBQUERY)
+		{
 			key_attnos = get_primary_key_attnos_from_query(r->subquery, constraintList);
-
+			has_pkey = (key_attnos != NULL);
+		}
 		/* for tables, call get_primary_key_attnos */
 		else if (r->rtekind == RTE_RELATION)
 		{
 			Oid constraintOid;
 			key_attnos = get_primary_key_attnos(r->relid, false, &constraintOid);
 			*constraintList = lappend_oid(*constraintList, constraintOid);
+			has_pkey = (key_attnos != NULL);
 		}
 
 		/* If any table has no primary key or its pkey constraint is deferrable, return NULL. */
-		if (!key_attnos)
+		if (!has_pkey)
 			return NULL;
 
 		key_attnos_list = lappend(key_attnos_list, key_attnos);
-
-		/* finish the loop if we processed all RTE included in the original query */
-		if (i++ >= num_rte)
-			break;
 	}
 
 	/* Collect attnos that is derived primary key attributes from the target list */
