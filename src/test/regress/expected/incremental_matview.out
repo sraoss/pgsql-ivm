@@ -74,15 +74,13 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 
 -- rename of IVM columns
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_rename AS SELECT DISTINCT * FROM mv_base_a;
-NOTICE:  could not create an index on materialized view "mv_ivm_rename" automatically
-HINT:  Create an index on the materialized view for effcient incremental maintenance.
+NOTICE:  created index "mv_ivm_rename_index" on materialized view "mv_ivm_rename"
 ALTER MATERIALIZED VIEW mv_ivm_rename RENAME COLUMN __ivm_count__ TO xxx;
 ERROR:  IVM column can not be renamed
 DROP MATERIALIZED VIEW mv_ivm_rename;
 -- unique index on IVM columns
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_unique AS SELECT DISTINCT * FROM mv_base_a;
-NOTICE:  could not create an index on materialized view "mv_ivm_unique" automatically
-HINT:  Create an index on the materialized view for effcient incremental maintenance.
+NOTICE:  created index "mv_ivm_unique_index" on materialized view "mv_ivm_unique"
 CREATE UNIQUE INDEX ON mv_ivm_unique(__ivm_count__);
 ERROR:  unique index creation on IVM columns is not supported
 CREATE UNIQUE INDEX ON mv_ivm_unique((__ivm_count__));
@@ -107,8 +105,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a
 NOTICE:  could not create an index on materialized view "mv_ivm_duplicate" automatically
 HINT:  Create an index on the materialized view for effcient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_distinct AS SELECT DISTINCT j FROM mv_base_a;
-NOTICE:  could not create an index on materialized view "mv_ivm_distinct" automatically
-HINT:  Create an index on the materialized view for effcient incremental maintenance.
+NOTICE:  created index "mv_ivm_distinct_index" on materialized view "mv_ivm_distinct"
 INSERT INTO mv_base_a VALUES(6,20);
 SELECT * FROM mv_ivm_duplicate ORDER BY 1;
  j  
@@ -568,8 +565,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery3 AS SELECT a.i, a.j 
 NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery3" automatically
 HINT:  Create an index on the materialized view for effcient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery4 AS SELECT DISTINCT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i + 100 = b.k);
-NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery4" automatically
-HINT:  Create an index on the materialized view for effcient incremental maintenance.
+NOTICE:  created index "mv_ivm_exists_subquery4_index" on materialized view "mv_ivm_exists_subquery4"
 SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
  i | j  | __ivm_exists_count_0__ 
 ---+----+------------------------
@@ -1229,8 +1225,7 @@ DROP VIEW v;
 CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT DISTINCT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
-NOTICE:  could not create an index on materialized view "mv" automatically
-HINT:  Create an index on the materialized view for effcient incremental maintenance.
+NOTICE:  created index "mv_index" on materialized view "mv"
 CREATE VIEW v(r, si, sj, t) AS
  SELECT DISTINCT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
