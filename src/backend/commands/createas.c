@@ -82,10 +82,10 @@ typedef struct
 {
 	bool	has_outerjoin;
 	bool	has_subquery;
-	bool	has_exists_subquery;	/* true, if it is in a exists subquery */
+	bool	in_exists_subquery;	/* true, if it is in a exists subquery */
 	bool	has_agg;
 	List	*join_quals;
-	List	*exists_quals;
+	List	*exists_qual_vars;
 } check_ivm_restriction_context;
 
 /* utility functions for CTAS definition creation */
@@ -328,7 +328,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 	if (is_matview && into->ivm)
 	{
-		check_ivm_restriction_context ctx = {false, false, false, false, NIL,NIL};
+		check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
 
 		if(contain_mutable_functions((Node *)query))
 			ereport(ERROR,
@@ -1162,11 +1162,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 				/* additional restriction checks for exists subquery */
-				if (ctx->exists_quals != NIL && depth == 0)
+				if (ctx->exists_qual_vars != NIL && depth == 0)
 				{
 					ListCell *lc;
 
-					foreach (lc, ctx->exists_quals)
+					foreach (lc, ctx->exists_qual_vars)
 					{
 						Var	*var = (Var *) lfirst(lc);
 						ListCell *lc2;
@@ -1190,7 +1190,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-									 errhint("targetlist must contain vars what is reffered by subquery")));
+									 errhint("targetlist must contain vars that are refered to in EXISTS subquery")));
 					}
 				}
 
@@ -1306,9 +1306,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("system column is not supported on incrementally maintainable materialized view")));
-				/* if subquery reffer vars of  parent tables */
-				if (variable->varlevelsup > 0 && ctx->has_exists_subquery)
-					ctx->exists_quals = lappend(ctx->exists_quals, node);
+				/* If EXISTS subquery refers to vars of the upper query, collect these vars */
+				if (variable->varlevelsup > 0 && ctx->in_exists_subquery)
+					ctx->exists_qual_vars = lappend(ctx->exists_qual_vars, node);
 			}
 			break;
 		case T_BoolExpr:
@@ -1374,11 +1374,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
 							 errhint("subquery with outer join is not supported")));
 
-				ctx->has_exists_subquery = true;
-				if (IsA(subselect->jointree, FromExpr))
-					ctx->join_quals = lappend(ctx->join_quals, subselect->jointree->quals);
+				ctx->in_exists_subquery = true;
 				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
-				ctx->has_exists_subquery = false;
+				ctx->in_exists_subquery = false;
 				break;
 			}
 		case T_Aggref:
