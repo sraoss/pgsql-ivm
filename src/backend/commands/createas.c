@@ -1104,7 +1104,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("aggregate functions in nested query are not supported on incrementally maintainable materialized view")));
 
-				ctx->has_agg = qry->hasAggs;
+				ctx->has_agg |= qry->hasAggs;
 
 				/* restrictions for rtable */
 				foreach(lc, qry->rtable)
