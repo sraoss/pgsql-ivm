@@ -1159,8 +1159,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
+
 				/* additional restriction checks for exists subquery */
 				if (ctx->exists_qual_vars != NIL && depth == 0)
 				{
