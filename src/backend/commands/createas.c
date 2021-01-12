@@ -1672,11 +1672,11 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 		}
 		else
 		{
-			/* create no index, just notice that an appropriate index is necessary for effcient IVM */
+			/* create no index, just notice that an appropriate index is necessary for efficient, IVM */
 			ereport(NOTICE,
 					(errmsg("could not create an index on materialized view \"%s\" automatically",
 							RelationGetRelationName(matviewRel)),
-					errhint("Create an index on the materialized view for effcient incremental maintenance.")));
+					errhint("Create an index on the materialized view for efficient incremental maintenance.")));
 			return;
 		}
 	}
