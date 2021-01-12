@@ -1155,7 +1155,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
-					if (ctx->has_agg && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
+					if (qry->hasAggs && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
@@ -1190,7 +1190,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-									 errhint("targetlist must contain vars that are refered to in EXISTS subquery")));
+									 errhint("targetlist must contain vars that are referred to in EXISTS subquery")));
 					}
 				}
 
