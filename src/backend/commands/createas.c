@@ -1458,6 +1458,7 @@ is_equijoin_condition(OpExpr *op)
 	Relids		left_varnos;
 	Relids		right_varnos;
 	Oid			opinputtype;
+	PlannerInfo root;
 
 	/* Is it a binary opclause? */
 	if (!IsA(op, OpExpr) || list_length(op->args) != 2)
@@ -1466,8 +1467,8 @@ is_equijoin_condition(OpExpr *op)
 	opno = op->opno;
 	left_expr = linitial(op->args);
 	right_expr = lsecond(op->args);
-	left_varnos = pull_varnos(left_expr);
-	right_varnos = pull_varnos(right_expr);
+	left_varnos = pull_varnos(&root, left_expr);
+	right_varnos = pull_varnos(&root, right_expr);
 	opinputtype = exprType(left_expr);
 
 	if (bms_num_members(left_varnos) != 1 || bms_num_members(right_varnos) != 1 ||
@@ -1759,6 +1760,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	int i;
 	Bitmapset *keys = NULL;
 	Relids	rels_in_from;
+	PlannerInfo root;
 
 
 	/* This can recurse, so check for excessive recursion */
@@ -1836,7 +1838,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	 * does not exist in the target, return NULL.
 	 */
 
-	rels_in_from = pull_varnos_of_level((Node *)query->jointree, 0);
+	rels_in_from = pull_varnos_of_level(&root, (Node *)query->jointree, 0);
 
 	i=1;
 	foreach(lc, key_attnos_list)

@@ -1939,7 +1939,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 			make_delta_enr_name("old", table->table_id, i));
 	}
 
-	raw = (RawStmt*)linitial(raw_parser(str.data));
+	raw = (RawStmt*)linitial(raw_parser(str.data, RAW_PARSE_DEFAULT));
 	sub = transformStmt(pstate, raw->stmt);
 
 	/* If this query has setOperations, RTEs in rtables has a subquery which contains ENR */
@@ -2043,7 +2043,7 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 			make_delta_enr_name(prefix, relid, i));
 	}
 
-	raw = (RawStmt*)linitial(raw_parser(str.data));
+	raw = (RawStmt*)linitial(raw_parser(str.data, RAW_PARSE_DEFAULT));
 	sub = transformStmt(pstate, raw->stmt);
 
 	rte->rtekind = RTE_SUBQUERY;
@@ -2608,6 +2608,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 	List		*result = NIL;
 	ListCell	*l1, *l2;
 	Relids		qual_relids;
+	PlannerInfo root;
 
 	/*
 	 * Convert qual to ANDs implicit expression on vars referencing to
@@ -2622,7 +2623,7 @@ multiply_terms(Query *query, List *terms1, List *terms2, Node* qual)
 		qual = (Node *) make_ands_implicit((Expr *) qual);
 	}
 	/* all relids included in qual */
-	qual_relids = pull_varnos(qual);
+	qual_relids = pull_varnos(&root, qual);
 
 	/* If either is NIL, return the other after filtering by qual. */
 	if (terms1 == NIL || terms2 == NIL)
@@ -4149,6 +4150,7 @@ insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 			char   *diff_resname = quote_qualified_identifier("diff", resname);
 			Oid		typid = attr->atttypid;
 			Relids	tle_relids;
+			PlannerInfo root;
 
 			i++;
 
@@ -4158,7 +4160,7 @@ insert_dangling_tuples(IvmMaintenanceGraph *graph, Query *query,
 			tle = (TargetEntry *) flatten_join_alias_vars(query, (Node *) tle);
 
 			/* get relids referenced in this entry */
-			tle_relids = pull_varnos_of_level((Node *)tle, 0);
+			tle_relids = pull_varnos_of_level(&root, (Node *)tle, 0);
 
 			/*
 			 * If all the column under this entry are belonging the nonnullable table, the value
