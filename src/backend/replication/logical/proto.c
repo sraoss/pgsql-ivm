@@ -3,7 +3,7 @@
  * proto.c
  *		logical replication protocol functions
  *
- * Copyright (c) 2015-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/replication/logical/proto.c
@@ -493,7 +493,6 @@ logicalrep_write_tuple(StringInfo out, Relation rel, HeapTuple tuple, bool binar
 		HeapTuple	typtup;
 		Form_pg_type typclass;
 		Form_pg_attribute att = TupleDescAttr(desc, i);
-		char	   *outputstr;
 
 		if (att->attisdropped || att->attgenerated)
 			continue;
@@ -537,6 +536,8 @@ logicalrep_write_tuple(StringInfo out, Relation rel, HeapTuple tuple, bool binar
 		}
 		else
 		{
+			char	   *outputstr;
+
 			pq_sendbyte(out, LOGICALREP_COLUMN_TEXT);
 			outputstr = OidOutputFunctionCall(typclass->typoutput, values[i]);
 			pq_sendcountedtext(out, outputstr, strlen(outputstr), false);

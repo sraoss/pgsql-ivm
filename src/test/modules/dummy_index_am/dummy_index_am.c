@@ -3,7 +3,7 @@
  * dummy_index_am.c
  *		Index AM template main file.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -168,6 +168,7 @@ static bool
 diinsert(Relation index, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
+		 bool indexUnchanged,
 		 IndexInfo *indexInfo)
 {
 	/* nothing to do */

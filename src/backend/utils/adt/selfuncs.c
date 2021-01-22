@@ -10,7 +10,7 @@
  *	  Index cost functions are located via the index AM's API struct,
  *	  which is obtained from the handler function registered in pg_am.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2206,7 +2206,7 @@ rowcomparesel(PlannerInfo *root,
 		/*
 		 * Otherwise, it's a join if there's more than one relation used.
 		 */
-		is_join_clause = (NumRelids((Node *) opargs) > 1);
+		is_join_clause = (NumRelids(root, (Node *) opargs) > 1);
 	}
 
 	if (is_join_clause)
@@ -4771,7 +4771,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 	 * membership.  Note that when varRelid isn't zero, only vars of that
 	 * relation are considered "real" vars.
 	 */
-	varnos = pull_varnos(basenode);
+	varnos = pull_varnos(root, basenode);
 
 	onerel = NULL;
 

@@ -4,7 +4,7 @@
  *	  prototypes for various files in optimizer/plan
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/planmain.h
@@ -87,7 +87,8 @@ extern RestrictInfo *process_implied_equality(PlannerInfo *root,
 											  Index security_level,
 											  bool below_outer_join,
 											  bool both_const);
-extern RestrictInfo *build_implied_join_equality(Oid opno,
+extern RestrictInfo *build_implied_join_equality(PlannerInfo *root,
+												 Oid opno,
 												 Oid collation,
 												 Expr *item1,
 												 Expr *item2,

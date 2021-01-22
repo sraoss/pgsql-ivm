@@ -37,7 +37,7 @@
  * record, wait for it to be replicated to the standby, and then exit.
  *
  *
- * Portions Copyright (c) 2010-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/walsender.c
@@ -2491,7 +2491,7 @@ WalSndSegmentOpen(XLogReaderState *state, XLogSegNo nextSegNo,
 		XLogSegNo	endSegNo;
 
 		XLByteToSeg(sendTimeLineValidUpto, endSegNo, state->segcxt.ws_segsize);
-		if (state->seg.ws_segno == endSegNo)
+		if (nextSegNo == endSegNo)
 			*tli_p = sendTimeLineNextTLI;
 	}
 

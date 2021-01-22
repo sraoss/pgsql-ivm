@@ -3,7 +3,7 @@
  * aclchk.c
  *	  Routines to check access control permissions.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1365,6 +1365,9 @@ SetDefaultACL(InternalDefaultACL *iacls)
 		ReleaseSysCache(tuple);
 
 	table_close(rel, RowExclusiveLock);
+
+	/* prevent error when processing duplicate objects */
+	CommandCounterIncrement();
 }
 
 

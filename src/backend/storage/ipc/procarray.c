@@ -34,7 +34,7 @@
  * happen, it would tie up KnownAssignedXids indefinitely, so we protect
  * ourselves by pruning the array when a valid list of running XIDs arrives.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -3325,6 +3325,13 @@ GetConflictingVirtualXIDs(TransactionId limitXmin, Oid dbOid)
 pid_t
 CancelVirtualTransaction(VirtualTransactionId vxid, ProcSignalReason sigmode)
 {
+	return SignalVirtualTransaction(vxid, sigmode, true);
+}
+
+pid_t
+SignalVirtualTransaction(VirtualTransactionId vxid, ProcSignalReason sigmode,
+						 bool conflictPending)
+{
 	ProcArrayStruct *arrayP = procArray;
 	int			index;
 	pid_t		pid = 0;
@@ -3342,7 +3349,7 @@ CancelVirtualTransaction(VirtualTransactionId vxid, ProcSignalReason sigmode)
 		if (procvxid.backendId == vxid.backendId &&
 			procvxid.localTransactionId == vxid.localTransactionId)
 		{
-			proc->recoveryConflictPending = true;
+			proc->recoveryConflictPending = conflictPending;
 			pid = proc->pid;
 			if (pid != 0)
 			{

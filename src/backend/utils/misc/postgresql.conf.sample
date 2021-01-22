@@ -92,7 +92,7 @@
 #db_user_namespace = off
 
 # GSSAPI using Kerberos
-#krb_server_keyfile = ''
+#krb_server_keyfile = 'FILE:${sysconfdir}/krb5.keytab'
 #krb_caseins_users = off
 
 # - SSL -
@@ -552,6 +552,8 @@
 					#   %% = '%'
 					# e.g. '<%u%%%d> '
 #log_lock_waits = off			# log lock waits >= deadlock_timeout
+#log_recovery_conflict_waits = off	# log standby recovery conflict waits
+					# >= deadlock_timeout
 #log_parameter_max_length = -1		# when logging statements, limit logged
 					# bind-parameter values to N bytes;
 					# -1 means print in full, 0 disables
@@ -663,6 +665,7 @@
 #statement_timeout = 0			# in milliseconds, 0 is disabled
 #lock_timeout = 0			# in milliseconds, 0 is disabled
 #idle_in_transaction_session_timeout = 0	# in milliseconds, 0 is disabled
+#idle_session_timeout = 0		# in milliseconds, 0 is disabled
 #vacuum_freeze_min_age = 50000000
 #vacuum_freeze_table_age = 150000000
 #vacuum_multixact_freeze_min_age = 5000000

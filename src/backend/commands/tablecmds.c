@@ -3,7 +3,7 @@
  * tablecmds.c
  *	  Commands for creating and altering table structures and settings
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1855,6 +1855,7 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 		{
 			Oid			heap_relid;
 			Oid			toast_relid;
+			ReindexParams reindex_params = {0};
 
 			/*
 			 * This effectively deletes all rows in the table, and may be done
@@ -1892,7 +1893,8 @@ ExecuteTruncateGuts(List *explicit_rels, List *relids, List *relids_logged,
 			/*
 			 * Reconstruct the indexes to match, and we're done.
 			 */
-			reindex_relation(heap_relid, REINDEX_REL_PROCESS_TOAST, 0);
+			reindex_relation(heap_relid, REINDEX_REL_PROCESS_TOAST,
+							 &reindex_params);
 		}
 
 		pgstat_count_truncate(rel);
@@ -12104,7 +12106,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, char *cmd,
 	 * parse_analyze() or the rewriter, but instead we need to pass them
 	 * through parse_utilcmd.c to make them ready for execution.
 	 */
-	raw_parsetree_list = raw_parser(cmd);
+	raw_parsetree_list = raw_parser(cmd, RAW_PARSE_DEFAULT);
 	querytree_list = NIL;
 	foreach(list_item, raw_parsetree_list)
 	{
@@ -13348,6 +13350,10 @@ ATExecSetTableSpaceNoStorage(Relation rel, Oid newTableSpace)
 	/* update the pg_class row */
 	rd_rel->reltablespace = (newTableSpace == MyDatabaseTableSpace) ? InvalidOid : newTableSpace;
 	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
+
+	/* Record dependency on tablespace */
+	changeDependencyOnTablespace(RelationRelationId,
+								 reloid, rd_rel->reltablespace);
 
 	InvokeObjectPostAlterHook(RelationRelationId, reloid, 0);
 

@@ -3,7 +3,7 @@
  * heapdesc.c
  *	  rmgr descriptor routines for access/heap/heapam.c
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -125,7 +125,7 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_heap_clean *xlrec = (xl_heap_clean *) rec;
 
-		appendStringInfo(buf, "remxid %u", xlrec->latestRemovedXid);
+		appendStringInfo(buf, "latestRemovedXid %u", xlrec->latestRemovedXid);
 	}
 	else if (info == XLOG_HEAP2_FREEZE_PAGE)
 	{
@@ -138,7 +138,7 @@ heap2_desc(StringInfo buf, XLogReaderState *record)
 	{
 		xl_heap_cleanup_info *xlrec = (xl_heap_cleanup_info *) rec;
 
-		appendStringInfo(buf, "remxid %u", xlrec->latestRemovedXid);
+		appendStringInfo(buf, "latestRemovedXid %u", xlrec->latestRemovedXid);
 	}
 	else if (info == XLOG_HEAP2_VISIBLE)
 	{

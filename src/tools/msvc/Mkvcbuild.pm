@@ -99,7 +99,7 @@ sub mkvcbuild
 	  srandom.c getaddrinfo.c gettimeofday.c inet_net_ntop.c kill.c open.c
 	  erand48.c snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c dlopen.c getopt.c getopt_long.c link.c
-	  pread.c pwrite.c pg_bitutils.c
+	  pread.c preadv.c pwrite.c pwritev.c pg_bitutils.c
 	  pg_strong_random.c pgcheckdir.c pgmkdirp.c pgsleep.c pgstrcasecmp.c
 	  pqsignal.c mkdtemp.c qsort.c qsort_arg.c quotes.c system.c
 	  strerror.c tar.c thread.c
@@ -121,7 +121,7 @@ sub mkvcbuild
 	our @pgcommonallfiles = qw(
 	  archive.c base64.c checksum_helper.c
 	  config_info.c controldata_utils.c d2s.c encnames.c exec.c
-	  f2s.c file_perm.c file_utils.c hashfn.c ip.c jsonapi.c
+	  f2s.c file_perm.c file_utils.c hashfn.c hex.c ip.c jsonapi.c
 	  keywords.c kwlookup.c link-canary.c md5_common.c
 	  pg_get_line.c pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c stringinfo.c unicode_norm.c username.c

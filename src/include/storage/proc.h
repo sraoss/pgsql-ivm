@@ -4,7 +4,7 @@
  *	  per-process shared memory data structures
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/proc.h
@@ -54,6 +54,7 @@ struct XidCache
 #define		PROC_IS_AUTOVACUUM	0x01	/* is it an autovac worker? */
 #define		PROC_IN_VACUUM		0x02	/* currently running lazy vacuum */
 #define		PROC_IN_SAFE_IC		0x04	/* currently running CREATE INDEX
+										 * CONCURRENTLY or REINDEX
 										 * CONCURRENTLY on non-expressional,
 										 * non-partial index */
 #define		PROC_VACUUM_FOR_WRAPAROUND	0x08	/* set by autovac only */
@@ -378,6 +379,7 @@ extern PGDLLIMPORT int DeadlockTimeout;
 extern PGDLLIMPORT int StatementTimeout;
 extern PGDLLIMPORT int LockTimeout;
 extern PGDLLIMPORT int IdleInTransactionSessionTimeout;
+extern PGDLLIMPORT int IdleSessionTimeout;
 extern bool log_lock_waits;
 
 

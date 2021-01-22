@@ -11,7 +11,7 @@
  * be handled easily in a simple depth-first traversal.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -3200,6 +3200,20 @@ _copySetOperationStmt(const SetOperationStmt *from)
 	return newnode;
 }
 
+static PLAssignStmt *
+_copyPLAssignStmt(const PLAssignStmt *from)
+{
+	PLAssignStmt *newnode = makeNode(PLAssignStmt);
+
+	COPY_STRING_FIELD(name);
+	COPY_NODE_FIELD(indirection);
+	COPY_SCALAR_FIELD(nnames);
+	COPY_NODE_FIELD(val);
+	COPY_LOCATION_FIELD(location);
+
+	return newnode;
+}
+
 static AlterTableStmt *
 _copyAlterTableStmt(const AlterTableStmt *from)
 {
@@ -5220,6 +5234,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_SetOperationStmt:
 			retval = _copySetOperationStmt(from);
+			break;
+		case T_PLAssignStmt:
+			retval = _copyPLAssignStmt(from);
 			break;
 		case T_AlterTableStmt:
 			retval = _copyAlterTableStmt(from);

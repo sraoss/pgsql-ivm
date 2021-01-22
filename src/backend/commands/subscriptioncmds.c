@@ -3,7 +3,7 @@
  * subscriptioncmds.c
  *		subscription catalog manipulation functions
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1267,7 +1267,7 @@ fetch_table_list(WalReceiverConn *wrconn, List *publications)
 		relname = TextDatumGetCString(slot_getattr(slot, 2, &isnull));
 		Assert(!isnull);
 
-		rv = makeRangeVar(pstrdup(nspname), pstrdup(relname), -1);
+		rv = makeRangeVar(nspname, relname, -1);
 		tablelist = lappend(tablelist, rv);
 
 		ExecClearTuple(slot);

@@ -43,7 +43,7 @@
  * overflow.)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -72,6 +72,7 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
@@ -201,6 +202,11 @@ is_log_level_output(int elevel, int log_min_level)
 	{
 		if (log_min_level == LOG || log_min_level <= ERROR)
 			return true;
+	}
+	else if (elevel == WARNING_CLIENT_ONLY)
+	{
+		/* never sent to log, regardless of log_min_level */
+		return false;
 	}
 	else if (log_min_level == LOG)
 	{
@@ -453,7 +459,7 @@ errstart(int elevel, const char *domain)
 	/* Select default errcode based on elevel */
 	if (elevel >= ERROR)
 		edata->sqlerrcode = ERRCODE_INTERNAL_ERROR;
-	else if (elevel == WARNING)
+	else if (elevel >= WARNING)
 		edata->sqlerrcode = ERRCODE_WARNING;
 	else
 		edata->sqlerrcode = ERRCODE_SUCCESSFUL_COMPLETION;
@@ -650,6 +656,13 @@ errfinish(const char *filename, int lineno, const char *funcname)
 		 */
 		fflush(stdout);
 		fflush(stderr);
+
+		/*
+		 * Let the statistics collector know. Only mark the session as
+		 * terminated by fatal error if there is no other known cause.
+		 */
+		if (pgStatSessionEndCause == DISCONNECT_NORMAL)
+			pgStatSessionEndCause = DISCONNECT_FATAL;
 
 		/*
 		 * Do normal process-exit cleanup, then return exit code 1 to indicate
@@ -2152,6 +2165,7 @@ write_eventlog(int level, const char *line, int len)
 			eventlevel = EVENTLOG_INFORMATION_TYPE;
 			break;
 		case WARNING:
+		case WARNING_CLIENT_ONLY:
 			eventlevel = EVENTLOG_WARNING_TYPE;
 			break;
 		case ERROR:
@@ -3109,6 +3123,7 @@ send_message_to_server_log(ErrorData *edata)
 				break;
 			case NOTICE:
 			case WARNING:
+			case WARNING_CLIENT_ONLY:
 				syslog_level = LOG_NOTICE;
 				break;
 			case ERROR:
@@ -3484,6 +3499,7 @@ error_severity(int elevel)
 			prefix = gettext_noop("NOTICE");
 			break;
 		case WARNING:
+		case WARNING_CLIENT_ONLY:
 			prefix = gettext_noop("WARNING");
 			break;
 		case ERROR:

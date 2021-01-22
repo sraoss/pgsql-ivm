@@ -11,7 +11,7 @@
  * Transactions on Mathematical Software, Vol. 24, No. 4, December 1998,
  * pages 359-367.
  *
- * Copyright (c) 1998-2020, PostgreSQL Global Development Group
+ * Copyright (c) 1998-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/adt/numeric.c
@@ -10290,7 +10290,7 @@ power_var_int(const NumericVar *base, int exp, NumericVar *result, int rscale)
 	 * to around log10(abs(exp)) digits, so work with this many extra digits
 	 * of precision (plus a few more for good measure).
 	 */
-	sig_digits += (int) log(Abs(exp)) + 8;
+	sig_digits += (int) log(fabs((double) exp)) + 8;
 
 	/*
 	 * Now we can proceed with the multiplications.

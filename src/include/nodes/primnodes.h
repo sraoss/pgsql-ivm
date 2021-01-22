@@ -7,7 +7,7 @@
  *	  and join trees.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/primnodes.h
@@ -458,6 +458,7 @@ typedef enum CoercionContext
 {
 	COERCION_IMPLICIT,			/* coercion in context of expression */
 	COERCION_ASSIGNMENT,		/* coercion in context of assignment */
+	COERCION_PLPGSQL,			/* if no assignment cast, use CoerceViaIO */
 	COERCION_EXPLICIT			/* explicit cast operation */
 } CoercionContext;
 

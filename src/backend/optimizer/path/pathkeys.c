@@ -7,7 +7,7 @@
  * the nature and use of path keys.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -598,7 +598,7 @@ build_index_pathkeys(PlannerInfo *root,
 			 * should stop considering index columns; any lower-order sort
 			 * keys won't be useful either.
 			 */
-			if (!indexcol_is_bool_constant_for_query(index, i))
+			if (!indexcol_is_bool_constant_for_query(root, index, i))
 				break;
 		}
 

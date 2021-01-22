@@ -3,7 +3,7 @@
  * outfuncs.c
  *	  Output functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2776,6 +2776,18 @@ _outSelectStmt(StringInfo str, const SelectStmt *node)
 }
 
 static void
+_outPLAssignStmt(StringInfo str, const PLAssignStmt *node)
+{
+	WRITE_NODE_TYPE("PLASSIGN");
+
+	WRITE_STRING_FIELD(name);
+	WRITE_NODE_FIELD(indirection);
+	WRITE_INT_FIELD(nnames);
+	WRITE_NODE_FIELD(val);
+	WRITE_LOCATION_FIELD(location);
+}
+
+static void
 _outFuncCall(StringInfo str, const FuncCall *node)
 {
 	WRITE_NODE_TYPE("FUNCCALL");
@@ -4211,6 +4223,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_SelectStmt:
 				_outSelectStmt(str, obj);
+				break;
+			case T_PLAssignStmt:
+				_outPLAssignStmt(str, obj);
 				break;
 			case T_ColumnDef:
 				_outColumnDef(str, obj);

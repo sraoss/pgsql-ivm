@@ -18,7 +18,7 @@
  * "x" to be considered equal() to another reference to "x" in the query.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -1081,6 +1081,18 @@ _equalSetOperationStmt(const SetOperationStmt *a, const SetOperationStmt *b)
 	COMPARE_NODE_FIELD(colTypmods);
 	COMPARE_NODE_FIELD(colCollations);
 	COMPARE_NODE_FIELD(groupClauses);
+
+	return true;
+}
+
+static bool
+_equalPLAssignStmt(const PLAssignStmt *a, const PLAssignStmt *b)
+{
+	COMPARE_STRING_FIELD(name);
+	COMPARE_NODE_FIELD(indirection);
+	COMPARE_SCALAR_FIELD(nnames);
+	COMPARE_NODE_FIELD(val);
+	COMPARE_LOCATION_FIELD(location);
 
 	return true;
 }
@@ -3275,6 +3287,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_SetOperationStmt:
 			retval = _equalSetOperationStmt(a, b);
+			break;
+		case T_PLAssignStmt:
+			retval = _equalPLAssignStmt(a, b);
 			break;
 		case T_AlterTableStmt:
 			retval = _equalAlterTableStmt(a, b);

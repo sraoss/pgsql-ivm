@@ -4,7 +4,7 @@
  *	  definitions for executor state nodes
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/execnodes.h
@@ -445,6 +445,12 @@ typedef struct ResultRelInfo
 
 	/* true when modifying foreign table directly */
 	bool		ri_usesFdwDirectModify;
+
+	/* batch insert stuff */
+	int			ri_NumSlots;		/* number of slots in the array */
+	int			ri_BatchSize;		/* max slots inserted in a single batch */
+	TupleTableSlot **ri_Slots;		/* input tuples for batch insert */
+	TupleTableSlot **ri_PlanSlots;
 
 	/* list of WithCheckOption's to be checked */
 	List	   *ri_WithCheckOptions;

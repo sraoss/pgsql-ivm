@@ -3,7 +3,7 @@
  * statscmds.c
  *	  Commands for creating and altering extended statistics objects
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -135,6 +135,13 @@ CreateStatistics(CreateStatsStmt *stmt)
 		if (!pg_class_ownercheck(RelationGetRelid(rel), stxowner))
 			aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
 						   RelationGetRelationName(rel));
+
+		/* Creating statistics on system catalogs is not allowed */
+		if (!allowSystemTableMods && IsSystemRelation(rel))
+			ereport(ERROR,
+					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("permission denied: \"%s\" is a system catalog",
+							RelationGetRelationName(rel))));
 	}
 
 	Assert(rel);

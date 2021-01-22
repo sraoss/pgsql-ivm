@@ -3,7 +3,7 @@
  * execPartition.c
  *	  Support routines for partitioning.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -992,6 +992,23 @@ ExecInitRoutingInfo(ModifyTableState *mtstate,
 	if (partRelInfo->ri_FdwRoutine != NULL &&
 		partRelInfo->ri_FdwRoutine->BeginForeignInsert != NULL)
 		partRelInfo->ri_FdwRoutine->BeginForeignInsert(mtstate, partRelInfo);
+
+	/*
+	 * Determine if the FDW supports batch insert and determine the batch
+	 * size (a FDW may support batching, but it may be disabled for the
+	 * server/table or for this particular query).
+	 *
+	 * If the FDW does not support batching, we set the batch size to 1.
+	 */
+	if (partRelInfo->ri_FdwRoutine != NULL &&
+		partRelInfo->ri_FdwRoutine->GetForeignModifyBatchSize &&
+		partRelInfo->ri_FdwRoutine->ExecForeignBatchInsert)
+		partRelInfo->ri_BatchSize =
+			partRelInfo->ri_FdwRoutine->GetForeignModifyBatchSize(partRelInfo);
+	else
+		partRelInfo->ri_BatchSize = 1;
+
+	Assert(partRelInfo->ri_BatchSize >= 1);
 
 	partRelInfo->ri_CopyMultiInsertBuffer = NULL;
 

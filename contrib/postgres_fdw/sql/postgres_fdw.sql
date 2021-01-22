@@ -15,6 +15,11 @@ DO $d$
             OPTIONS (dbname '$$||current_database()||$$',
                      port '$$||current_setting('port')||$$'
             )$$;
+        EXECUTE $$CREATE SERVER loopback3 FOREIGN DATA WRAPPER postgres_fdw
+            OPTIONS (dbname '$$||current_database()||$$',
+                     port '$$||current_setting('port')||$$'
+            )$$;
+
     END;
 $d$;
 
@@ -22,6 +27,7 @@ CREATE USER MAPPING FOR public SERVER testserver1
 	OPTIONS (user 'value', password 'value');
 CREATE USER MAPPING FOR CURRENT_USER SERVER loopback;
 CREATE USER MAPPING FOR CURRENT_USER SERVER loopback2;
+CREATE USER MAPPING FOR public SERVER loopback3;
 
 -- ===================================================================
 -- create objects used through FDW loopback server
@@ -141,6 +147,12 @@ CREATE FOREIGN TABLE ft6 (
 	c2 int NOT NULL,
 	c3 text
 ) SERVER loopback2 OPTIONS (schema_name 'S 1', table_name 'T 4');
+
+CREATE FOREIGN TABLE ft7 (
+	c1 int NOT NULL,
+	c2 int NOT NULL,
+	c3 text
+) SERVER loopback3 OPTIONS (schema_name 'S 1', table_name 'T 4');
 
 -- ===================================================================
 -- tests for validator
@@ -2697,3 +2709,125 @@ COMMIT;
 
 -- Clean up
 DROP PROCEDURE terminate_backend_and_wait(text);
+
+-- ===================================================================
+-- test connection invalidation cases
+-- ===================================================================
+-- This test case is for closing the connection in pgfdw_xact_callback
+BEGIN;
+-- List all the existing cached connections. Only loopback2 should be output.
+SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
+-- Connection xact depth becomes 1 i.e. the connection is in midst of the xact.
+SELECT 1 FROM ft1 LIMIT 1;
+SELECT 1 FROM ft7 LIMIT 1;
+-- List all the existing cached connections. loopback and loopback3
+-- also should be output as valid connections.
+SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
+-- Connection is not closed at the end of the alter statement in
+-- pgfdw_inval_callback. That's because the connection is in midst of this
+-- xact, it is just marked as invalid.
+ALTER SERVER loopback OPTIONS (ADD use_remote_estimate 'off');
+DROP SERVER loopback3 CASCADE;
+-- List all the existing cached connections. loopback and loopback3
+-- should be output as invalid connections. Also the server name for
+-- loopback3 should be NULL because the server was dropped.
+SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
+-- The invalid connection gets closed in pgfdw_xact_callback during commit.
+COMMIT;
+-- List all the existing cached connections. loopback and loopback3
+-- should not be output because they should be closed at the end of
+-- the above transaction.
+SELECT * FROM postgres_fdw_get_connections() ORDER BY 1;
+
+-- ===================================================================
+-- batch insert
+-- ===================================================================
+
+BEGIN;
+
+CREATE SERVER batch10 FOREIGN DATA WRAPPER postgres_fdw OPTIONS( batch_size '10' );
+
+SELECT count(*)
+FROM pg_foreign_server
+WHERE srvname = 'batch10'
+AND srvoptions @> array['batch_size=10'];
+
+ALTER SERVER batch10 OPTIONS( SET batch_size '20' );
+
+SELECT count(*)
+FROM pg_foreign_server
+WHERE srvname = 'batch10'
+AND srvoptions @> array['batch_size=10'];
+
+SELECT count(*)
+FROM pg_foreign_server
+WHERE srvname = 'batch10'
+AND srvoptions @> array['batch_size=20'];
+
+CREATE FOREIGN TABLE table30 ( x int ) SERVER batch10 OPTIONS ( batch_size '30' );
+
+SELECT COUNT(*)
+FROM pg_foreign_table
+WHERE ftrelid = 'table30'::regclass
+AND ftoptions @> array['batch_size=30'];
+
+ALTER FOREIGN TABLE table30 OPTIONS ( SET batch_size '40');
+
+SELECT COUNT(*)
+FROM pg_foreign_table
+WHERE ftrelid = 'table30'::regclass
+AND ftoptions @> array['batch_size=30'];
+
+SELECT COUNT(*)
+FROM pg_foreign_table
+WHERE ftrelid = 'table30'::regclass
+AND ftoptions @> array['batch_size=40'];
+
+ROLLBACK;
+
+CREATE TABLE batch_table ( x int );
+
+CREATE FOREIGN TABLE ftable ( x int ) SERVER loopback OPTIONS ( table_name 'batch_table', batch_size '10' );
+EXPLAIN (VERBOSE, COSTS OFF) INSERT INTO ftable SELECT * FROM generate_series(1, 10) i;
+INSERT INTO ftable SELECT * FROM generate_series(1, 10) i;
+INSERT INTO ftable SELECT * FROM generate_series(11, 31) i;
+INSERT INTO ftable VALUES (32);
+INSERT INTO ftable VALUES (33), (34);
+SELECT COUNT(*) FROM ftable;
+TRUNCATE batch_table;
+DROP FOREIGN TABLE ftable;
+
+-- Disable batch insert
+CREATE FOREIGN TABLE ftable ( x int ) SERVER loopback OPTIONS ( table_name 'batch_table', batch_size '1' );
+EXPLAIN (VERBOSE, COSTS OFF) INSERT INTO ftable VALUES (1), (2);
+INSERT INTO ftable VALUES (1), (2);
+SELECT COUNT(*) FROM ftable;
+DROP FOREIGN TABLE ftable;
+DROP TABLE batch_table;
+
+-- Use partitioning
+CREATE TABLE batch_table ( x int ) PARTITION BY HASH (x);
+
+CREATE TABLE batch_table_p0 (LIKE batch_table);
+CREATE FOREIGN TABLE batch_table_p0f
+	PARTITION OF batch_table
+	FOR VALUES WITH (MODULUS 3, REMAINDER 0)
+	SERVER loopback
+	OPTIONS (table_name 'batch_table_p0', batch_size '10');
+
+CREATE TABLE batch_table_p1 (LIKE batch_table);
+CREATE FOREIGN TABLE batch_table_p1f
+	PARTITION OF batch_table
+	FOR VALUES WITH (MODULUS 3, REMAINDER 1)
+	SERVER loopback
+	OPTIONS (table_name 'batch_table_p1', batch_size '1');
+
+CREATE TABLE batch_table_p2
+	PARTITION OF batch_table
+	FOR VALUES WITH (MODULUS 3, REMAINDER 2);
+
+INSERT INTO batch_table SELECT * FROM generate_series(1, 66) i;
+SELECT COUNT(*) FROM batch_table;
+
+-- Clean up
+DROP TABLE batch_table CASCADE;

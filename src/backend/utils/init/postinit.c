@@ -3,7 +3,7 @@
  * postinit.c
  *	  postgres initialization utilities
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -72,6 +72,7 @@ static void ShutdownPostgres(int code, Datum arg);
 static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
+static void IdleSessionTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
@@ -270,11 +271,22 @@ PerformAuthentication(Port *port)
 							 be_tls_get_compression(port) ? _("on") : _("off"));
 #endif
 #ifdef ENABLE_GSS
-		if (be_gssapi_get_princ(port))
-			appendStringInfo(&logmsg, _(" GSS (authenticated=%s, encrypted=%s, principal=%s)"),
-							 be_gssapi_get_auth(port) ? _("yes") : _("no"),
-							 be_gssapi_get_enc(port) ? _("yes") : _("no"),
-							 be_gssapi_get_princ(port));
+		if (port->gss)
+		{
+			const char *princ = be_gssapi_get_princ(port);
+
+			if (princ)
+				appendStringInfo(&logmsg,
+								 _(" GSS (authenticated=%s, encrypted=%s, principal=%s)"),
+								 be_gssapi_get_auth(port) ? _("yes") : _("no"),
+								 be_gssapi_get_enc(port) ? _("yes") : _("no"),
+								 princ);
+			else
+				appendStringInfo(&logmsg,
+								 _(" GSS (authenticated=%s, encrypted=%s)"),
+								 be_gssapi_get_auth(port) ? _("yes") : _("no"),
+								 be_gssapi_get_enc(port) ? _("yes") : _("no"));
+		}
 #endif
 
 		ereport(LOG, errmsg_internal("%s", logmsg.data));
@@ -608,6 +620,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		RegisterTimeout(LOCK_TIMEOUT, LockTimeoutHandler);
 		RegisterTimeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 						IdleInTransactionSessionTimeoutHandler);
+		RegisterTimeout(IDLE_SESSION_TIMEOUT, IdleSessionTimeoutHandler);
 	}
 
 	/*
@@ -1218,6 +1231,14 @@ static void
 IdleInTransactionSessionTimeoutHandler(void)
 {
 	IdleInTransactionSessionTimeoutPending = true;
+	InterruptPending = true;
+	SetLatch(MyLatch);
+}
+
+static void
+IdleSessionTimeoutHandler(void)
+{
+	IdleSessionTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
 }

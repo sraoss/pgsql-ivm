@@ -4,7 +4,7 @@
  *	  POSTGRES heap access XLOG definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/heapam_xlog.h
@@ -68,6 +68,9 @@
 #define XLH_INSERT_IS_SPECULATIVE				(1<<2)
 #define XLH_INSERT_CONTAINS_NEW_TUPLE			(1<<3)
 #define XLH_INSERT_ON_TOAST_RELATION			(1<<4)
+
+/* all_frozen_set always implies all_visible_set */
+#define XLH_INSERT_ALL_FROZEN_SET				(1<<5)
 
 /*
  * xl_heap_update flag values, 8 bits are available.

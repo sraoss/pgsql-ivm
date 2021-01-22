@@ -3,7 +3,7 @@
  * parse_coerce.c
  *		handle type coercions/conversions for parser
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1541,7 +1541,7 @@ select_common_typmod(ParseState *pstate, List *exprs, Oid common_type)
 
 	foreach(lc, exprs)
 	{
-		Node   *expr = (Node *) lfirst(lc);
+		Node	   *expr = (Node *) lfirst(lc);
 
 		/* Types must match */
 		if (exprType(expr) != common_type)
@@ -2380,7 +2380,8 @@ enforce_generic_type_consistency(const Oid *actual_arg_types,
 			if (!OidIsValid(elem_typeid))
 			{
 				/*
-				 * if we don't have an element type yet, use the one we just got
+				 * if we don't have an element type yet, use the one we just
+				 * got
 				 */
 				elem_typeid = range_typelem;
 			}
@@ -3096,6 +3097,14 @@ find_coercion_pathway(Oid targetTypeId, Oid sourceTypeId,
 				result = COERCION_PATH_COERCEVIAIO;
 		}
 	}
+
+	/*
+	 * When parsing PL/pgSQL assignments, allow an I/O cast to be used
+	 * whenever no normal coercion is available.
+	 */
+	if (result == COERCION_PATH_NONE &&
+		ccontext == COERCION_PLPGSQL)
+		result = COERCION_PATH_COERCEVIAIO;
 
 	return result;
 }

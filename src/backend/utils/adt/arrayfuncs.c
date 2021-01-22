@@ -3,7 +3,7 @@
  * arrayfuncs.c
  *	  Support functions for arrays.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2582,8 +2582,11 @@ array_set_element_expanded(Datum arraydatum,
 
 	/*
 	 * Copy new element into array's context, if needed (we assume it's
-	 * already detoasted, so no junk should be created).  If we fail further
-	 * down, this memory is leaked, but that's reasonably harmless.
+	 * already detoasted, so no junk should be created).  Doing this before
+	 * we've made any significant changes ensures that our behavior is sane
+	 * even when the source is a reference to some element of this same array.
+	 * If we fail further down, this memory is leaked, but that's reasonably
+	 * harmless.
 	 */
 	if (!eah->typbyval && !isNull)
 	{

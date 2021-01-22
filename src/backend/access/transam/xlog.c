@@ -4,7 +4,7 @@
  *		PostgreSQL write-ahead log manager
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/xlog.c
@@ -48,6 +48,7 @@
 #include "pg_trace.h"
 #include "pgstat.h"
 #include "port/atomics.h"
+#include "port/pg_iovec.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/startup.h"
 #include "postmaster/walwriter.h"
@@ -929,7 +930,8 @@ static void XLogFileClose(void);
 static void PreallocXlogFiles(XLogRecPtr endptr);
 static void RemoveTempXlogFiles(void);
 static void RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr);
-static void RemoveXlogFile(const char *segname, XLogRecPtr lastredoptr, XLogRecPtr endptr);
+static void RemoveXlogFile(const char *segname, XLogSegNo recycleSegNo,
+						   XLogSegNo *endlogSegNo);
 static void UpdateLastRemovedPtr(char *filename);
 static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
@@ -3270,7 +3272,6 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	XLogSegNo	installed_segno;
 	XLogSegNo	max_segno;
 	int			fd;
-	int			nbytes;
 	int			save_errno;
 
 	XLogFilePath(path, ThisTimeLineID, logsegno, wal_segment_size);
@@ -3317,6 +3318,9 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 	save_errno = 0;
 	if (wal_init_zero)
 	{
+		struct iovec iov[PG_IOV_MAX];
+		int			blocks;
+
 		/*
 		 * Zero-fill the file.  With this setting, we do this the hard way to
 		 * ensure that all the file space has really been allocated.  On
@@ -3326,15 +3330,28 @@ XLogFileInit(XLogSegNo logsegno, bool *use_existent, bool use_lock)
 		 * indirect blocks are down on disk.  Therefore, fdatasync(2) or
 		 * O_DSYNC will be sufficient to sync future writes to the log file.
 		 */
-		for (nbytes = 0; nbytes < wal_segment_size; nbytes += XLOG_BLCKSZ)
+
+		/* Prepare to write out a lot of copies of our zero buffer at once. */
+		for (int i = 0; i < lengthof(iov); ++i)
 		{
-			errno = 0;
-			if (write(fd, zbuffer.data, XLOG_BLCKSZ) != XLOG_BLCKSZ)
+			iov[i].iov_base = zbuffer.data;
+			iov[i].iov_len = XLOG_BLCKSZ;
+		}
+
+		/* Loop, writing as many blocks as we can for each system call. */
+		blocks = wal_segment_size / XLOG_BLCKSZ;
+		for (int i = 0; i < blocks;)
+		{
+			int 		iovcnt = Min(blocks - i, lengthof(iov));
+			off_t		offset = i * XLOG_BLCKSZ;
+
+			if (pg_pwritev_with_retry(fd, iov, iovcnt, offset) < 0)
 			{
-				/* if write didn't set errno, assume no disk space */
-				save_errno = errno ? errno : ENOSPC;
+				save_errno = errno;
 				break;
 			}
+
+			i += iovcnt;
 		}
 	}
 	else
@@ -4039,6 +4056,12 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 	DIR		   *xldir;
 	struct dirent *xlde;
 	char		lastoff[MAXFNAMELEN];
+	XLogSegNo	endlogSegNo;
+	XLogSegNo	recycleSegNo;
+
+	/* Initialize info about where to try to recycle to */
+	XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
+	recycleSegNo = XLOGfileslop(lastredoptr);
 
 	/*
 	 * Construct a filename of the last segment to be kept. The timeline ID
@@ -4077,7 +4100,7 @@ RemoveOldXlogFiles(XLogSegNo segno, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 				/* Update the last removed location in shared memory first */
 				UpdateLastRemovedPtr(xlde->d_name);
 
-				RemoveXlogFile(xlde->d_name, lastredoptr, endptr);
+				RemoveXlogFile(xlde->d_name, recycleSegNo, &endlogSegNo);
 			}
 		}
 	}
@@ -4107,13 +4130,21 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 	struct dirent *xlde;
 	char		switchseg[MAXFNAMELEN];
 	XLogSegNo	endLogSegNo;
+	XLogSegNo	switchLogSegNo;
+	XLogSegNo	recycleSegNo;
 
-	XLByteToPrevSeg(switchpoint, endLogSegNo, wal_segment_size);
+	/*
+	 * Initialize info about where to begin the work.  This will recycle,
+	 * somewhat arbitrarily, 10 future segments.
+	 */
+	XLByteToPrevSeg(switchpoint, switchLogSegNo, wal_segment_size);
+	XLByteToSeg(switchpoint, endLogSegNo, wal_segment_size);
+	recycleSegNo = endLogSegNo + 10;
 
 	/*
 	 * Construct a filename of the last segment to be kept.
 	 */
-	XLogFileName(switchseg, newTLI, endLogSegNo, wal_segment_size);
+	XLogFileName(switchseg, newTLI, switchLogSegNo, wal_segment_size);
 
 	elog(DEBUG2, "attempting to remove WAL segments newer than log file %s",
 		 switchseg);
@@ -4141,7 +4172,7 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 			 * - but seems safer to let them be archived and removed later.
 			 */
 			if (!XLogArchiveIsReady(xlde->d_name))
-				RemoveXlogFile(xlde->d_name, InvalidXLogRecPtr, switchpoint);
+				RemoveXlogFile(xlde->d_name, recycleSegNo, &endLogSegNo);
 		}
 	}
 
@@ -4151,36 +4182,22 @@ RemoveNonParentXlogFiles(XLogRecPtr switchpoint, TimeLineID newTLI)
 /*
  * Recycle or remove a log file that's no longer needed.
  *
- * endptr is current (or recent) end of xlog, and lastredoptr is the
- * redo pointer of the last checkpoint. These are used to determine
- * whether we want to recycle rather than delete no-longer-wanted log files.
- * If lastredoptr is not known, pass invalid, and the function will recycle,
- * somewhat arbitrarily, 10 future segments.
+ * segname is the name of the segment to recycle or remove.  recycleSegNo
+ * is the segment number to recycle up to.  endlogSegNo is the segment
+ * number of the current (or recent) end of WAL.
+ *
+ * endlogSegNo gets incremented if the segment is recycled so as it is not
+ * checked again with future callers of this function.
  */
 static void
-RemoveXlogFile(const char *segname, XLogRecPtr lastredoptr, XLogRecPtr endptr)
+RemoveXlogFile(const char *segname, XLogSegNo recycleSegNo,
+			   XLogSegNo *endlogSegNo)
 {
 	char		path[MAXPGPATH];
 #ifdef WIN32
 	char		newpath[MAXPGPATH];
 #endif
 	struct stat statbuf;
-	XLogSegNo	endlogSegNo;
-	XLogSegNo	recycleSegNo;
-
-	if (wal_recycle)
-	{
-		/*
-		 * Initialize info about where to try to recycle to.
-		 */
-		XLByteToSeg(endptr, endlogSegNo, wal_segment_size);
-		if (lastredoptr == InvalidXLogRecPtr)
-			recycleSegNo = endlogSegNo + 10;
-		else
-			recycleSegNo = XLOGfileslop(lastredoptr);
-	}
-	else
-		recycleSegNo = 0;		/* keep compiler quiet */
 
 	snprintf(path, MAXPGPATH, XLOGDIR "/%s", segname);
 
@@ -4190,9 +4207,9 @@ RemoveXlogFile(const char *segname, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 	 * symbolic links pointing to a separate archive directory.
 	 */
 	if (wal_recycle &&
-		endlogSegNo <= recycleSegNo &&
+		*endlogSegNo <= recycleSegNo &&
 		lstat(path, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
-		InstallXLogFileSegment(&endlogSegNo, path,
+		InstallXLogFileSegment(endlogSegNo, path,
 							   true, recycleSegNo, true))
 	{
 		ereport(DEBUG2,
@@ -4200,7 +4217,7 @@ RemoveXlogFile(const char *segname, XLogRecPtr lastredoptr, XLogRecPtr endptr)
 						segname)));
 		CheckpointStats.ckpt_segs_recycled++;
 		/* Needn't recheck that slot on future iterations */
-		endlogSegNo++;
+		(*endlogSegNo)++;
 	}
 	else
 	{
@@ -6244,12 +6261,61 @@ static void
 RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue)
 {
 	if (currValue < minValue)
-		ereport(ERROR,
+	{
+		if (LocalHotStandbyActive)
+		{
+			bool		warned_for_promote = false;
+
+			ereport(WARNING,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("hot standby is not possible because of insufficient parameter settings"),
+					 errdetail("%s = %d is a lower setting than on the primary server, where its value was %d.",
+							   param_name,
+							   currValue,
+							   minValue)));
+
+			SetRecoveryPause(true);
+
+			ereport(LOG,
+					(errmsg("recovery has paused"),
+					 errdetail("If recovery is unpaused, the server will shut down."),
+					 errhint("You can then restart the server after making the necessary configuration changes.")));
+
+			while (RecoveryIsPaused())
+			{
+				HandleStartupProcInterrupts();
+
+				if (CheckForStandbyTrigger())
+				{
+					if (!warned_for_promote)
+						ereport(WARNING,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("promotion is not possible because of insufficient parameter settings"),
+								 /* Repeat the detail from above so it's easy to find in the log. */
+								 errdetail("%s = %d is a lower setting than on the primary server, where its value was %d.",
+										   param_name,
+										   currValue,
+										   minValue),
+								 errhint("Restart the server after making the necessary configuration changes.")));
+					warned_for_promote = true;
+				}
+
+				pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
+				pg_usleep(1000000L);	/* 1000 ms */
+				pgstat_report_wait_end();
+			}
+		}
+
+		ereport(FATAL,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("hot standby is not possible because %s = %d is a lower setting than on the primary server (its value was %d)",
-						param_name,
-						currValue,
-						minValue)));
+				 errmsg("recovery aborted because of insufficient parameter settings"),
+				 /* Repeat the detail from above so it's easy to find in the log. */
+				 errdetail("%s = %d is a lower setting than on the primary server, where its value was %d.",
+						   param_name,
+						   currValue,
+						   minValue),
+				 errhint("You can restart the server after making the necessary configuration changes.")));
+	}
 }
 
 /*
@@ -10418,7 +10484,7 @@ get_sync_bit(int method)
 	 *
 	 * Never use O_DIRECT in walreceiver process for similar reasons; the WAL
 	 * written by walreceiver is normally read by the startup process soon
-	 * after its written. Also, walreceiver performs unaligned writes, which
+	 * after it's written. Also, walreceiver performs unaligned writes, which
 	 * don't work with O_DIRECT, so it is required for correctness too.
 	 */
 	if (!XLogIsNeeded() && !AmWalReceiverProcess())

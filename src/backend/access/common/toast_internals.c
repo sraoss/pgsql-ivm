@@ -3,7 +3,7 @@
  * toast_internals.c
  *	  Functions for internal use by the TOAST system.
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/access/common/toast_internals.c
@@ -328,7 +328,7 @@ toast_save_datum(Relation rel, Datum value,
 							 toastrel,
 							 toastidxs[i]->rd_index->indisunique ?
 							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							 NULL);
+							 false, NULL);
 		}
 
 		/*

@@ -3,7 +3,7 @@
  * spi.c
  *				Server Programming Interface
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -50,6 +50,12 @@ static _SPI_connection *_SPI_stack = NULL;
 static _SPI_connection *_SPI_current = NULL;
 static int	_SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
 static int	_SPI_connected = -1;	/* current stack index */
+
+typedef struct SPICallbackArg
+{
+	const char *query;
+	RawParseMode mode;
+} SPICallbackArg;
 
 static Portal SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 									   ParamListInfo paramLI, bool read_only);
@@ -508,6 +514,7 @@ SPI_execute(const char *src, bool read_only, long tcount)
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = CURSOR_OPT_PARALLEL_OK;
 
 	_SPI_prepare_oneshot_plan(src, &plan);
@@ -681,6 +688,7 @@ SPI_execute_with_args(const char *src,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = CURSOR_OPT_PARALLEL_OK;
 	plan.nargs = nargs;
 	plan.argtypes = argtypes;
@@ -726,6 +734,7 @@ SPI_execute_with_receiver(const char *src,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = CURSOR_OPT_PARALLEL_OK;
 	if (params)
 	{
@@ -768,11 +777,48 @@ SPI_prepare_cursor(const char *src, int nargs, Oid *argtypes,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = cursorOptions;
 	plan.nargs = nargs;
 	plan.argtypes = argtypes;
 	plan.parserSetup = NULL;
 	plan.parserSetupArg = NULL;
+
+	_SPI_prepare_plan(src, &plan);
+
+	/* copy plan to procedure context */
+	result = _SPI_make_plan_non_temp(&plan);
+
+	_SPI_end_call(true);
+
+	return result;
+}
+
+SPIPlanPtr
+SPI_prepare_extended(const char *src,
+					 const SPIPrepareOptions *options)
+{
+	_SPI_plan	plan;
+	SPIPlanPtr	result;
+
+	if (src == NULL || options == NULL)
+	{
+		SPI_result = SPI_ERROR_ARGUMENT;
+		return NULL;
+	}
+
+	SPI_result = _SPI_begin_call(true);
+	if (SPI_result < 0)
+		return NULL;
+
+	memset(&plan, 0, sizeof(_SPI_plan));
+	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = options->parseMode;
+	plan.cursor_options = options->cursorOptions;
+	plan.nargs = 0;
+	plan.argtypes = NULL;
+	plan.parserSetup = options->parserSetup;
+	plan.parserSetupArg = options->parserSetupArg;
 
 	_SPI_prepare_plan(src, &plan);
 
@@ -805,6 +851,7 @@ SPI_prepare_params(const char *src,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = cursorOptions;
 	plan.nargs = 0;
 	plan.argtypes = NULL;
@@ -1340,6 +1387,7 @@ SPI_cursor_open_with_args(const char *name,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = cursorOptions;
 	plan.nargs = nargs;
 	plan.argtypes = argtypes;
@@ -1400,6 +1448,7 @@ SPI_cursor_parse_open_with_paramlist(const char *name,
 
 	memset(&plan, 0, sizeof(_SPI_plan));
 	plan.magic = _SPI_PLAN_MAGIC;
+	plan.parse_mode = RAW_PARSE_DEFAULT;
 	plan.cursor_options = cursorOptions;
 	if (params)
 	{
@@ -1436,6 +1485,7 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	Snapshot	snapshot;
 	MemoryContext oldcontext;
 	Portal		portal;
+	SPICallbackArg spicallbackarg;
 	ErrorContextCallback spierrcontext;
 
 	/*
@@ -1490,8 +1540,10 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	 * Setup error traceback support for ereport(), in case GetCachedPlan
 	 * throws an error.
 	 */
+	spicallbackarg.query = plansource->query_string;
+	spicallbackarg.mode = plan->parse_mode;
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, plansource->query_string);
+	spierrcontext.arg = &spicallbackarg;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -1909,6 +1961,7 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 {
 	CachedPlanSource *plansource;
 	CachedPlan *cplan;
+	SPICallbackArg spicallbackarg;
 	ErrorContextCallback spierrcontext;
 
 	Assert(plan->magic == _SPI_PLAN_MAGIC);
@@ -1923,8 +1976,10 @@ SPI_plan_get_cached_plan(SPIPlanPtr plan)
 	plansource = (CachedPlanSource *) linitial(plan->plancache_list);
 
 	/* Setup error traceback support for ereport() */
+	spicallbackarg.query = plansource->query_string;
+	spicallbackarg.mode = plan->parse_mode;
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, plansource->query_string);
+	spierrcontext.arg = &spicallbackarg;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2036,7 +2091,8 @@ spi_printtup(TupleTableSlot *slot, DestReceiver *self)
  * Parse and analyze a querystring.
  *
  * At entry, plan->argtypes and plan->nargs (or alternatively plan->parserSetup
- * and plan->parserSetupArg) must be valid, as must plan->cursor_options.
+ * and plan->parserSetupArg) must be valid, as must plan->parse_mode and
+ * plan->cursor_options.
  *
  * Results are stored into *plan (specifically, plan->plancache_list).
  * Note that the result data is all in CurrentMemoryContext or child contexts
@@ -2050,20 +2106,23 @@ _SPI_prepare_plan(const char *src, SPIPlanPtr plan)
 	List	   *raw_parsetree_list;
 	List	   *plancache_list;
 	ListCell   *list_item;
+	SPICallbackArg spicallbackarg;
 	ErrorContextCallback spierrcontext;
 
 	/*
 	 * Setup error traceback support for ereport()
 	 */
+	spicallbackarg.query = src;
+	spicallbackarg.mode = plan->parse_mode;
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, src);
+	spierrcontext.arg = &spicallbackarg;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
 	/*
 	 * Parse the request string into a list of raw parse trees.
 	 */
-	raw_parsetree_list = pg_parse_query(src);
+	raw_parsetree_list = raw_parser(src, plan->parse_mode);
 
 	/*
 	 * Do parse analysis and rule rewrite for each raw parsetree, storing the
@@ -2155,20 +2214,23 @@ _SPI_prepare_oneshot_plan(const char *src, SPIPlanPtr plan)
 	List	   *raw_parsetree_list;
 	List	   *plancache_list;
 	ListCell   *list_item;
+	SPICallbackArg spicallbackarg;
 	ErrorContextCallback spierrcontext;
 
 	/*
 	 * Setup error traceback support for ereport()
 	 */
+	spicallbackarg.query = src;
+	spicallbackarg.mode = plan->parse_mode;
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = unconstify(char *, src);
+	spierrcontext.arg = &spicallbackarg;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
 	/*
 	 * Parse the request string into a list of raw parse trees.
 	 */
-	raw_parsetree_list = pg_parse_query(src);
+	raw_parsetree_list = raw_parser(src, plan->parse_mode);
 
 	/*
 	 * Construct plancache entries, but don't do parse analysis yet.
@@ -2219,6 +2281,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 	SPITupleTable *my_tuptable = NULL;
 	int			res = 0;
 	bool		pushed_active_snap = false;
+	SPICallbackArg spicallbackarg;
 	ErrorContextCallback spierrcontext;
 	CachedPlan *cplan = NULL;
 	ListCell   *lc1;
@@ -2226,8 +2289,10 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 	/*
 	 * Setup error traceback support for ereport()
 	 */
+	spicallbackarg.query = NULL;	/* we'll fill this below */
+	spicallbackarg.mode = plan->parse_mode;
 	spierrcontext.callback = _SPI_error_callback;
-	spierrcontext.arg = NULL;	/* we'll fill this below */
+	spierrcontext.arg = &spicallbackarg;
 	spierrcontext.previous = error_context_stack;
 	error_context_stack = &spierrcontext;
 
@@ -2274,7 +2339,7 @@ _SPI_execute_plan(SPIPlanPtr plan, ParamListInfo paramLI,
 		List	   *stmt_list;
 		ListCell   *lc2;
 
-		spierrcontext.arg = unconstify(char *, plansource->query_string);
+		spicallbackarg.query = plansource->query_string;
 
 		/*
 		 * If this is a one-shot plan, we still need to do parse analysis.
@@ -2678,7 +2743,8 @@ _SPI_pquery(QueryDesc *queryDesc, bool fire_triggers, uint64 tcount)
 static void
 _SPI_error_callback(void *arg)
 {
-	const char *query = (const char *) arg;
+	SPICallbackArg *carg = (SPICallbackArg *) arg;
+	const char *query = carg->query;
 	int			syntaxerrposition;
 
 	if (query == NULL)			/* in case arg wasn't set yet */
@@ -2696,7 +2762,23 @@ _SPI_error_callback(void *arg)
 		internalerrquery(query);
 	}
 	else
-		errcontext("SQL statement \"%s\"", query);
+	{
+		/* Use the parse mode to decide how to describe the query */
+		switch (carg->mode)
+		{
+			case RAW_PARSE_PLPGSQL_EXPR:
+				errcontext("SQL expression \"%s\"", query);
+				break;
+			case RAW_PARSE_PLPGSQL_ASSIGN1:
+			case RAW_PARSE_PLPGSQL_ASSIGN2:
+			case RAW_PARSE_PLPGSQL_ASSIGN3:
+				errcontext("PL/pgSQL assignment \"%s\"", query);
+				break;
+			default:
+				errcontext("SQL statement \"%s\"", query);
+				break;
+		}
+	}
 }
 
 /*
@@ -2866,6 +2948,7 @@ _SPI_make_plan_non_temp(SPIPlanPtr plan)
 	newplan = (SPIPlanPtr) palloc0(sizeof(_SPI_plan));
 	newplan->magic = _SPI_PLAN_MAGIC;
 	newplan->plancxt = plancxt;
+	newplan->parse_mode = plan->parse_mode;
 	newplan->cursor_options = plan->cursor_options;
 	newplan->nargs = plan->nargs;
 	if (plan->nargs > 0)
@@ -2930,6 +3013,7 @@ _SPI_save_plan(SPIPlanPtr plan)
 	newplan = (SPIPlanPtr) palloc0(sizeof(_SPI_plan));
 	newplan->magic = _SPI_PLAN_MAGIC;
 	newplan->plancxt = plancxt;
+	newplan->parse_mode = plan->parse_mode;
 	newplan->cursor_options = plan->cursor_options;
 	newplan->nargs = plan->nargs;
 	if (plan->nargs > 0)

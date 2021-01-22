@@ -6,7 +6,7 @@
  * See comments in pg_list.h.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -273,6 +273,21 @@ list_make4_impl(NodeTag t, ListCell datum1, ListCell datum2,
 	list->elements[1] = datum2;
 	list->elements[2] = datum3;
 	list->elements[3] = datum4;
+	check_list_invariants(list);
+	return list;
+}
+
+List *
+list_make5_impl(NodeTag t, ListCell datum1, ListCell datum2,
+				ListCell datum3, ListCell datum4, ListCell datum5)
+{
+	List	   *list = new_list(t, 5);
+
+	list->elements[0] = datum1;
+	list->elements[1] = datum2;
+	list->elements[2] = datum3;
+	list->elements[3] = datum4;
+	list->elements[4] = datum5;
 	check_list_invariants(list);
 	return list;
 }

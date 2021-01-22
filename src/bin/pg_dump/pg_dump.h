@@ -3,7 +3,7 @@
  * pg_dump.h
  *	  Common header file for the pg_dump utility
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_dump/pg_dump.h
@@ -50,6 +50,7 @@ typedef enum
 	DO_COLLATION,
 	DO_CONVERSION,
 	DO_TABLE,
+	DO_TABLE_ATTACH,
 	DO_ATTRDEF,
 	DO_INDEX,
 	DO_INDEX_ATTACH,
@@ -339,6 +340,13 @@ typedef struct _tableInfo
 	struct _triggerInfo *triggers;	/* array of TriggerInfo structs */
 } TableInfo;
 
+typedef struct _tableAttachInfo
+{
+	DumpableObject dobj;
+	TableInfo  *parentTbl;		/* link to partitioned table */
+	TableInfo  *partitionTbl;	/* link to partition */
+} TableAttachInfo;
+
 typedef struct _attrDefInfo
 {
 	DumpableObject dobj;		/* note: dobj.name is name of table */
@@ -368,7 +376,7 @@ typedef struct _indxInfo
 	int			indnattrs;		/* total number of index attributes */
 	Oid		   *indkeys;		/* In spite of the name 'indkeys' this field
 								 * contains both key and nonkey attributes */
-	char	   *inddependcollnames;	/* FQ names of depended-on collations */
+	char	   *inddependcollnames; /* FQ names of depended-on collations */
 	char	   *inddependcollversions;	/* versions of the above */
 	bool		indisclustered;
 	bool		indisreplident;
@@ -616,8 +624,8 @@ typedef struct _PublicationInfo
 typedef struct _PublicationRelInfo
 {
 	DumpableObject dobj;
+	PublicationInfo *publication;
 	TableInfo  *pubtable;
-	char	   *pubname;
 } PublicationRelInfo;
 
 /*
@@ -668,6 +676,7 @@ extern OprInfo *findOprByOid(Oid oid);
 extern CollInfo *findCollationByOid(Oid oid);
 extern NamespaceInfo *findNamespaceByOid(Oid oid);
 extern ExtensionInfo *findExtensionByOid(Oid oid);
+extern PublicationInfo *findPublicationByOid(Oid oid);
 
 extern void setExtensionMembership(ExtensionMemberId *extmems, int nextmems);
 extern ExtensionInfo *findOwningExtension(CatalogId catalogId);
@@ -720,7 +729,8 @@ extern void processExtensionTables(Archive *fout, ExtensionInfo extinfo[],
 								   int numExtensions);
 extern EventTriggerInfo *getEventTriggers(Archive *fout, int *numEventTriggers);
 extern void getPolicies(Archive *fout, TableInfo tblinfo[], int numTables);
-extern void getPublications(Archive *fout);
+extern PublicationInfo *getPublications(Archive *fout,
+										int *numPublications);
 extern void getPublicationTables(Archive *fout, TableInfo tblinfo[],
 								 int numTables);
 extern void getSubscriptions(Archive *fout);

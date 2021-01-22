@@ -23,7 +23,7 @@ m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.6
 Untested combinations of 'autoconf' and PostgreSQL versions are not
 recommended.  You can remove the check from 'configure.ac' but it is then
 your responsibility whether the result works or not.])])
-AC_COPYRIGHT([Copyright (c) 1996-2020, PostgreSQL Global Development Group])
+AC_COPYRIGHT([Copyright (c) 1996-2021, PostgreSQL Global Development Group])
 AC_CONFIG_SRCDIR([src/backend/access/common/heaptuple.c])
 AC_CONFIG_AUX_DIR(config)
 AC_PREFIX_DEFAULT(/usr/local/pgsql)
@@ -1331,6 +1331,7 @@ AC_CHECK_HEADERS(m4_normalize([
 	sys/shm.h
 	sys/sockio.h
 	sys/tas.h
+	sys/uio.h
 	sys/un.h
 	termios.h
 	ucred.h
@@ -1663,6 +1664,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	pstat
 	pthread_is_threaded_np
 	readlink
+	readv
 	setproctitle
 	setproctitle_fast
 	setsid
@@ -1673,6 +1675,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	sync_file_range
 	uselocale
 	wcstombs_l
+	writev
 ]))
 
 # These typically are compiler builtins, for which AC_CHECK_FUNCS fails.
@@ -1734,7 +1737,9 @@ AC_REPLACE_FUNCS(m4_normalize([
 	link
 	mkdtemp
 	pread
+	preadv
 	pwrite
+	pwritev
 	random
 	srandom
 	strlcat
@@ -1757,11 +1762,13 @@ fi
 case $host_os in
         # Windows uses a specialised env handler
         mingw*)
+                AC_DEFINE(HAVE_SETENV, 1, [Define to 1 because replacement version used.])
                 AC_DEFINE(HAVE_UNSETENV, 1, [Define to 1 because replacement version used.])
+                ac_cv_func_setenv=yes
                 ac_cv_func_unsetenv=yes
                 ;;
         *)
-                AC_REPLACE_FUNCS([unsetenv])
+                AC_REPLACE_FUNCS([setenv unsetenv])
                 ;;
 esac
 

@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * src/bin/psql/help.c
  */
@@ -267,6 +267,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\du[S+] [PATTERN]      list roles\n"));
 	fprintf(output, _("  \\dv[S+] [PATTERN]      list views\n"));
 	fprintf(output, _("  \\dx[+]  [PATTERN]      list extensions\n"));
+	fprintf(output, _("  \\dX     [PATTERN]      list extended statistics\n"));
 	fprintf(output, _("  \\dy     [PATTERN]      list event triggers\n"));
 	fprintf(output, _("  \\l[+]   [PATTERN]      list databases\n"));
 	fprintf(output, _("  \\sf[+]  FUNCNAME       show a function's definition\n"));
@@ -671,7 +672,7 @@ print_copyright(void)
 {
 	puts("PostgreSQL Database Management System\n"
 		 "(formerly known as Postgres, then as Postgres95)\n\n"
-		 "Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group\n\n"
+		 "Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group\n\n"
 		 "Portions Copyright (c) 1994, The Regents of the University of California\n\n"
 		 "Permission to use, copy, modify, and distribute this software and its\n"
 		 "documentation for any purpose, without fee, and without a written agreement\n"

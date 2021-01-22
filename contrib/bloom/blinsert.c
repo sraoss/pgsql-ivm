@@ -3,7 +3,7 @@
  * blinsert.c
  *		Bloom index build and insert functions.
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  contrib/bloom/blinsert.c
@@ -198,6 +198,7 @@ bool
 blinsert(Relation index, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
+		 bool indexUnchanged,
 		 IndexInfo *indexInfo)
 {
 	BloomState	blstate;

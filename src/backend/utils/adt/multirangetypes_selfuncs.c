@@ -6,7 +6,7 @@
  * Estimates are based on histograms of lower and upper bounds, and the
  * fraction of empty multiranges.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -86,6 +86,8 @@ default_multirange_selectivity(Oid operator)
 		case OID_RANGE_OVERLAPS_MULTIRANGE_OP:
 			return 0.01;
 
+		case OID_RANGE_CONTAINS_MULTIRANGE_OP:
+		case OID_RANGE_MULTIRANGE_CONTAINED_OP:
 		case OID_MULTIRANGE_CONTAINS_RANGE_OP:
 		case OID_MULTIRANGE_CONTAINS_MULTIRANGE_OP:
 		case OID_MULTIRANGE_RANGE_CONTAINED_OP:
@@ -224,7 +226,8 @@ multirangesel(PG_FUNCTION_ARGS)
 											  1, &constrange);
 		}
 	}
-	else if (operator == OID_MULTIRANGE_CONTAINS_RANGE_OP ||
+	else if (operator == OID_RANGE_MULTIRANGE_CONTAINED_OP ||
+			 operator == OID_MULTIRANGE_CONTAINS_RANGE_OP ||
 			 operator == OID_MULTIRANGE_OVERLAPS_RANGE_OP ||
 			 operator == OID_MULTIRANGE_OVERLAPS_LEFT_RANGE_OP ||
 			 operator == OID_MULTIRANGE_OVERLAPS_RIGHT_RANGE_OP ||
@@ -248,6 +251,7 @@ multirangesel(PG_FUNCTION_ARGS)
 			 operator == OID_RANGE_OVERLAPS_RIGHT_MULTIRANGE_OP ||
 			 operator == OID_RANGE_LEFT_MULTIRANGE_OP ||
 			 operator == OID_RANGE_RIGHT_MULTIRANGE_OP ||
+			 operator == OID_RANGE_CONTAINS_MULTIRANGE_OP ||
 			 operator == OID_MULTIRANGE_ELEM_CONTAINED_OP ||
 			 operator == OID_MULTIRANGE_RANGE_CONTAINED_OP)
 	{
@@ -645,6 +649,7 @@ calc_hist_selectivity(TypeCacheEntry *typcache, VariableStatData *vardata,
 
 		case OID_MULTIRANGE_RANGE_CONTAINED_OP:
 		case OID_MULTIRANGE_MULTIRANGE_CONTAINED_OP:
+		case OID_RANGE_MULTIRANGE_CONTAINED_OP:
 			if (const_lower.infinite)
 			{
 				/*

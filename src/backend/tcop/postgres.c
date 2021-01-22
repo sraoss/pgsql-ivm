@@ -3,7 +3,7 @@
  * postgres.c
  *	  POSTGRES C Backend Interface
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -67,6 +67,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
+#include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
@@ -634,7 +635,7 @@ pg_parse_query(const char *query_string)
 	if (log_parser_stats)
 		ResetUsage();
 
-	raw_parsetree_list = raw_parser(query_string);
+	raw_parsetree_list = raw_parser(query_string, RAW_PARSE_DEFAULT);
 
 	if (log_parser_stats)
 		ShowUsage("PARSER STATISTICS");
@@ -2752,8 +2753,8 @@ drop_unnamed_stmt(void)
 /*
  * quickdie() occurs when signaled SIGQUIT by the postmaster.
  *
- * Some backend has bought the farm,
- * so we need to stop what we're doing and exit.
+ * Either some backend has bought the farm, or we've been told to shut down
+ * "immediately"; so we need to stop what we're doing and exit.
  */
 void
 quickdie(SIGNAL_ARGS)
@@ -2788,18 +2789,48 @@ quickdie(SIGNAL_ARGS)
 	 * wrong, so there's not much to lose.  Assuming the postmaster is still
 	 * running, it will SIGKILL us soon if we get stuck for some reason.
 	 *
-	 * Ideally this should be ereport(FATAL), but then we'd not get control
-	 * back...
+	 * One thing we can do to make this a tad safer is to clear the error
+	 * context stack, so that context callbacks are not called.  That's a lot
+	 * less code that could be reached here, and the context info is unlikely
+	 * to be very relevant to a SIGQUIT report anyway.
 	 */
-	ereport(WARNING,
-			(errcode(ERRCODE_CRASH_SHUTDOWN),
-			 errmsg("terminating connection because of crash of another server process"),
-			 errdetail("The postmaster has commanded this server process to roll back"
-					   " the current transaction and exit, because another"
-					   " server process exited abnormally and possibly corrupted"
-					   " shared memory."),
-			 errhint("In a moment you should be able to reconnect to the"
-					 " database and repeat your command.")));
+	error_context_stack = NULL;
+
+	/*
+	 * When responding to a postmaster-issued signal, we send the message only
+	 * to the client; sending to the server log just creates log spam, plus
+	 * it's more code that we need to hope will work in a signal handler.
+	 *
+	 * Ideally these should be ereport(FATAL), but then we'd not get control
+	 * back to force the correct type of process exit.
+	 */
+	switch (GetQuitSignalReason())
+	{
+		case PMQUIT_NOT_SENT:
+			/* Hmm, SIGQUIT arrived out of the blue */
+			ereport(WARNING,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating connection because of unexpected SIGQUIT signal")));
+			break;
+		case PMQUIT_FOR_CRASH:
+			/* A crash-and-restart cycle is in progress */
+			ereport(WARNING_CLIENT_ONLY,
+					(errcode(ERRCODE_CRASH_SHUTDOWN),
+					 errmsg("terminating connection because of crash of another server process"),
+					 errdetail("The postmaster has commanded this server process to roll back"
+							   " the current transaction and exit, because another"
+							   " server process exited abnormally and possibly corrupted"
+							   " shared memory."),
+					 errhint("In a moment you should be able to reconnect to the"
+							 " database and repeat your command.")));
+			break;
+		case PMQUIT_FOR_STOP:
+			/* Immediate-mode stop */
+			ereport(WARNING_CLIENT_ONLY,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating connection due to immediate shutdown command")));
+			break;
+	}
 
 	/*
 	 * We DO NOT want to run proc_exit() or atexit() callbacks -- we're here
@@ -2833,6 +2864,9 @@ die(SIGNAL_ARGS)
 		InterruptPending = true;
 		ProcDiePending = true;
 	}
+
+	/* for the statistics collector */
+	pgStatSessionEndCause = DISCONNECT_KILLED;
 
 	/* If we're still here, waken anything waiting on the process latch */
 	SetLatch(MyLatch);
@@ -2919,11 +2953,23 @@ RecoveryConflictInterrupt(ProcSignalReason reason)
 			case PROCSIG_RECOVERY_CONFLICT_BUFFERPIN:
 
 				/*
-				 * If we aren't blocking the Startup process there is nothing
-				 * more to do.
+				 * If PROCSIG_RECOVERY_CONFLICT_BUFFERPIN is requested but we
+				 * aren't blocking the Startup process there is nothing more
+				 * to do.
+				 *
+				 * When PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK is
+				 * requested, if we're waiting for locks and the startup
+				 * process is not waiting for buffer pin (i.e., also waiting
+				 * for locks), we set the flag so that ProcSleep() will check
+				 * for deadlocks.
 				 */
 				if (!HoldingBufferPinThatDelaysRecovery())
+				{
+					if (reason == PROCSIG_RECOVERY_CONFLICT_STARTUP_DEADLOCK &&
+						GetStartupBufferPinWaitBufId() < 0)
+						CheckDeadLockAlert();
 					return;
+				}
 
 				MyProc->recoveryConflictPending = true;
 
@@ -3199,14 +3245,28 @@ ProcessInterrupts(void)
 
 	if (IdleInTransactionSessionTimeoutPending)
 	{
-		/* Has the timeout setting changed since last we looked? */
+		/*
+		 * If the GUC has been reset to zero, ignore the signal.  This is
+		 * important because the GUC update itself won't disable any pending
+		 * interrupt.
+		 */
 		if (IdleInTransactionSessionTimeout > 0)
 			ereport(FATAL,
 					(errcode(ERRCODE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT),
 					 errmsg("terminating connection due to idle-in-transaction timeout")));
 		else
 			IdleInTransactionSessionTimeoutPending = false;
+	}
 
+	if (IdleSessionTimeoutPending)
+	{
+		/* As above, ignore the signal if the GUC has been reset to zero. */
+		if (IdleSessionTimeout > 0)
+			ereport(FATAL,
+					(errcode(ERRCODE_IDLE_SESSION_TIMEOUT),
+					 errmsg("terminating connection due to idle-session timeout")));
+		else
+			IdleSessionTimeoutPending = false;
 	}
 
 	if (ProcSignalBarrierPending)
@@ -3783,7 +3843,8 @@ PostgresMain(int argc, char *argv[],
 	StringInfoData input_message;
 	sigjmp_buf	local_sigjmp_buf;
 	volatile bool send_ready_for_query = true;
-	bool		disable_idle_in_transaction_timeout = false;
+	bool		idle_in_transaction_timeout_enabled = false;
+	bool		idle_session_timeout_enabled = false;
 
 	/* Initialize startup process environment if necessary. */
 	if (!IsUnderPostmaster)
@@ -4185,6 +4246,8 @@ PostgresMain(int argc, char *argv[],
 		 * processing of batched messages, and because we don't want to report
 		 * uncommitted updates (that confuses autovacuum).  The notification
 		 * processor wants a call too, if we are not in a transaction block.
+		 *
+		 * Also, if an idle timeout is enabled, start the timer for that.
 		 */
 		if (send_ready_for_query)
 		{
@@ -4196,7 +4259,7 @@ PostgresMain(int argc, char *argv[],
 				/* Start the idle-in-transaction timer */
 				if (IdleInTransactionSessionTimeout > 0)
 				{
-					disable_idle_in_transaction_timeout = true;
+					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 										 IdleInTransactionSessionTimeout);
 				}
@@ -4209,7 +4272,7 @@ PostgresMain(int argc, char *argv[],
 				/* Start the idle-in-transaction timer */
 				if (IdleInTransactionSessionTimeout > 0)
 				{
-					disable_idle_in_transaction_timeout = true;
+					idle_in_transaction_timeout_enabled = true;
 					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
 										 IdleInTransactionSessionTimeout);
 				}
@@ -4232,6 +4295,14 @@ PostgresMain(int argc, char *argv[],
 
 				set_ps_display("idle");
 				pgstat_report_activity(STATE_IDLE, NULL);
+
+				/* Start the idle-session timer */
+				if (IdleSessionTimeout > 0)
+				{
+					idle_session_timeout_enabled = true;
+					enable_timeout_after(IDLE_SESSION_TIMEOUT,
+										 IdleSessionTimeout);
+				}
 			}
 
 			/* Report any recently-changed GUC options */
@@ -4255,7 +4326,26 @@ PostgresMain(int argc, char *argv[],
 		firstchar = ReadCommand(&input_message);
 
 		/*
-		 * (4) disable async signal conditions again.
+		 * (4) turn off the idle-in-transaction and idle-session timeouts, if
+		 * active.  We do this before step (5) so that any last-moment timeout
+		 * is certain to be detected in step (5).
+		 *
+		 * At most one of these timeouts will be active, so there's no need to
+		 * worry about combining the timeout.c calls into one.
+		 */
+		if (idle_in_transaction_timeout_enabled)
+		{
+			disable_timeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT, false);
+			idle_in_transaction_timeout_enabled = false;
+		}
+		if (idle_session_timeout_enabled)
+		{
+			disable_timeout(IDLE_SESSION_TIMEOUT, false);
+			idle_session_timeout_enabled = false;
+		}
+
+		/*
+		 * (5) disable async signal conditions again.
 		 *
 		 * Query cancel is supposed to be a no-op when there is no query in
 		 * progress, so if a query cancel arrived while we were idle, just
@@ -4265,15 +4355,6 @@ PostgresMain(int argc, char *argv[],
 		 */
 		CHECK_FOR_INTERRUPTS();
 		DoingCommandRead = false;
-
-		/*
-		 * (5) turn off the idle-in-transaction timeout
-		 */
-		if (disable_idle_in_transaction_timeout)
-		{
-			disable_timeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT, false);
-			disable_idle_in_transaction_timeout = false;
-		}
 
 		/*
 		 * (6) check for any other interesting events that happened while we
@@ -4501,8 +4582,14 @@ PostgresMain(int argc, char *argv[],
 				 * means unexpected loss of frontend connection. Either way,
 				 * perform normal shutdown.
 				 */
-			case 'X':
 			case EOF:
+
+				/* for the statistics collector */
+				pgStatSessionEndCause = DISCONNECT_CLIENT_EOF;
+
+				/* FALLTHROUGH */
+
+			case 'X':
 
 				/*
 				 * Reset whereToSendOutput to prevent ereport from attempting

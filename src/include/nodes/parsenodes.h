@@ -12,7 +12,7 @@
  * identifying statement boundaries in multi-statement source strings.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/parsenodes.h
@@ -1674,6 +1674,25 @@ typedef struct SetOperationStmt
 	List	   *groupClauses;	/* a list of SortGroupClause's */
 	/* groupClauses is NIL if UNION ALL, but must be set otherwise */
 } SetOperationStmt;
+
+
+/* ----------------------
+ *		PL/pgSQL Assignment Statement
+ *
+ * Like SelectStmt, this is transformed into a SELECT Query.
+ * However, the targetlist of the result looks more like an UPDATE.
+ * ----------------------
+ */
+typedef struct PLAssignStmt
+{
+	NodeTag		type;
+
+	char	   *name;			/* initial column name */
+	List	   *indirection;	/* subscripts and field names, if any */
+	int			nnames;			/* number of names to use in ColumnRef */
+	SelectStmt *val;			/* the PL/pgSQL expression to assign */
+	int			location;		/* name's token location, or -1 if unknown */
+} PLAssignStmt;
 
 
 /*****************************************************************************

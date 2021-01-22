@@ -3,7 +3,7 @@
  * amapi.h
  *	  API for Postgres index access methods.
  *
- * Copyright (c) 2015-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2015-2021, PostgreSQL Global Development Group
  *
  * src/include/access/amapi.h
  *
@@ -110,6 +110,7 @@ typedef bool (*aminsert_function) (Relation indexRelation,
 								   ItemPointer heap_tid,
 								   Relation heapRelation,
 								   IndexUniqueCheck checkUnique,
+								   bool indexUnchanged,
 								   struct IndexInfo *indexInfo);
 
 /* bulk delete */

@@ -3,7 +3,7 @@
  * xlogreader.c
  *		Generic XLog reading facility
  *
- * Portions Copyright (c) 2013-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2013-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/backend/access/transam/xlogreader.c
@@ -1545,7 +1545,7 @@ XLogRecGetBlockData(XLogReaderState *record, uint8 block_id, Size *len)
 /*
  * Restore a full-page image from a backup block attached to an XLOG record.
  *
- * Returns the buffer number containing the page.
+ * Returns true if a full-page image is restored.
  */
 bool
 RestoreBlockImage(XLogReaderState *record, uint8 block_id, char *page)

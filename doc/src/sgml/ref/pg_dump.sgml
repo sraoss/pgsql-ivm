@@ -176,8 +176,8 @@ PostgreSQL documentation
        </para>
 
        <para>
-        This option is only meaningful for the plain-text format.  For
-        the archive formats, you can specify the option when you
+        This option is ignored when emitting an archive (non-text) output
+        file.  For the archive formats, you can specify the option when you
         call <command>pg_restore</command>.
        </para>
       </listitem>
@@ -208,8 +208,8 @@ PostgreSQL documentation
        </para>
 
        <para>
-        This option is only meaningful for the plain-text format.  For
-        the archive formats, you can specify the option when you
+        This option is ignored when emitting an archive (non-text) output
+        file.  For the archive formats, you can specify the option when you
         call <command>pg_restore</command>.
        </para>
       </listitem>
@@ -456,8 +456,8 @@ PostgreSQL documentation
        </para>
 
        <para>
-        This option is only meaningful for the plain-text format.  For
-        the archive formats, you can specify the option when you
+        This option is ignored when emitting an archive (non-text) output
+        file.  For the archive formats, you can specify the option when you
         call <command>pg_restore</command>.
        </para>
       </listitem>
@@ -621,7 +621,7 @@ PostgreSQL documentation
       <listitem>
        <para>
         Specify the compression level to use.  Zero means no compression.
-        For the custom archive format, this specifies compression of
+        For the custom and directory archive formats, this specifies compression of
         individual table-data segments, and the default is to compress
         at a moderate level.
         For plain text output, setting a nonzero compression level causes
@@ -693,8 +693,8 @@ PostgreSQL documentation
        </para>
 
        <para>
-        This option is only meaningful for the plain-text format.  For
-        the archive formats, you can specify the option when you
+        This option is ignored when emitting an archive (non-text) output
+        file.  For the archive formats, you can specify the option when you
         call <command>pg_restore</command>.
        </para>
       </listitem>
@@ -924,8 +924,8 @@ PostgreSQL documentation
        </para>
 
        <para>
-        This option is only meaningful for the plain-text format.  For
-        the archive formats, you can specify the option when you
+        This option is ignored when emitting an archive (non-text) output
+        file.  For the archive formats, you can specify the option when you
         call <command>pg_restore</command>.
        </para>
       </listitem>

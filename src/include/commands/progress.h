@@ -7,7 +7,7 @@
  *	  constants, you probably also need to update the views based on them
  *	  in system_views.sql.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/commands/progress.h
@@ -132,5 +132,10 @@
 #define PROGRESS_BASEBACKUP_PHASE_STREAM_BACKUP			3
 #define PROGRESS_BASEBACKUP_PHASE_WAIT_WAL_ARCHIVE		4
 #define PROGRESS_BASEBACKUP_PHASE_TRANSFER_WAL			5
+
+/* Commands of PROGRESS_COPY */
+#define PROGRESS_COPY_BYTES_PROCESSED 0
+#define PROGRESS_COPY_BYTES_TOTAL 1
+#define PROGRESS_COPY_LINES_PROCESSED 2
 
 #endif

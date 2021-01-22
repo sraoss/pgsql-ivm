@@ -3,7 +3,7 @@
  * pl_exec.c		- Executor for the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -333,8 +333,7 @@ static void exec_prepare_plan(PLpgSQL_execstate *estate,
 							  bool keepplan);
 static void exec_simple_check_plan(PLpgSQL_execstate *estate, PLpgSQL_expr *expr);
 static void exec_save_simple_expr(PLpgSQL_expr *expr, CachedPlan *cplan);
-static void exec_check_rw_parameter(PLpgSQL_expr *expr, int target_dno);
-static bool contains_target_param(Node *node, int *target_dno);
+static void exec_check_rw_parameter(PLpgSQL_expr *expr);
 static bool exec_eval_simple_expr(PLpgSQL_execstate *estate,
 								  PLpgSQL_expr *expr,
 								  Datum *result,
@@ -1311,12 +1310,11 @@ copy_plpgsql_datums(PLpgSQL_execstate *estate,
 
 			case PLPGSQL_DTYPE_ROW:
 			case PLPGSQL_DTYPE_RECFIELD:
-			case PLPGSQL_DTYPE_ARRAYELEM:
 
 				/*
 				 * These datum records are read-only at runtime, so no need to
-				 * copy them (well, RECFIELD and ARRAYELEM contain cached
-				 * data, but we'd just as soon centralize the caching anyway).
+				 * copy them (well, RECFIELD contains cached data, but we'd
+				 * just as soon centralize the caching anyway).
 				 */
 				outdatum = indatum;
 				break;
@@ -2235,8 +2233,8 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 			int			i;
 			ListCell   *lc;
 
-			/* Use eval_mcontext for any cruft accumulated here */
-			oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
+			/* Use stmt_mcontext for any cruft accumulated here */
+			oldcontext = MemoryContextSwitchTo(get_stmt_mcontext(estate));
 
 			/*
 			 * Get the parsed CallStmt, and look up the called procedure
@@ -2282,7 +2280,7 @@ exec_stmt_call(PLpgSQL_execstate *estate, PLpgSQL_stmt_call *stmt)
 			row->varnos = (int *) palloc(sizeof(int) * list_length(funcargs));
 
 			if (!local_plan)
-				MemoryContextSwitchTo(get_eval_mcontext(estate));
+				MemoryContextSwitchTo(get_stmt_mcontext(estate));
 
 			/*
 			 * Examine procedure's argument list.  Each output arg position
@@ -4136,9 +4134,6 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
  *
  * NB: the result of the evaluation is no longer valid after this is done,
  * unless it is a pass-by-value datatype.
- *
- * NB: if you change this code, see also the hacks in exec_assign_value's
- * PLPGSQL_DTYPE_ARRAYELEM case for partial cleanup after subscript evals.
  * ----------
  */
 static void
@@ -4168,6 +4163,7 @@ exec_prepare_plan(PLpgSQL_execstate *estate,
 				  bool keepplan)
 {
 	SPIPlanPtr	plan;
+	SPIPrepareOptions options;
 
 	/*
 	 * The grammar can't conveniently set expr->func while building the parse
@@ -4178,12 +4174,14 @@ exec_prepare_plan(PLpgSQL_execstate *estate,
 	/*
 	 * Generate and save the plan
 	 */
-	plan = SPI_prepare_params(expr->query,
-							  (ParserSetupHook) plpgsql_parser_setup,
-							  (void *) expr,
-							  cursorOptions);
+	memset(&options, 0, sizeof(options));
+	options.parserSetup = (ParserSetupHook) plpgsql_parser_setup;
+	options.parserSetupArg = (void *) expr;
+	options.parseMode = expr->parseMode;
+	options.cursorOptions = cursorOptions;
+	plan = SPI_prepare_extended(expr->query, &options);
 	if (plan == NULL)
-		elog(ERROR, "SPI_prepare_params failed for \"%s\": %s",
+		elog(ERROR, "SPI_prepare_extended failed for \"%s\": %s",
 			 expr->query, SPI_result_code_string(SPI_result));
 	if (keepplan)
 		SPI_keepplan(plan);
@@ -4191,13 +4189,6 @@ exec_prepare_plan(PLpgSQL_execstate *estate,
 
 	/* Check to see if it's a simple expression */
 	exec_simple_check_plan(estate, expr);
-
-	/*
-	 * Mark expression as not using a read-write param.  exec_assign_value has
-	 * to take steps to override this if appropriate; that seems cleaner than
-	 * adding parameters to all other callers.
-	 */
-	expr->rwparam = -1;
 }
 
 
@@ -5025,16 +5016,23 @@ exec_assign_expr(PLpgSQL_execstate *estate, PLpgSQL_datum *target,
 	int32		valtypmod;
 
 	/*
-	 * If first time through, create a plan for this expression, and then see
-	 * if we can pass the target variable as a read-write parameter to the
-	 * expression.  (This is a bit messy, but it seems cleaner than modifying
-	 * the API of exec_eval_expr for the purpose.)
+	 * If first time through, create a plan for this expression.
 	 */
 	if (expr->plan == NULL)
 	{
-		exec_prepare_plan(estate, expr, 0, true);
+		/*
+		 * Mark the expression as being an assignment source, if target is a
+		 * simple variable.  (This is a bit messy, but it seems cleaner than
+		 * modifying the API of exec_prepare_plan for the purpose.  We need to
+		 * stash the target dno into the expr anyway, so that it will be
+		 * available if we have to replan.)
+		 */
 		if (target->dtype == PLPGSQL_DTYPE_VAR)
-			exec_check_rw_parameter(expr, target->dno);
+			expr->target_param = target->dno;
+		else
+			expr->target_param = -1;	/* should be that already */
+
+		exec_prepare_plan(estate, expr, 0, true);
 	}
 
 	value = exec_eval_expr(estate, expr, &isnull, &valtype, &valtypmod);
@@ -5285,198 +5283,6 @@ exec_assign_value(PLpgSQL_execstate *estate,
 				break;
 			}
 
-		case PLPGSQL_DTYPE_ARRAYELEM:
-			{
-				/*
-				 * Target is an element of an array
-				 */
-				PLpgSQL_arrayelem *arrayelem;
-				int			nsubscripts;
-				int			i;
-				PLpgSQL_expr *subscripts[MAXDIM];
-				int			subscriptvals[MAXDIM];
-				Datum		oldarraydatum,
-							newarraydatum,
-							coerced_value;
-				bool		oldarrayisnull;
-				Oid			parenttypoid;
-				int32		parenttypmod;
-				SPITupleTable *save_eval_tuptable;
-				MemoryContext oldcontext;
-
-				/*
-				 * We need to do subscript evaluation, which might require
-				 * evaluating general expressions; and the caller might have
-				 * done that too in order to prepare the input Datum.  We have
-				 * to save and restore the caller's SPI_execute result, if
-				 * any.
-				 */
-				save_eval_tuptable = estate->eval_tuptable;
-				estate->eval_tuptable = NULL;
-
-				/*
-				 * To handle constructs like x[1][2] := something, we have to
-				 * be prepared to deal with a chain of arrayelem datums. Chase
-				 * back to find the base array datum, and save the subscript
-				 * expressions as we go.  (We are scanning right to left here,
-				 * but want to evaluate the subscripts left-to-right to
-				 * minimize surprises.)  Note that arrayelem is left pointing
-				 * to the leftmost arrayelem datum, where we will cache the
-				 * array element type data.
-				 */
-				nsubscripts = 0;
-				do
-				{
-					arrayelem = (PLpgSQL_arrayelem *) target;
-					if (nsubscripts >= MAXDIM)
-						ereport(ERROR,
-								(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-								 errmsg("number of array dimensions (%d) exceeds the maximum allowed (%d)",
-										nsubscripts + 1, MAXDIM)));
-					subscripts[nsubscripts++] = arrayelem->subscript;
-					target = estate->datums[arrayelem->arrayparentno];
-				} while (target->dtype == PLPGSQL_DTYPE_ARRAYELEM);
-
-				/* Fetch current value of array datum */
-				exec_eval_datum(estate, target,
-								&parenttypoid, &parenttypmod,
-								&oldarraydatum, &oldarrayisnull);
-
-				/* Update cached type data if necessary */
-				if (arrayelem->parenttypoid != parenttypoid ||
-					arrayelem->parenttypmod != parenttypmod)
-				{
-					Oid			arraytypoid;
-					int32		arraytypmod = parenttypmod;
-					int16		arraytyplen;
-					Oid			elemtypoid;
-					int16		elemtyplen;
-					bool		elemtypbyval;
-					char		elemtypalign;
-
-					/* If target is domain over array, reduce to base type */
-					arraytypoid = getBaseTypeAndTypmod(parenttypoid,
-													   &arraytypmod);
-
-					/* ... and identify the element type */
-					elemtypoid = get_element_type(arraytypoid);
-					if (!OidIsValid(elemtypoid))
-						ereport(ERROR,
-								(errcode(ERRCODE_DATATYPE_MISMATCH),
-								 errmsg("subscripted object is not an array")));
-
-					/* Collect needed data about the types */
-					arraytyplen = get_typlen(arraytypoid);
-
-					get_typlenbyvalalign(elemtypoid,
-										 &elemtyplen,
-										 &elemtypbyval,
-										 &elemtypalign);
-
-					/* Now safe to update the cached data */
-					arrayelem->parenttypoid = parenttypoid;
-					arrayelem->parenttypmod = parenttypmod;
-					arrayelem->arraytypoid = arraytypoid;
-					arrayelem->arraytypmod = arraytypmod;
-					arrayelem->arraytyplen = arraytyplen;
-					arrayelem->elemtypoid = elemtypoid;
-					arrayelem->elemtyplen = elemtyplen;
-					arrayelem->elemtypbyval = elemtypbyval;
-					arrayelem->elemtypalign = elemtypalign;
-				}
-
-				/*
-				 * Evaluate the subscripts, switch into left-to-right order.
-				 * Like the expression built by ExecInitSubscriptingRef(),
-				 * complain if any subscript is null.
-				 */
-				for (i = 0; i < nsubscripts; i++)
-				{
-					bool		subisnull;
-
-					subscriptvals[i] =
-						exec_eval_integer(estate,
-										  subscripts[nsubscripts - 1 - i],
-										  &subisnull);
-					if (subisnull)
-						ereport(ERROR,
-								(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-								 errmsg("array subscript in assignment must not be null")));
-
-					/*
-					 * Clean up in case the subscript expression wasn't
-					 * simple. We can't do exec_eval_cleanup, but we can do
-					 * this much (which is safe because the integer subscript
-					 * value is surely pass-by-value), and we must do it in
-					 * case the next subscript expression isn't simple either.
-					 */
-					if (estate->eval_tuptable != NULL)
-						SPI_freetuptable(estate->eval_tuptable);
-					estate->eval_tuptable = NULL;
-				}
-
-				/* Now we can restore caller's SPI_execute result if any. */
-				Assert(estate->eval_tuptable == NULL);
-				estate->eval_tuptable = save_eval_tuptable;
-
-				/* Coerce source value to match array element type. */
-				coerced_value = exec_cast_value(estate,
-												value,
-												&isNull,
-												valtype,
-												valtypmod,
-												arrayelem->elemtypoid,
-												arrayelem->arraytypmod);
-
-				/*
-				 * If the original array is null, cons up an empty array so
-				 * that the assignment can proceed; we'll end with a
-				 * one-element array containing just the assigned-to
-				 * subscript.  This only works for varlena arrays, though; for
-				 * fixed-length array types we skip the assignment.  We can't
-				 * support assignment of a null entry into a fixed-length
-				 * array, either, so that's a no-op too.  This is all ugly but
-				 * corresponds to the current behavior of execExpr*.c.
-				 */
-				if (arrayelem->arraytyplen > 0 &&	/* fixed-length array? */
-					(oldarrayisnull || isNull))
-					return;
-
-				/* empty array, if any, and newarraydatum are short-lived */
-				oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
-
-				if (oldarrayisnull)
-					oldarraydatum = PointerGetDatum(construct_empty_array(arrayelem->elemtypoid));
-
-				/*
-				 * Build the modified array value.
-				 */
-				newarraydatum = array_set_element(oldarraydatum,
-												  nsubscripts,
-												  subscriptvals,
-												  coerced_value,
-												  isNull,
-												  arrayelem->arraytyplen,
-												  arrayelem->elemtyplen,
-												  arrayelem->elemtypbyval,
-												  arrayelem->elemtypalign);
-
-				MemoryContextSwitchTo(oldcontext);
-
-				/*
-				 * Assign the new array to the base variable.  It's never NULL
-				 * at this point.  Note that if the target is a domain,
-				 * coercing the base array type back up to the domain will
-				 * happen within exec_assign_value.
-				 */
-				exec_assign_value(estate, target,
-								  newarraydatum,
-								  false,
-								  arrayelem->arraytypoid,
-								  arrayelem->arraytypmod);
-				break;
-			}
-
 		default:
 			elog(ERROR, "unrecognized dtype: %d", target->dtype);
 	}
@@ -5487,8 +5293,8 @@ exec_assign_value(PLpgSQL_execstate *estate,
  *
  * The type oid, typmod, value in Datum format, and null flag are returned.
  *
- * At present this doesn't handle PLpgSQL_expr or PLpgSQL_arrayelem datums;
- * that's not needed because we never pass references to such datums to SPI.
+ * At present this doesn't handle PLpgSQL_expr datums; that's not needed
+ * because we never pass references to such datums to SPI.
  *
  * NOTE: the returned Datum points right at the stored value in the case of
  * pass-by-reference datatypes.  Generally callers should take care not to
@@ -6291,6 +6097,7 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 			ReleaseCachedPlan(cplan, true);
 			/* Mark expression as non-simple, and fail */
 			expr->expr_simple_expr = NULL;
+			expr->expr_rw_param = NULL;
 			return false;
 		}
 
@@ -6302,10 +6109,6 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 
 		/* Extract desired scalar expression from cached plan */
 		exec_save_simple_expr(expr, cplan);
-
-		/* better recheck r/w safety, as it could change due to inlining */
-		if (expr->rwparam >= 0)
-			exec_check_rw_parameter(expr, expr->rwparam);
 	}
 
 	/*
@@ -6578,20 +6381,18 @@ plpgsql_param_fetch(ParamListInfo params,
 	prm->pflags = PARAM_FLAG_CONST;
 
 	/*
-	 * If it's a read/write expanded datum, convert reference to read-only,
-	 * unless it's safe to pass as read-write.
+	 * If it's a read/write expanded datum, convert reference to read-only.
+	 * (There's little point in trying to optimize read/write parameters,
+	 * given the cases in which this function is used.)
 	 */
-	if (dno != expr->rwparam)
-	{
-		if (datum->dtype == PLPGSQL_DTYPE_VAR)
-			prm->value = MakeExpandedObjectReadOnly(prm->value,
-													prm->isnull,
-													((PLpgSQL_var *) datum)->datatype->typlen);
-		else if (datum->dtype == PLPGSQL_DTYPE_REC)
-			prm->value = MakeExpandedObjectReadOnly(prm->value,
-													prm->isnull,
-													-1);
-	}
+	if (datum->dtype == PLPGSQL_DTYPE_VAR)
+		prm->value = MakeExpandedObjectReadOnly(prm->value,
+												prm->isnull,
+												((PLpgSQL_var *) datum)->datatype->typlen);
+	else if (datum->dtype == PLPGSQL_DTYPE_REC)
+		prm->value = MakeExpandedObjectReadOnly(prm->value,
+												prm->isnull,
+												-1);
 
 	return prm;
 }
@@ -6634,7 +6435,7 @@ plpgsql_param_compile(ParamListInfo params, Param *param,
 	 */
 	if (datum->dtype == PLPGSQL_DTYPE_VAR)
 	{
-		if (dno != expr->rwparam &&
+		if (param != expr->expr_rw_param &&
 			((PLpgSQL_var *) datum)->datatype->typlen == -1)
 			scratch.d.cparam.paramfunc = plpgsql_param_eval_var_ro;
 		else
@@ -6644,14 +6445,14 @@ plpgsql_param_compile(ParamListInfo params, Param *param,
 		scratch.d.cparam.paramfunc = plpgsql_param_eval_recfield;
 	else if (datum->dtype == PLPGSQL_DTYPE_PROMISE)
 	{
-		if (dno != expr->rwparam &&
+		if (param != expr->expr_rw_param &&
 			((PLpgSQL_var *) datum)->datatype->typlen == -1)
 			scratch.d.cparam.paramfunc = plpgsql_param_eval_generic_ro;
 		else
 			scratch.d.cparam.paramfunc = plpgsql_param_eval_generic;
 	}
 	else if (datum->dtype == PLPGSQL_DTYPE_REC &&
-			 dno != expr->rwparam)
+			 param != expr->expr_rw_param)
 		scratch.d.cparam.paramfunc = plpgsql_param_eval_generic_ro;
 	else
 		scratch.d.cparam.paramfunc = plpgsql_param_eval_generic;
@@ -8003,10 +7804,14 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 		placeholder->collation = get_typcollation(srctype);
 
 		/*
-		 * Apply coercion.  We use ASSIGNMENT coercion because that's the
-		 * closest match to plpgsql's historical behavior; in particular,
-		 * EXPLICIT coercion would allow silent truncation to a destination
-		 * varchar/bpchar's length, which we do not want.
+		 * Apply coercion.  We use the special coercion context
+		 * COERCION_PLPGSQL to match plpgsql's historical behavior, namely
+		 * that any cast not available at ASSIGNMENT level will be implemented
+		 * as an I/O coercion.  (It's somewhat dubious that we prefer I/O
+		 * coercion over cast pathways that exist at EXPLICIT level.  Changing
+		 * that would cause assorted minor behavioral differences though, and
+		 * a user who wants the explicit-cast behavior can always write an
+		 * explicit cast.)
 		 *
 		 * If source type is UNKNOWN, coerce_to_target_type will fail (it only
 		 * expects to see that for Const input nodes), so don't call it; we'll
@@ -8019,7 +7824,7 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 			cast_expr = coerce_to_target_type(NULL,
 											  (Node *) placeholder, srctype,
 											  dsttype, dsttypmod,
-											  COERCION_ASSIGNMENT,
+											  COERCION_PLPGSQL,
 											  COERCE_IMPLICIT_CAST,
 											  -1);
 
@@ -8027,7 +7832,8 @@ get_cast_hashentry(PLpgSQL_execstate *estate,
 		 * If there's no cast path according to the parser, fall back to using
 		 * an I/O coercion; this is semantically dubious but matches plpgsql's
 		 * historical behavior.  We would need something of the sort for
-		 * UNKNOWN literals in any case.
+		 * UNKNOWN literals in any case.  (This is probably now only reachable
+		 * in the case where srctype is UNKNOWN/RECORD.)
 		 */
 		if (cast_expr == NULL)
 		{
@@ -8118,6 +7924,7 @@ exec_simple_check_plan(PLpgSQL_execstate *estate, PLpgSQL_expr *expr)
 	 * Initialize to "not simple".
 	 */
 	expr->expr_simple_expr = NULL;
+	expr->expr_rw_param = NULL;
 
 	/*
 	 * Check the analyzed-and-rewritten form of the query to see if we will be
@@ -8296,6 +8103,12 @@ exec_save_simple_expr(PLpgSQL_expr *expr, CachedPlan *cplan)
 	expr->expr_simple_typmod = exprTypmod((Node *) tle_expr);
 	/* We also want to remember if it is immutable or not */
 	expr->expr_simple_mutable = contain_mutable_functions((Node *) tle_expr);
+
+	/*
+	 * Lastly, check to see if there's a possibility of optimizing a
+	 * read/write parameter.
+	 */
+	exec_check_rw_parameter(expr);
 }
 
 /*
@@ -8307,25 +8120,36 @@ exec_save_simple_expr(PLpgSQL_expr *expr, CachedPlan *cplan)
  * value as a read/write pointer and let the function modify the value
  * in-place.
  *
- * This function checks for a safe expression, and sets expr->rwparam to the
- * dno of the target variable (x) if safe, or -1 if not safe.
+ * This function checks for a safe expression, and sets expr->expr_rw_param
+ * to the address of any Param within the expression that can be passed as
+ * read/write (there can be only one); or to NULL when there is no safe Param.
+ *
+ * Note that this mechanism intentionally applies the safety labeling to just
+ * one Param; the expression could contain other Params referencing the target
+ * variable, but those must still be treated as read-only.
+ *
+ * Also note that we only apply this optimization within simple expressions.
+ * There's no point in it for non-simple expressions, because the
+ * exec_run_select code path will flatten any expanded result anyway.
+ * Also, it's safe to assume that an expr_simple_expr tree won't get copied
+ * somewhere before it gets compiled, so that looking for pointer equality
+ * to expr_rw_param will work for matching the target Param.  That'd be much
+ * shakier in the general case.
  */
 static void
-exec_check_rw_parameter(PLpgSQL_expr *expr, int target_dno)
+exec_check_rw_parameter(PLpgSQL_expr *expr)
 {
+	int			target_dno;
 	Oid			funcid;
 	List	   *fargs;
 	ListCell   *lc;
 
 	/* Assume unsafe */
-	expr->rwparam = -1;
+	expr->expr_rw_param = NULL;
 
-	/*
-	 * If the expression isn't simple, there's no point in trying to optimize
-	 * (because the exec_run_select code path will flatten any expanded result
-	 * anyway).  Even without that, this seems like a good safety restriction.
-	 */
-	if (expr->expr_simple_expr == NULL)
+	/* Done if expression isn't an assignment source */
+	target_dno = expr->target_param;
+	if (target_dno < 0)
 		return;
 
 	/*
@@ -8335,8 +8159,12 @@ exec_check_rw_parameter(PLpgSQL_expr *expr, int target_dno)
 	if (!bms_is_member(target_dno, expr->paramnos))
 		return;
 
+	/* Shouldn't be here for non-simple expression */
+	Assert(expr->expr_simple_expr != NULL);
+
 	/*
-	 * Top level of expression must be a simple FuncExpr or OpExpr.
+	 * Top level of expression must be a simple FuncExpr, OpExpr, or
+	 * SubscriptingRef, else we can't optimize.
 	 */
 	if (IsA(expr->expr_simple_expr, FuncExpr))
 	{
@@ -8352,6 +8180,31 @@ exec_check_rw_parameter(PLpgSQL_expr *expr, int target_dno)
 		funcid = opexpr->opfuncid;
 		fargs = opexpr->args;
 	}
+	else if (IsA(expr->expr_simple_expr, SubscriptingRef))
+	{
+		SubscriptingRef *sbsref = (SubscriptingRef *) expr->expr_simple_expr;
+
+		/* We only trust standard varlena arrays to be safe */
+		if (get_typsubscript(sbsref->refcontainertype, NULL) !=
+			F_ARRAY_SUBSCRIPT_HANDLER)
+			return;
+
+		/* We can optimize the refexpr if it's the target, otherwise not */
+		if (sbsref->refexpr && IsA(sbsref->refexpr, Param))
+		{
+			Param	   *param = (Param *) sbsref->refexpr;
+
+			if (param->paramkind == PARAM_EXTERN &&
+				param->paramid == target_dno + 1)
+			{
+				/* Found the Param we want to pass as read/write */
+				expr->expr_rw_param = param;
+				return;
+			}
+		}
+
+		return;
+	}
 	else
 		return;
 
@@ -8365,44 +8218,28 @@ exec_check_rw_parameter(PLpgSQL_expr *expr, int target_dno)
 		return;
 
 	/*
-	 * The target variable (in the form of a Param) must only appear as a
-	 * direct argument of the top-level function.
+	 * The target variable (in the form of a Param) must appear as a direct
+	 * argument of the top-level function.  References further down in the
+	 * tree can't be optimized; but on the other hand, they don't invalidate
+	 * optimizing the top-level call, since that will be executed last.
 	 */
 	foreach(lc, fargs)
 	{
 		Node	   *arg = (Node *) lfirst(lc);
 
-		/* A Param is OK, whether it's the target variable or not */
 		if (arg && IsA(arg, Param))
-			continue;
-		/* Otherwise, argument expression must not reference target */
-		if (contains_target_param(arg, &target_dno))
-			return;
+		{
+			Param	   *param = (Param *) arg;
+
+			if (param->paramkind == PARAM_EXTERN &&
+				param->paramid == target_dno + 1)
+			{
+				/* Found the Param we want to pass as read/write */
+				expr->expr_rw_param = param;
+				return;
+			}
+		}
 	}
-
-	/* OK, we can pass target as a read-write parameter */
-	expr->rwparam = target_dno;
-}
-
-/*
- * Recursively check for a Param referencing the target variable
- */
-static bool
-contains_target_param(Node *node, int *target_dno)
-{
-	if (node == NULL)
-		return false;
-	if (IsA(node, Param))
-	{
-		Param	   *param = (Param *) node;
-
-		if (param->paramkind == PARAM_EXTERN &&
-			param->paramid == *target_dno + 1)
-			return true;
-		return false;
-	}
-	return expression_tree_walker(node, contains_target_param,
-								  (void *) target_dno);
 }
 
 /* ----------

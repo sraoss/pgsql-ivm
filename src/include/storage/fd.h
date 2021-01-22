@@ -4,7 +4,7 @@
  *	  Virtual file descriptor definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/fd.h
@@ -45,6 +45,7 @@
 
 #include <dirent.h>
 
+struct iovec;					/* avoid including port/pg_iovec.h here */
 
 typedef int File;
 
@@ -153,6 +154,10 @@ extern int	pg_fsync_no_writethrough(int fd);
 extern int	pg_fsync_writethrough(int fd);
 extern int	pg_fdatasync(int fd);
 extern void pg_flush_data(int fd, off_t offset, off_t amount);
+extern ssize_t pg_pwritev_with_retry(int fd,
+									 const struct iovec *iov,
+									 int iovcnt,
+									 off_t offset);
 extern int	pg_truncate(const char *path, off_t length);
 extern void fsync_fname(const char *fname, bool isdir);
 extern int	fsync_fname_ext(const char *fname, bool isdir, bool ignore_perm, int elevel);

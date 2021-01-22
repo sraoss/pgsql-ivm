@@ -107,7 +107,7 @@
  * is a convenient point to initialize replication from, which is why we
  * export a snapshot at that point, which *can* be used to read normal data.
  *
- * Copyright (c) 2012-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/snapbuild.c
@@ -834,6 +834,13 @@ SnapBuildDistributeNewCatalogSnapshot(SnapBuild *builder, XLogRecPtr lsn)
 		if (!ReorderBufferXidHasBaseSnapshot(builder->reorder, txn->xid))
 			continue;
 
+		/*
+		 * We don't need to add snapshot to prepared transactions as they
+		 * should not see the new catalog contents.
+		 */
+		if (rbtxn_prepared(txn) || rbtxn_skip_prepared(txn))
+			continue;
+
 		elog(DEBUG2, "adding a new snapshot to %u at %X/%X",
 			 txn->xid, (uint32) (lsn >> 32), (uint32) lsn);
 
@@ -1481,7 +1488,7 @@ static void
 SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 {
 	Size		needed_length;
-	SnapBuildOnDisk *ondisk;
+	SnapBuildOnDisk *ondisk = NULL;
 	char	   *ondisk_c;
 	int			fd;
 	char		tmppath[MAXPGPATH];
@@ -1680,6 +1687,9 @@ SnapBuildSerialize(SnapBuild *builder, XLogRecPtr lsn)
 out:
 	ReorderBufferSetRestartPoint(builder->reorder,
 								 builder->last_serialized_snapshot);
+	/* be tidy */
+	if (ondisk)
+		pfree(ondisk);
 }
 
 /*
