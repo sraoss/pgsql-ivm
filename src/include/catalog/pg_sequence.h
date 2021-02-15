@@ -22,8 +22,8 @@
 
 CATALOG(pg_sequence,2224,SequenceRelationId)
 {
-	Oid			seqrelid;
-	Oid			seqtypid;
+	Oid			seqrelid BKI_LOOKUP(pg_class);
+	Oid			seqtypid BKI_LOOKUP(pg_type);
 	int64		seqstart;
 	int64		seqincrement;
 	int64		seqmax;
@@ -39,7 +39,7 @@ CATALOG(pg_sequence,2224,SequenceRelationId)
  */
 typedef FormData_pg_sequence *Form_pg_sequence;
 
-DECLARE_UNIQUE_INDEX(pg_sequence_seqrelid_index, 5002, on pg_sequence using btree(seqrelid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_sequence_seqrelid_index, 5002, on pg_sequence using btree(seqrelid oid_ops));
 #define SequenceRelidIndexId	5002
 
 #endif							/* PG_SEQUENCE_H */

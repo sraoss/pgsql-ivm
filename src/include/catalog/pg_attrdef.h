@@ -30,7 +30,8 @@ CATALOG(pg_attrdef,2604,AttrDefaultRelationId)
 {
 	Oid			oid;			/* oid */
 
-	Oid			adrelid;		/* OID of table containing attribute */
+	Oid			adrelid BKI_LOOKUP(pg_class);	/* OID of table containing
+												 * attribute */
 	int16		adnum;			/* attnum of attribute */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
@@ -50,7 +51,9 @@ DECLARE_TOAST(pg_attrdef, 2830, 2831);
 
 DECLARE_UNIQUE_INDEX(pg_attrdef_adrelid_adnum_index, 2656, on pg_attrdef using btree(adrelid oid_ops, adnum int2_ops));
 #define AttrDefaultIndexId	2656
-DECLARE_UNIQUE_INDEX(pg_attrdef_oid_index, 2657, on pg_attrdef using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_attrdef_oid_index, 2657, on pg_attrdef using btree(oid oid_ops));
 #define AttrDefaultOidIndexId  2657
+
+DECLARE_FOREIGN_KEY((adrelid, adnum), pg_attribute, (attrelid, attnum));
 
 #endif							/* PG_ATTRDEF_H */

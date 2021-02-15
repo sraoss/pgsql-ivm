@@ -34,8 +34,8 @@ my @unlink_on_exit;
 # Set of variables for modules in contrib/ and src/test/modules/
 my $contrib_defines = { 'refint' => 'REFINT_VERBOSE' };
 my @contrib_uselibpq = ('dblink', 'oid2name', 'postgres_fdw', 'vacuumlo');
-my @contrib_uselibpgport   = ('oid2name', 'pg_standby', 'vacuumlo');
-my @contrib_uselibpgcommon = ('oid2name', 'pg_standby', 'vacuumlo');
+my @contrib_uselibpgport   = ('oid2name', 'vacuumlo');
+my @contrib_uselibpgcommon = ('oid2name', 'vacuumlo');
 my $contrib_extralibs      = undef;
 my $contrib_extraincludes = { 'dblink' => ['src/backend'] };
 my $contrib_extrasource = {
@@ -136,6 +136,7 @@ sub mkvcbuild
 	{
 		push(@pgcommonallfiles, 'cryptohash.c');
 		push(@pgcommonallfiles, 'md5.c');
+		push(@pgcommonallfiles, 'sha1.c');
 		push(@pgcommonallfiles, 'sha2.c');
 	}
 
@@ -146,8 +147,9 @@ sub mkvcbuild
 	our @pgcommonbkndfiles = @pgcommonallfiles;
 
 	our @pgfeutilsfiles = qw(
-	  archive.c cancel.c conditional.c mbprint.c print.c psqlscan.l
-	  psqlscan.c simple_list.c string_utils.c recovery_gen.c);
+	  archive.c cancel.c conditional.c connect_utils.c mbprint.c option_utils.c
+	  parallel_slot.c print.c psqlscan.l psqlscan.c query_utils.c simple_list.c
+	  string_utils.c recovery_gen.c);
 
 	$libpgport = $solution->AddProject('libpgport', 'lib', 'misc');
 	$libpgport->AddDefine('FRONTEND');
@@ -465,10 +467,10 @@ sub mkvcbuild
 	else
 	{
 		$pgcrypto->AddFiles(
-			'contrib/pgcrypto',   'sha1.c',
-			'internal.c',         'internal-sha2.c',
-			'blf.c',              'rijndael.c',
-			'pgp-mpi-internal.c', 'imath.c');
+			'contrib/pgcrypto', 'internal.c',
+			'internal-sha2.c',  'blf.c',
+			'rijndael.c',       'pgp-mpi-internal.c',
+			'imath.c');
 	}
 	$pgcrypto->AddReference($postgres);
 	$pgcrypto->AddLibrary('ws2_32.lib');

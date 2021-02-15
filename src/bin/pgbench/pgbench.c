@@ -1225,8 +1225,7 @@ doConnect(void)
 	/* check to see that the backend connection was successfully made */
 	if (PQstatus(conn) == CONNECTION_BAD)
 	{
-		pg_log_error("connection to database \"%s\" failed: %s",
-					 dbName, PQerrorMessage(conn));
+		pg_log_error("%s", PQerrorMessage(conn));
 		PQfinish(conn);
 		return NULL;
 	}
@@ -6040,13 +6039,6 @@ main(int argc, char **argv)
 	con = doConnect();
 	if (con == NULL)
 		exit(1);
-
-	if (PQstatus(con) == CONNECTION_BAD)
-	{
-		pg_log_fatal("connection to database \"%s\" failed: %s",
-					 dbName, PQerrorMessage(con));
-		exit(1);
-	}
 
 	if (internal_script_used)
 		GetTableInfo(con, scale_given);

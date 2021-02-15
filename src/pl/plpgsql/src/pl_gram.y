@@ -951,6 +951,9 @@ stmt_call		: K_CALL
 						new->expr = read_sql_stmt();
 						new->is_call = true;
 
+						/* Remember we may need a procedure resource owner */
+						plpgsql_curr_compile->requires_procedure_resowner = true;
+
 						$$ = (PLpgSQL_stmt *)new;
 
 					}
@@ -966,6 +969,9 @@ stmt_call		: K_CALL
 						plpgsql_push_back_token(K_DO);
 						new->expr = read_sql_stmt();
 						new->is_call = false;
+
+						/* Remember we may need a procedure resource owner */
+						plpgsql_curr_compile->requires_procedure_resowner = true;
 
 						$$ = (PLpgSQL_stmt *)new;
 
@@ -1335,7 +1341,6 @@ stmt_for		: opt_loop_label K_FOR for_control loop_body
 
 							new = (PLpgSQL_stmt_fori *) $3;
 							new->lineno   = plpgsql_location_to_lineno(@2);
-							new->stmtid	  = ++plpgsql_curr_compile->nstatements;
 							new->label	  = $1;
 							new->body	  = $4.stmts;
 							$$ = (PLpgSQL_stmt *) new;
@@ -1350,7 +1355,6 @@ stmt_for		: opt_loop_label K_FOR for_control loop_body
 							/* forq is the common supertype of all three */
 							new = (PLpgSQL_stmt_forq *) $3;
 							new->lineno   = plpgsql_location_to_lineno(@2);
-							new->stmtid	  = ++plpgsql_curr_compile->nstatements;
 							new->label	  = $1;
 							new->body	  = $4.stmts;
 							$$ = (PLpgSQL_stmt *) new;

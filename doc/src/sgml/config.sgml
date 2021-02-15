@@ -263,8 +263,9 @@ shared_buffers = 128MB
      <listitem>
      <para>
       The <link linkend="sql-show"><command>SHOW</command></link> command allows inspection of the
-      current value of all parameters.  The corresponding function is
-      <function>current_setting(setting_name text)</function>.
+      current value of any parameter.  The corresponding SQL function is
+      <function>current_setting(setting_name text)</function>
+      (see <xref linkend="functions-admin-set"/>).
      </para>
      </listitem>
 
@@ -273,8 +274,9 @@ shared_buffers = 128MB
        The <link linkend="sql-set"><command>SET</command></link> command allows modification of the
        current value of those parameters that can be set locally to a
        session; it has no effect on other sessions.
-       The corresponding function is
-       <function>set_config(setting_name, new_value, is_local)</function>.
+       The corresponding SQL function is
+       <function>set_config(setting_name, new_value, is_local)</function>
+       (see <xref linkend="functions-admin-set"/>).
       </para>
      </listitem>
     </itemizedlist>
@@ -1591,14 +1593,14 @@ include_dir 'conf.d'
 
        <para>
         Huge pages are known as large pages on Windows.  To use them, you need to
-        assign the user right Lock Pages in Memory to the Windows user account
+        assign the user right <quote>Lock pages in memory</quote> to the Windows user account
         that runs <productname>PostgreSQL</productname>.
         You can use Windows Group Policy tool (gpedit.msc) to assign the user right
-        Lock Pages in Memory.
+        <quote>Lock pages in memory</quote>.
         To start the database server on the command prompt as a standalone process,
         not as a Windows service, the command prompt must be run as an administrator or
         User Access Control (UAC) must be disabled. When the UAC is enabled, the normal
-        command prompt revokes the user right Lock Pages in Memory when started.
+        command prompt revokes the user right <quote>Lock pages in memory</quote> when started.
        </para>
 
        <para>
@@ -2116,7 +2118,7 @@ include_dir 'conf.d'
          The estimated cost for vacuuming a buffer that has to be read from
          disk.  This represents the effort to lock the buffer pool,
          lookup the shared hash table, read the desired block in from
-         the disk and scan its content. The default value is 10.
+         the disk and scan its content. The default value is 2.
         </para>
        </listitem>
       </varlistentry>
@@ -2926,7 +2928,7 @@ include_dir 'conf.d'
         Not all of these choices are available on all platforms.
         The default is the first method in the above list that is supported
         by the platform, except that <literal>fdatasync</literal> is the default on
-        Linux.  The default is not necessarily ideal; it might be
+        Linux and FreeBSD.  The default is not necessarily ideal; it might be
         necessary to change this setting or other aspects of your system
         configuration in order to create a crash-safe configuration or
         achieve optimal performance.

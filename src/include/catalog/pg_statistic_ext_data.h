@@ -30,7 +30,8 @@
  */
 CATALOG(pg_statistic_ext_data,3429,StatisticExtDataRelationId)
 {
-	Oid			stxoid;			/* statistics object this data is for */
+	Oid			stxoid BKI_LOOKUP(pg_statistic_ext);	/* statistics object
+														 * this data is for */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 
@@ -51,7 +52,7 @@ typedef FormData_pg_statistic_ext_data * Form_pg_statistic_ext_data;
 
 DECLARE_TOAST(pg_statistic_ext_data, 3430, 3431);
 
-DECLARE_UNIQUE_INDEX(pg_statistic_ext_data_stxoid_index, 3433, on pg_statistic_ext_data using btree(stxoid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_statistic_ext_data_stxoid_index, 3433, on pg_statistic_ext_data using btree(stxoid oid_ops));
 #define StatisticExtDataStxoidIndexId 3433
 
 #endif							/* PG_STATISTIC_EXT_DATA_H */

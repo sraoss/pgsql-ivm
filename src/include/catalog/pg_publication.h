@@ -32,7 +32,7 @@ CATALOG(pg_publication,6104,PublicationRelationId)
 
 	NameData	pubname;		/* name of the publication */
 
-	Oid			pubowner;		/* publication owner */
+	Oid			pubowner BKI_LOOKUP(pg_authid); /* publication owner */
 
 	/*
 	 * indicates that this is special publication which should encompass all
@@ -63,7 +63,7 @@ CATALOG(pg_publication,6104,PublicationRelationId)
  */
 typedef FormData_pg_publication *Form_pg_publication;
 
-DECLARE_UNIQUE_INDEX(pg_publication_oid_index, 6110, on pg_publication using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_publication_oid_index, 6110, on pg_publication using btree(oid oid_ops));
 #define PublicationObjectIndexId 6110
 DECLARE_UNIQUE_INDEX(pg_publication_pubname_index, 6111, on pg_publication using btree(pubname name_ops));
 #define PublicationNameIndexId 6111

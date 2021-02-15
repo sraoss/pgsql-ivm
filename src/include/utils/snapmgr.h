@@ -37,7 +37,7 @@
  */
 #define RelationAllowsEarlyPruning(rel) \
 ( \
-	 RelationNeedsWAL(rel) \
+	 (rel)->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT	\
   && !IsCatalogRelation(rel) \
   && !RelationIsAccessibleInLogicalDecoding(rel) \
 )
@@ -155,7 +155,7 @@ extern bool GlobalVisTestIsRemovableFullXid(GlobalVisState *state, FullTransacti
 extern FullTransactionId GlobalVisTestNonRemovableFullHorizon(GlobalVisState *state);
 extern TransactionId GlobalVisTestNonRemovableHorizon(GlobalVisState *state);
 extern bool GlobalVisCheckRemovableXid(Relation rel, TransactionId xid);
-extern bool GlobalVisIsRemovableFullXid(Relation rel, FullTransactionId fxid);
+extern bool GlobalVisCheckRemovableFullXid(Relation rel, FullTransactionId fxid);
 
 /*
  * Utility functions for implementing visibility routines in table AMs.

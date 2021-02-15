@@ -27,8 +27,8 @@
  */
 CATALOG(pg_foreign_table,3118,ForeignTableRelationId)
 {
-	Oid			ftrelid;		/* OID of foreign table */
-	Oid			ftserver;		/* OID of foreign server */
+	Oid			ftrelid BKI_LOOKUP(pg_class);	/* OID of foreign table */
+	Oid			ftserver BKI_LOOKUP(pg_foreign_server); /* OID of foreign server */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	text		ftoptions[1];	/* FDW-specific options */
@@ -44,7 +44,7 @@ typedef FormData_pg_foreign_table *Form_pg_foreign_table;
 
 DECLARE_TOAST(pg_foreign_table, 4153, 4154);
 
-DECLARE_UNIQUE_INDEX(pg_foreign_table_relid_index, 3119, on pg_foreign_table using btree(ftrelid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_foreign_table_relid_index, 3119, on pg_foreign_table using btree(ftrelid oid_ops));
 #define ForeignTableRelidIndexId 3119
 
 #endif							/* PG_FOREIGN_TABLE_H */

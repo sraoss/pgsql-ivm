@@ -28,7 +28,8 @@
 CATALOG(pg_shseclabel,3592,SharedSecLabelRelationId) BKI_SHARED_RELATION BKI_ROWTYPE_OID(4066,SharedSecLabelRelation_Rowtype_Id) BKI_SCHEMA_MACRO
 {
 	Oid			objoid;			/* OID of the shared object itself */
-	Oid			classoid;		/* OID of table containing the shared object */
+	Oid			classoid BKI_LOOKUP(pg_class);	/* OID of table containing the
+												 * shared object */
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	text		provider BKI_FORCE_NOT_NULL;	/* name of label provider */
@@ -42,7 +43,7 @@ DECLARE_TOAST(pg_shseclabel, 4060, 4061);
 #define PgShseclabelToastTable 4060
 #define PgShseclabelToastIndex 4061
 
-DECLARE_UNIQUE_INDEX(pg_shseclabel_object_index, 3593, on pg_shseclabel using btree(objoid oid_ops, classoid oid_ops, provider text_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_shseclabel_object_index, 3593, on pg_shseclabel using btree(objoid oid_ops, classoid oid_ops, provider text_ops));
 #define SharedSecLabelObjectIndexId			3593
 
 #endif							/* PG_SHSECLABEL_H */

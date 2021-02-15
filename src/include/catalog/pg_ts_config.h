@@ -36,10 +36,10 @@ CATALOG(pg_ts_config,3602,TSConfigRelationId)
 	NameData	cfgname;
 
 	/* name space */
-	Oid			cfgnamespace BKI_DEFAULT(PGNSP);
+	Oid			cfgnamespace BKI_DEFAULT(pg_catalog) BKI_LOOKUP(pg_namespace);
 
 	/* owner */
-	Oid			cfgowner BKI_DEFAULT(PGUID);
+	Oid			cfgowner BKI_DEFAULT(POSTGRES) BKI_LOOKUP(pg_authid);
 
 	/* OID of parser */
 	Oid			cfgparser BKI_LOOKUP(pg_ts_parser);
@@ -49,7 +49,7 @@ typedef FormData_pg_ts_config *Form_pg_ts_config;
 
 DECLARE_UNIQUE_INDEX(pg_ts_config_cfgname_index, 3608, on pg_ts_config using btree(cfgname name_ops, cfgnamespace oid_ops));
 #define TSConfigNameNspIndexId	3608
-DECLARE_UNIQUE_INDEX(pg_ts_config_oid_index, 3712, on pg_ts_config using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_ts_config_oid_index, 3712, on pg_ts_config using btree(oid oid_ops));
 #define TSConfigOidIndexId	3712
 
 #endif							/* PG_TS_CONFIG_H */

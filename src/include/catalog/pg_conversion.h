@@ -35,10 +35,10 @@ CATALOG(pg_conversion,2607,ConversionRelationId)
 	NameData	conname;
 
 	/* namespace that the conversion belongs to */
-	Oid			connamespace BKI_DEFAULT(PGNSP);
+	Oid			connamespace BKI_DEFAULT(pg_catalog) BKI_LOOKUP(pg_namespace);
 
 	/* owner of the conversion */
-	Oid			conowner BKI_DEFAULT(PGUID);
+	Oid			conowner BKI_DEFAULT(POSTGRES) BKI_LOOKUP(pg_authid);
 
 	/* FOR encoding id */
 	int32		conforencoding BKI_LOOKUP(encoding);
@@ -64,7 +64,7 @@ DECLARE_UNIQUE_INDEX(pg_conversion_default_index, 2668, on pg_conversion using b
 #define ConversionDefaultIndexId  2668
 DECLARE_UNIQUE_INDEX(pg_conversion_name_nsp_index, 2669, on pg_conversion using btree(conname name_ops, connamespace oid_ops));
 #define ConversionNameNspIndexId  2669
-DECLARE_UNIQUE_INDEX(pg_conversion_oid_index, 2670, on pg_conversion using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_conversion_oid_index, 2670, on pg_conversion using btree(oid oid_ops));
 #define ConversionOidIndexId  2670
 
 

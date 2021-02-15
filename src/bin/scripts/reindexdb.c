@@ -16,9 +16,11 @@
 #include "common/connect.h"
 #include "common/logging.h"
 #include "fe_utils/cancel.h"
+#include "fe_utils/option_utils.h"
+#include "fe_utils/parallel_slot.h"
+#include "fe_utils/query_utils.h"
 #include "fe_utils/simple_list.h"
 #include "fe_utils/string_utils.h"
-#include "scripts_parallel.h"
 
 typedef enum ReindexType
 {
@@ -464,6 +466,7 @@ reindex_one_database(const ConnParams *cparams, ReindexType type,
 			goto finish;
 		}
 
+		ParallelSlotSetHandler(free_slot, TableCommandResultHandler, NULL);
 		run_reindex_command(free_slot->connection, process_type, objname,
 							echo, verbose, concurrently, true);
 

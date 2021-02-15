@@ -430,10 +430,6 @@ static XLogRecPtr RedoStartLSN = InvalidXLogRecPtr;
  * ControlFileLock: must be held to read/update control file or create
  * new log file.
  *
- * CheckpointLock: must be held to do a checkpoint or restartpoint (ensures
- * only one checkpointer at a time; currently, with all checkpoints done by
- * the checkpointer, this is just pro forma).
- *
  *----------
  */
 
@@ -4203,7 +4199,7 @@ RemoveXlogFile(const char *segname, XLogSegNo recycleSegNo,
 
 	/*
 	 * Before deleting the file, see if it can be recycled as a future log
-	 * segment. Only recycle normal files, pg_standby for example can create
+	 * segment. Only recycle normal files, because we don't want to recycle
 	 * symbolic links pointing to a separate archive directory.
 	 */
 	if (wal_recycle &&
@@ -6860,6 +6856,13 @@ StartupXLOG(void)
 	StartupReorderBuffer();
 
 	/*
+	 * Startup CLOG. This must be done after ShmemVariableCache->nextXid
+	 * has been initialized and before we accept connections or begin WAL
+	 * replay.
+	 */
+	StartupCLOG();
+
+	/*
 	 * Startup MultiXact. We need to do this early to be able to replay
 	 * truncations.
 	 */
@@ -7129,11 +7132,10 @@ StartupXLOG(void)
 			ProcArrayInitRecovery(XidFromFullTransactionId(ShmemVariableCache->nextXid));
 
 			/*
-			 * Startup commit log and subtrans only.  MultiXact and commit
+			 * Startup subtrans only.  CLOG, MultiXact and commit
 			 * timestamp have already been started up and other SLRUs are not
 			 * maintained during recovery and need not be started yet.
 			 */
-			StartupCLOG();
 			StartupSUBTRANS(oldestActiveXID);
 
 			/*
@@ -7949,14 +7951,11 @@ StartupXLOG(void)
 	LWLockRelease(ProcArrayLock);
 
 	/*
-	 * Start up the commit log and subtrans, if not already done for hot
-	 * standby.  (commit timestamps are started below, if necessary.)
+	 * Start up subtrans, if not already done for hot standby.  (commit
+	 * timestamps are started below, if necessary.)
 	 */
 	if (standbyState == STANDBY_DISABLED)
-	{
-		StartupCLOG();
 		StartupSUBTRANS(oldestActiveXID);
-	}
 
 	/*
 	 * Perform end of recovery actions for any SLRUs that need it.
@@ -7999,17 +7998,16 @@ StartupXLOG(void)
 	 * All done with end-of-recovery actions.
 	 *
 	 * Now allow backends to write WAL and update the control file status in
-	 * consequence.  The boolean flag allowing backends to write WAL is
-	 * updated while holding ControlFileLock to prevent other backends to look
-	 * at an inconsistent state of the control file in shared memory.  There
-	 * is still a small window during which backends can write WAL and the
-	 * control file is still referring to a system not in DB_IN_PRODUCTION
+	 * consequence.  SharedRecoveryState, that controls if backends can write
+	 * WAL, is updated while holding ControlFileLock to prevent other backends
+	 * to look at an inconsistent state of the control file in shared memory.
+	 * There is still a small window during which backends can write WAL and
+	 * the control file is still referring to a system not in DB_IN_PRODUCTION
 	 * state while looking at the on-disk control file.
 	 *
-	 * Also, although the boolean flag to allow WAL is probably atomic in
-	 * itself, we use the info_lck here to ensure that there are no race
-	 * conditions concerning visibility of other recent updates to shared
-	 * memory.
+	 * Also, we use info_lck to update SharedRecoveryState to ensure that
+	 * there are no race conditions concerning visibility of other recent
+	 * updates to shared memory.
 	 */
 	LWLockAcquire(ControlFileLock, LW_EXCLUSIVE);
 	ControlFile->state = DB_IN_PRODUCTION;
@@ -8865,14 +8863,6 @@ CreateCheckPoint(int flags)
 	InitXLogInsert();
 
 	/*
-	 * Acquire CheckpointLock to ensure only one checkpoint happens at a time.
-	 * (This is just pro forma, since in the present system structure there is
-	 * only one process that is allowed to issue checkpoints at any given
-	 * time.)
-	 */
-	LWLockAcquire(CheckpointLock, LW_EXCLUSIVE);
-
-	/*
 	 * Prepare to accumulate statistics.
 	 *
 	 * Note: because it is possible for log_checkpoints to change while a
@@ -8941,7 +8931,6 @@ CreateCheckPoint(int flags)
 		if (last_important_lsn == ControlFile->checkPoint)
 		{
 			WALInsertLockRelease();
-			LWLockRelease(CheckpointLock);
 			END_CRIT_SECTION();
 			ereport(DEBUG1,
 					(errmsg("checkpoint skipped because system is idle")));
@@ -9241,15 +9230,12 @@ CreateCheckPoint(int flags)
 									 CheckpointStats.ckpt_segs_added,
 									 CheckpointStats.ckpt_segs_removed,
 									 CheckpointStats.ckpt_segs_recycled);
-
-	LWLockRelease(CheckpointLock);
 }
 
 /*
  * Mark the end of recovery in WAL though without running a full checkpoint.
  * We can expect that a restartpoint is likely to be in progress as we
- * do this, though we are unwilling to wait for it to complete. So be
- * careful to avoid taking the CheckpointLock anywhere here.
+ * do this, though we are unwilling to wait for it to complete.
  *
  * CreateRestartPoint() allows for the case where recovery may end before
  * the restartpoint completes so there is no concern of concurrent behaviour.
@@ -9399,12 +9385,6 @@ CreateRestartPoint(int flags)
 	XLogSegNo	_logSegNo;
 	TimestampTz xtime;
 
-	/*
-	 * Acquire CheckpointLock to ensure only one restartpoint or checkpoint
-	 * happens at a time.
-	 */
-	LWLockAcquire(CheckpointLock, LW_EXCLUSIVE);
-
 	/* Get a local copy of the last safe checkpoint record. */
 	SpinLockAcquire(&XLogCtl->info_lck);
 	lastCheckPointRecPtr = XLogCtl->lastCheckPointRecPtr;
@@ -9420,7 +9400,6 @@ CreateRestartPoint(int flags)
 	{
 		ereport(DEBUG2,
 				(errmsg("skipping restartpoint, recovery has already ended")));
-		LWLockRelease(CheckpointLock);
 		return false;
 	}
 
@@ -9455,7 +9434,6 @@ CreateRestartPoint(int flags)
 			UpdateControlFile();
 			LWLockRelease(ControlFileLock);
 		}
-		LWLockRelease(CheckpointLock);
 		return false;
 	}
 
@@ -9620,8 +9598,6 @@ CreateRestartPoint(int flags)
 					(uint32) (lastCheckPoint.redo >> 32), (uint32) lastCheckPoint.redo),
 			 xtime ? errdetail("Last completed transaction was at log time %s.",
 							   timestamptz_to_str(xtime)) : 0));
-
-	LWLockRelease(CheckpointLock);
 
 	/*
 	 * Finally, execute archive_cleanup_command, if any.

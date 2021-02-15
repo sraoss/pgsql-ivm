@@ -41,8 +41,7 @@ static void _bt_log_reuse_page(Relation rel, BlockNumber blkno,
 static void _bt_delitems_delete(Relation rel, Buffer buf,
 								TransactionId latestRemovedXid,
 								OffsetNumber *deletable, int ndeletable,
-								BTVacuumPosting *updatable, int nupdatable,
-								Relation heapRel);
+								BTVacuumPosting *updatable, int nupdatable);
 static char *_bt_delitems_update(BTVacuumPosting *updatable, int nupdatable,
 								 OffsetNumber *updatedoffsets,
 								 Size *updatedbuflen, bool needswal);
@@ -1260,8 +1259,7 @@ _bt_delitems_vacuum(Relation rel, Buffer buf,
 static void
 _bt_delitems_delete(Relation rel, Buffer buf, TransactionId latestRemovedXid,
 					OffsetNumber *deletable, int ndeletable,
-					BTVacuumPosting *updatable, int nupdatable,
-					Relation heapRel)
+					BTVacuumPosting *updatable, int nupdatable)
 {
 	Page		page = BufferGetPage(buf);
 	BTPageOpaque opaque;
@@ -1650,7 +1648,7 @@ _bt_delitems_delete_check(Relation rel, Buffer buf, Relation heapRel,
 
 	/* Physically delete tuples (or TIDs) using deletable (or updatable) */
 	_bt_delitems_delete(rel, buf, latestRemovedXid, deletable, ndeletable,
-						updatable, nupdatable, heapRel);
+						updatable, nupdatable);
 
 	/* be tidy */
 	for (int i = 0; i < nupdatable; i++)
@@ -1980,9 +1978,6 @@ _bt_pagedel(Relation rel, Buffer leafbuf, TransactionId *oldestBtpoXact)
 		 * Then unlink it from its siblings.  Each call to
 		 * _bt_unlink_halfdead_page unlinks the topmost page from the subtree,
 		 * making it shallower.  Iterate until the leafbuf page is deleted.
-		 *
-		 * _bt_unlink_halfdead_page should never fail, since we established
-		 * that deletion is generally safe in _bt_mark_page_halfdead.
 		 */
 		rightsib_empty = false;
 		Assert(P_ISLEAF(opaque) && P_ISHALFDEAD(opaque));
@@ -1993,7 +1988,15 @@ _bt_pagedel(Relation rel, Buffer leafbuf, TransactionId *oldestBtpoXact)
 										  &rightsib_empty, oldestBtpoXact,
 										  &ndeleted))
 			{
-				/* _bt_unlink_halfdead_page failed, released buffer */
+				/*
+				 * _bt_unlink_halfdead_page should never fail, since we
+				 * established that deletion is generally safe in
+				 * _bt_mark_page_halfdead -- index must be corrupt.
+				 *
+				 * Note that _bt_unlink_halfdead_page already released the
+				 * lock and pin on leafbuf for us.
+				 */
+				Assert(false);
 				return ndeleted;
 			}
 		}
@@ -2263,7 +2266,7 @@ _bt_mark_page_halfdead(Relation rel, Buffer leafbuf, BTStack stack)
  *
  * We maintain *oldestBtpoXact for pages that are deleted by the current
  * VACUUM operation here.  This must be handled here because we conservatively
- * assume that there needs to be a new call to ReadNewTransactionId() each
+ * assume that there needs to be a new call to ReadNextTransactionId() each
  * time a page gets deleted.  See comments about the underlying assumption
  * below.
  *
@@ -2357,11 +2360,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	 * So, first lock the leaf page, if it's not the target.  Then find and
 	 * write-lock the current left sibling of the target page.  The sibling
 	 * that was current a moment ago could have split, so we may have to move
-	 * right.  This search could fail if either the sibling or the target page
-	 * was deleted by someone else meanwhile; if so, give up.  (Right now,
-	 * that should never happen, since page deletion is only done in VACUUM
-	 * and there shouldn't be multiple VACUUMs concurrently on the same
-	 * table.)
+	 * right.
 	 */
 	if (target != leafblkno)
 		_bt_lockbuf(rel, leafbuf, BT_WRITE);
@@ -2372,23 +2371,26 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 		opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 		while (P_ISDELETED(opaque) || opaque->btpo_next != target)
 		{
-			/* step right one page */
+			bool	leftsibvalid = true;
+
+			/*
+			 * Before we follow the link from the page that was the left
+			 * sibling mere moments ago, validate its right link.  This
+			 * reduces the opportunities for loop to fail to ever make any
+			 * progress in the presence of index corruption.
+			 *
+			 * Note: we rely on the assumption that there can only be one
+			 * vacuum process running at a time (against the same index).
+			 */
+			if (P_RIGHTMOST(opaque) || P_ISDELETED(opaque) ||
+				leftsib == opaque->btpo_next)
+				leftsibvalid = false;
+
 			leftsib = opaque->btpo_next;
 			_bt_relbuf(rel, lbuf);
 
-			/*
-			 * It'd be good to check for interrupts here, but it's not easy to
-			 * do so because a lock is always held. This block isn't
-			 * frequently reached, so hopefully the consequences of not
-			 * checking interrupts aren't too bad.
-			 */
-
-			if (leftsib == P_NONE)
+			if (!leftsibvalid)
 			{
-				ereport(LOG,
-						(errmsg("no left sibling (concurrent deletion?) of block %u in \"%s\"",
-								target,
-								RelationGetRelationName(rel))));
 				if (target != leafblkno)
 				{
 					/* we have only a pin on target, but pin+lock on leafbuf */
@@ -2400,8 +2402,20 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 					/* we have only a pin on leafbuf */
 					ReleaseBuffer(leafbuf);
 				}
+
+				ereport(LOG,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg_internal("valid left sibling for deletion target could not be located: "
+										 "left sibling %u of target %u with leafblkno %u and scanblkno %u in index \"%s\"",
+										 leftsib, target, leafblkno, scanblkno,
+										 RelationGetRelationName(rel))));
+
 				return false;
 			}
+
+			CHECK_FOR_INTERRUPTS();
+
+			/* step right one page */
 			lbuf = _bt_getbuf(rel, leftsib, BT_WRITE);
 			page = BufferGetPage(lbuf);
 			opaque = (BTPageOpaque) PageGetSpecialPointer(page);
@@ -2410,11 +2424,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	else
 		lbuf = InvalidBuffer;
 
-	/*
-	 * Next write-lock the target page itself.  It's okay to take a write lock
-	 * rather than a superexclusive lock, since no scan will stop on an empty
-	 * page.
-	 */
+	/* Next write-lock the target page itself */
 	_bt_lockbuf(rel, buf, BT_WRITE);
 	page = BufferGetPage(buf);
 	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
@@ -2549,7 +2559,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	 * Mark the page itself deleted.  It can be recycled when all current
 	 * transactions are gone.  Storing GetTopTransactionId() would work, but
 	 * we're in VACUUM and would not otherwise have an XID.  Having already
-	 * updated links to the target, ReadNewTransactionId() suffices as an
+	 * updated links to the target, ReadNextTransactionId() suffices as an
 	 * upper bound.  Any scan having retained a now-stale link is advertising
 	 * in its PGPROC an xmin less than or equal to the value we read here.  It
 	 * will continue to do so, holding back the xmin horizon, for the duration
@@ -2560,7 +2570,7 @@ _bt_unlink_halfdead_page(Relation rel, Buffer leafbuf, BlockNumber scanblkno,
 	Assert(P_ISHALFDEAD(opaque) || !P_ISLEAF(opaque));
 	opaque->btpo_flags &= ~BTP_HALF_DEAD;
 	opaque->btpo_flags |= BTP_DELETED;
-	opaque->btpo.xact = ReadNewTransactionId();
+	opaque->btpo.xact = ReadNextTransactionId();
 
 	/*
 	 * Remove the remaining tuples on the page.  This keeps things simple for

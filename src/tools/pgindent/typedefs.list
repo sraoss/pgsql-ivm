@@ -1198,6 +1198,7 @@ JsonbIterator
 JsonbIteratorToken
 JsonbPair
 JsonbParseState
+JsonbSubWorkspace
 JsonbTypeCategory
 JsonbValue
 JunkFilter
@@ -2396,7 +2397,6 @@ StdAnalyzeData
 StdRdOptions
 Step
 StopList
-StopWorkersData
 StrategyNumber
 StreamCtl
 StreamXidHash
@@ -2407,6 +2407,7 @@ SubLink
 SubLinkType
 SubPlan
 SubPlanState
+SubRemoveRels
 SubTransactionId
 SubXactCallback
 SubXactCallbackItem
@@ -3214,6 +3215,7 @@ pg_md5_ctx
 pg_on_exit_callback
 pg_re_flags
 pg_saslprep_rc
+pg_sha1_ctx
 pg_sha224_ctx
 pg_sha256_ctx
 pg_sha384_ctx

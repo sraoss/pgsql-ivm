@@ -70,14 +70,6 @@ int			SessionReplicationRole = SESSION_REPLICATION_ROLE_ORIGIN;
 /* How many levels deep into trigger execution are we? */
 static int	MyTriggerDepth = 0;
 
-/*
- * The authoritative version of this macro is in executor/execMain.c.  Be sure
- * to keep everything in sync.
- */
-#define GetAllUpdatedColumns(relinfo, estate) \
-	(bms_union(exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->updatedCols, \
-			   exec_rt_fetch((relinfo)->ri_RangeTableIndex, estate)->extraUpdatedCols))
-
 /* Local function prototypes */
 static void SetTriggerFlags(TriggerDesc *trigdesc, Trigger *trigger);
 static bool GetTupleForTrigger(EState *estate,
@@ -2643,7 +2635,10 @@ ExecBSUpdateTriggers(EState *estate, ResultRelInfo *relinfo)
 								   CMD_UPDATE))
 		return;
 
-	updatedCols = GetAllUpdatedColumns(relinfo, estate);
+	/* statement-level triggers operate on the parent table */
+	Assert(relinfo->ri_RootResultRelInfo == NULL);
+
+	updatedCols = ExecGetAllUpdatedCols(relinfo, estate);
 
 	LocTriggerData.type = T_TriggerData;
 	LocTriggerData.tg_event = TRIGGER_EVENT_UPDATE |
@@ -2684,10 +2679,13 @@ ExecASUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 {
 	TriggerDesc *trigdesc = relinfo->ri_TrigDesc;
 
+	/* statement-level triggers operate on the parent table */
+	Assert(relinfo->ri_RootResultRelInfo == NULL);
+
 	if (trigdesc && trigdesc->trig_update_after_statement)
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  false, NULL, NULL, NIL,
-							  GetAllUpdatedColumns(relinfo, estate),
+							  ExecGetAllUpdatedCols(relinfo, estate),
 							  transition_capture);
 }
 
@@ -2757,7 +2755,7 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 		TRIGGER_EVENT_ROW |
 		TRIGGER_EVENT_BEFORE;
 	LocTriggerData.tg_relation = relinfo->ri_RelationDesc;
-	updatedCols = GetAllUpdatedColumns(relinfo, estate);
+	updatedCols = ExecGetAllUpdatedCols(relinfo, estate);
 	LocTriggerData.tg_updatedcols = updatedCols;
 	for (i = 0; i < trigdesc->numtriggers; i++)
 	{
@@ -2798,16 +2796,6 @@ ExecBRUpdateTriggers(EState *estate, EPQState *epqstate,
 		else if (newtuple != oldtuple)
 		{
 			ExecForceStoreHeapTuple(newtuple, newslot, false);
-
-			if (trigger->tgisclone &&
-				!ExecPartitionCheck(relinfo, newslot, estate, false))
-				ereport(ERROR,
-						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("moving row to another partition during a BEFORE trigger is not supported"),
-						 errdetail("Before executing trigger \"%s\", the row was to be in partition \"%s.%s\".",
-								   trigger->tgname,
-								   get_namespace_name(RelationGetNamespace(relinfo->ri_RelationDesc)),
-								   RelationGetRelationName(relinfo->ri_RelationDesc))));
 
 			/*
 			 * If the tuple returned by the trigger / being stored, is the old
@@ -2868,7 +2856,7 @@ ExecARUpdateTriggers(EState *estate, ResultRelInfo *relinfo,
 
 		AfterTriggerSaveEvent(estate, relinfo, TRIGGER_EVENT_UPDATE,
 							  true, oldslot, newslot, recheckIndexes,
-							  GetAllUpdatedColumns(relinfo, estate),
+							  ExecGetAllUpdatedCols(relinfo, estate),
 							  transition_capture);
 	}
 }

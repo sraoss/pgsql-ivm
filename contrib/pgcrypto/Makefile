@@ -1,6 +1,6 @@
 # contrib/pgcrypto/Makefile
 
-INT_SRCS = sha1.c internal.c internal-sha2.c blf.c rijndael.c \
+INT_SRCS = internal.c internal-sha2.c blf.c rijndael.c \
 		pgp-mpi-internal.c imath.c
 INT_TESTS = sha2
 
@@ -10,8 +10,8 @@ OSSL_TESTS = sha2 des 3des cast5
 ZLIB_TST = pgp-compression
 ZLIB_OFF_TST = pgp-zlib-DISABLED
 
-CF_SRCS = $(if $(subst no,,$(with_openssl)), $(OSSL_SRCS), $(INT_SRCS))
-CF_TESTS = $(if $(subst no,,$(with_openssl)), $(OSSL_TESTS), $(INT_TESTS))
+CF_SRCS = $(if $(subst openssl,,$(with_ssl)), $(INT_SRCS), $(OSSL_SRCS))
+CF_TESTS = $(if $(subst openssl,,$(with_ssl)), $(INT_TESTS), $(OSSL_TESTS))
 CF_PGP_TESTS = $(if $(subst no,,$(with_zlib)), $(ZLIB_TST), $(ZLIB_OFF_TST))
 
 SRCS = \
