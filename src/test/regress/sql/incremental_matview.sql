@@ -1607,6 +1607,17 @@ SELECT * FROM mv_mytype;
 
 ROLLBACK;
 
+-- expressions including aggregete function
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_multi_func1 AS SELECT sum(j)*0.5 AS result FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_multi_func2 AS SELECT sum(i)/count(j) AS result FROM mv_base_a;
+SELECT result FROM mv_multi_func1 ORDER BY 1;
+SELECT result FROM mv_multi_func2 ORDER BY 1;
+INSERT INTO mv_base_a VALUES(1,10),(10,100),(100,1000);
+SELECT result FROM mv_multi_func1 ORDER BY 1;
+SELECT result FROM mv_multi_func2 ORDER BY 1;
+ROLLBACK;
+
 -- outer join view's targetlist must contain vars in the join conditions
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i,j,k FROM mv_base_a a LEFT JOIN mv_base_b b USING(i);
@@ -1696,10 +1707,6 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FR
 
 -- expressions specified in GROUP BY must appear in the target list.
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
-
--- experssions containing an aggregate is not supported
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_base_a;
 
 -- VALUES is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);

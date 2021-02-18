@@ -5725,6 +5725,40 @@ SELECT * FROM mv_mytype;
 (1 row)
 
 ROLLBACK;
+-- expressions including aggregete function
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_multi_func1 AS SELECT sum(j)*0.5 AS result FROM mv_base_a;
+NOTICE:  could not create an index on materialized view "mv_multi_func1" automatically
+HINT:  Create an index on the materialized view for efficient incremental maintenance.
+CREATE INCREMENTAL MATERIALIZED VIEW mv_multi_func2 AS SELECT sum(i)/count(j) AS result FROM mv_base_a;
+NOTICE:  could not create an index on materialized view "mv_multi_func2" automatically
+HINT:  Create an index on the materialized view for efficient incremental maintenance.
+SELECT result FROM mv_multi_func1 ORDER BY 1;
+ result 
+--------
+   75.0
+(1 row)
+
+SELECT result FROM mv_multi_func2 ORDER BY 1;
+ result 
+--------
+      3
+(1 row)
+
+INSERT INTO mv_base_a VALUES(1,10),(10,100),(100,1000);
+SELECT result FROM mv_multi_func1 ORDER BY 1;
+ result 
+--------
+  630.0
+(1 row)
+
+SELECT result FROM mv_multi_func2 ORDER BY 1;
+ result 
+--------
+     15
+(1 row)
+
+ROLLBACK;
 -- outer join view's targetlist must contain vars in the join conditions
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
 ERROR:  this query is not allowed on incrementally maintainable materialized view
@@ -5848,11 +5882,6 @@ ERROR:  column name __ivm_count__ is not supported on incrementally maintainable
 -- expressions specified in GROUP BY must appear in the target list.
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
 ERROR:  GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view
--- experssions containing an aggregate is not supported
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
-ERROR:  expression containing an aggregate in it is not supported on incrementally maintainable materialized view
-CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm31 AS SELECT sum(i)/sum(j) FROM mv_base_a;
-ERROR:  expression containing an aggregate in it is not supported on incrementally maintainable materialized view
 -- VALUES is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_only_values1 AS values(1);
 ERROR:  VALUES is not supported on incrementally maintainable materialized view

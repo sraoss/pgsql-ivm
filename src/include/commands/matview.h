@@ -39,5 +39,6 @@ extern Query* rewrite_query_for_exists_subquery(Query *query);
 extern void AtAbort_IVM(void);
 extern char *getColumnNameStartWith(RangeTblEntry *rte, char *str, int *attnum);
 extern bool isIvmName(const char *s);
+extern char *IVM_colname(const char *type, const char *col);
 
 #endif							/* MATVIEW_H */

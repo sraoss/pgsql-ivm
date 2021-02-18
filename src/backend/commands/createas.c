@@ -107,6 +107,7 @@ static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
+static Node *replaceIvmAggColumn(Node *node, char *resname, List *targetList, List *agg_counts, int depth);
 
 /*
  * create_ctas_internal
@@ -529,83 +530,14 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 		ListCell *lc;
 		List *agg_counts = NIL;
 		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
-		Const	*dmy_arg = makeConst(INT4OID,
-									 -1,
-									 InvalidOid,
-									 sizeof(int32),
-									 Int32GetDatum(1),
-									 false,
-									 true); /* pass by value */
 
 		foreach(lc, rewritten->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
-			TargetEntry *tle_count;
 			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno-1)));
 
+			makeIvmAggColumn((Node *)tle->expr, resname, &next_resno, pstate, &agg_counts, 0);
 
-			if (IsA(tle->expr, Aggref))
-			{
-				Aggref *aggref = (Aggref *) tle->expr;
-				const char *aggname = get_func_name(aggref->aggfnoid);
-
-				/*
-				 * For aggregate functions except to count, add count func with the same arg parameters.
-				 * Also, add sum func for agv.
-				 *
-				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-				 * of adding new duplicated one.
-				 */
-				if (strcmp(aggname, "count") != 0)
-				{
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												pstrdup(makeObjectName("__ivm_count",resname, "_")),
-												false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-				}
-				if (strcmp(aggname, "avg") == 0)
-				{
-					List *dmy_args = NIL;
-					ListCell *lc;
-					foreach(lc, aggref->aggargtypes)
-					{
-						Oid		typeid = lfirst_oid(lc);
-						Type	type = typeidType(typeid);
-
-						Const *con = makeConst(typeid,
-											   -1,
-											   typeTypeCollation(type),
-											   typeLen(type),
-											   (Datum) 0,
-											   true,
-											   typeByVal(type));
-						dmy_args = lappend(dmy_args, con);
-						ReleaseSysCache(type);
-
-					}
-					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												pstrdup(makeObjectName("__ivm_sum",resname, "_")),
-												false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-				}
-
-			}
 		}
 		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
 
@@ -626,8 +558,235 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 		rewritten->targetList = lappend(rewritten->targetList, tle);
 		rewritten->hasAggs = true;
 	}
-
 	return rewritten;
+}
+
+/*
+ * makeIvmAggColumn -- make aggregation column which is added by ivm
+ */
+void
+makeIvmAggColumn(Node *tle, char *resname, AttrNumber *next_resno, ParseState *pstate, List **agg_counts, int depth)
+{
+	TargetEntry *tle_count;
+
+	if (IsA(tle, Aggref))
+	{
+		Node *node;
+		FuncCall *fn;
+		Const	*dmy_arg = makeConst(INT4OID,
+									 -1,
+									 InvalidOid,
+									 sizeof(int32),
+									 Int32GetDatum(1),
+									 false,
+									 true); /* pass by value */
+		Aggref *aggref = (Aggref *) tle;
+		const char *aggname = get_func_name(aggref->aggfnoid);
+
+		/* If include expressions of aggreagate, add its aggregate column in targetlist */
+		if (depth > 0)
+		{
+			ListCell *lc;
+			char columnName[NAMEDATALEN];
+			int count = 0;
+
+			snprintf(columnName, sizeof(columnName), "%s_%d", resname, count);
+			foreach(lc, *agg_counts)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+				if (strcmp(tle->resname, IVM_colname(aggname, columnName)) == 0)
+				{
+					snprintf(columnName, sizeof(columnName), "%s_%d", resname, ++count);
+				}
+			}
+
+			resname = pstrdup(IVM_colname(aggname, columnName));
+			tle_count = makeTargetEntry((Expr *) tle,
+										*next_resno,
+										resname,
+										false);
+			*agg_counts = lappend(*agg_counts, tle_count);
+			(*next_resno)++;
+		}
+
+		/*
+		 * For aggregate functions except to count, add count func with the same arg parameters.
+		 * Also, add sum func for agv.
+		 *
+		 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+		 * of adding new duplicated one.
+		 */
+		if (strcmp(aggname, "count") != 0)
+		{
+			fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+			/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+			node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+			((Aggref *)node)->args = aggref->args;
+
+			tle_count = makeTargetEntry((Expr *) node,
+										*next_resno,
+										pstrdup(IVM_colname("count", resname)),
+										false);
+			*agg_counts = lappend(*agg_counts, tle_count);
+			(*next_resno)++;
+		}
+		if (strcmp(aggname, "avg") == 0)
+		{
+			List *dmy_args = NIL;
+			ListCell *lc;
+			foreach(lc, aggref->aggargtypes)
+			{
+				Oid		typeid = lfirst_oid(lc);
+				Type	type = typeidType(typeid);
+
+				Const *con = makeConst(typeid,
+									   -1,
+									   typeTypeCollation(type),
+									   typeLen(type),
+									   (Datum) 0,
+									   true,
+									   typeByVal(type));
+				dmy_args = lappend(dmy_args, con);
+				ReleaseSysCache(type);
+
+			}
+			fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+			/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+			node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+			((Aggref *)node)->args = aggref->args;
+
+			tle_count = makeTargetEntry((Expr *) node,
+										*next_resno,
+										pstrdup(IVM_colname("sum", resname)),
+										false);
+			*agg_counts = lappend(*agg_counts, tle_count);
+			(*next_resno)++;
+		}
+	}
+
+	/* if expression containing an aggregate, this function works as recursive processing */
+	else if (contain_aggs_of_level(tle, 0))
+	{
+		switch (nodeTag(tle))
+		{
+			case T_OpExpr:
+				{
+					OpExpr	   *op = (OpExpr *) tle;
+					ListCell   *lc;
+					foreach(lc, op->args)
+					{
+						Node	   *arg = (Node *) lfirst(lc);
+						makeIvmAggColumn(arg, pstrdup(resname), next_resno, pstate, agg_counts, depth + 1);
+					}
+					break;
+				}
+			case T_FuncExpr:
+				{
+					FuncExpr	   *expr = (FuncExpr *) tle;
+					ListCell   *lc;
+					foreach(lc, expr->args)
+					{
+						Node	   *arg = (Node *) lfirst(lc);
+						makeIvmAggColumn(arg, pstrdup(resname), next_resno, pstate, agg_counts, depth + 1);
+					}
+					break;
+				}
+			case T_SubLink:
+			case T_CaseExpr:
+				/* Currently, another case is not supported */
+				break;
+			default:
+					break;
+		}
+	}
+}
+
+/*
+ * replaceIvmAggColumn -- replace aggregation column which is added by IVM
+ */
+static Node *
+replaceIvmAggColumn(Node *node, char *resname, List *targetList, List *agg_counts, int depth)
+{
+	Node *result = node;
+
+	if (IsA(node, Aggref))
+	{
+		if (depth > 0)
+		{
+			ListCell *lc;
+			Aggref *aggref = (Aggref *) node;
+			const char *aggname = get_func_name(aggref->aggfnoid);
+			char columnName[NAMEDATALEN];
+			int count = 0;
+
+			/* 
+			 * Check other existing IVM column name and Create new IVM column name
+			 */
+			snprintf(columnName, sizeof(columnName), "%s_%d", resname, count);
+			foreach(lc, agg_counts)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+
+				if (strcmp(tle->resname, IVM_colname(aggname, columnName)) == 0)
+				{
+					snprintf(columnName, sizeof(columnName), "%s_%d", resname, ++count);
+				}
+			}
+
+			/* Get referrenced resno by aggreagate */
+			foreach (lc, targetList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				if (!strcmp(IVM_colname(aggname, columnName), tle->resname))
+				{
+					agg_counts = lappend(agg_counts, tle);
+					result = (Node *)makeVar(1 ,tle->resno,
+							  aggref->aggtype, -1, InvalidOid, 0);
+					return result;
+				}
+			}
+		}
+	}
+	/* if expression containing an aggregate, this function works as recursive processing */
+	else if (contain_aggs_of_level(node, 0))
+	{
+		switch (nodeTag(node))
+		{
+			case T_OpExpr:
+				{
+					OpExpr	   *op = (OpExpr *) node;
+					ListCell   *lc;
+					foreach(lc, op->args)
+					{
+						Node	   *arg = (Node *) lfirst(lc);
+						lfirst(lc) = replaceIvmAggColumn(arg, pstrdup(resname), targetList, agg_counts, depth + 1);
+					}
+					break;
+				}
+			case T_FuncExpr:
+				{
+					FuncExpr	   *expr = (FuncExpr *) node;
+					ListCell   *lc;
+					foreach(lc, expr->args)
+					{
+						Node	   *arg = (Node *) lfirst(lc);
+						lfirst(lc) = replaceIvmAggColumn(arg, pstrdup(resname), targetList, agg_counts, depth + 1);
+					}
+					break;
+				}
+			case T_SubLink:
+			case T_CaseExpr:
+				/* Currently, another case is not supported */
+				break;
+			default:
+					break;
+		}
+	}
+
+	return result;
 }
 
 /*
@@ -782,6 +941,7 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 {
 	DR_intorel *myState = (DR_intorel *) self;
 	IntoClause *into = myState->into;
+	Query *query = NULL;
 	bool		is_matview;
 	List	   *attrList;
 	ObjectAddress intoRelationAddr;
@@ -793,6 +953,11 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 
 	/* This code supports both CREATE TABLE AS and CREATE MATERIALIZED VIEW */
 	is_matview = (into->viewQuery != NULL);
+
+	if (into->ivm)
+	{
+		query = rewriteQueryForIMMV((Query *)into->viewQuery, into->colNames);
+	}
 
 	/*
 	 * Build column definitions using "pre-cooked" type and collation info. If
@@ -820,6 +985,19 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 							attribute->atttypid,
 							attribute->atttypmod,
 							attribute->attcollation);
+
+		/* If IVM with expressions including aggregate functions, it replaces generated column */
+		if (into->ivm && query)
+		{
+			TargetEntry *tle = list_nth(query->targetList, attnum);
+			if (tle && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
+			{
+				List *agg_counts = NIL;
+				replaceIvmAggColumn((Node *)tle->expr, tle->resname, query->targetList, agg_counts, 0);
+				col->cooked_default = (Node *)tle->expr;
+				col->generated = ATTRIBUTE_GENERATED_STORED;
+			}
+		}
 
 		/*
 		 * It's possible that the column is of a collatable type but the
@@ -1178,11 +1356,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
-					if (qry->hasAggs && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
-
 					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
 				}
 
@@ -1431,10 +1604,20 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
 				break;
 			}
+		case T_FuncExpr:
+			{
+				FuncExpr	   *expr = (FuncExpr *) node;
+				ListCell   *lc;
+				foreach(lc, expr->args)
+				{
+					Node	   *arg = (Node *) lfirst(lc);
+					check_ivm_restriction_walker((Node *) arg, ctx, depth);
+				}
+				break;
+			}
 		case T_SubPlan:
 		case T_GroupingFunc:
 		case T_WindowFunc:
-		case T_FuncExpr:
 		case T_SQLValueFunction:
 		case T_Const:
 		case T_Param:

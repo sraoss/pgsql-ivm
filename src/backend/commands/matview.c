@@ -247,7 +247,7 @@ static ListCell *getRteListCell(Query *query, List *rte_path);
 
 static void apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *new_tuplestores,
 			TupleDesc tupdesc_old, TupleDesc tupdesc_new,
-			Query *query, bool use_count, char *count_colname, IvmMaintenanceGraph *graph);
+			Query *query, Query *rewritten, bool use_count, char *count_colname, IvmMaintenanceGraph *graph);
 static void append_set_clause_for_count(const char *resname, StringInfo buf_old,
 							StringInfo buf_new,StringInfo aggs_list);
 static void append_set_clause_for_sum(const char *resname, StringInfo buf_old,
@@ -1690,7 +1690,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			{
 				/* apply the delta tables to the materialized view */
 				apply_delta(matviewOid, old_tuplestore, new_tuplestore,
-							tupdesc_old, tupdesc_new, query, use_count,
+							tupdesc_old, tupdesc_new, query, rewritten, use_count,
 							count_colname, hasOuterJoins ? maintenance_graph : NULL);
 			}
 			PG_CATCH();
@@ -2081,92 +2081,24 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 	TargetEntry *tle_count;
 	FuncCall *fn;
 	Node *node;
+	ListCell *lc;
 	int varno = 0;
-	Const	*dmy_arg = makeConst(INT4OID,
-								 -1,
-								 InvalidOid,
-								 sizeof(int32),
-								 Int32GetDatum(1),
-								 false,
-								 true);
 	ListCell *tbl_lc;
 
 	/* For aggregate views */
 	if (query->hasAggs)
 	{
-		ListCell *lc;
 		List *agg_counts = NIL;
 		AttrNumber next_resno = list_length(query->targetList) + 1;
 
 		foreach(lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
+			char *resname = tle->resname;
 
-			if (IsA(tle->expr, Aggref))
-			{
-				Aggref *aggref = (Aggref *) tle->expr;
-				const char *aggname = get_func_name(aggref->aggfnoid);
-
-				/*
-				 * For aggregate functions except to count, add count func with the same arg parameters.
-				 * Also, add sum func for agv.
-				 *
-				 * XXX: need some generalization
-				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-				 * of adding new duplicated one.
-				 */
-				if (strcmp(aggname, "count") != 0)
-				{
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-											next_resno,
-											pstrdup(makeObjectName("__ivm_count", tle->resname, "_")),
-											false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-				}
-				if (strcmp(aggname, "avg") == 0)
-				{
-					List *dmy_args = NIL;
-					ListCell *lc;
-					foreach(lc, aggref->aggargtypes)
-					{
-						Oid		typeid = lfirst_oid(lc);
-						Type	type = typeidType(typeid);
-
-						Const *con = makeConst(typeid,
-											   -1,
-											   typeTypeCollation(type),
-											   typeLen(type),
-											   (Datum) 0,
-											   true,
-											   typeByVal(type));
-						dmy_args = lappend(dmy_args, con);
-						ReleaseSysCache(type);
-
-					}
-					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												pstrdup(makeObjectName("__ivm_sum", tle->resname, "_")),
-												false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-					}
-				}
-
-			}
-			query->targetList = list_concat(query->targetList, agg_counts);
+			makeIvmAggColumn((Node *)tle->expr, resname, &next_resno, pstate, &agg_counts, 0);
+		}
+		query->targetList = list_concat(query->targetList, agg_counts);
 	}
 
 	/* Add count(*) using EXISTS clause */
@@ -2196,7 +2128,6 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 			query->targetList = lappend(query->targetList, tle_count);
 		}
 	}
-
 	/* Add count(*) for counting distinct tuples in views */
 	fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 	fn->agg_star = true;
@@ -2211,7 +2142,6 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 								false);
 	query->targetList = lappend(query->targetList, tle_count);
 	query->hasAggs = true;
-
 	return query;
 }
 
@@ -2952,7 +2882,21 @@ getRteListCell(Query *query, List *rte_path)
 	return rte_lc;
 }
 
-#define IVM_colname(type, col) makeObjectName("__ivm_" type, col, "_")
+char *
+IVM_colname(const char *type, const char *col)
+{
+	char pre[NAMEDATALEN];
+	snprintf(pre, sizeof(pre), "__ivm_%s", type);
+	if (isIvmName(col))
+	{
+		char resname[NAMEDATALEN];
+		strncpy(resname, col + 6, strlen(col)-8);
+		resname[strlen(col) - 8] = '\0';
+		return makeObjectName(pre, resname, "_");
+	}
+	else
+		return makeObjectName(pre, col, "_");
+}
 
 /*
  * apply_delta
@@ -2963,7 +2907,7 @@ getRteListCell(Query *query, List *rte_path)
 static void
 apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *new_tuplestores,
 			TupleDesc tupdesc_old, TupleDesc tupdesc_new,
-			Query *query, bool use_count, char *count_colname, IvmMaintenanceGraph *graph)
+			Query *query, Query *rewritten, bool use_count, char *count_colname, IvmMaintenanceGraph *graph)
 {
 	StringInfoData querybuf;
 	StringInfoData target_list_buf;
@@ -2974,6 +2918,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	char	   *matviewname;
 	ListCell	*lc;
 	int			i;
+	bool		first_column = true;
 	List	   *keys = NIL;
 	List	   *minmax_list = NIL;
 	List	   *is_min_list = NIL;
@@ -3009,13 +2954,18 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
 		char   *resname = NameStr(attr->attname);
 
-		if (i != 0)
+		/* skip generated column */
+		if (attr->attgenerated)
+			continue;
+		if (!first_column)
 			appendStringInfo(&target_list_buf, ", ");
 		appendStringInfo(&target_list_buf, "%s", quote_qualified_identifier(NULL, resname));
+
+		first_column = false;
 	}
 
 	i = 0;
-	foreach (lc, query->targetList)
+	foreach (lc, rewritten->targetList)
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lc);
 		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
@@ -3023,6 +2973,8 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 
 		i++;
 
+		if (strncmp(tle->resname, "__ivm_count__", 13) == 0)
+			continue;
 		if (tle->resjunk)
 			continue;
 
@@ -3030,7 +2982,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 		 * For views without aggregates, all attributes are used as keys to identify a
 		 * tuple in a view.
 		 */
-		if (!query->hasAggs)
+		if (!query->hasAggs && !isIvmName(tle->resname) )
 			keys = lappend(keys, attr);
 
 		/* For views with aggregates, we need to build SET clause for updating aggregate
@@ -3039,6 +2991,20 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 		{
 			Aggref *aggref = (Aggref *) tle->expr;
 			const char *aggname = get_func_name(aggref->aggfnoid);
+
+			if (isIvmName(tle->resname))
+			{
+				int j = 0;
+				for (j = 0; j < matviewRel->rd_att->natts; j++)
+				{
+					Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, j);
+					char   *colname = NameStr(attr->attname);
+					if (!strncmp(tle->resname, IVM_colname(aggname, colname),strlen(IVM_colname(aggname, colname)) - 3) && attr->attgenerated)
+						break;
+				}
+				if (j == matviewRel->rd_att->natts)
+					continue;
+			}
 
 			/*
 			 * We can use function names here because it is already checked if these

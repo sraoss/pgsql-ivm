@@ -2619,6 +2619,13 @@ AddRelationNewConstraints(Relation rel,
 						   atp->atttypid, atp->atttypmod,
 						   NameStr(atp->attname),
 						   atp->attgenerated);
+		if (rel->rd_rel->relisivm && atp->attgenerated)
+		{
+			if (contain_mutable_functions(expr))
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("generated expression is not immutable")));
+		}
 
 		/*
 		 * If the expression is just a NULL constant, we do not bother to make
