@@ -922,13 +922,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 	rel = relation_open(relationId, AccessExclusiveLock);
 
 	/*
-	 * if true, relation status is needed to update immediately.
-	 * In AddrelationNewConstraints, the ivm status is referenced.
-	 */
-//	if (stmt->ivm)
-//		SetMatViewIVMState(rel, true);
-
-	/*
 	 * Now add any newly specified column default and generation expressions
 	 * to the new relation.  These are passed to us in the form of raw
 	 * parsetrees; we need to transform them to executable expression trees
