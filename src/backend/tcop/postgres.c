@@ -353,7 +353,7 @@ SocketBackend(StringInfo inBuf)
 			whereToSendOutput = DestNone;
 			ereport(DEBUG1,
 					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-					 errmsg("unexpected EOF on client connection")));
+					 errmsg_internal("unexpected EOF on client connection")));
 		}
 		return qtype;
 	}
@@ -370,57 +370,10 @@ SocketBackend(StringInfo inBuf)
 	{
 		case 'Q':				/* simple query */
 			doing_extended_query_message = false;
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) < 3)
-			{
-				/* old style without length word; convert */
-				if (pq_getstring(inBuf))
-				{
-					if (IsTransactionState())
-						ereport(COMMERROR,
-								(errcode(ERRCODE_CONNECTION_FAILURE),
-								 errmsg("unexpected EOF on client connection with an open transaction")));
-					else
-					{
-						/*
-						 * Can't send DEBUG log messages to client at this
-						 * point. Since we're disconnecting right away, we
-						 * don't need to restore whereToSendOutput.
-						 */
-						whereToSendOutput = DestNone;
-						ereport(DEBUG1,
-								(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-								 errmsg("unexpected EOF on client connection")));
-					}
-					return EOF;
-				}
-			}
 			break;
 
 		case 'F':				/* fastpath function call */
 			doing_extended_query_message = false;
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) < 3)
-			{
-				if (GetOldFunctionMessage(inBuf))
-				{
-					if (IsTransactionState())
-						ereport(COMMERROR,
-								(errcode(ERRCODE_CONNECTION_FAILURE),
-								 errmsg("unexpected EOF on client connection with an open transaction")));
-					else
-					{
-						/*
-						 * Can't send DEBUG log messages to client at this
-						 * point. Since we're disconnecting right away, we
-						 * don't need to restore whereToSendOutput.
-						 */
-						whereToSendOutput = DestNone;
-						ereport(DEBUG1,
-								(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-								 errmsg("unexpected EOF on client connection")));
-					}
-					return EOF;
-				}
-			}
 			break;
 
 		case 'X':				/* terminate */
@@ -435,11 +388,6 @@ SocketBackend(StringInfo inBuf)
 		case 'H':				/* flush */
 		case 'P':				/* parse */
 			doing_extended_query_message = true;
-			/* these are only legal in protocol 3 */
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) < 3)
-				ereport(FATAL,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("invalid frontend message type %d", qtype)));
 			break;
 
 		case 'S':				/* sync */
@@ -447,22 +395,12 @@ SocketBackend(StringInfo inBuf)
 			ignore_till_sync = false;
 			/* mark not-extended, so that a new error doesn't begin skip */
 			doing_extended_query_message = false;
-			/* only legal in protocol 3 */
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) < 3)
-				ereport(FATAL,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("invalid frontend message type %d", qtype)));
 			break;
 
 		case 'd':				/* copy data */
 		case 'c':				/* copy done */
 		case 'f':				/* copy fail */
 			doing_extended_query_message = false;
-			/* these are only legal in protocol 3 */
-			if (PG_PROTOCOL_MAJOR(FrontendProtocol) < 3)
-				ereport(FATAL,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("invalid frontend message type %d", qtype)));
 			break;
 
 		default:
@@ -483,13 +421,8 @@ SocketBackend(StringInfo inBuf)
 	 * after the type code; we can read the message contents independently of
 	 * the type.
 	 */
-	if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3)
-	{
-		if (pq_getmessage(inBuf, 0))
-			return EOF;			/* suitable message already logged */
-	}
-	else
-		pq_endmsgread();
+	if (pq_getmessage(inBuf, 0))
+		return EOF;			/* suitable message already logged */
 	RESUME_CANCEL_INTERRUPTS();
 
 	return qtype;
@@ -1375,7 +1308,7 @@ exec_parse_message(const char *query_string,	/* string to execute */
 		ResetUsage();
 
 	ereport(DEBUG2,
-			(errmsg("parse %s: %s",
+			(errmsg_internal("parse %s: %s",
 					*stmt_name ? stmt_name : "<unnamed>",
 					query_string)));
 
@@ -1631,7 +1564,7 @@ exec_bind_message(StringInfo input_message)
 	stmt_name = pq_getmsgstring(input_message);
 
 	ereport(DEBUG2,
-			(errmsg("bind %s to %s",
+			(errmsg_internal("bind %s to %s",
 					*portal_name ? portal_name : "<unnamed>",
 					*stmt_name ? stmt_name : "<unnamed>")));
 
@@ -3092,7 +3025,7 @@ ProcessInterrupts(void)
 		else if (IsLogicalLauncher())
 		{
 			ereport(DEBUG1,
-					(errmsg("logical replication launcher shutting down")));
+					(errmsg_internal("logical replication launcher shutting down")));
 
 			/*
 			 * The logical replication launcher can be stopped at any time.

@@ -95,6 +95,50 @@ UNION ALL
 )
 SELECT n, pg_typeof(n) FROM t;
 
+-- Deeply nested WITH caused a list-munging problem in v13
+-- Detection of cross-references and self-references
+WITH RECURSIVE w1(c1) AS
+ (WITH w2(c2) AS
+  (WITH w3(c3) AS
+   (WITH w4(c4) AS
+    (WITH w5(c5) AS
+     (WITH RECURSIVE w6(c6) AS
+      (WITH w6(c6) AS
+       (WITH w8(c8) AS
+        (SELECT 1)
+        SELECT * FROM w8)
+       SELECT * FROM w6)
+      SELECT * FROM w6)
+     SELECT * FROM w5)
+    SELECT * FROM w4)
+   SELECT * FROM w3)
+  SELECT * FROM w2)
+SELECT * FROM w1;
+-- Detection of invalid self-references
+WITH RECURSIVE outermost(x) AS (
+ SELECT 1
+ UNION (WITH innermost1 AS (
+  SELECT 2
+  UNION (WITH innermost2 AS (
+   SELECT 3
+   UNION (WITH innermost3 AS (
+    SELECT 4
+    UNION (WITH innermost4 AS (
+     SELECT 5
+     UNION (WITH innermost5 AS (
+      SELECT 6
+      UNION (WITH innermost6 AS
+       (SELECT 7)
+       SELECT * FROM innermost6))
+      SELECT * FROM innermost5))
+     SELECT * FROM innermost4))
+    SELECT * FROM innermost3))
+   SELECT * FROM innermost2))
+  SELECT * FROM outermost
+  UNION SELECT * FROM innermost1)
+ )
+ SELECT * FROM outermost ORDER BY 1;
+
 --
 -- Some examples with a tree
 --
@@ -465,7 +509,7 @@ with recursive search_graph(f, t, label) as (
 	select g.*
 	from graph g, search_graph sg
 	where g.f = sg.t
-) cycle f, t set is_cycle to true default false using path
+) cycle f, t set is_cycle using path
 select * from search_graph;
 
 with recursive search_graph(f, t, label) as (
@@ -501,7 +545,7 @@ with recursive a as (
 	select 1 as b
 	union all
 	select * from a
-) cycle b set c to true default false using p
+) cycle b set c using p
 select * from a;
 
 -- search+cycle
@@ -512,7 +556,7 @@ with recursive search_graph(f, t, label) as (
 	from graph g, search_graph sg
 	where g.f = sg.t
 ) search depth first by f, t set seq
-  cycle f, t set is_cycle to true default false using path
+  cycle f, t set is_cycle using path
 select * from search_graph;
 
 with recursive search_graph(f, t, label) as (
@@ -522,7 +566,7 @@ with recursive search_graph(f, t, label) as (
 	from graph g, search_graph sg
 	where g.f = sg.t
 ) search breadth first by f, t set seq
-  cycle f, t set is_cycle to true default false using path
+  cycle f, t set is_cycle using path
 select * from search_graph;
 
 -- various syntax errors
@@ -532,7 +576,7 @@ with recursive search_graph(f, t, label) as (
 	select g.*
 	from graph g, search_graph sg
 	where g.f = sg.t
-) cycle foo, tar set is_cycle to true default false using path
+) cycle foo, tar set is_cycle using path
 select * from search_graph;
 
 with recursive search_graph(f, t, label) as (
@@ -610,19 +654,31 @@ with recursive search_graph(f, t, label) as (
 select * from search_graph;
 
 -- test ruleutils and view expansion
-create temp view v_cycle as
+create temp view v_cycle1 as
 with recursive search_graph(f, t, label) as (
 	select * from graph g
 	union all
 	select g.*
 	from graph g, search_graph sg
 	where g.f = sg.t
-) cycle f, t set is_cycle to true default false using path
+) cycle f, t set is_cycle using path
 select f, t, label from search_graph;
 
-select pg_get_viewdef('v_cycle');
+create temp view v_cycle2 as
+with recursive search_graph(f, t, label) as (
+	select * from graph g
+	union all
+	select g.*
+	from graph g, search_graph sg
+	where g.f = sg.t
+) cycle f, t set is_cycle to 'Y' default 'N' using path
+select f, t, label from search_graph;
 
-select * from v_cycle;
+select pg_get_viewdef('v_cycle1');
+select pg_get_viewdef('v_cycle2');
+
+select * from v_cycle1;
+select * from v_cycle2;
 
 --
 -- test multiple WITH queries

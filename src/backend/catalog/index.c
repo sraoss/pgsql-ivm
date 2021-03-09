@@ -1291,7 +1291,8 @@ do_collation_version_check(const ObjectAddress *otherObject,
 		return false;
 
 	/* Ask the provider for the current version.  Give up if unsupported. */
-	current_version = get_collation_version_for_oid(otherObject->objectId);
+	current_version = get_collation_version_for_oid(otherObject->objectId,
+													false);
 	if (!current_version)
 		return false;
 
@@ -1370,7 +1371,7 @@ do_collation_version_update(const ObjectAddress *otherObject,
 	if (OidIsValid(*coll) && otherObject->objectId != *coll)
 		return false;
 
-	*new_version = get_collation_version_for_oid(otherObject->objectId);
+	*new_version = get_collation_version_for_oid(otherObject->objectId, false);
 
 	return true;
 }
@@ -3082,14 +3083,12 @@ index_build(Relation heapRelation,
 
 	if (indexInfo->ii_ParallelWorkers == 0)
 		ereport(DEBUG1,
-				(errmsg("building index \"%s\" on table \"%s\" serially",
+				(errmsg_internal("building index \"%s\" on table \"%s\" serially",
 						RelationGetRelationName(indexRelation),
 						RelationGetRelationName(heapRelation))));
 	else
 		ereport(DEBUG1,
-				(errmsg_plural("building index \"%s\" on table \"%s\" with request for %d parallel worker",
-							   "building index \"%s\" on table \"%s\" with request for %d parallel workers",
-							   indexInfo->ii_ParallelWorkers,
+				(errmsg_internal("building index \"%s\" on table \"%s\" with request for %d parallel workers",
 							   RelationGetRelationName(indexRelation),
 							   RelationGetRelationName(heapRelation),
 							   indexInfo->ii_ParallelWorkers)));
@@ -3689,12 +3688,18 @@ reindex_index(Oid indexId, bool skip_constraint_checks, char persistence,
 
 	if (progress)
 	{
+		const int	progress_cols[] = {
+			PROGRESS_CREATEIDX_COMMAND,
+			PROGRESS_CREATEIDX_INDEX_OID
+		};
+		const int64 progress_vals[] = {
+			PROGRESS_CREATEIDX_COMMAND_REINDEX,
+			indexId
+		};
+
 		pgstat_progress_start_command(PROGRESS_COMMAND_CREATE_INDEX,
 									  heapId);
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_COMMAND,
-									 PROGRESS_CREATEIDX_COMMAND_REINDEX);
-		pgstat_progress_update_param(PROGRESS_CREATEIDX_INDEX_OID,
-									 indexId);
+		pgstat_progress_update_multi_param(2, progress_cols, progress_vals);
 	}
 
 	/*

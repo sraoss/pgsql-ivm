@@ -2672,6 +2672,7 @@ ReorderBufferPrepare(ReorderBuffer *rb, TransactionId xid,
 void
 ReorderBufferFinishPrepared(ReorderBuffer *rb, TransactionId xid,
 							XLogRecPtr commit_lsn, XLogRecPtr end_lsn,
+							XLogRecPtr initial_consistent_point,
 							TimestampTz commit_time, RepOriginId origin_id,
 							XLogRecPtr origin_lsn, char *gid, bool is_commit)
 {
@@ -2679,7 +2680,7 @@ ReorderBufferFinishPrepared(ReorderBuffer *rb, TransactionId xid,
 	XLogRecPtr	prepare_end_lsn;
 	TimestampTz prepare_time;
 
-	txn = ReorderBufferTXNByXid(rb, xid, true, NULL, commit_lsn, false);
+	txn = ReorderBufferTXNByXid(rb, xid, false, NULL, commit_lsn, false);
 
 	/* unknown transaction, nothing to do */
 	if (txn == NULL)
@@ -2698,12 +2699,11 @@ ReorderBufferFinishPrepared(ReorderBuffer *rb, TransactionId xid,
 	/*
 	 * It is possible that this transaction is not decoded at prepare time
 	 * either because by that time we didn't have a consistent snapshot or it
-	 * was decoded earlier but we have restarted. We can't distinguish between
-	 * those two cases so we send the prepare in both the cases and let
-	 * downstream decide whether to process or skip it. We don't need to
-	 * decode the xact for aborts if it is not done already.
+	 * was decoded earlier but we have restarted. We only need to send the
+	 * prepare if it was not decoded earlier. We don't need to decode the xact
+	 * for aborts if it is not done already.
 	 */
-	if (!rbtxn_prepared(txn) && is_commit)
+	if ((txn->final_lsn < initial_consistent_point) && is_commit)
 	{
 		txn->txn_flags |= RBTXN_PREPARE;
 
@@ -4366,8 +4366,7 @@ ReorderBufferSerializedPath(char *path, ReplicationSlot *slot, TransactionId xid
 
 	snprintf(path, MAXPGPATH, "pg_replslot/%s/xid-%u-lsn-%X-%X.spill",
 			 NameStr(MyReplicationSlot->data.name),
-			 xid,
-			 (uint32) (recptr >> 32), (uint32) recptr);
+			 xid, LSN_FORMAT_ARGS(recptr));
 }
 
 /*

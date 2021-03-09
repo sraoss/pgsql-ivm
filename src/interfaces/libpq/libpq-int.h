@@ -232,21 +232,25 @@ typedef enum
 	PGQUERY_DESCRIBE			/* Describe Statement or Portal */
 } PGQueryClass;
 
-/* PGSetenvStatusType defines the state of the pqSetenv state machine */
-
-/* (this is used only for 2.0-protocol connections) */
+/* Target server type (decoded value of target_session_attrs) */
 typedef enum
 {
-	SETENV_STATE_CLIENT_ENCODING_SEND,	/* About to send an Environment Option */
-	SETENV_STATE_CLIENT_ENCODING_WAIT,	/* Waiting for above send to complete */
-	SETENV_STATE_OPTION_SEND,	/* About to send an Environment Option */
-	SETENV_STATE_OPTION_WAIT,	/* Waiting for above send to complete */
-	SETENV_STATE_QUERY1_SEND,	/* About to send a status query */
-	SETENV_STATE_QUERY1_WAIT,	/* Waiting for query to complete */
-	SETENV_STATE_QUERY2_SEND,	/* About to send a status query */
-	SETENV_STATE_QUERY2_WAIT,	/* Waiting for query to complete */
-	SETENV_STATE_IDLE
-} PGSetenvStatusType;
+	SERVER_TYPE_ANY = 0,		/* Any server (default) */
+	SERVER_TYPE_READ_WRITE,		/* Read-write server */
+	SERVER_TYPE_READ_ONLY,		/* Read-only server */
+	SERVER_TYPE_PRIMARY,		/* Primary server */
+	SERVER_TYPE_STANDBY,		/* Standby server */
+	SERVER_TYPE_PREFER_STANDBY, /* Prefer standby server */
+	SERVER_TYPE_PREFER_STANDBY_PASS2	/* second pass - behaves same as ANY */
+} PGTargetServerType;
+
+/* Boolean value plus a not-known state, for GUCs we might have to fetch */
+typedef enum
+{
+	PG_BOOL_UNKNOWN = 0,		/* Currently unknown */
+	PG_BOOL_YES,				/* Yes (true) */
+	PG_BOOL_NO					/* No (false) */
+} PGTernaryBool;
 
 /* Typedef for the EnvironmentOptions[] array */
 typedef struct PQEnvironmentOption
@@ -356,12 +360,12 @@ struct pg_conn
 	char	   *keepalives_count;	/* maximum number of TCP keepalive
 									 * retransmits */
 	char	   *sslmode;		/* SSL mode (require,prefer,allow,disable) */
-	char	   *sslcompression; /* SSL compression (0 or 1) */
 	char	   *sslkey;			/* client key filename */
 	char	   *sslcert;		/* client certificate filename */
 	char	   *sslpassword;	/* client key file password */
 	char	   *sslrootcert;	/* root certificate filename */
 	char	   *sslcrl;			/* certificate revocation list filename */
+	char	   *sslcrldir;		/* certificate revocation list directory name */
 	char	   *requirepeer;	/* required peer credentials for local sockets */
 	char	   *gssencmode;		/* GSS mode (require,prefer,disable) */
 	char	   *krbsrvname;		/* Kerberos service name */
@@ -369,9 +373,7 @@ struct pg_conn
 								 * "sspi") */
 	char	   *ssl_min_protocol_version;	/* minimum TLS protocol version */
 	char	   *ssl_max_protocol_version;	/* maximum TLS protocol version */
-
-	/* Type of connection to make.  Possible values: any, read-write. */
-	char	   *target_session_attrs;
+	char	   *target_session_attrs;	/* desired session properties */
 
 	/* Optional file to write trace info to */
 	FILE	   *Pfdebug;
@@ -421,13 +423,12 @@ struct pg_conn
 	char	   *write_err_msg;	/* write error message, or NULL if OOM */
 
 	/* Transient state needed while establishing connection */
+	PGTargetServerType target_server_type;	/* desired session properties */
 	bool		try_next_addr;	/* time to advance to next address/host? */
 	bool		try_next_host;	/* time to advance to next connhost[]? */
 	struct addrinfo *addrlist;	/* list of addresses for current connhost */
 	struct addrinfo *addr_cur;	/* the one currently being tried */
 	int			addrlist_family;	/* needed to know how to free addrlist */
-	PGSetenvStatusType setenv_state;	/* for 2.0 protocol only */
-	const PQEnvironmentOption *next_eo;
 	bool		send_appname;	/* okay to send application_name? */
 
 	/* Miscellaneous stuff */
@@ -436,6 +437,8 @@ struct pg_conn
 	pgParameterStatus *pstatus; /* ParameterStatus data */
 	int			client_encoding;	/* encoding id */
 	bool		std_strings;	/* standard_conforming_strings */
+	PGTernaryBool default_transaction_read_only;	/* default_transaction_read_only */
+	PGTernaryBool in_hot_standby;	/* in_hot_standby */
 	PGVerbosity verbosity;		/* error/notice message verbosity */
 	PGContextVisibility show_context;	/* whether to show CONTEXT field */
 	PGlobjfuncs *lobjfuncs;		/* private state for large-object access fns */
@@ -617,22 +620,6 @@ extern void pqSaveParameterStatus(PGconn *conn, const char *name,
 extern int	pqRowProcessor(PGconn *conn, const char **errmsgp);
 extern int	PQsendQueryContinue(PGconn *conn, const char *query);
 
-/* === in fe-protocol2.c === */
-
-extern PostgresPollingStatusType pqSetenvPoll(PGconn *conn);
-
-extern char *pqBuildStartupPacket2(PGconn *conn, int *packetlen,
-								   const PQEnvironmentOption *options);
-extern void pqParseInput2(PGconn *conn);
-extern int	pqGetCopyData2(PGconn *conn, char **buffer, int async);
-extern int	pqGetline2(PGconn *conn, char *s, int maxlen);
-extern int	pqGetlineAsync2(PGconn *conn, char *buffer, int bufsize);
-extern int	pqEndcopy2(PGconn *conn);
-extern PGresult *pqFunctionCall2(PGconn *conn, Oid fnid,
-								 int *result_buf, int *actual_result_len,
-								 int result_is_int,
-								 const PQArgBlock *args, int nargs);
-
 /* === in fe-protocol3.c === */
 
 extern char *pqBuildStartupPacket3(PGconn *conn, int *packetlen,
@@ -669,7 +656,7 @@ extern int	pqSkipnchar(size_t len, PGconn *conn);
 extern int	pqPutnchar(const char *s, size_t len, PGconn *conn);
 extern int	pqGetInt(int *result, size_t bytes, PGconn *conn);
 extern int	pqPutInt(int value, size_t bytes, PGconn *conn);
-extern int	pqPutMsgStart(char msg_type, bool force_len, PGconn *conn);
+extern int	pqPutMsgStart(char msg_type, PGconn *conn);
 extern int	pqPutMsgEnd(PGconn *conn);
 extern int	pqReadData(PGconn *conn);
 extern int	pqFlush(PGconn *conn);

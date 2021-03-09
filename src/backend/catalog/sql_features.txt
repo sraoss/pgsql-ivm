@@ -243,7 +243,7 @@ F312	MERGE statement			NO	consider INSERT ... ON CONFLICT DO UPDATE
 F313	Enhanced MERGE statement			NO	
 F314	MERGE statement with DELETE branch			NO	
 F321	User authorization			YES	
-F341	Usage tables			NO	no ROUTINE_*_USAGE tables
+F341	Usage tables			YES	
 F361	Subprogram support			YES	
 F381	Extended schema manipulation			YES	
 F381	Extended schema manipulation	01	ALTER TABLE statement: ALTER COLUMN clause	YES	
@@ -398,7 +398,7 @@ S301	Enhanced UNNEST			YES
 S401	Distinct types based on array types			NO	
 S402	Distinct types based on distinct types			NO	
 S403	ARRAY_MAX_CARDINALITY			NO	
-S404	TRIM_ARRAY			NO	
+S404	TRIM_ARRAY			YES	
 T011	Timestamp in Information Schema			NO	
 T021	BINARY and VARBINARY data types			NO	
 T022	Advanced support for BINARY and VARBINARY data types			NO	
@@ -425,6 +425,7 @@ T121	WITH (excluding RECURSIVE) in query expression			YES
 T122	WITH (excluding RECURSIVE) in subquery			YES	
 T131	Recursive query			YES	
 T132	Recursive query in subquery			YES	
+T133	Enhanced cycle mark values			YES	SQL:202x draft
 T141	SIMILAR predicate			YES	
 T151	DISTINCT predicate			YES	
 T152	DISTINCT predicate with negation			YES	

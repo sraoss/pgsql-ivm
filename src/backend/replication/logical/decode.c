@@ -362,6 +362,20 @@ DecodeXactOp(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 					break;
 				}
 
+				/*
+				 * Note that if the prepared transaction has locked [user]
+				 * catalog tables exclusively then decoding prepare can block
+				 * till the main transaction is committed because it needs to
+				 * lock the catalog tables.
+				 *
+				 * XXX Now, this can even lead to a deadlock if the prepare
+				 * transaction is waiting to get it logically replicated for
+				 * distributed 2PC. Currently, we don't have an in-core
+				 * implementation of prepares for distributed 2PC but some
+				 * out-of-core logical replication solution can have such an
+				 * implementation. They need to inform users to not have locks
+				 * on catalog tables in such transactions.
+				 */
 				DecodePrepare(ctx, buf, &parsed);
 				break;
 			}
@@ -716,6 +730,7 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	if (two_phase)
 	{
 		ReorderBufferFinishPrepared(ctx->reorder, xid, buf->origptr, buf->endptr,
+									SnapBuildInitialConsistentPoint(ctx->snapshot_builder),
 									commit_time, origin_id, origin_lsn,
 									parsed->twophase_gid, true);
 	}
@@ -854,6 +869,7 @@ DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	{
 		ReorderBufferFinishPrepared(ctx->reorder, xid, buf->origptr, buf->endptr,
 									abort_time, origin_id, origin_lsn,
+									InvalidXLogRecPtr,
 									parsed->twophase_gid, false);
 	}
 	else

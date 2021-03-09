@@ -863,7 +863,6 @@ CREATE VIEW pg_stat_ssl AS
             S.sslversion AS version,
             S.sslcipher AS cipher,
             S.sslbits AS bits,
-            S.sslcompression AS compression,
             S.ssl_client_dn AS client_dn,
             S.ssl_client_serial AS client_serial,
             S.ssl_issuer_dn AS issuer_dn
@@ -894,7 +893,8 @@ CREATE VIEW pg_replication_slots AS
             L.restart_lsn,
             L.confirmed_flush_lsn,
             L.wal_status,
-            L.safe_wal_size
+            L.safe_wal_size,
+            L.two_phase
     FROM pg_get_replication_slots() AS L
             LEFT JOIN pg_database D ON (L.datoid = D.oid);
 
@@ -1318,6 +1318,7 @@ AS 'pg_create_physical_replication_slot';
 CREATE OR REPLACE FUNCTION pg_create_logical_replication_slot(
     IN slot_name name, IN plugin name,
     IN temporary boolean DEFAULT false,
+    IN twophase boolean DEFAULT false,
     OUT slot_name name, OUT lsn pg_lsn)
 RETURNS RECORD
 LANGUAGE INTERNAL

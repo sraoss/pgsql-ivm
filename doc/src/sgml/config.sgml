@@ -1216,7 +1216,41 @@ include_dir 'conf.d'
         Relative paths are relative to the data directory.
         This parameter can only be set in the <filename>postgresql.conf</filename>
         file or on the server command line.
-        The default is empty, meaning no CRL file is loaded.
+        The default is empty, meaning no CRL file is loaded (unless
+        <xref linkend="guc-ssl-crl-dir"/> is set).
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-ssl-crl-dir" xreflabel="ssl_crl_dir">
+      <term><varname>ssl_crl_dir</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>ssl_crl_dir</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Specifies the name of the directory containing the SSL server
+        certificate revocation list (CRL).  Relative paths are relative to the
+        data directory.  This parameter can only be set in
+        the <filename>postgresql.conf</filename> file or on the server command
+        line.  The default is empty, meaning no CRLs are used (unless
+        <xref linkend="guc-ssl-crl-file"/> is set).
+       </para>
+
+       <para>
+        The directory needs to be prepared with the OpenSSL command
+        <literal>openssl rehash</literal> or <literal>c_rehash</literal>.  See
+        its documentation for details.
+       </para>
+
+       <para>
+        When using this setting, CRLs in the specified directory are loaded
+        on-demand at connection time.  New CRLs can be added to the directory
+        and will be used immediately.  This is unlike <xref
+        linkend="guc-ssl-crl-file"/>, which causes the CRL in the file to be
+        loaded at server start time or when the configuration is reloaded.
+        Both settings can be used together.
        </para>
       </listitem>
      </varlistentry>
@@ -3967,6 +4001,17 @@ restore_command = 'copy "C:\\server\\archivedir\\%f" "%p"'  # Windows
          to <literal>replica</literal> or higher to allow replication slots to
          be used.
         </para>
+
+        <para>
+         On the subscriber side, specifies how many replication origins (see
+         <xref linkend="replication-origins"/>) can be tracked simultaneously,
+         effectively limiting how many logical replication subscriptions can
+         be created on the server. Setting it a lower value than the current
+         number of tracked replication origins (reflected in
+         <link linkend="view-pg-replication-origin-status">pg_replication_origin_status</link>,
+         not <link linkend="catalog-pg-replication-origin">pg_replication_origin</link>)
+         will prevent the server from starting.
+        </para>
        </listitem>
       </varlistentry>
 
@@ -4469,15 +4514,16 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        view.  The standby will report
        the last write-ahead log location it has written, the last position it
        has flushed to disk, and the last position it has applied.
-       This parameter's
-       value is the maximum amount of time between reports.  Updates are
-       sent each time the write or flush positions change, or at least as
-       often as specified by this parameter.  Thus, the apply position may
-       lag slightly behind the true position.
+       This parameter's value is the maximum amount of time between reports.
+       Updates are sent each time the write or flush positions change, or as
+       often as specified by this parameter if set to a non-zero value.
+       There are additional cases where updates are sent while ignoring this
+       parameter; for example, when processing of the existing WAL completes
+       or when <varname>synchronous_commit</varname> is set to
+       <literal>remote_apply</literal>.
+       Thus, the apply position may lag slightly behind the true position.
        If this value is specified without units, it is taken as seconds.
-       The default value is 10 seconds.
-       Setting this parameter to zero disables status updates completely.
-       This parameter can only be set in
+       The default value is 10 seconds. This parameter can only be set in
        the <filename>postgresql.conf</filename> file or on the server
        command line.
       </para>
@@ -8494,11 +8540,10 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 
        <para>
         If no tuples were deleted from the heap, B-tree indexes are still
-        scanned at the <command>VACUUM</command> cleanup stage when at least one
-        of the following conditions is met: the index statistics are stale, or
-        the index contains deleted pages that can be recycled during cleanup.
-        Index statistics are considered to be stale if the number of newly
-        inserted tuples exceeds the <varname>vacuum_cleanup_index_scale_factor</varname>
+        scanned at the <command>VACUUM</command> cleanup stage when the
+        index's statistics are stale.  Index statistics are considered
+        stale if the number of newly inserted tuples exceeds the
+        <varname>vacuum_cleanup_index_scale_factor</varname>
         fraction of the total number of heap tuples detected by the previous
         statistics collection. The total number of heap tuples is stored in
         the index meta-page. Note that the meta-page does not include this data

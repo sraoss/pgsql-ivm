@@ -60,6 +60,7 @@
 #include "common/int.h"
 #include "common/logging.h"
 #include "common/string.h"
+#include "common/username.h"
 #include "fe_utils/cancel.h"
 #include "fe_utils/conditional.h"
 #include "getopt_long.h"
@@ -240,10 +241,10 @@ bool		is_connect;			/* establish connection for each transaction */
 bool		report_per_command; /* report per-command latencies */
 int			main_pid;			/* main process id used in log filename */
 
-char	   *pghost = "";
-char	   *pgport = "";
-char	   *login = NULL;
-char	   *dbName;
+const char *pghost = NULL;
+const char *pgport = NULL;
+const char *username = NULL;
+const char *dbName = NULL;
 char	   *logfile_prefix = NULL;
 const char *progname;
 
@@ -427,7 +428,6 @@ typedef struct
 
 	/* per client collected stats */
 	int64		cnt;			/* client transaction count, for -t */
-	int			ecnt;			/* error count */
 } CState;
 
 /*
@@ -1192,7 +1192,7 @@ doConnect(void)
 		keywords[1] = "port";
 		values[1] = pgport;
 		keywords[2] = "user";
-		values[2] = login;
+		values[2] = username;
 		keywords[3] = "password";
 		values[3] = password;
 		keywords[4] = "dbname";
@@ -2716,7 +2716,6 @@ sendCommand(CState *st, Command *command)
 	if (r == 0)
 	{
 		pg_log_debug("client %d could not send %s", st->id, command->argv[0]);
-		st->ecnt++;
 		return false;
 	}
 	else
@@ -2828,14 +2827,12 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 	if (qrynum == 0)
 	{
 		pg_log_error("client %d command %d: no results", st->id, st->command);
-		st->ecnt++;
 		return false;
 	}
 
 	return true;
 
 error:
-	st->ecnt++;
 	PQclear(res);
 	PQclear(next_res);
 	do
@@ -5487,13 +5484,6 @@ main(int argc, char **argv)
 		}
 	}
 
-	if ((env = getenv("PGHOST")) != NULL && *env != '\0')
-		pghost = env;
-	if ((env = getenv("PGPORT")) != NULL && *env != '\0')
-		pgport = env;
-	else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
-		login = env;
-
 	state = (CState *) pg_malloc0(sizeof(CState));
 
 	/* set random seed early, because it may be used while parsing scripts. */
@@ -5614,7 +5604,7 @@ main(int argc, char **argv)
 				}
 				break;
 			case 'U':
-				login = pg_strdup(optarg);
+				username = pg_strdup(optarg);
 				break;
 			case 'l':
 				benchmarking_option_set = true;
@@ -5864,10 +5854,10 @@ main(int argc, char **argv)
 	{
 		if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
 			dbName = env;
-		else if (login != NULL && *login != '\0')
-			dbName = login;
+		else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
+			dbName = env;
 		else
-			dbName = "";
+			dbName = get_user_name_or_exit(progname);
 	}
 
 	if (optind < argc)
@@ -6030,15 +6020,15 @@ main(int argc, char **argv)
 		initRandomState(&state[i].cs_func_rs);
 	}
 
-	pg_log_debug("pghost: %s pgport: %s nclients: %d %s: %d dbName: %s",
-				 pghost, pgport, nclients,
-				 duration <= 0 ? "nxacts" : "duration",
-				 duration <= 0 ? nxacts : duration, dbName);
-
 	/* opening connection... */
 	con = doConnect();
 	if (con == NULL)
 		exit(1);
+
+	pg_log_debug("pghost: %s pgport: %s nclients: %d %s: %d dbName: %s",
+				 PQhost(con), PQport(con), nclients,
+				 duration <= 0 ? "nxacts" : "duration",
+				 duration <= 0 ? nxacts : duration, PQdb(con));
 
 	if (internal_script_used)
 		GetTableInfo(con, scale_given);
@@ -6458,7 +6448,7 @@ threadRun(void *arg)
 
 			/*
 			 * If advanceConnectionState changed client to finished state,
-			 * that's one less client that remains.
+			 * that's one fewer client that remains.
 			 */
 			if (st->state == CSTATE_FINISHED || st->state == CSTATE_ABORTED)
 				remains--;

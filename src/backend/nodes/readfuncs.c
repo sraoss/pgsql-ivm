@@ -1934,6 +1934,21 @@ _readTidScan(void)
 }
 
 /*
+ * _readTidRangeScan
+ */
+static TidRangeScan *
+_readTidRangeScan(void)
+{
+	READ_LOCALS(TidRangeScan);
+
+	ReadCommonScan(&local_node->scan);
+
+	READ_NODE_FIELD(tidrangequals);
+
+	READ_DONE();
+}
+
+/*
  * _readSubqueryScan
  */
 static SubqueryScan *
@@ -2850,6 +2865,8 @@ parseNodeString(void)
 		return_value = _readBitmapHeapScan();
 	else if (MATCH("TIDSCAN", 7))
 		return_value = _readTidScan();
+	else if (MATCH("TIDRANGESCAN", 12))
+		return_value = _readTidRangeScan();
 	else if (MATCH("SUBQUERYSCAN", 12))
 		return_value = _readSubqueryScan();
 	else if (MATCH("FUNCTIONSCAN", 12))

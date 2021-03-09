@@ -526,8 +526,7 @@ static ObjectAddress ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKM
 static void ATExecDropOf(Relation rel, LOCKMODE lockmode);
 static void ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode);
 static void ATExecGenericOptions(Relation rel, List *options);
-static void ATExecEnableRowSecurity(Relation rel);
-static void ATExecDisableRowSecurity(Relation rel);
+static void ATExecSetRowSecurity(Relation rel, bool rls);
 static void ATExecForceNoForceRowSecurity(Relation rel, bool force_rls);
 
 static void index_copy_data(Relation rel, RelFileNode newrnode);
@@ -4832,10 +4831,10 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation rel,
 			ATExecReplicaIdentity(rel, (ReplicaIdentityStmt *) cmd->def, lockmode);
 			break;
 		case AT_EnableRowSecurity:
-			ATExecEnableRowSecurity(rel);
+			ATExecSetRowSecurity(rel, true);
 			break;
 		case AT_DisableRowSecurity:
-			ATExecDisableRowSecurity(rel);
+			ATExecSetRowSecurity(rel, false);
 			break;
 		case AT_ForceRowSecurity:
 			ATExecForceNoForceRowSecurity(rel, true);
@@ -5408,11 +5407,11 @@ ATRewriteTable(AlteredTableInfo *tab, Oid OIDNewHeap, LOCKMODE lockmode)
 
 		if (newrel)
 			ereport(DEBUG1,
-					(errmsg("rewriting table \"%s\"",
+					(errmsg_internal("rewriting table \"%s\"",
 							RelationGetRelationName(oldrel))));
 		else
 			ereport(DEBUG1,
-					(errmsg("verifying table \"%s\"",
+					(errmsg_internal("verifying table \"%s\"",
 							RelationGetRelationName(oldrel))));
 
 		if (newrel)
@@ -7025,7 +7024,7 @@ NotNullImpliedByRelConstraints(Relation rel, Form_pg_attribute attr)
 	if (ConstraintImpliedByRelConstraint(rel, list_make1(nnulltest), NIL))
 	{
 		ereport(DEBUG1,
-				(errmsg("existing constraints on column \"%s.%s\" are sufficient to prove that it does not contain nulls",
+				(errmsg_internal("existing constraints on column \"%s.%s\" are sufficient to prove that it does not contain nulls",
 						RelationGetRelationName(rel), NameStr(attr->attname))));
 		return true;
 	}
@@ -10574,7 +10573,7 @@ validateForeignKeyConstraint(char *conname,
 	MemoryContext perTupCxt;
 
 	ereport(DEBUG1,
-			(errmsg("validating foreign key constraint \"%s\"", conname)));
+			(errmsg_internal("validating foreign key constraint \"%s\"", conname)));
 
 	/*
 	 * Build a trigger call structure; we'll need it either way.
@@ -14822,30 +14821,7 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
  * ALTER TABLE ENABLE/DISABLE ROW LEVEL SECURITY
  */
 static void
-ATExecEnableRowSecurity(Relation rel)
-{
-	Relation	pg_class;
-	Oid			relid;
-	HeapTuple	tuple;
-
-	relid = RelationGetRelid(rel);
-
-	pg_class = table_open(RelationRelationId, RowExclusiveLock);
-
-	tuple = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
-
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for relation %u", relid);
-
-	((Form_pg_class) GETSTRUCT(tuple))->relrowsecurity = true;
-	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
-
-	table_close(pg_class, RowExclusiveLock);
-	heap_freetuple(tuple);
-}
-
-static void
-ATExecDisableRowSecurity(Relation rel)
+ATExecSetRowSecurity(Relation rel, bool rls)
 {
 	Relation	pg_class;
 	Oid			relid;
@@ -14861,7 +14837,7 @@ ATExecDisableRowSecurity(Relation rel)
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for relation %u", relid);
 
-	((Form_pg_class) GETSTRUCT(tuple))->relrowsecurity = false;
+	((Form_pg_class) GETSTRUCT(tuple))->relrowsecurity = rls;
 	CatalogTupleUpdate(pg_class, &tuple->t_self, tuple);
 
 	table_close(pg_class, RowExclusiveLock);
@@ -16303,11 +16279,11 @@ QueuePartitionConstraintValidation(List **wqueue, Relation scanrel,
 	{
 		if (!validate_default)
 			ereport(DEBUG1,
-					(errmsg("partition constraint for table \"%s\" is implied by existing constraints",
+					(errmsg_internal("partition constraint for table \"%s\" is implied by existing constraints",
 							RelationGetRelationName(scanrel))));
 		else
 			ereport(DEBUG1,
-					(errmsg("updated partition constraint for default partition \"%s\" is implied by existing constraints",
+					(errmsg_internal("updated partition constraint for default partition \"%s\" is implied by existing constraints",
 							RelationGetRelationName(scanrel))));
 		return;
 	}

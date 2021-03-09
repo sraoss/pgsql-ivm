@@ -3067,16 +3067,6 @@ SELECT pid, wait_event_type, wait_event FROM pg_stat_activity WHERE wait_event i
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
-       <structfield>compression</structfield> <type>boolean</type>
-      </para>
-      <para>
-       True if SSL compression is in use, false if not,
-       or NULL if SSL is not in use on this connection
-      </para></entry>
-     </row>
-
-     <row>
-      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>client_dn</structfield> <type>text</type>
       </para>
       <para>
@@ -5716,6 +5706,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       <para>
        When creating an index on a partitioned table, this column is set to
        the total number of partitions on which the index is to be created.
+       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
       </para></entry>
      </row>
 
@@ -5726,6 +5717,7 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
       <para>
        When creating an index on a partitioned table, this column is set to
        the number of partitions on which the index has been completed.
+       This field is <literal>0</literal> during a <literal>REINDEX</literal>.
       </para></entry>
      </row>
     </tbody>

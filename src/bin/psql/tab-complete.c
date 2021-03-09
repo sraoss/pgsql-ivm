@@ -609,6 +609,14 @@ static const SchemaQuery Query_for_list_of_statistics = {
 	.result = "pg_catalog.quote_ident(s.stxname)",
 };
 
+static const SchemaQuery Query_for_list_of_collations = {
+	.catname = "pg_catalog.pg_collation c",
+	.selcondition = "c.collencoding IN (-1, pg_catalog.pg_char_to_encoding(pg_catalog.getdatabaseencoding()))",
+	.viscondition = "pg_catalog.pg_collation_is_visible(c.oid)",
+	.namespace = "c.collnamespace",
+	.result = "pg_catalog.quote_ident(c.collname)",
+};
+
 
 /*
  * Queries to get lists of names of various kinds of things, possibly
@@ -1031,7 +1039,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"AGGREGATE", NULL, NULL, Query_for_list_of_aggregates},
 	{"CAST", NULL, NULL, NULL}, /* Casts have complex structures for names, so
 								 * skip it */
-	{"COLLATION", "SELECT pg_catalog.quote_ident(collname) FROM pg_catalog.pg_collation WHERE collencoding IN (-1, pg_catalog.pg_char_to_encoding(pg_catalog.getdatabaseencoding())) AND substring(pg_catalog.quote_ident(collname),1,%d)='%s'"},
+	{"COLLATION", NULL, NULL, &Query_for_list_of_collations},
 
 	/*
 	 * CREATE CONSTRAINT TRIGGER is not supported here because it is designed
@@ -1615,14 +1623,24 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER AGGREGATE,FUNCTION,PROCEDURE,ROUTINE <name> */
 	else if (Matches("ALTER", "AGGREGATE|FUNCTION|PROCEDURE|ROUTINE", MatchAny))
 		COMPLETE_WITH("(");
-	/* ALTER AGGREGATE,FUNCTION,PROCEDURE,ROUTINE <name> (...) */
-	else if (Matches("ALTER", "AGGREGATE|FUNCTION|PROCEDURE|ROUTINE", MatchAny, MatchAny))
+	/* ALTER AGGREGATE <name> (...) */
+	else if (Matches("ALTER", "AGGREGATE", MatchAny, MatchAny))
 	{
 		if (ends_with(prev_wd, ')'))
 			COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA");
 		else
 			COMPLETE_WITH_FUNCTION_ARG(prev2_wd);
 	}
+	/* ALTER FUNCTION,PROCEDURE,ROUTINE <name> (...) */
+	else if (Matches("ALTER", "FUNCTION|PROCEDURE|ROUTINE", MatchAny, MatchAny))
+	{
+		if (ends_with(prev_wd, ')'))
+			COMPLETE_WITH("OWNER TO", "RENAME TO", "SET SCHEMA",
+						  "DEPENDS ON EXTENSION", "NO DEPENDS ON EXTENSION");
+		else
+			COMPLETE_WITH_FUNCTION_ARG(prev2_wd);
+	}
+
 	/* ALTER PUBLICATION <name> */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny))
 		COMPLETE_WITH("ADD TABLE", "DROP TABLE", "OWNER TO", "RENAME TO", "SET");
@@ -1736,7 +1754,8 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER INDEX <name> */
 	else if (Matches("ALTER", "INDEX", MatchAny))
 		COMPLETE_WITH("ALTER COLUMN", "OWNER TO", "RENAME TO", "SET",
-					  "RESET", "ATTACH PARTITION", "DEPENDS", "NO DEPENDS",
+					  "RESET", "ATTACH PARTITION",
+					  "DEPENDS ON EXTENSION", "NO DEPENDS ON EXTENSION",
 					  "ALTER COLLATION");
 	else if (Matches("ALTER", "INDEX", MatchAny, "ATTACH"))
 		COMPLETE_WITH("PARTITION");
@@ -1783,10 +1802,6 @@ psql_completion(const char *text, int start, int end)
 					  "buffering =",	/* GiST */
 					  "pages_per_range =", "autosummarize ="	/* BRIN */
 			);
-	else if (Matches("ALTER", "INDEX", MatchAny, "NO", "DEPENDS"))
-		COMPLETE_WITH("ON EXTENSION");
-	else if (Matches("ALTER", "INDEX", MatchAny, "DEPENDS"))
-		COMPLETE_WITH("ON EXTENSION");
 	/* ALTER INDEX <name> ALTER COLLATION */
 	else if (Matches("ALTER", "INDEX", MatchAny, "ALTER", "COLLATION"))
 	{
@@ -1921,7 +1936,8 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER MATERIALIZED VIEW <name> */
 	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny))
 		COMPLETE_WITH("ALTER COLUMN", "CLUSTER ON", "DEPENDS ON EXTENSION",
-					  "OWNER TO", "RENAME", "RESET (", "SET");
+					  "NO DEPENDS ON EXTENSION", "OWNER TO", "RENAME",
+					  "RESET (", "SET");
 	/* ALTER MATERIALIZED VIEW xxx RENAME */
 	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny, "RENAME"))
 		COMPLETE_WITH_ATTR(prev2_wd, " UNION SELECT 'COLUMN' UNION SELECT 'TO'");
@@ -1998,7 +2014,8 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER TRIGGER <name> ON <name> */
 	else if (Matches("ALTER", "TRIGGER", MatchAny, "ON", MatchAny))
-		COMPLETE_WITH("RENAME TO");
+		COMPLETE_WITH("RENAME TO", "DEPENDS ON EXTENSION",
+					  "NO DEPENDS ON EXTENSION");
 
 	/*
 	 * If we detect ALTER TABLE <name>, suggest sub commands
@@ -2424,6 +2441,22 @@ psql_completion(const char *text, int start, int end)
 	/* Complete "CREATE ACCESS METHOD <name> TYPE <type>" */
 	else if (Matches("CREATE", "ACCESS", "METHOD", MatchAny, "TYPE", MatchAny))
 		COMPLETE_WITH("HANDLER");
+
+	/* CREATE COLLATION */
+	else if (Matches("CREATE", "COLLATION", MatchAny))
+		COMPLETE_WITH("(", "FROM");
+	else if (Matches("CREATE", "COLLATION", MatchAny, "FROM"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_collations, NULL);
+	else if (HeadMatches("CREATE", "COLLATION", MatchAny, "(*"))
+	{
+		if (TailMatches("(|*,"))
+			COMPLETE_WITH("LOCALE =", "LC_COLLATE =", "LC_CTYPE =",
+						  "PROVIDER =", "DETERMINISTIC =");
+		else if (TailMatches("PROVIDER", "="))
+			COMPLETE_WITH("libc", "icu");
+		else if (TailMatches("DETERMINISTIC", "="))
+			COMPLETE_WITH("true", "false");
+	}
 
 	/* CREATE DATABASE */
 	else if (Matches("CREATE", "DATABASE", MatchAny))
@@ -3803,7 +3836,20 @@ psql_completion(const char *text, int start, int end)
 
 /* TRUNCATE */
 	else if (Matches("TRUNCATE"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables,
+								   " UNION SELECT 'TABLE'"
+								   " UNION SELECT 'ONLY'");
+	else if (Matches("TRUNCATE", "TABLE"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables,
+								   " UNION SELECT 'ONLY'");
+	else if (HeadMatches("TRUNCATE") && TailMatches("ONLY"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables, NULL);
+	else if (Matches("TRUNCATE", MatchAny) ||
+			 Matches("TRUNCATE", "TABLE|ONLY", MatchAny) ||
+			 Matches("TRUNCATE", "TABLE", "ONLY", MatchAny))
+		COMPLETE_WITH("RESTART IDENTITY", "CONTINUE IDENTITY", "CASCADE", "RESTRICT");
+	else if (HeadMatches("TRUNCATE") && TailMatches("IDENTITY"))
+		COMPLETE_WITH("CASCADE", "RESTRICT");
 
 /* UNLISTEN */
 	else if (Matches("UNLISTEN"))

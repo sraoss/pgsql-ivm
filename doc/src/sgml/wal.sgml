@@ -237,10 +237,10 @@
   </indexterm>
 
   <para>
-   Data pages are not checksum protected by default, but this can optionally be
-   enabled for a cluster.  When enabled, each data page will be assigned a
-   checksum that is updated when the page is written and verified every time
-   the page is read. Only data pages are protected by checksums, internal data
+   By default, data pages are not protected by checksums, but this can
+   optionally be enabled for a cluster. When enabled, each data page includes
+   a checksum that is updated when the page is written and verified each time
+   the page is read. Only data pages are protected by checksums; internal data
    structures and temporary files are not.
   </para>
 
@@ -260,9 +260,9 @@
   </para>
 
   <para>
-   When attempting to recover from corrupt data it may be necessary to bypass
-   the checksum protection in order to recover data. To do this, temporarily
-   set the configuration parameter <xref linkend="guc-ignore-checksum-failure" />.
+   When attempting to recover from page corruptions, it may be necessary to
+   bypass the checksum protection. To do this, temporarily set the
+   configuration parameter <xref linkend="guc-ignore-checksum-failure" />.
   </para>
 
   <sect2 id="checksums-offline-enable-disable">
