@@ -3,6 +3,12 @@
  * copyfrom.c
  *		COPY <table> FROM file/program/client
  *
+ * This file contains routines needed to efficiently load tuples into a
+ * table.  That includes looking up the correct partition, firing triggers,
+ * calling the table AM function to insert the data, and updating indexes.
+ * Reading data from the input file or client and parsing it into Datums
+ * is handled in copyfromparse.c.
+ *
  * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -23,6 +29,7 @@
 #include "access/tableam.h"
 #include "access/xact.h"
 #include "access/xlog.h"
+#include "catalog/namespace.h"
 #include "commands/copy.h"
 #include "commands/copyfrom_internal.h"
 #include "commands/progress.h"
@@ -87,7 +94,7 @@ typedef struct CopyMultiInsertInfo
 	List	   *multiInsertBuffers; /* List of tracked CopyMultiInsertBuffers */
 	int			bufferedTuples; /* number of tuples buffered over all buffers */
 	int			bufferedBytes;	/* number of bytes from all buffered tuples */
-	CopyFromState	cstate;			/* Copy state for this CopyMultiInsertInfo */
+	CopyFromState cstate;		/* Copy state for this CopyMultiInsertInfo */
 	EState	   *estate;			/* Executor state used for COPY */
 	CommandId	mycid;			/* Command Id used for COPY */
 	int			ti_options;		/* table insert options */
@@ -107,7 +114,7 @@ static void ClosePipeFromProgram(CopyFromState cstate);
 void
 CopyFromErrorCallback(void *arg)
 {
-	CopyFromState	cstate = (CopyFromState) arg;
+	CopyFromState cstate = (CopyFromState) arg;
 	char		curlineno_str[32];
 
 	snprintf(curlineno_str, sizeof(curlineno_str), UINT64_FORMAT,
@@ -149,15 +156,9 @@ CopyFromErrorCallback(void *arg)
 			/*
 			 * Error is relevant to a particular line.
 			 *
-			 * If line_buf still contains the correct line, and it's already
-			 * transcoded, print it. If it's still in a foreign encoding, it's
-			 * quite likely that the error is precisely a failure to do
-			 * encoding conversion (ie, bad data). We dare not try to convert
-			 * it, and at present there's no way to regurgitate it without
-			 * conversion. So we have to punt and just report the line number.
+			 * If line_buf still contains the correct line, print it.
 			 */
-			if (cstate->line_buf_valid &&
-				(cstate->line_buf_converted || !cstate->need_transcoding))
+			if (cstate->line_buf_valid)
 			{
 				char	   *lineval;
 
@@ -300,7 +301,7 @@ CopyMultiInsertBufferFlush(CopyMultiInsertInfo *miinfo,
 	MemoryContext oldcontext;
 	int			i;
 	uint64		save_cur_lineno;
-	CopyFromState	cstate = miinfo->cstate;
+	CopyFromState cstate = miinfo->cstate;
 	EState	   *estate = miinfo->estate;
 	CommandId	mycid = miinfo->mycid;
 	int			ti_options = miinfo->ti_options;
@@ -539,7 +540,8 @@ CopyFrom(CopyFromState cstate)
 	BulkInsertState bistate = NULL;
 	CopyInsertMethod insertMethod;
 	CopyMultiInsertInfo multiInsertInfo = {0};	/* pacify compiler */
-	uint64		processed = 0;
+	int64		processed = 0;
+	int64		excluded = 0;
 	bool		has_before_insert_row_trig;
 	bool		has_instead_insert_row_trig;
 	bool		leafpart_use_multi_insert = false;
@@ -665,6 +667,7 @@ CopyFrom(CopyFromState cstate)
 	mtstate->ps.plan = NULL;
 	mtstate->ps.state = estate;
 	mtstate->operation = CMD_INSERT;
+	mtstate->mt_nrels = 1;
 	mtstate->resultRelInfo = resultRelInfo;
 	mtstate->rootResultRelInfo = resultRelInfo;
 
@@ -694,7 +697,7 @@ CopyFrom(CopyFromState cstate)
 	 * CopyFrom tuple routing.
 	 */
 	if (cstate->rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		proute = ExecSetupPartitionTupleRouting(estate, NULL, cstate->rel);
+		proute = ExecSetupPartitionTupleRouting(estate, cstate->rel);
 
 	if (cstate->whereClause)
 		cstate->qualexpr = ExecInitQual(castNode(List, cstate->whereClause),
@@ -869,7 +872,15 @@ CopyFrom(CopyFromState cstate)
 			econtext->ecxt_scantuple = myslot;
 			/* Skip items that don't match COPY's WHERE clause */
 			if (!ExecQual(cstate->qualexpr, econtext))
+			{
+				/*
+				 * Report that this tuple was filtered out by the WHERE
+				 * clause.
+				 */
+				pgstat_progress_update_param(PROGRESS_COPY_TUPLES_EXCLUDED,
+											 ++excluded);
 				continue;
+			}
 		}
 
 		/* Determine the partition to insert the tuple into */
@@ -1104,10 +1115,11 @@ CopyFrom(CopyFromState cstate)
 			/*
 			 * We count only tuples not suppressed by a BEFORE INSERT trigger
 			 * or FDW; this is the same definition used by nodeModifyTable.c
-			 * for counting tuples inserted by an INSERT command. Update
+			 * for counting tuples inserted by an INSERT command.  Update
 			 * progress of the COPY command as well.
 			 */
-			pgstat_progress_update_param(PROGRESS_COPY_LINES_PROCESSED, ++processed);
+			pgstat_progress_update_param(PROGRESS_COPY_TUPLES_PROCESSED,
+										 ++processed);
 		}
 	}
 
@@ -1180,7 +1192,7 @@ BeginCopyFrom(ParseState *pstate,
 			  List *attnamelist,
 			  List *options)
 {
-	CopyFromState	cstate;
+	CopyFromState cstate;
 	bool		pipe = (filename == NULL);
 	TupleDesc	tupDesc;
 	AttrNumber	num_phys_attrs,
@@ -1193,6 +1205,16 @@ BeginCopyFrom(ParseState *pstate,
 	ExprState **defexprs;
 	MemoryContext oldcontext;
 	bool		volatile_defexprs;
+	const int	progress_cols[] = {
+		PROGRESS_COPY_COMMAND,
+		PROGRESS_COPY_TYPE,
+		PROGRESS_COPY_BYTES_TOTAL
+	};
+	int64		progress_vals[] = {
+		PROGRESS_COPY_COMMAND_FROM,
+		0,
+		0
+	};
 
 	/* Allocate workspace and zero all fields */
 	cstate = (CopyFromStateData *) palloc0(sizeof(CopyFromStateData));
@@ -1208,7 +1230,7 @@ BeginCopyFrom(ParseState *pstate,
 	oldcontext = MemoryContextSwitchTo(cstate->copycontext);
 
 	/* Extract options from the statement node tree */
-	ProcessCopyOptions(pstate, &cstate->opts, true /* is_from */, options);
+	ProcessCopyOptions(pstate, &cstate->opts, true /* is_from */ , options);
 
 	/* Process the target relation */
 	cstate->rel = rel;
@@ -1299,15 +1321,20 @@ BeginCopyFrom(ParseState *pstate,
 		cstate->file_encoding = cstate->opts.file_encoding;
 
 	/*
-	 * Set up encoding conversion info.  Even if the file and server encodings
-	 * are the same, we must apply pg_any_to_server() to validate data in
-	 * multibyte encodings.
+	 * Look up encoding conversion function.
 	 */
-	cstate->need_transcoding =
-		(cstate->file_encoding != GetDatabaseEncoding() ||
-		 pg_database_encoding_max_length() > 1);
-	/* See Multibyte encoding comment above */
-	cstate->encoding_embeds_ascii = PG_ENCODING_IS_CLIENT_ONLY(cstate->file_encoding);
+	if (cstate->file_encoding == GetDatabaseEncoding() ||
+		cstate->file_encoding == PG_SQL_ASCII ||
+		GetDatabaseEncoding() == PG_SQL_ASCII)
+	{
+		cstate->need_transcoding = false;
+	}
+	else
+	{
+		cstate->need_transcoding = true;
+		cstate->conversion_proc = FindDefaultConversionProc(cstate->file_encoding,
+															GetDatabaseEncoding());
+	}
 
 	cstate->copy_src = COPY_FILE;	/* default */
 
@@ -1318,7 +1345,6 @@ BeginCopyFrom(ParseState *pstate,
 	oldcontext = MemoryContextSwitchTo(cstate->copycontext);
 
 	/* Initialize state variables */
-	cstate->reached_eof = false;
 	cstate->eol_type = EOL_UNKNOWN;
 	cstate->cur_relname = RelationGetRelationName(cstate->rel);
 	cstate->cur_lineno = 0;
@@ -1326,18 +1352,35 @@ BeginCopyFrom(ParseState *pstate,
 	cstate->cur_attval = NULL;
 
 	/*
-	 * Set up variables to avoid per-attribute overhead.  attribute_buf and
-	 * raw_buf are used in both text and binary modes, but we use line_buf
-	 * only in text mode.
+	 * Allocate buffers for the input pipeline.
+	 *
+	 * attribute_buf and raw_buf are used in both text and binary modes, but
+	 * input_buf and line_buf only in text mode.
 	 */
-	initStringInfo(&cstate->attribute_buf);
-	cstate->raw_buf = (char *) palloc(RAW_BUF_SIZE + 1);
+	cstate->raw_buf = palloc(RAW_BUF_SIZE + 1);
 	cstate->raw_buf_index = cstate->raw_buf_len = 0;
+	cstate->raw_reached_eof = false;
+
 	if (!cstate->opts.binary)
 	{
+		/*
+		 * If encoding conversion is needed, we need another buffer to hold
+		 * the converted input data.  Otherwise, we can just point input_buf
+		 * to the same buffer as raw_buf.
+		 */
+		if (cstate->need_transcoding)
+		{
+			cstate->input_buf = (char *) palloc(INPUT_BUF_SIZE + 1);
+			cstate->input_buf_index = cstate->input_buf_len = 0;
+		}
+		else
+			cstate->input_buf = cstate->raw_buf;
+		cstate->input_reached_eof = false;
+
 		initStringInfo(&cstate->line_buf);
-		cstate->line_buf_converted = false;
 	}
+
+	initStringInfo(&cstate->attribute_buf);
 
 	/* Assign range table, we'll need it in CopyFrom. */
 	if (pstate)
@@ -1430,11 +1473,13 @@ BeginCopyFrom(ParseState *pstate,
 
 	if (data_source_cb)
 	{
+		progress_vals[1] = PROGRESS_COPY_TYPE_CALLBACK;
 		cstate->copy_src = COPY_CALLBACK;
 		cstate->data_source_cb = data_source_cb;
 	}
 	else if (pipe)
 	{
+		progress_vals[1] = PROGRESS_COPY_TYPE_PIPE;
 		Assert(!is_program);	/* the grammar does not allow this */
 		if (whereToSendOutput == DestRemote)
 			ReceiveCopyBegin(cstate);
@@ -1447,6 +1492,7 @@ BeginCopyFrom(ParseState *pstate,
 
 		if (cstate->is_program)
 		{
+			progress_vals[1] = PROGRESS_COPY_TYPE_PROGRAM;
 			cstate->copy_file = OpenPipeStream(cstate->filename, PG_BINARY_R);
 			if (cstate->copy_file == NULL)
 				ereport(ERROR,
@@ -1458,6 +1504,7 @@ BeginCopyFrom(ParseState *pstate,
 		{
 			struct stat st;
 
+			progress_vals[1] = PROGRESS_COPY_TYPE_FILE;
 			cstate->copy_file = AllocateFile(cstate->filename, PG_BINARY_R);
 			if (cstate->copy_file == NULL)
 			{
@@ -1484,9 +1531,11 @@ BeginCopyFrom(ParseState *pstate,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("\"%s\" is a directory", cstate->filename)));
 
-			pgstat_progress_update_param(PROGRESS_COPY_BYTES_TOTAL, st.st_size);
+			progress_vals[2] = st.st_size;
 		}
 	}
+
+	pgstat_progress_update_multi_param(3, progress_cols, progress_vals);
 
 	if (cstate->opts.binary)
 	{
@@ -1557,7 +1606,7 @@ ClosePipeFromProgram(CopyFromState cstate)
 		 * should not report that as an error.  Otherwise, SIGPIPE indicates a
 		 * problem.
 		 */
-		if (!cstate->reached_eof &&
+		if (!cstate->raw_reached_eof &&
 			wait_result_is_signal(pclose_rc, SIGPIPE))
 			return;
 

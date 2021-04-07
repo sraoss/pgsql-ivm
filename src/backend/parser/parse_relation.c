@@ -66,6 +66,7 @@ static ParseNamespaceItem *scanNameSpaceForRelid(ParseState *pstate, Oid relid,
 static void check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
 								 int location);
 static int	scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte,
+							 Alias *eref,
 							 const char *colname, int location,
 							 int fuzzy_rte_penalty,
 							 FuzzyAttrMatchState *fuzzystate);
@@ -185,7 +186,6 @@ scanNameSpaceForRefname(ParseState *pstate, const char *refname, int location)
 	foreach(l, pstate->p_namespace)
 	{
 		ParseNamespaceItem *nsitem = (ParseNamespaceItem *) lfirst(l);
-		RangeTblEntry *rte = nsitem->p_rte;
 
 		/* Ignore columns-only items */
 		if (!nsitem->p_rel_visible)
@@ -194,7 +194,7 @@ scanNameSpaceForRefname(ParseState *pstate, const char *refname, int location)
 		if (nsitem->p_lateral_only && !pstate->p_lateral_active)
 			continue;
 
-		if (strcmp(rte->eref->aliasname, refname) == 0)
+		if (strcmp(nsitem->p_names->aliasname, refname) == 0)
 		{
 			if (result)
 				ereport(ERROR,
@@ -421,7 +421,7 @@ checkNameSpaceConflicts(ParseState *pstate, List *namespace1,
 	{
 		ParseNamespaceItem *nsitem1 = (ParseNamespaceItem *) lfirst(l1);
 		RangeTblEntry *rte1 = nsitem1->p_rte;
-		const char *aliasname1 = rte1->eref->aliasname;
+		const char *aliasname1 = nsitem1->p_names->aliasname;
 		ListCell   *l2;
 
 		if (!nsitem1->p_rel_visible)
@@ -431,10 +431,11 @@ checkNameSpaceConflicts(ParseState *pstate, List *namespace1,
 		{
 			ParseNamespaceItem *nsitem2 = (ParseNamespaceItem *) lfirst(l2);
 			RangeTblEntry *rte2 = nsitem2->p_rte;
+			const char *aliasname2 = nsitem2->p_names->aliasname;
 
 			if (!nsitem2->p_rel_visible)
 				continue;
-			if (strcmp(rte2->eref->aliasname, aliasname1) != 0)
+			if (strcmp(aliasname2, aliasname1) != 0)
 				continue;		/* definitely no conflict */
 			if (rte1->rtekind == RTE_RELATION && rte1->alias == NULL &&
 				rte2->rtekind == RTE_RELATION && rte2->alias == NULL &&
@@ -467,7 +468,7 @@ check_lateral_ref_ok(ParseState *pstate, ParseNamespaceItem *nsitem,
 	{
 		/* SQL:2008 demands this be an error, not an invisible item */
 		RangeTblEntry *rte = nsitem->p_rte;
-		char	   *refname = rte->eref->aliasname;
+		char	   *refname = nsitem->p_names->aliasname;
 
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
@@ -673,10 +674,10 @@ scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
 	Var		   *var;
 
 	/*
-	 * Scan the RTE's column names (or aliases) for a match.  Complain if
+	 * Scan the nsitem's column names (or aliases) for a match.  Complain if
 	 * multiple matches.
 	 */
-	attnum = scanRTEForColumn(pstate, rte,
+	attnum = scanRTEForColumn(pstate, rte, nsitem->p_names,
 							  colname, location,
 							  0, NULL);
 
@@ -713,7 +714,7 @@ scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
 					(errcode(ERRCODE_UNDEFINED_COLUMN),
 					 errmsg("column \"%s\" of relation \"%s\" does not exist",
 							colname,
-							rte->eref->aliasname)));
+							nsitem->p_names->aliasname)));
 
 		var = makeVar(nscol->p_varno,
 					  nscol->p_varattno,
@@ -753,6 +754,12 @@ scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
  *	  else return InvalidAttrNumber.
  *	  If the name proves ambiguous within this RTE, raise error.
  *
+ * Actually, we only search the names listed in "eref".  This can be either
+ * rte->eref, in which case we are indeed searching all the column names,
+ * or for a join it can be rte->join_using_alias, in which case we are only
+ * considering the common column names (which are the first N columns of the
+ * join, so everything works).
+ *
  * pstate and location are passed only for error-reporting purposes.
  *
  * Side effect: if fuzzystate is non-NULL, check non-system columns
@@ -766,6 +773,7 @@ scanNSItemForColumn(ParseState *pstate, ParseNamespaceItem *nsitem,
  */
 static int
 scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte,
+				 Alias *eref,
 				 const char *colname, int location,
 				 int fuzzy_rte_penalty,
 				 FuzzyAttrMatchState *fuzzystate)
@@ -787,7 +795,7 @@ scanRTEForColumn(ParseState *pstate, RangeTblEntry *rte,
 	 * Callers interested in finding match with shortest distance need to
 	 * defend against this directly, though.
 	 */
-	foreach(c, rte->eref->colnames)
+	foreach(c, eref->colnames)
 	{
 		const char *attcolname = strVal(lfirst(c));
 
@@ -971,7 +979,7 @@ searchRangeTableForCol(ParseState *pstate, const char *alias, const char *colnam
 			 * Scan for a matching column; if we find an exact match, we're
 			 * done.  Otherwise, update fuzzystate.
 			 */
-			if (scanRTEForColumn(orig_pstate, rte, colname, location,
+			if (scanRTEForColumn(orig_pstate, rte, rte->eref, colname, location,
 								 fuzzy_rte_penalty, fuzzystate)
 				&& fuzzy_rte_penalty == 0)
 			{
@@ -1253,6 +1261,7 @@ buildNSItemFromTupleDesc(RangeTblEntry *rte, Index rtindex, TupleDesc tupdesc)
 
 	/* ... and build the nsitem */
 	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_rtindex = rtindex;
 	nsitem->p_nscolumns = nscolumns;
@@ -1314,6 +1323,7 @@ buildNSItemFromLists(RangeTblEntry *rte, Index rtindex,
 
 	/* ... and build the nsitem */
 	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_rtindex = rtindex;
 	nsitem->p_nscolumns = nscolumns;
@@ -2133,6 +2143,7 @@ addRangeTableEntryForJoin(ParseState *pstate,
 						  List *aliasvars,
 						  List *leftcols,
 						  List *rightcols,
+						  Alias *join_using_alias,
 						  Alias *alias,
 						  bool inFromCl)
 {
@@ -2161,6 +2172,7 @@ addRangeTableEntryForJoin(ParseState *pstate,
 	rte->joinaliasvars = aliasvars;
 	rte->joinleftcols = leftcols;
 	rte->joinrightcols = rightcols;
+	rte->join_using_alias = join_using_alias;
 	rte->alias = alias;
 
 	eref = alias ? copyObject(alias) : makeAlias("unnamed_join", NIL);
@@ -2201,6 +2213,7 @@ addRangeTableEntryForJoin(ParseState *pstate,
 	 * list --- caller must do that if appropriate.
 	 */
 	nsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+	nsitem->p_names = rte->eref;
 	nsitem->p_rte = rte;
 	nsitem->p_rtindex = list_length(pstate->p_rtable);
 	nsitem->p_nscolumns = nscolumns;
@@ -2359,7 +2372,7 @@ addRangeTableEntryForCTE(ParseState *pstate,
 	 */
 	if (rte->ctelevelsup > 0)
 		for (int i = 0; i < n_dontexpand_columns; i++)
-			psi->p_nscolumns[list_length(psi->p_rte->eref->colnames) - 1 - i].p_dontexpand = true;
+			psi->p_nscolumns[list_length(psi->p_names->colnames) - 1 - i].p_dontexpand = true;
 
 	return psi;
 }
@@ -3043,7 +3056,7 @@ expandNSItemVars(ParseNamespaceItem *nsitem,
 	if (colnames)
 		*colnames = NIL;
 	colindex = 0;
-	foreach(lc, nsitem->p_rte->eref->colnames)
+	foreach(lc, nsitem->p_names->colnames)
 	{
 		Value	   *colnameval = (Value *) lfirst(lc);
 		const char *colname = strVal(colnameval);

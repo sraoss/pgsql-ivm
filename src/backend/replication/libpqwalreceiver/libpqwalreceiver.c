@@ -246,9 +246,15 @@ libpqrcv_check_conninfo(const char *conninfo)
 
 	opts = PQconninfoParse(conninfo, &err);
 	if (opts == NULL)
+	{
+		/* The error string is malloc'd, so we must free it explicitly */
+		char	   *errcopy = err ? pstrdup(err) : "out of memory";
+
+		PQfreemem(err);
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("invalid connection string syntax: %s", err)));
+				 errmsg("invalid connection string syntax: %s", errcopy)));
+	}
 
 	PQconninfoFree(opts);
 }
@@ -1017,6 +1023,12 @@ libpqrcv_exec(WalReceiverConn *conn, const char *query,
 		case PGRES_EMPTY_QUERY:
 			walres->status = WALRCV_ERROR;
 			walres->err = _("empty query");
+			break;
+
+		case PGRES_PIPELINE_SYNC:
+		case PGRES_PIPELINE_ABORTED:
+			walres->status = WALRCV_ERROR;
+			walres->err = _("unexpected pipeline mode");
 			break;
 
 		case PGRES_NONFATAL_ERROR:

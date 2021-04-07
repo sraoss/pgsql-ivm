@@ -2664,6 +2664,14 @@ ReorderBufferPrepare(ReorderBuffer *rb, TransactionId xid,
 
 	ReorderBufferReplay(txn, rb, xid, txn->final_lsn, txn->end_lsn,
 						txn->commit_time, txn->origin_id, txn->origin_lsn);
+
+	/*
+	 * We send the prepare for the concurrently aborted xacts so that later
+	 * when rollback prepared is decoded and sent, the downstream should be
+	 * able to rollback such a xact. See comments atop DecodePrepare.
+	 */
+	if (txn->concurrent_abort)
+		rb->prepare(rb, txn, txn->final_lsn);
 }
 
 /*
@@ -4641,7 +4649,7 @@ ReorderBufferToastReplace(ReorderBuffer *rb, ReorderBufferTXN *txn,
 				   VARSIZE(chunk) - VARHDRSZ);
 			data_done += VARSIZE(chunk) - VARHDRSZ;
 		}
-		Assert(data_done == toast_pointer.va_extsize);
+		Assert(data_done == VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer));
 
 		/* make sure its marked as compressed or not */
 		if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
@@ -4736,19 +4744,19 @@ ReorderBufferToastReset(ReorderBuffer *rb, ReorderBufferTXN *txn)
  * always rely on stored cmin/cmax values because of two scenarios:
  *
  * * A tuple got changed multiple times during a single transaction and thus
- *	 has got a combocid. Combocid's are only valid for the duration of a
+ *	 has got a combo CID. Combo CIDs are only valid for the duration of a
  *	 single transaction.
- * * A tuple with a cmin but no cmax (and thus no combocid) got
+ * * A tuple with a cmin but no cmax (and thus no combo CID) got
  *	 deleted/updated in another transaction than the one which created it
- *	 which we are looking at right now. As only one of cmin, cmax or combocid
+ *	 which we are looking at right now. As only one of cmin, cmax or combo CID
  *	 is actually stored in the heap we don't have access to the value we
  *	 need anymore.
  *
  * To resolve those problems we have a per-transaction hash of (cmin,
  * cmax) tuples keyed by (relfilenode, ctid) which contains the actual
- * (cmin, cmax) values. That also takes care of combocids by simply
+ * (cmin, cmax) values. That also takes care of combo CIDs by simply
  * not caring about them at all. As we have the real cmin/cmax values
- * combocids aren't interesting.
+ * combo CIDs aren't interesting.
  *
  * As we only care about catalog tuples here the overhead of this
  * hashtable should be acceptable.
@@ -4995,7 +5003,7 @@ UpdateLogicalMappings(HTAB *tuplecid_data, Oid relid, Snapshot snapshot)
 
 /*
  * Lookup cmin/cmax of a tuple, during logical decoding where we can't rely on
- * combocids.
+ * combo CIDs.
  */
 bool
 ResolveCminCmaxDuringDecoding(HTAB *tuplecid_data,

@@ -372,6 +372,8 @@ helpVariables(unsigned short int pager)
 					  "    true if last query failed, else false\n"));
 	fprintf(output, _("  FETCH_COUNT\n"
 					  "    the number of result rows to fetch and display at a time (0 = unlimited)\n"));
+	fprintf(output, _("  HIDE_TOAST_COMPRESSION\n"
+					  "    if set, compression methods are not displayed\n"));
 	fprintf(output, _("  HIDE_TABLEAM\n"
 					  "    if set, table access methods are not displayed\n"));
 	fprintf(output, _("  HISTCONTROL\n"
@@ -408,6 +410,8 @@ helpVariables(unsigned short int pager)
 	fprintf(output, _("  SERVER_VERSION_NAME\n"
 					  "  SERVER_VERSION_NUM\n"
 					  "    server's version (in short string or numeric format)\n"));
+	fprintf(output, _("  SHOW_ALL_RESULTS\n"
+					  "    show all results of a combined query (\\;) instead of only the last\n"));
 	fprintf(output, _("  SHOW_CONTEXT\n"
 					  "    controls display of message context fields [never, errors, always]\n"));
 	fprintf(output, _("  SINGLELINE\n"

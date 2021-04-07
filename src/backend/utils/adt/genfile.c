@@ -62,10 +62,13 @@ convert_and_check_filename(text *arg)
 	 * files on the server as the PG user, so no need to do any further checks
 	 * here.
 	 */
-	if (is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_SERVER_FILES))
+	if (is_member_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
 		return filename;
 
-	/* User isn't a member of the default role, so check if it's allowable */
+	/*
+	 * User isn't a member of the pg_read_server_files role, so check if it's
+	 * allowable
+	 */
 	if (is_absolute_path(filename))
 	{
 		/* Disallow '/a/b/data/..' */
@@ -251,7 +254,7 @@ pg_read_file(PG_FUNCTION_ARGS)
 				 errmsg("must be superuser to read files with adminpack 1.0"),
 		/* translator: %s is a SQL function name */
 				 errhint("Consider using %s, which is part of core, instead.",
-						 "pg_file_read()")));
+						 "pg_read_file()")));
 
 	/* handle optional arguments */
 	if (PG_NARGS() >= 3)

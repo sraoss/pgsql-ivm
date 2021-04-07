@@ -69,6 +69,7 @@
 #include "replication/walsender.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
+#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "utils/acl.h"
@@ -207,6 +208,7 @@ WalReceiverMain(void)
 
 		case WALRCV_STOPPED:
 			SpinLockRelease(&walrcv->mutex);
+			ConditionVariableBroadcast(&walrcv->walRcvStoppedCV);
 			proc_exit(1);
 			break;
 
@@ -784,6 +786,8 @@ WalRcvDie(int code, Datum arg)
 	walrcv->latch = NULL;
 	SpinLockRelease(&walrcv->mutex);
 
+	ConditionVariableBroadcast(&walrcv->walRcvStoppedCV);
+
 	/* Terminate the connection gracefully. */
 	if (wrconn != NULL)
 		walrcv_disconnect(wrconn);
@@ -1358,7 +1362,7 @@ pg_stat_get_wal_receiver(PG_FUNCTION_ARGS)
 	/* Fetch values */
 	values[0] = Int32GetDatum(pid);
 
-	if (!is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_ALL_STATS))
+	if (!is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS))
 	{
 		/*
 		 * Only superusers and members of pg_read_all_stats can see details.

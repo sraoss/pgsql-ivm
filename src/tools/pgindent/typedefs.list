@@ -398,11 +398,13 @@ CompressionAlgorithm
 CompressorState
 ComputeXidHorizonsResult
 ConditionVariable
+ConditionVariableMinimallyPadded
 ConditionalStack
 ConfigData
 ConfigVariable
 ConnCacheEntry
 ConnCacheKey
+ConnParams
 ConnStatusType
 ConnType
 ConnectionStateEnum
@@ -1561,15 +1563,18 @@ PG_Locale_Strategy
 PG_Lock_Status
 PG_init_t
 PGcancel
+PGcmdQueueEntry
 PGconn
 PGdataValue
 PGlobjfuncs
 PGnotify
+PGpipelineStatus
 PGresAttDesc
 PGresAttValue
 PGresParamDesc
 PGresult
 PGresult_data
+PgArchData
 PHANDLE
 PLAINTREE
 PLUID_AND_ATTRIBUTES
@@ -1729,6 +1734,7 @@ ParallelHashJoinState
 ParallelIndexScanDesc
 ParallelReadyList
 ParallelSlot
+ParallelSlotArray
 ParallelState
 ParallelTableScanDesc
 ParallelTableScanDescData
@@ -3209,6 +3215,7 @@ pg_enc2gettext
 pg_enc2name
 pg_encname
 pg_gssinfo
+pg_hmac_ctx
 pg_int64
 pg_local_to_utf_combined
 pg_locale_t
@@ -3225,6 +3232,7 @@ pg_sha512_ctx
 pg_snapshot
 pg_stack_base_t
 pg_time_t
+pg_time_usec_t
 pg_tz
 pg_tz_cache
 pg_tzenum
@@ -3294,6 +3302,7 @@ proclist_mutable_iter
 proclist_node
 promptStatus_t
 pthread_attr_t
+pthread_barrier_t
 pthread_key_t
 pthread_mutex_t
 pthread_once_t
@@ -3353,7 +3362,6 @@ role_auth_extra
 row_security_policy_hook_type
 rsv_callback
 save_buffer
-scram_HMAC_ctx
 scram_state
 scram_state_enum
 sem_t
@@ -3546,8 +3554,6 @@ xl_hash_split_complete
 xl_hash_squeeze_page
 xl_hash_update_meta_page
 xl_hash_vacuum_one_page
-xl_heap_clean
-xl_heap_cleanup_info
 xl_heap_confirm
 xl_heap_delete
 xl_heap_freeze_page
@@ -3559,9 +3565,11 @@ xl_heap_lock
 xl_heap_lock_updated
 xl_heap_multi_insert
 xl_heap_new_cid
+xl_heap_prune
 xl_heap_rewrite_mapping
 xl_heap_truncate
 xl_heap_update
+xl_heap_vacuum
 xl_heap_visible
 xl_invalid_page
 xl_invalid_page_key

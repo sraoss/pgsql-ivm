@@ -34,6 +34,7 @@
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
 #include "optimizer/clauses.h"
 #include "optimizer/cost.h"
@@ -126,8 +127,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	relation = table_open(relationObjectId, NoLock);
 
 	/* Temporary and unlogged relations are inaccessible during recovery. */
-	if (relation->rd_rel->relpersistence != RELPERSISTENCE_PERMANENT &&
-		RecoveryInProgress())
+	if (!RelationIsPermanent(relation) && RecoveryInProgress())
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot access temporary or unlogged relations during recovery")));
@@ -1309,6 +1309,7 @@ get_relation_constraints(PlannerInfo *root,
 static List *
 get_relation_statistics(RelOptInfo *rel, Relation relation)
 {
+	Index		varno = rel->relid;
 	List	   *statoidlist;
 	List	   *stainfos = NIL;
 	ListCell   *l;
@@ -1322,6 +1323,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		HeapTuple	htup;
 		HeapTuple	dtup;
 		Bitmapset  *keys = NULL;
+		List	   *exprs = NIL;
 		int			i;
 
 		htup = SearchSysCache1(STATEXTOID, ObjectIdGetDatum(statOid));
@@ -1341,6 +1343,49 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 		for (i = 0; i < staForm->stxkeys.dim1; i++)
 			keys = bms_add_member(keys, staForm->stxkeys.values[i]);
 
+		/*
+		 * Preprocess expressions (if any). We read the expressions, run them
+		 * through eval_const_expressions, and fix the varnos.
+		 */
+		{
+			bool		isnull;
+			Datum		datum;
+
+			/* decode expression (if any) */
+			datum = SysCacheGetAttr(STATEXTOID, htup,
+									Anum_pg_statistic_ext_stxexprs, &isnull);
+
+			if (!isnull)
+			{
+				char	   *exprsString;
+
+				exprsString = TextDatumGetCString(datum);
+				exprs = (List *) stringToNode(exprsString);
+				pfree(exprsString);
+
+				/*
+				 * Run the expressions through eval_const_expressions. This is
+				 * not just an optimization, but is necessary, because the
+				 * planner will be comparing them to similarly-processed qual
+				 * clauses, and may fail to detect valid matches without this.
+				 * We must not use canonicalize_qual, however, since these
+				 * aren't qual expressions.
+				 */
+				exprs = (List *) eval_const_expressions(NULL, (Node *) exprs);
+
+				/* May as well fix opfuncids too */
+				fix_opfuncids((Node *) exprs);
+
+				/*
+				 * Modify the copies we obtain from the relcache to have the
+				 * correct varno for the parent relation, so that they match
+				 * up correctly against qual clauses.
+				 */
+				if (varno != 1)
+					ChangeVarNodes((Node *) exprs, 1, varno, 0);
+			}
+		}
+
 		/* add one StatisticExtInfo for each kind built */
 		if (statext_is_kind_built(dtup, STATS_EXT_NDISTINCT))
 		{
@@ -1350,6 +1395,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_NDISTINCT;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}
@@ -1362,6 +1408,7 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_DEPENDENCIES;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}
@@ -1374,6 +1421,20 @@ get_relation_statistics(RelOptInfo *rel, Relation relation)
 			info->rel = rel;
 			info->kind = STATS_EXT_MCV;
 			info->keys = bms_copy(keys);
+			info->exprs = exprs;
+
+			stainfos = lappend(stainfos, info);
+		}
+
+		if (statext_is_kind_built(dtup, STATS_EXT_EXPRESSIONS))
+		{
+			StatisticExtInfo *info = makeNode(StatisticExtInfo);
+
+			info->statOid = statOid;
+			info->rel = rel;
+			info->kind = STATS_EXT_EXPRESSIONS;
+			info->keys = bms_copy(keys);
+			info->exprs = exprs;
 
 			stainfos = lappend(stainfos, info);
 		}
@@ -1454,18 +1515,11 @@ relation_excluded_by_constraints(PlannerInfo *root,
 
 			/*
 			 * When constraint_exclusion is set to 'partition' we only handle
-			 * appendrel members.  Normally, they are RELOPT_OTHER_MEMBER_REL
-			 * relations, but we also consider inherited target relations as
-			 * appendrel members for the purposes of constraint exclusion
-			 * (since, indeed, they were appendrel members earlier in
-			 * inheritance_planner).
-			 *
-			 * In both cases, partition pruning was already applied, so there
-			 * is no need to consider the rel's partition constraints here.
+			 * appendrel members.  Partition pruning has already been applied,
+			 * so there is no need to consider the rel's partition constraints
+			 * here.
 			 */
-			if (rel->reloptkind == RELOPT_OTHER_MEMBER_REL ||
-				(rel->relid == root->parse->resultRelation &&
-				 root->inhTargetKind != INHKIND_NONE))
+			if (rel->reloptkind == RELOPT_OTHER_MEMBER_REL)
 				break;			/* appendrel member, so process it */
 			return false;
 
@@ -1478,9 +1532,7 @@ relation_excluded_by_constraints(PlannerInfo *root,
 			 * its partition constraints haven't been considered yet, so
 			 * include them in the processing here.
 			 */
-			if (rel->reloptkind == RELOPT_BASEREL &&
-				!(rel->relid == root->parse->resultRelation &&
-				  root->inhTargetKind != INHKIND_NONE))
+			if (rel->reloptkind == RELOPT_BASEREL)
 				include_partition = true;
 			break;				/* always try to exclude */
 	}
@@ -2142,10 +2194,14 @@ set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 {
 	PartitionDesc partdesc;
 
-	/* Create the PartitionDirectory infrastructure if we didn't already */
+	/*
+	 * Create the PartitionDirectory infrastructure if we didn't already.
+	 */
 	if (root->glob->partition_directory == NULL)
+	{
 		root->glob->partition_directory =
-			CreatePartitionDirectory(CurrentMemoryContext);
+			CreatePartitionDirectory(CurrentMemoryContext, false);
+	}
 
 	partdesc = PartitionDirectoryLookup(root->glob->partition_directory,
 										relation);

@@ -110,6 +110,7 @@ int			CommitDelay = 0;	/* precommit delay in microseconds */
 int			CommitSiblings = 5; /* # concurrent xacts needed to sleep */
 int			wal_retrieve_retry_interval = 5000;
 int			max_slot_wal_keep_size_mb = -1;
+bool		track_wal_io_timing = false;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -721,8 +722,9 @@ typedef struct XLogCtlData
 	 * only relevant for replication or archive recovery
 	 */
 	TimestampTz currentChunkStartTime;
-	/* Are we requested to pause recovery? */
-	bool		recoveryPause;
+	/* Recovery pause state */
+	RecoveryPauseState	recoveryPauseState;
+	ConditionVariable recoveryNotPausedCV;
 
 	/*
 	 * lastFpwDisableRecPtr points to the start of the last replayed
@@ -894,6 +896,7 @@ static void validateRecoveryParameters(void);
 static void exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog);
 static bool recoveryStopsBefore(XLogReaderState *record);
 static bool recoveryStopsAfter(XLogReaderState *record);
+static void ConfirmRecoveryPaused(void);
 static void recoveryPausesHere(bool endOfRecovery);
 static bool recoveryApplyDelay(XLogReaderState *record);
 static void SetLatestXTime(TimestampTz xtime);
@@ -2533,6 +2536,7 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			Size		nbytes;
 			Size		nleft;
 			int			written;
+			instr_time	start;
 
 			/* OK to write the page(s) */
 			from = XLogCtl->pages + startidx * (Size) XLOG_BLCKSZ;
@@ -2541,9 +2545,30 @@ XLogWrite(XLogwrtRqst WriteRqst, bool flexible)
 			do
 			{
 				errno = 0;
+
+				/* Measure I/O timing to write WAL data */
+				if (track_wal_io_timing)
+					INSTR_TIME_SET_CURRENT(start);
+
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
 				written = pg_pwrite(openLogFile, from, nleft, startoffset);
 				pgstat_report_wait_end();
+
+				/*
+				 * Increment the I/O timing and the number of times WAL data
+				 * were written out to disk.
+				 */
+				if (track_wal_io_timing)
+				{
+					instr_time	duration;
+
+					INSTR_TIME_SET_CURRENT(duration);
+					INSTR_TIME_SUBTRACT(duration, start);
+					WalStats.m_wal_write_time += INSTR_TIME_GET_MICROSEC(duration);
+				}
+
+				WalStats.m_wal_write++;
+
 				if (written <= 0)
 				{
 					char		xlogfname[MAXFNAMELEN];
@@ -5204,6 +5229,7 @@ XLOGShmemInit(void)
 	SpinLockInit(&XLogCtl->info_lck);
 	SpinLockInit(&XLogCtl->ulsn_lck);
 	InitSharedLatch(&XLogCtl->recoveryWakeupLatch);
+	ConditionVariableInit(&XLogCtl->recoveryNotPausedCV);
 }
 
 /*
@@ -6011,15 +6037,11 @@ recoveryStopsAfter(XLogReaderState *record)
 }
 
 /*
- * Wait until shared recoveryPause flag is cleared.
+ * Wait until shared recoveryPauseState is set to RECOVERY_NOT_PAUSED.
  *
  * endOfRecovery is true if the recovery target is reached and
  * the paused state starts at the end of recovery because of
  * recovery_target_action=pause, and false otherwise.
- *
- * XXX Could also be done with shared latch, avoiding the pg_usleep loop.
- * Probably not worth the trouble though.  This state shouldn't be one that
- * anyone cares about server power consumption in.
  */
 static void
 recoveryPausesHere(bool endOfRecovery)
@@ -6041,34 +6063,80 @@ recoveryPausesHere(bool endOfRecovery)
 				(errmsg("recovery has paused"),
 				 errhint("Execute pg_wal_replay_resume() to continue.")));
 
-	while (RecoveryIsPaused())
+	/* loop until recoveryPauseState is set to RECOVERY_NOT_PAUSED */
+	while (GetRecoveryPauseState() != RECOVERY_NOT_PAUSED)
 	{
 		HandleStartupProcInterrupts();
 		if (CheckForStandbyTrigger())
 			return;
-		pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
-		pg_usleep(1000000L);	/* 1000 ms */
-		pgstat_report_wait_end();
+
+		/*
+		 * If recovery pause is requested then set it paused.  While we are in
+		 * the loop, user might resume and pause again so set this every time.
+		 */
+		ConfirmRecoveryPaused();
+
+		/*
+		 * We wait on a condition variable that will wake us as soon as the
+		 * pause ends, but we use a timeout so we can check the above exit
+		 * condition periodically too.
+		 */
+		ConditionVariableTimedSleep(&XLogCtl->recoveryNotPausedCV, 1000,
+									WAIT_EVENT_RECOVERY_PAUSE);
 	}
+	ConditionVariableCancelSleep();
 }
 
-bool
-RecoveryIsPaused(void)
+/*
+ * Get the current state of the recovery pause request.
+ */
+RecoveryPauseState
+GetRecoveryPauseState(void)
 {
-	bool		recoveryPause;
+	RecoveryPauseState	state;
 
 	SpinLockAcquire(&XLogCtl->info_lck);
-	recoveryPause = XLogCtl->recoveryPause;
+	state = XLogCtl->recoveryPauseState;
 	SpinLockRelease(&XLogCtl->info_lck);
 
-	return recoveryPause;
+	return state;
 }
 
+/*
+ * Set the recovery pause state.
+ *
+ * If recovery pause is requested then sets the recovery pause state to
+ * 'pause requested' if it is not already 'paused'.  Otherwise, sets it
+ * to 'not paused' to resume the recovery.  The recovery pause will be
+ * confirmed by the ConfirmRecoveryPaused.
+ */
 void
 SetRecoveryPause(bool recoveryPause)
 {
 	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->recoveryPause = recoveryPause;
+
+	if (!recoveryPause)
+		XLogCtl->recoveryPauseState = RECOVERY_NOT_PAUSED;
+	else if (XLogCtl->recoveryPauseState == RECOVERY_NOT_PAUSED)
+		XLogCtl->recoveryPauseState = RECOVERY_PAUSE_REQUESTED;
+
+	SpinLockRelease(&XLogCtl->info_lck);
+
+	if (!recoveryPause)
+		ConditionVariableBroadcast(&XLogCtl->recoveryNotPausedCV);
+}
+
+/*
+ * Confirm the recovery pause by setting the recovery pause state to
+ * RECOVERY_PAUSED.
+ */
+static void
+ConfirmRecoveryPaused(void)
+{
+	/* If recovery pause is requested then set it paused */
+	SpinLockAcquire(&XLogCtl->info_lck);
+	if (XLogCtl->recoveryPauseState == RECOVERY_PAUSE_REQUESTED)
+		XLogCtl->recoveryPauseState = RECOVERY_PAUSED;
 	SpinLockRelease(&XLogCtl->info_lck);
 }
 
@@ -6269,7 +6337,7 @@ RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue
 					 errdetail("If recovery is unpaused, the server will shut down."),
 					 errhint("You can then restart the server after making the necessary configuration changes.")));
 
-			while (RecoveryIsPaused())
+			while (GetRecoveryPauseState() != RECOVERY_NOT_PAUSED)
 			{
 				HandleStartupProcInterrupts();
 
@@ -6288,10 +6356,22 @@ RecoveryRequiresIntParameter(const char *param_name, int currValue, int minValue
 					warned_for_promote = true;
 				}
 
-				pgstat_report_wait_start(WAIT_EVENT_RECOVERY_PAUSE);
-				pg_usleep(1000000L);	/* 1000 ms */
-				pgstat_report_wait_end();
+				/*
+				 * If recovery pause is requested then set it paused.  While we
+				 * are in the loop, user might resume and pause again so set
+				 * this every time.
+				 */
+				ConfirmRecoveryPaused();
+
+				/*
+				 * We wait on a condition variable that will wake us as soon as
+				 * the pause ends, but we use a timeout so we can check the
+				 * above conditions periodically too.
+				 */
+				ConditionVariableTimedSleep(&XLogCtl->recoveryNotPausedCV, 1000,
+											WAIT_EVENT_RECOVERY_PAUSE);
 			}
+			ConditionVariableCancelSleep();
 		}
 
 		ereport(FATAL,
@@ -6323,9 +6403,10 @@ CheckRequiredParameterValues(void)
 	 */
 	if (ArchiveRecoveryRequested && ControlFile->wal_level == WAL_LEVEL_MINIMAL)
 	{
-		ereport(WARNING,
-				(errmsg("WAL was generated with wal_level=minimal, data may be missing"),
-				 errhint("This happens if you temporarily set wal_level=minimal without taking a new base backup.")));
+		ereport(FATAL,
+				(errmsg("WAL was generated with wal_level=minimal, cannot continue recovering"),
+				 errdetail("This happens if you temporarily set wal_level=minimal on the server."),
+				 errhint("Use a backup taken after setting wal_level to higher than minimal.")));
 	}
 
 	/*
@@ -6334,11 +6415,6 @@ CheckRequiredParameterValues(void)
 	 */
 	if (ArchiveRecoveryRequested && EnableHotStandby)
 	{
-		if (ControlFile->wal_level < WAL_LEVEL_REPLICA)
-			ereport(ERROR,
-					(errmsg("hot standby is not possible because wal_level was not set to \"replica\" or higher on the primary server"),
-					 errhint("Either set wal_level to \"replica\" on the primary, or turn off hot_standby here.")));
-
 		/* We ignore autovacuum_max_workers when we make this test. */
 		RecoveryRequiresIntParameter("max_connections",
 									 MaxConnections,
@@ -7182,7 +7258,7 @@ StartupXLOG(void)
 		XLogCtl->lastReplayedTLI = XLogCtl->replayEndTLI;
 		XLogCtl->recoveryLastXTime = 0;
 		XLogCtl->currentChunkStartTime = 0;
-		XLogCtl->recoveryPause = false;
+		XLogCtl->recoveryPauseState = RECOVERY_NOT_PAUSED;
 		SpinLockRelease(&XLogCtl->info_lck);
 
 		/* Also ensure XLogReceiptTime has a sane value */
@@ -7286,7 +7362,8 @@ StartupXLOG(void)
 				 * otherwise would is a minor issue, so it doesn't seem worth
 				 * adding another spinlock cycle to prevent that.
 				 */
-				if (((volatile XLogCtlData *) XLogCtl)->recoveryPause)
+				if (((volatile XLogCtlData *) XLogCtl)->recoveryPauseState !=
+					RECOVERY_NOT_PAUSED)
 					recoveryPausesHere(false);
 
 				/*
@@ -7311,7 +7388,8 @@ StartupXLOG(void)
 					 * here otherwise pausing during the delay-wait wouldn't
 					 * work.
 					 */
-					if (((volatile XLogCtlData *) XLogCtl)->recoveryPause)
+					if (((volatile XLogCtlData *) XLogCtl)->recoveryPauseState !=
+						RECOVERY_NOT_PAUSED)
 						recoveryPausesHere(false);
 				}
 
@@ -10524,6 +10602,20 @@ void
 issue_xlog_fsync(int fd, XLogSegNo segno)
 {
 	char	   *msg = NULL;
+	instr_time	start;
+
+	/*
+	 * Quick exit if fsync is disabled or write() has already synced the WAL
+	 * file.
+	 */
+	if (!enableFsync ||
+		sync_method == SYNC_METHOD_OPEN ||
+		sync_method == SYNC_METHOD_OPEN_DSYNC)
+		return;
+
+	/* Measure I/O timing to sync the WAL file */
+	if (track_wal_io_timing)
+		INSTR_TIME_SET_CURRENT(start);
 
 	pgstat_report_wait_start(WAIT_EVENT_WAL_SYNC);
 	switch (sync_method)
@@ -10546,7 +10638,8 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
 #endif
 		case SYNC_METHOD_OPEN:
 		case SYNC_METHOD_OPEN_DSYNC:
-			/* write synced it already */
+			/* not reachable */
+			Assert(false);
 			break;
 		default:
 			elog(PANIC, "unrecognized wal_sync_method: %d", sync_method);
@@ -10568,6 +10661,20 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
 	}
 
 	pgstat_report_wait_end();
+
+	/*
+	 * Increment the I/O timing and the number of times WAL files were synced.
+	 */
+	if (track_wal_io_timing)
+	{
+		instr_time	duration;
+
+		INSTR_TIME_SET_CURRENT(duration);
+		INSTR_TIME_SUBTRACT(duration, start);
+		WalStats.m_wal_sync_time += INSTR_TIME_GET_MICROSEC(duration);
+	}
+
+	WalStats.m_wal_sync++;
 }
 
 /*
@@ -10591,18 +10698,16 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
  * active at the same time, and they don't conflict with an exclusive backup
  * either.
  *
- * tablespaces is required only when this function is called while
- * the streaming base backup requested by pg_basebackup is running.
- * NULL should be specified otherwise.
+ * labelfile and tblspcmapfile must be passed as NULL when starting an
+ * exclusive backup, and as initially-empty StringInfos for a non-exclusive
+ * backup.
+ *
+ * If "tablespaces" isn't NULL, it receives a list of tablespaceinfo structs
+ * describing the cluster's tablespaces.
  *
  * tblspcmapfile is required mainly for tar format in windows as native windows
  * utilities are not able to create symlinks while extracting files from tar.
  * However for consistency, the same is used for all platforms.
- *
- * needtblspcmapfile is true for the cases (exclusive backup and for
- * non-exclusive backup only when tar format is used for taking backup)
- * when backup needs to generate tablespace_map file, it is used to
- * embed escape character before newline character in tablespace path.
  *
  * Returns the minimum WAL location that must be present to restore from this
  * backup, and the corresponding timeline ID in *starttli_p.
@@ -10616,7 +10721,7 @@ issue_xlog_fsync(int fd, XLogSegNo segno)
 XLogRecPtr
 do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 				   StringInfo labelfile, List **tablespaces,
-				   StringInfo tblspcmapfile, bool needtblspcmapfile)
+				   StringInfo tblspcmapfile)
 {
 	bool		exclusive = (labelfile == NULL);
 	bool		backup_started_in_recovery = false;
@@ -10829,9 +10934,10 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		XLogFileName(xlogfilename, starttli, _logSegNo, wal_segment_size);
 
 		/*
-		 * Construct tablespace_map file
+		 * Construct tablespace_map file.  If caller isn't interested in this,
+		 * we make a local StringInfo.
 		 */
-		if (exclusive)
+		if (tblspcmapfile == NULL)
 			tblspcmapfile = makeStringInfo();
 
 		datadirpathlen = strlen(DataDir);
@@ -10844,11 +10950,11 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			char		linkpath[MAXPGPATH];
 			char	   *relpath = NULL;
 			int			rllen;
-			StringInfoData buflinkpath;
-			char	   *s = linkpath;
+			StringInfoData escapedpath;
+			char	   *s;
 
-			/* Skip special stuff */
-			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+			/* Skip anything that doesn't look like a tablespace */
+			if (strspn(de->d_name, "0123456789") != strlen(de->d_name))
 				continue;
 
 			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
@@ -10872,18 +10978,15 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			linkpath[rllen] = '\0';
 
 			/*
-			 * Add the escape character '\\' before newline in a string to
-			 * ensure that we can distinguish between the newline in the
-			 * tablespace path and end of line while reading tablespace_map
-			 * file during archive recovery.
+			 * Build a backslash-escaped version of the link path to include
+			 * in the tablespace map file.
 			 */
-			initStringInfo(&buflinkpath);
-
-			while (*s)
+			initStringInfo(&escapedpath);
+			for (s = linkpath; *s; s++)
 			{
-				if ((*s == '\n' || *s == '\r') && needtblspcmapfile)
-					appendStringInfoChar(&buflinkpath, '\\');
-				appendStringInfoChar(&buflinkpath, *s++);
+				if (*s == '\n' || *s == '\r' || *s == '\\')
+					appendStringInfoChar(&escapedpath, '\\');
+				appendStringInfoChar(&escapedpath, *s);
 			}
 
 			/*
@@ -10898,16 +11001,17 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 
 			ti = palloc(sizeof(tablespaceinfo));
 			ti->oid = pstrdup(de->d_name);
-			ti->path = pstrdup(buflinkpath.data);
+			ti->path = pstrdup(linkpath);
 			ti->rpath = relpath ? pstrdup(relpath) : NULL;
 			ti->size = -1;
 
 			if (tablespaces)
 				*tablespaces = lappend(*tablespaces, ti);
 
-			appendStringInfo(tblspcmapfile, "%s %s\n", ti->oid, ti->path);
+			appendStringInfo(tblspcmapfile, "%s %s\n",
+							 ti->oid, escapedpath.data);
 
-			pfree(buflinkpath.data);
+			pfree(escapedpath.data);
 #else
 
 			/*
@@ -10923,9 +11027,10 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 		FreeDir(tblspcdir);
 
 		/*
-		 * Construct backup label file
+		 * Construct backup label file.  If caller isn't interested in this,
+		 * we make a local StringInfo.
 		 */
-		if (exclusive)
+		if (labelfile == NULL)
 			labelfile = makeStringInfo();
 
 		/* Use the log timezone here, not the session timezone */
@@ -11787,22 +11892,20 @@ read_backup_label(XLogRecPtr *checkPointLoc, bool *backupEndRequired,
  * recovering from a backup dump file, and we therefore need to create symlinks
  * as per the information present in tablespace_map file.
  *
- * Returns true if a tablespace_map file was found (and fills the link
- * information for all the tablespace links present in file); returns false
- * if not.
+ * Returns true if a tablespace_map file was found (and fills *tablespaces
+ * with a tablespaceinfo struct for each tablespace listed in the file);
+ * returns false if not.
  */
 static bool
 read_tablespace_map(List **tablespaces)
 {
 	tablespaceinfo *ti;
 	FILE	   *lfp;
-	char		tbsoid[MAXPGPATH];
-	char	   *tbslinkpath;
 	char		str[MAXPGPATH];
 	int			ch,
-				prev_ch = -1,
-				i = 0,
+				i,
 				n;
+	bool		was_backslash;
 
 	/*
 	 * See if tablespace_map file is present
@@ -11821,37 +11924,54 @@ read_tablespace_map(List **tablespaces)
 	/*
 	 * Read and parse the link name and path lines from tablespace_map file
 	 * (this code is pretty crude, but we are not expecting any variability in
-	 * the file format).  While taking backup we embed escape character '\\'
-	 * before newline in tablespace path, so that during reading of
-	 * tablespace_map file, we could distinguish newline in tablespace path
-	 * and end of line.  Now while reading tablespace_map file, remove the
-	 * escape character that has been added in tablespace path during backup.
+	 * the file format).  De-escape any backslashes that were inserted.
 	 */
+	i = 0;
+	was_backslash = false;
 	while ((ch = fgetc(lfp)) != EOF)
 	{
-		if ((ch == '\n' || ch == '\r') && prev_ch != '\\')
+		if (!was_backslash && (ch == '\n' || ch == '\r'))
 		{
+			if (i == 0)
+				continue;		/* \r immediately followed by \n */
+
+			/*
+			 * The de-escaped line should contain an OID followed by exactly
+			 * one space followed by a path.  The path might start with
+			 * spaces, so don't be too liberal about parsing.
+			 */
 			str[i] = '\0';
-			if (sscanf(str, "%s %n", tbsoid, &n) != 1)
+			n = 0;
+			while (str[n] && str[n] != ' ')
+				n++;
+			if (n < 1 || n >= i - 1)
 				ereport(FATAL,
 						(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 						 errmsg("invalid data in file \"%s\"", TABLESPACE_MAP)));
-			tbslinkpath = str + n;
-			i = 0;
+			str[n++] = '\0';
 
-			ti = palloc(sizeof(tablespaceinfo));
-			ti->oid = pstrdup(tbsoid);
-			ti->path = pstrdup(tbslinkpath);
-
+			ti = palloc0(sizeof(tablespaceinfo));
+			ti->oid = pstrdup(str);
+			ti->path = pstrdup(str + n);
 			*tablespaces = lappend(*tablespaces, ti);
+
+			i = 0;
 			continue;
 		}
-		else if ((ch == '\n' || ch == '\r') && prev_ch == '\\')
-			str[i - 1] = ch;
+		else if (!was_backslash && ch == '\\')
+			was_backslash = true;
 		else
-			str[i++] = ch;
-		prev_ch = ch;
+		{
+			if (i < sizeof(str) - 1)
+				str[i++] = ch;
+			was_backslash = false;
+		}
 	}
+
+	if (i != 0 || was_backslash)	/* last line not terminated? */
+		ereport(FATAL,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("invalid data in file \"%s\"", TABLESPACE_MAP)));
 
 	if (ferror(lfp) || FreeFile(lfp))
 		ereport(FATAL,
@@ -12603,6 +12723,14 @@ WaitForWALToBecomeAvailable(XLogRecPtr RecPtr, bool randAccess,
 			default:
 				elog(ERROR, "unexpected WAL source %d", currentSource);
 		}
+
+		/*
+		 * Check for recovery pause here so that we can confirm more quickly
+		 * that a requested pause has actually taken effect.
+		 */
+		if (((volatile XLogCtlData *) XLogCtl)->recoveryPauseState !=
+			RECOVERY_NOT_PAUSED)
+			recoveryPausesHere(false);
 
 		/*
 		 * This possibly-long loop needs to handle interrupts of startup

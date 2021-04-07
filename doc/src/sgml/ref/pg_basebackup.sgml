@@ -161,6 +161,7 @@ PostgreSQL documentation
             tablespaces, the main data directory will be placed in the
             target directory, but all other tablespaces will be placed
             in the same absolute path as they have on the source server.
+            (See <option>--tablespace-mapping</option> to change that.)
            </para>
            <para>
             This is the default format.
@@ -198,7 +199,10 @@ PostgreSQL documentation
       <listitem>
 
        <para>
-        Creates a <filename>standby.signal</filename> file and appends
+        Creates a
+        <link linkend="file-standby-signal"><filename>standby.signal</filename></link>
+        <indexterm><primary><filename>standby.signal</filename></primary><secondary>pg_basebackup --write-recovery-conf</secondary></indexterm>
+        file and appends
         connection settings to the <filename>postgresql.auto.conf</filename>
         file in the target directory (or within the base archive file when
         using tar format).  This eases setting up a standby server using the
@@ -241,7 +245,12 @@ PostgreSQL documentation
         the main data directory are updated to point to the new location.  So
         the new data directory is ready to be used for a new server instance
         with all tablespaces in the updated locations.
-        </para>
+       </para>
+
+       <para>
+        Currently, this option only works with plain output format; it is
+        ignored if tar format is selected.
+       </para>
       </listitem>
      </varlistentry>
 

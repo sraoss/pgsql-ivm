@@ -1514,7 +1514,7 @@ apply_handle_delete_internal(ResultRelInfo *relinfo, EState *estate,
 	{
 		/* The tuple to be deleted could not be found. */
 		elog(DEBUG1,
-			 "logical replication could not find row for delete "
+			 "logical replication did not find row for delete "
 			 "in replication target relation \"%s\"",
 			 RelationGetRelationName(localrel));
 	}
@@ -1583,7 +1583,7 @@ apply_handle_tuple_routing(ResultRelInfo *relinfo,
 	mtstate->ps.state = estate;
 	mtstate->operation = operation;
 	mtstate->resultRelInfo = relinfo;
-	proute = ExecSetupPartitionTupleRouting(estate, mtstate, parentrel);
+	proute = ExecSetupPartitionTupleRouting(estate, parentrel);
 
 	/*
 	 * Find the partition to which the "search tuple" belongs.
@@ -1937,6 +1937,15 @@ apply_dispatch(StringInfo s)
 
 		case LOGICAL_REP_MSG_ORIGIN:
 			apply_handle_origin(s);
+			return;
+
+		case LOGICAL_REP_MSG_MESSAGE:
+
+			/*
+			 * Logical replication does not use generic logical messages yet.
+			 * Although, it could be used by other applications that use this
+			 * output plugin.
+			 */
 			return;
 
 		case LOGICAL_REP_MSG_STREAM_START:
@@ -2740,14 +2749,14 @@ stream_cleanup_files(Oid subid, TransactionId xid)
 {
 	char		path[MAXPGPATH];
 	StreamXidHash *ent;
+	bool		found = false;
 
-	/* Remove the xid entry from the stream xid hash */
+	/* By this time we must have created the transaction entry */
 	ent = (StreamXidHash *) hash_search(xidhash,
 										(void *) &xid,
-										HASH_REMOVE,
-										NULL);
-	/* By this time we must have created the transaction entry */
-	Assert(ent != NULL);
+										HASH_FIND,
+										&found);
+	Assert(found);
 
 	/* Delete the change file and release the stream fileset memory */
 	changes_filename(path, subid, xid);
@@ -2763,6 +2772,9 @@ stream_cleanup_files(Oid subid, TransactionId xid)
 		pfree(ent->subxact_fileset);
 		ent->subxact_fileset = NULL;
 	}
+
+	/* Remove the xid entry from the stream xid hash */
+	hash_search(xidhash, (void *) &xid, HASH_REMOVE, NULL);
 }
 
 /*

@@ -998,6 +998,43 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-client-connection-check-interval" xreflabel="client_connection_check_interval">
+      <term><varname>client_connection_check_interval</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>client_connection_check_interval</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the time interval between optional checks that the client is still
+        connected, while running queries.  The check is performed by polling
+        the socket, and allows long running queries to be aborted sooner if
+        the kernel reports that the connection is closed.
+       </para>
+       <para>
+        This option is currently available only on systems that support the
+        non-standard <symbol>POLLRDHUP</symbol> extension to the
+        <symbol>poll</symbol> system call, including Linux.
+       </para>
+       <para>
+        If the value is specified without units, it is taken as milliseconds.
+        The default value is <literal>0</literal>, which disables connection
+        checks.  Without connection checks, the server will detect the loss of
+        the connection only at the next interaction with the socket, when it
+        waits for, receives or sends data.
+       </para>
+       <para>
+        For the kernel itself to detect lost TCP connections reliably and within
+        a known timeframe in all scenarios including network failure, it may
+        also be necessary to adjust the TCP keepalive settings of the operating
+        system, or the <xref linkend="guc-tcp-keepalives-idle"/>,
+        <xref linkend="guc-tcp-keepalives-interval"/> and
+        <xref linkend="guc-tcp-keepalives-count"/> settings of
+        <productname>PostgreSQL</productname>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
      </sect2>
 
@@ -1770,8 +1807,9 @@ include_dir 'conf.d'
         fact in mind when choosing the value.  Sort operations are used
         for <literal>ORDER BY</literal>, <literal>DISTINCT</literal>,
         and merge joins.
-        Hash tables are used in hash joins, hash-based aggregation, and
-        hash-based processing of <literal>IN</literal> subqueries.
+        Hash tables are used in hash joins, hash-based aggregation, result
+        cache nodes and hash-based processing of <literal>IN</literal>
+        subqueries.
        </para>
        <para>
         Hash-based operations are generally more sensitive to memory
@@ -2682,6 +2720,10 @@ include_dir 'conf.d'
         data from a base backup and the WAL logs, so <literal>replica</literal> or
         higher must be used to enable WAL archiving
         (<xref linkend="guc-archive-mode"/>) and streaming replication.
+        Note that changing <varname>wal_level</varname> to
+        <literal>minimal</literal> makes any base backups taken before
+        unavailable for archive recovery and standby server, which may
+        lead to database loss.
        </para>
        <para>
         In <literal>logical</literal> level, the same information is logged as
@@ -3302,9 +3344,15 @@ include_dir 'conf.d'
       <listitem>
        <para>
         Specifies the target of checkpoint completion, as a fraction of
-        total time between checkpoints. The default is 0.5.
-        This parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.
+        total time between checkpoints. The default is 0.9, which spreads the
+        checkpoint across almost all of the available interval, providing fairly
+        consistent I/O load while also leaving some time for checkpoint
+        completion overhead.  Reducing this parameter is not recommended because
+        it causes the checkpoint to complete faster.  This results in a higher
+        rate of I/O during the checkpoint followed by a period of less I/O between
+        the checkpoint completion and the next scheduled checkpoint.  This
+        parameter can only be set in the <filename>postgresql.conf</filename> file
+        or on the server command line.
        </para>
       </listitem>
      </varlistentry>
@@ -4306,7 +4354,9 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
      <title>Standby Servers</title>
 
      <para>
-      These settings control the behavior of a standby server that is
+      These settings control the behavior of a
+      <link linkend="standby-server-operation">standby server</link>
+      that is
       to receive replication data.  Their values on the primary server
       are irrelevant.
      </para>
@@ -4781,6 +4831,20 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </para>
 
      <variablelist>
+     <varlistentry id="guc-enable-async-append" xreflabel="enable_async_append">
+      <term><varname>enable_async_append</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_async_append</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of async-aware
+        append plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-enable-bitmapscan" xreflabel="enable_bitmapscan">
       <term><varname>enable_bitmapscan</varname> (<type>boolean</type>)
       <indexterm>
@@ -4899,6 +4963,25 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         but turning this variable off prevents the planner from inserting
         materialize nodes except in cases where it is required for correctness.
         The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-resultcache" xreflabel="enable_resultcache">
+      <term><varname>enable_resultcache</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_resultcache</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables the query planner's use of result cache plans for
+        caching results from parameterized scans inside nested-loop joins.
+        This plan type allows scans to the underlying plans to be skipped when
+        the results for the current parameters are already in the cache.  Less
+        commonly looked up results may be evicted from the cache when more
+        space is required for new entries. The default is
+        <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -6672,7 +6755,8 @@ local0.*    /var/log/postgresql
       <listitem>
        <para>
         Causes each attempted connection to the server to be logged,
-        as well as successful completion of client authentication.
+        as well as successful completion of both client authentication (if
+        necessary) and authorization.
         Only superusers can change this parameter at session start,
         and it cannot be changed at all within a session.
         The default is <literal>off</literal>.
@@ -7450,15 +7534,38 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <listitem>
        <para>
         Enables timing of database I/O calls.  This parameter is off by
-        default, because it will repeatedly query the operating system for
+        default, as it will repeatedly query the operating system for
         the current time, which may cause significant overhead on some
         platforms.  You can use the <xref linkend="pgtesttiming"/> tool to
         measure the overhead of timing on your system.
         I/O timing information is
         displayed in <link linkend="monitoring-pg-stat-database-view">
         <structname>pg_stat_database</structname></link>, in the output of
-        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option is
-        used, and by <xref linkend="pgstatstatements"/>.  Only superusers can
+        <xref linkend="sql-explain"/> when the <literal>BUFFERS</literal> option
+        is used, by autovacuum for auto-vacuums and auto-analyzes, when
+        <xref linkend="guc-log-autovacuum-min-duration"/> is set and by
+        <xref linkend="pgstatstatements"/>.  Only superusers can change this
+        setting.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-track-wal-io-timing" xreflabel="track_wal_io_timing">
+      <term><varname>track_wal_io_timing</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>track_wal_io_timing</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables timing of WAL I/O calls. This parameter is off by default,
+        as it will repeatedly query the operating system for the current time,
+        which may cause significant overhead on some platforms.
+        You can use the <application>pg_test_timing</application> tool to
+        measure the overhead of timing on your system.
+        I/O timing information is
+        displayed in <link linkend="monitoring-pg-stat-wal-view">
+        <structname>pg_stat_wal</structname></link>.  Only superusers can
         change this setting.
        </para>
       </listitem>
@@ -8105,6 +8212,28 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-default-toast-compression" xreflabel="default_toast_compression">
+      <term><varname>default_toast_compression</varname> (<type>enum</type>)
+      <indexterm>
+       <primary><varname>default_toast_compression</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This variable sets the default
+        <link linkend="storage-toast">TOAST</link>
+        compression method for columns of newly-created tables. The
+        <command>CREATE TABLE</command> statement can override this default
+        by specifying the <literal>COMPRESSION</literal> column option.
+
+        The supported compression methods are <literal>pglz</literal> and
+        (if configured at the time <productname>PostgreSQL</productname> was
+        built) <literal>lz4</literal>.
+        The default is <literal>pglz</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-temp-tablespaces" xreflabel="temp_tablespaces">
       <term><varname>temp_tablespaces</varname> (<type>string</type>)
       <indexterm>
@@ -8520,46 +8649,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         autovacuums.
         For more information see <xref linkend="vacuum-for-multixact-wraparound"/>.
        </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry id="guc-vacuum-cleanup-index-scale-factor" xreflabel="vacuum_cleanup_index_scale_factor">
-      <term><varname>vacuum_cleanup_index_scale_factor</varname> (<type>floating point</type>)
-      <indexterm>
-       <primary><varname>vacuum_cleanup_index_scale_factor</varname></primary>
-       <secondary>configuration parameter</secondary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        Specifies the fraction of the total number of heap tuples counted in
-        the previous statistics collection that can be inserted without
-        incurring an index scan at the <command>VACUUM</command> cleanup stage.
-        This setting currently applies to B-tree indexes only.
-       </para>
-
-       <para>
-        If no tuples were deleted from the heap, B-tree indexes are still
-        scanned at the <command>VACUUM</command> cleanup stage when the
-        index's statistics are stale.  Index statistics are considered
-        stale if the number of newly inserted tuples exceeds the
-        <varname>vacuum_cleanup_index_scale_factor</varname>
-        fraction of the total number of heap tuples detected by the previous
-        statistics collection. The total number of heap tuples is stored in
-        the index meta-page. Note that the meta-page does not include this data
-        until <command>VACUUM</command> finds no dead tuples, so B-tree index
-        scan at the cleanup stage can only be skipped if the second and
-        subsequent <command>VACUUM</command> cycles detect no dead tuples.
-       </para>
-
-       <para>
-        The value can range from <literal>0</literal> to
-        <literal>10000000000</literal>.
-        When <varname>vacuum_cleanup_index_scale_factor</varname> is set to
-        <literal>0</literal>, index scans are never skipped during
-        <command>VACUUM</command> cleanup. The default value is <literal>0.1</literal>.
-       </para>
-
       </listitem>
      </varlistentry>
 
@@ -9665,6 +9754,23 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-remove-temp-files-after-crash" xreflabel="remove_temp_files_after_crash">
+      <term><varname>remove_temp_files_after_crash</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>remove_temp_files_after_crash</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>on</literal>, which is the default,
+        <productname>PostgreSQL</productname> will automatically remove
+        temporary files after a backend crash. If disabled, the files will be
+        retained and may be used for debugging, for example. Repeated crashes 
+        may however result in accumulation of useless files.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-data-sync-retry" xreflabel="data_sync_retry">
       <term><varname>data_sync_retry</varname> (<type>boolean</type>)
       <indexterm>
@@ -9694,6 +9800,41 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         operation can be retried in a later checkpoint.  Only set it to on
         after investigating the operating system's treatment of buffered data
         in case of write-back failure.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recovery-init-sync-method" xreflabel="recovery_init_sync_method">
+      <term><varname>recovery_init_sync_method</varname> (<type>enum</type>)
+       <indexterm>
+        <primary><varname>recovery_init_sync_method</varname> configuration parameter</primary>
+       </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>fsync</literal>, which is the default,
+        <productname>PostgreSQL</productname> will recursively open and
+        synchronize all files in the data directory before crash recovery
+        begins.  The search for files will follow symbolic links for the WAL
+        directory and each configured tablespace (but not any other symbolic
+        links).  This is intended to make sure that all WAL and data files are
+        durably stored on disk before replaying changes.  This applies whenever
+        starting a database cluster that did not shut down cleanly, including
+        copies created with <application>pg_basebackup</application>.
+       </para>
+       <para>
+        On Linux, <literal>syncfs</literal> may be used instead, to ask the
+        operating system to synchronize the whole file systems that contain the
+        data directory, the WAL files and each tablespace (but not any other
+        file systems that may be reachable through symbolic links).  This may
+        be a lot faster than the <literal>fsync</literal> setting, because it
+        doesn't need to open each file one by one.  On the other hand, it may
+        be slower if a file system is shared by other applications that
+        modify a lot of files, since those files will also be written to disk.
+        Furthermore, on versions of Linux before 5.8, I/O errors encountered
+        while writing data to disk may not be reported to
+        <productname>PostgreSQL</productname>, and relevant error messages may
+        appear only in kernel logs.
        </para>
       </listitem>
      </varlistentry>

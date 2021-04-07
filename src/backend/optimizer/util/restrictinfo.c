@@ -138,6 +138,13 @@ make_restrictinfo_internal(PlannerInfo *root,
 		restrictinfo->leakproof = false;	/* really, "don't know" */
 
 	/*
+	 * Mark volatility as unknown.  The contain_volatile_functions function
+	 * will determine if there are any volatile functions when called for the
+	 * first time with this RestrictInfo.
+	 */
+	restrictinfo->has_volatile = VOLATILITY_UNKNOWN;
+
+	/*
 	 * If it's a binary opclause, set up left/right relids info. In any case
 	 * set up the total clause relids info.
 	 */
@@ -209,6 +216,8 @@ make_restrictinfo_internal(PlannerInfo *root,
 	restrictinfo->right_bucketsize = -1;
 	restrictinfo->left_mcvfreq = -1;
 	restrictinfo->right_mcvfreq = -1;
+
+	restrictinfo->hasheqoperator = InvalidOid;
 
 	return restrictinfo;
 }
@@ -359,6 +368,7 @@ commute_restrictinfo(RestrictInfo *rinfo, Oid comm_op)
 	result->right_bucketsize = rinfo->left_bucketsize;
 	result->left_mcvfreq = rinfo->right_mcvfreq;
 	result->right_mcvfreq = rinfo->left_mcvfreq;
+	result->hasheqoperator = InvalidOid;
 
 	return result;
 }

@@ -86,6 +86,7 @@ static void _selectTableAccessMethod(ArchiveHandle *AH, const char *tableam);
 static void processEncodingEntry(ArchiveHandle *AH, TocEntry *te);
 static void processStdStringsEntry(ArchiveHandle *AH, TocEntry *te);
 static void processSearchPathEntry(ArchiveHandle *AH, TocEntry *te);
+static void processToastCompressionEntry(ArchiveHandle *AH, TocEntry *te);
 static int	_tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH);
 static RestorePass _tocEntryRestorePass(TocEntry *te);
 static bool _tocEntryIsACL(TocEntry *te);
@@ -2070,6 +2071,7 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 	if (AH->lookahead)
 		free(AH->lookahead);
 
+	AH->readHeader = 0;
 	AH->lookaheadSize = 512;
 	AH->lookahead = pg_malloc0(512);
 	AH->lookaheadLen = 0;
@@ -2141,62 +2143,9 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 
 	if (strncmp(sig, "PGDMP", 5) == 0)
 	{
-		int			byteread;
-		char		vmaj,
-					vmin,
-					vrev;
-
-		/*
-		 * Finish reading (most of) a custom-format header.
-		 *
-		 * NB: this code must agree with ReadHead().
-		 */
-		if ((byteread = fgetc(fh)) == EOF)
-			READ_ERROR_EXIT(fh);
-
-		vmaj = byteread;
-
-		if ((byteread = fgetc(fh)) == EOF)
-			READ_ERROR_EXIT(fh);
-
-		vmin = byteread;
-
-		/* Save these too... */
-		AH->lookahead[AH->lookaheadLen++] = vmaj;
-		AH->lookahead[AH->lookaheadLen++] = vmin;
-
-		/* Check header version; varies from V1.0 */
-		if (vmaj > 1 || (vmaj == 1 && vmin > 0))	/* Version > 1.0 */
-		{
-			if ((byteread = fgetc(fh)) == EOF)
-				READ_ERROR_EXIT(fh);
-
-			vrev = byteread;
-			AH->lookahead[AH->lookaheadLen++] = vrev;
-		}
-		else
-			vrev = 0;
-
-		AH->version = MAKE_ARCHIVE_VERSION(vmaj, vmin, vrev);
-
-		if ((AH->intSize = fgetc(fh)) == EOF)
-			READ_ERROR_EXIT(fh);
-		AH->lookahead[AH->lookaheadLen++] = AH->intSize;
-
-		if (AH->version >= K_VERS_1_7)
-		{
-			if ((AH->offSize = fgetc(fh)) == EOF)
-				READ_ERROR_EXIT(fh);
-			AH->lookahead[AH->lookaheadLen++] = AH->offSize;
-		}
-		else
-			AH->offSize = AH->intSize;
-
-		if ((byteread = fgetc(fh)) == EOF)
-			READ_ERROR_EXIT(fh);
-
-		AH->format = byteread;
-		AH->lookahead[AH->lookaheadLen++] = AH->format;
+		/* It's custom format, stop here */
+		AH->format = archCustom;
+		AH->readHeader = 1;
 	}
 	else
 	{
@@ -2233,22 +2182,15 @@ _discoverArchiveFormat(ArchiveHandle *AH)
 		AH->format = archTar;
 	}
 
-	/* If we can't seek, then mark the header as read */
-	if (fseeko(fh, 0, SEEK_SET) != 0)
-	{
-		/*
-		 * NOTE: Formats that use the lookahead buffer can unset this in their
-		 * Init routine.
-		 */
-		AH->readHeader = 1;
-	}
-	else
-		AH->lookaheadLen = 0;	/* Don't bother since we've reset the file */
-
-	/* Close the file */
+	/* Close the file if we opened it */
 	if (wantClose)
+	{
 		if (fclose(fh) != 0)
 			fatal("could not close input file: %m");
+		/* Forget lookahead, since we'll re-read header after re-opening */
+		AH->readHeader = 0;
+		AH->lookaheadLen = 0;
+	}
 
 	return AH->format;
 }
@@ -2696,6 +2638,8 @@ ReadToc(ArchiveHandle *AH)
 			processStdStringsEntry(AH, te);
 		else if (strcmp(te->desc, "SEARCHPATH") == 0)
 			processSearchPathEntry(AH, te);
+		else if (strcmp(te->desc, "TOASTCOMPRESSION") == 0)
+			processToastCompressionEntry(AH, te);
 	}
 }
 
@@ -2751,6 +2695,29 @@ processSearchPathEntry(ArchiveHandle *AH, TocEntry *te)
 	 * verbatim for use later.
 	 */
 	AH->public.searchpath = pg_strdup(te->defn);
+}
+
+static void
+processToastCompressionEntry(ArchiveHandle *AH, TocEntry *te)
+{
+	/* te->defn should have the form SET default_toast_compression = 'x'; */
+	char	   *defn = pg_strdup(te->defn);
+	char	   *ptr1;
+	char	   *ptr2 = NULL;
+
+	ptr1 = strchr(defn, '\'');
+	if (ptr1)
+		ptr2 = strchr(++ptr1, '\'');
+	if (ptr2)
+	{
+		*ptr2 = '\0';
+		AH->public.default_toast_compression = pg_strdup(ptr1);
+	}
+	else
+		fatal("invalid TOASTCOMPRESSION item: %s",
+			  te->defn);
+
+	free(defn);
 }
 
 static void
@@ -2812,7 +2779,8 @@ _tocEntryRequired(TocEntry *te, teSection curSection, ArchiveHandle *AH)
 	/* These items are treated specially */
 	if (strcmp(te->desc, "ENCODING") == 0 ||
 		strcmp(te->desc, "STDSTRINGS") == 0 ||
-		strcmp(te->desc, "SEARCHPATH") == 0)
+		strcmp(te->desc, "SEARCHPATH") == 0 ||
+		strcmp(te->desc, "TOASTCOMPRESSION") == 0)
 		return REQ_SPECIAL;
 
 	/*
@@ -3134,6 +3102,11 @@ _doSetFixedOutputState(ArchiveHandle *AH)
 	/* Select the dump-time search_path */
 	if (AH->public.searchpath)
 		ahprintf(AH, "%s", AH->public.searchpath);
+
+	/* Select the dump-time default_toast_compression */
+	if (AH->public.default_toast_compression)
+		ahprintf(AH, "SET default_toast_compression = '%s';\n",
+				 AH->public.default_toast_compression);
 
 	/* Make sure function checking is disabled */
 	ahprintf(AH, "SET check_function_bodies = false;\n");
@@ -3758,7 +3731,9 @@ WriteHead(ArchiveHandle *AH)
 void
 ReadHead(ArchiveHandle *AH)
 {
-	char		tmpMag[7];
+	char		vmaj,
+				vmin,
+				vrev;
 	int			fmt;
 	struct tm	crtm;
 
@@ -3770,48 +3745,46 @@ ReadHead(ArchiveHandle *AH)
 	 */
 	if (!AH->readHeader)
 	{
-		char		vmaj,
-					vmin,
-					vrev;
+		char		tmpMag[7];
 
 		AH->ReadBufPtr(AH, tmpMag, 5);
 
 		if (strncmp(tmpMag, "PGDMP", 5) != 0)
 			fatal("did not find magic string in file header");
-
-		vmaj = AH->ReadBytePtr(AH);
-		vmin = AH->ReadBytePtr(AH);
-
-		if (vmaj > 1 || (vmaj == 1 && vmin > 0))	/* Version > 1.0 */
-			vrev = AH->ReadBytePtr(AH);
-		else
-			vrev = 0;
-
-		AH->version = MAKE_ARCHIVE_VERSION(vmaj, vmin, vrev);
-
-		if (AH->version < K_VERS_1_0 || AH->version > K_VERS_MAX)
-			fatal("unsupported version (%d.%d) in file header",
-				  vmaj, vmin);
-
-		AH->intSize = AH->ReadBytePtr(AH);
-		if (AH->intSize > 32)
-			fatal("sanity check on integer size (%lu) failed",
-				  (unsigned long) AH->intSize);
-
-		if (AH->intSize > sizeof(int))
-			pg_log_warning("archive was made on a machine with larger integers, some operations might fail");
-
-		if (AH->version >= K_VERS_1_7)
-			AH->offSize = AH->ReadBytePtr(AH);
-		else
-			AH->offSize = AH->intSize;
-
-		fmt = AH->ReadBytePtr(AH);
-
-		if (AH->format != fmt)
-			fatal("expected format (%d) differs from format found in file (%d)",
-				  AH->format, fmt);
 	}
+
+	vmaj = AH->ReadBytePtr(AH);
+	vmin = AH->ReadBytePtr(AH);
+
+	if (vmaj > 1 || (vmaj == 1 && vmin > 0))	/* Version > 1.0 */
+		vrev = AH->ReadBytePtr(AH);
+	else
+		vrev = 0;
+
+	AH->version = MAKE_ARCHIVE_VERSION(vmaj, vmin, vrev);
+
+	if (AH->version < K_VERS_1_0 || AH->version > K_VERS_MAX)
+		fatal("unsupported version (%d.%d) in file header",
+			  vmaj, vmin);
+
+	AH->intSize = AH->ReadBytePtr(AH);
+	if (AH->intSize > 32)
+		fatal("sanity check on integer size (%lu) failed",
+			  (unsigned long) AH->intSize);
+
+	if (AH->intSize > sizeof(int))
+		pg_log_warning("archive was made on a machine with larger integers, some operations might fail");
+
+	if (AH->version >= K_VERS_1_7)
+		AH->offSize = AH->ReadBytePtr(AH);
+	else
+		AH->offSize = AH->intSize;
+
+	fmt = AH->ReadBytePtr(AH);
+
+	if (AH->format != fmt)
+		fatal("expected format (%d) differs from format found in file (%d)",
+			  AH->format, fmt);
 
 	if (AH->version >= K_VERS_1_2)
 	{

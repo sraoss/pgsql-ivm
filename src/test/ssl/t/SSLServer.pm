@@ -37,45 +37,7 @@ use Exporter 'import';
 our @EXPORT = qw(
   configure_test_server_for_ssl
   switch_server_cert
-  test_connect_fails
-  test_connect_ok
 );
-
-# Define a couple of helper functions to test connecting to the server.
-
-# The first argument is a base connection string to use for connection.
-# The second argument is a complementary connection string.
-sub test_connect_ok
-{
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
-	my ($common_connstr, $connstr, $test_name) = @_;
-
-	my $cmd = [
-		'psql', '-X', '-A', '-t', '-c',
-		"SELECT \$\$connected with $connstr\$\$",
-		'-d', "$common_connstr $connstr"
-	];
-
-	command_ok($cmd, $test_name);
-	return;
-}
-
-sub test_connect_fails
-{
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
-	my ($common_connstr, $connstr, $expected_stderr, $test_name) = @_;
-
-	my $cmd = [
-		'psql', '-X', '-A', '-t', '-c',
-		"SELECT \$\$connected with $connstr\$\$",
-		'-d', "$common_connstr $connstr"
-	];
-
-	command_fails_like($cmd, $expected_stderr, $test_name);
-	return;
-}
 
 # Copy a set of files, taking into account wildcards
 sub copy_files
@@ -109,6 +71,9 @@ sub configure_test_server_for_ssl
 	$node->psql('postgres', "CREATE USER yetanotheruser");
 	$node->psql('postgres', "CREATE DATABASE trustdb");
 	$node->psql('postgres', "CREATE DATABASE certdb");
+	$node->psql('postgres', "CREATE DATABASE certdb_dn");
+	$node->psql('postgres', "CREATE DATABASE certdb_dn_re");
+	$node->psql('postgres', "CREATE DATABASE certdb_cn");
 	$node->psql('postgres', "CREATE DATABASE verifydb");
 
 	# Update password of each user as needed.
@@ -217,7 +182,20 @@ sub configure_hba_for_ssl
 	  "hostssl verifydb        yetanotheruser  $servercidr            $authmethod        clientcert=verify-ca\n";
 	print $hba
 	  "hostssl certdb          all             $servercidr            cert\n";
+	print $hba
+	  "hostssl certdb_dn       all             $servercidr            cert clientname=DN map=dn\n",
+	  "hostssl certdb_dn_re    all             $servercidr            cert clientname=DN map=dnre\n",
+	  "hostssl certdb_cn       all             $servercidr            cert clientname=CN map=cn\n";
 	close $hba;
+
+	# Also set the ident maps. Note: fields with commas must be quoted
+	open my $map, ">", "$pgdata/pg_ident.conf";
+	print $map
+	  "# MAPNAME       SYSTEM-USERNAME                           PG-USERNAME\n",
+	  "dn             \"CN=ssltestuser-dn,OU=Testing,OU=Engineering,O=PGDG\"    ssltestuser\n",
+	  "dnre           \"/^.*OU=Testing,.*\$\"                    ssltestuser\n",
+	  "cn              ssltestuser-dn                            ssltestuser\n";
+
 	return;
 }
 

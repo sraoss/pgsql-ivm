@@ -987,6 +987,31 @@ PGAC_ARG_BOOL(with, zlib, yes,
 AC_SUBST(with_zlib)
 
 #
+# LZ4
+#
+AC_MSG_CHECKING([whether to build with LZ4 support])
+PGAC_ARG_BOOL(with, lz4, no, [build with LZ4 support],
+              [AC_DEFINE([USE_LZ4], 1, [Define to 1 to build with LZ4 support. (--with-lz4)])])
+AC_MSG_RESULT([$with_lz4])
+AC_SUBST(with_lz4)
+
+if test "$with_lz4" = yes; then
+  PKG_CHECK_MODULES(LZ4, liblz4)
+  # We only care about -I, -D, and -L switches;
+  # note that -llz4 will be added by AC_CHECK_LIB below.
+  for pgac_option in $LZ4_CFLAGS; do
+    case $pgac_option in
+      -I*|-D*) CPPFLAGS="$CPPFLAGS $pgac_option";;
+    esac
+  done
+  for pgac_option in $LZ4_LIBS; do
+    case $pgac_option in
+      -L*) LDFLAGS="$LDFLAGS $pgac_option";;
+    esac
+  done
+fi
+
+#
 # Assignments
 #
 
@@ -1155,6 +1180,10 @@ AC_SEARCH_LIBS(shmget, cygipc)
 # *BSD:
 AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
+if test "$enable_thread_safety" = yes; then
+  AC_SEARCH_LIBS(pthread_barrier_wait, pthread)
+fi
+
 if test "$with_readline" = yes; then
   PGAC_CHECK_READLINE
   if test x"$pgac_cv_check_readline" = x"no"; then
@@ -1229,7 +1258,7 @@ if test "$with_ssl" = openssl ; then
   # defines OPENSSL_VERSION_NUMBER to claim version 2.0.0, even though it
   # doesn't have these OpenSSL 1.1.0 functions. So check for individual
   # functions.
-  AC_CHECK_FUNCS([OPENSSL_init_ssl BIO_get_data BIO_meth_new ASN1_STRING_get0_data])
+  AC_CHECK_FUNCS([OPENSSL_init_ssl BIO_get_data BIO_meth_new ASN1_STRING_get0_data HMAC_CTX_new HMAC_CTX_free])
   # OpenSSL versions before 1.1.0 required setting callback functions, for
   # thread-safety. In 1.1.0, it's no longer required, and CRYPTO_lock()
   # function was removed.
@@ -1250,6 +1279,10 @@ fi
 
 if test "$with_libxslt" = yes ; then
   AC_CHECK_LIB(xslt, xsltCleanupGlobals, [], [AC_MSG_ERROR([library 'xslt' is required for XSLT support])])
+fi
+
+if test "$with_lz4" = yes ; then
+  AC_CHECK_LIB(lz4, LZ4_compress_default, [], [AC_MSG_ERROR([library 'lz4' is required for LZ4 support])])
 fi
 
 # Note: We can test for libldap_r only after we know PTHREAD_LIBS
@@ -1404,6 +1437,10 @@ if test "$with_zlib" = yes; then
 If you have zlib already installed, see config.log for details on the
 failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support.])])
+fi
+
+if test "$with_lz4" = yes; then
+  AC_CHECK_HEADERS(lz4.h, [], [AC_MSG_ERROR([lz4.h header file is required for LZ4])])
 fi
 
 if test "$with_gssapi" = yes ; then
@@ -1677,6 +1714,7 @@ AC_CHECK_FUNCS(m4_normalize([
 	strchrnul
 	strsignal
 	symlink
+	syncfs
 	sync_file_range
 	uselocale
 	wcstombs_l
@@ -1752,6 +1790,10 @@ AC_REPLACE_FUNCS(m4_normalize([
 	strnlen
 	strtof
 ]))
+
+if test "$enable_thread_safety" = yes; then
+  AC_REPLACE_FUNCS(pthread_barrier_wait)
+fi
 
 if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both

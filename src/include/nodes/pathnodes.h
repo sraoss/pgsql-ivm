@@ -77,18 +77,6 @@ typedef enum UpperRelationKind
 	/* NB: UPPERREL_FINAL must be last enum entry; it's used to size arrays */
 } UpperRelationKind;
 
-/*
- * This enum identifies which type of relation is being planned through the
- * inheritance planner.  INHKIND_NONE indicates the inheritance planner
- * was not used.
- */
-typedef enum InheritanceKind
-{
-	INHKIND_NONE,
-	INHKIND_INHERITED,
-	INHKIND_PARTITIONED
-} InheritanceKind;
-
 /*----------
  * PlannerGlobal
  *		Global information for planning/optimization
@@ -277,11 +265,24 @@ struct PlannerInfo
 	List	   *join_info_list; /* list of SpecialJoinInfos */
 
 	/*
+	 * all_result_relids is empty for SELECT, otherwise it contains at least
+	 * parse->resultRelation.  For UPDATE/DELETE across an inheritance or
+	 * partitioning tree, the result rel's child relids are added.  When using
+	 * multi-level partitioning, intermediate partitioned rels are included.
+	 * leaf_result_relids is similar except that only actual result tables,
+	 * not partitioned tables, are included in it.
+	 */
+	Relids		all_result_relids;	/* set of all result relids */
+	Relids		leaf_result_relids; /* set of all leaf relids */
+
+	/*
 	 * Note: for AppendRelInfos describing partitions of a partitioned table,
 	 * we guarantee that partitions that come earlier in the partitioned
 	 * table's PartitionDesc will appear earlier in append_rel_list.
 	 */
 	List	   *append_rel_list;	/* list of AppendRelInfos */
+
+	List	   *row_identity_vars;	/* list of RowIdentityVarInfos */
 
 	List	   *rowMarks;		/* list of PlanRowMarks */
 
@@ -309,14 +310,22 @@ struct PlannerInfo
 
 	/*
 	 * The fully-processed targetlist is kept here.  It differs from
-	 * parse->targetList in that (for INSERT and UPDATE) it's been reordered
-	 * to match the target table, and defaults have been filled in.  Also,
-	 * additional resjunk targets may be present.  preprocess_targetlist()
-	 * does most of this work, but note that more resjunk targets can get
-	 * added during appendrel expansion.  (Hence, upper_targets mustn't get
-	 * set up till after that.)
+	 * parse->targetList in that (for INSERT) it's been reordered to match the
+	 * target table, and defaults have been filled in.  Also, additional
+	 * resjunk targets may be present.  preprocess_targetlist() does most of
+	 * that work, but note that more resjunk targets can get added during
+	 * appendrel expansion.  (Hence, upper_targets mustn't get set up till
+	 * after that.)
 	 */
 	List	   *processed_tlist;
+
+	/*
+	 * For UPDATE, this list contains the target table's attribute numbers to
+	 * which the first N entries of processed_tlist are to be assigned.  (Any
+	 * additional entries in processed_tlist must be resjunk.)  DO NOT use the
+	 * resnos in processed_tlist to identify the UPDATE target columns.
+	 */
+	List	   *update_colnos;
 
 	/* Fields filled during create_plan() for use in setrefs.c */
 	AttrNumber *grouping_map;	/* for GroupingFunc fixup */
@@ -333,9 +342,6 @@ struct PlannerInfo
 	Index		qual_security_level;	/* minimum security_level for quals */
 	/* Note: qual_security_level is zero if there are no securityQuals */
 
-	InheritanceKind inhTargetKind;	/* indicates if the target relation is an
-									 * inheritance child or partition or a
-									 * partitioned table */
 	bool		hasJoinRTEs;	/* true if any RTEs are RTE_JOIN kind */
 	bool		hasLateralRTEs; /* true if any RTEs are marked LATERAL */
 	bool		hasHavingQual;	/* true if havingQual was non-null */
@@ -921,8 +927,9 @@ typedef struct StatisticExtInfo
 
 	Oid			statOid;		/* OID of the statistics row */
 	RelOptInfo *rel;			/* back-link to statistic's table */
-	char		kind;			/* statistic kind of this entry */
+	char		kind;			/* statistics kind of this entry */
 	Bitmapset  *keys;			/* attnums of the columns covered */
+	List	   *exprs;			/* expressions */
 } StatisticExtInfo;
 
 /*
@@ -1054,6 +1061,17 @@ typedef struct PathKey
 	bool		pk_nulls_first; /* do NULLs come before normal values? */
 } PathKey;
 
+/*
+ * VolatileFunctionStatus -- allows nodes to cache their
+ * contain_volatile_functions properties. VOLATILITY_UNKNOWN means not yet
+ * determined.
+ */
+typedef enum VolatileFunctionStatus
+{
+	VOLATILITY_UNKNOWN = 0,
+	VOLATILITY_VOLATILE,
+	VOLATILITY_NOVOLATILE
+} VolatileFunctionStatus;
 
 /*
  * PathTarget
@@ -1085,6 +1103,8 @@ typedef struct PathTarget
 	Index	   *sortgrouprefs;	/* corresponding sort/group refnos, or 0 */
 	QualCost	cost;			/* cost of evaluating the expressions */
 	int			width;			/* estimated avg width of result tuples */
+	VolatileFunctionStatus	has_volatile_expr;	/* indicates if exprs contain
+												 * any volatile functions. */
 } PathTarget;
 
 /* Convenience macro to get a sort/group refno from a PathTarget */
@@ -1475,6 +1495,25 @@ typedef struct MaterialPath
 } MaterialPath;
 
 /*
+ * ResultCachePath represents a ResultCache plan node, i.e., a cache that
+ * caches tuples from parameterized paths to save the underlying node from
+ * having to be rescanned for parameter values which are already cached.
+ */
+typedef struct ResultCachePath
+{
+	Path		path;
+	Path	   *subpath;		/* outerpath to cache tuples from */
+	List	   *hash_operators; /* hash operators for each key */
+	List	   *param_exprs;	/* cache keys */
+	bool		singlerow;		/* true if the cache entry is to be marked as
+								 * complete after caching the first record. */
+	double		calls;			/* expected number of rescans */
+	uint32		est_entries;	/* The maximum number of entries that the
+								 * planner expects will fit in the cache, or 0
+								 * if unknown */
+} ResultCachePath;
+
+/*
  * UniquePath represents elimination of distinct rows from the output of
  * its subpath.
  *
@@ -1825,20 +1864,20 @@ typedef struct LockRowsPath
  * ModifyTablePath represents performing INSERT/UPDATE/DELETE modifications
  *
  * We represent most things that will be in the ModifyTable plan node
- * literally, except we have child Path(s) not Plan(s).  But analysis of the
+ * literally, except we have a child Path not Plan.  But analysis of the
  * OnConflictExpr is deferred to createplan.c, as is collection of FDW data.
  */
 typedef struct ModifyTablePath
 {
 	Path		path;
+	Path	   *subpath;		/* Path producing source data */
 	CmdType		operation;		/* INSERT, UPDATE, or DELETE */
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	Index		nominalRelation;	/* Parent RT index for use of EXPLAIN */
 	Index		rootRelation;	/* Root RT index, if target is partitioned */
-	bool		partColsUpdated;	/* some part key in hierarchy updated */
+	bool		partColsUpdated;	/* some part key in hierarchy updated? */
 	List	   *resultRelations;	/* integer list of RT indexes */
-	List	   *subpaths;		/* Path(s) producing source data */
-	List	   *subroots;		/* per-target-table PlannerInfos */
+	List	   *updateColnosLists;	/* per-target-table update_colnos lists */
 	List	   *withCheckOptionLists;	/* per-target-table WCO lists */
 	List	   *returningLists; /* per-target-table RETURNING tlists */
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
@@ -2015,6 +2054,9 @@ typedef struct RestrictInfo
 
 	bool		leakproof;		/* true if known to contain no leaked Vars */
 
+	VolatileFunctionStatus	has_volatile;	/* to indicate if clause contains
+											 * any volatile functions. */
+
 	Index		security_level; /* see comment above */
 
 	/* The set of relids (varnos) actually referenced in the clause: */
@@ -2068,6 +2110,9 @@ typedef struct RestrictInfo
 	Selectivity right_bucketsize;	/* avg bucketsize of right side */
 	Selectivity left_mcvfreq;	/* left side's most common val's freq */
 	Selectivity right_mcvfreq;	/* right side's most common val's freq */
+
+	/* hash equality operator used for result cache, else InvalidOid */
+	Oid			hasheqoperator;
 } RestrictInfo;
 
 /*
@@ -2293,6 +2338,34 @@ typedef struct AppendRelInfo
 	 */
 	Oid			parent_reloid;	/* OID of parent relation */
 } AppendRelInfo;
+
+/*
+ * Information about a row-identity "resjunk" column in UPDATE/DELETE.
+ *
+ * In partitioned UPDATE/DELETE it's important for child partitions to share
+ * row-identity columns whenever possible, so as not to chew up too many
+ * targetlist columns.  We use these structs to track which identity columns
+ * have been requested.  In the finished plan, each of these will give rise
+ * to one resjunk entry in the targetlist of the ModifyTable's subplan node.
+ *
+ * All the Vars stored in RowIdentityVarInfos must have varno ROWID_VAR, for
+ * convenience of detecting duplicate requests.  We'll replace that, in the
+ * final plan, with the varno of the generating rel.
+ *
+ * Outside this list, a Var with varno ROWID_VAR and varattno k is a reference
+ * to the k-th element of the row_identity_vars list (k counting from 1).
+ * We add such a reference to root->processed_tlist when creating the entry,
+ * and it propagates into the plan tree from there.
+ */
+typedef struct RowIdentityVarInfo
+{
+	NodeTag		type;
+
+	Var		   *rowidvar;		/* Var to be evaluated (but varno=ROWID_VAR) */
+	int32		rowidwidth;		/* estimated average width */
+	char	   *rowidname;		/* name of the resjunk column */
+	Relids		rowidrels;		/* RTE indexes of target rels using this */
+} RowIdentityVarInfo;
 
 /*
  * For each distinct placeholder expression generated during planning, we

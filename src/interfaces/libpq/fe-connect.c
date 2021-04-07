@@ -120,9 +120,7 @@ static int	ldapServiceLookup(const char *purl, PQconninfoOption *options,
  * by environment variables
  */
 #define DefaultHost		"localhost"
-#define DefaultTty		""
 #define DefaultOption	""
-#define DefaultAuthtype		  ""
 #ifdef USE_SSL
 #define DefaultChannelBinding	"prefer"
 #else
@@ -192,14 +190,6 @@ typedef struct _internalPQconninfoOption
 } internalPQconninfoOption;
 
 static const internalPQconninfoOption PQconninfoOptions[] = {
-	/*
-	 * "authtype" is no longer used, so mark it "don't show".  We keep it in
-	 * the array so as not to reject conninfo strings from old apps that might
-	 * still try to set it.
-	 */
-	{"authtype", "PGAUTHTYPE", DefaultAuthtype, NULL,
-	"Database-Authtype", "D", 20, -1},
-
 	{"service", "PGSERVICE", NULL, NULL,
 	"Database-Service", "", 20, -1},
 
@@ -243,14 +233,6 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"Client-Encoding", "", 10,
 	offsetof(struct pg_conn, client_encoding_initial)},
 
-	/*
-	 * "tty" is no longer used either, but keep it present for backwards
-	 * compatibility.
-	 */
-	{"tty", "PGTTY", DefaultTty, NULL,
-		"Backend-Debug-TTY", "D", 40,
-	offsetof(struct pg_conn, pgtty)},
-
 	{"options", "PGOPTIONS", DefaultOption, NULL,
 		"Backend-Options", "", 40,
 	offsetof(struct pg_conn, pgoptions)},
@@ -293,12 +275,9 @@ static const internalPQconninfoOption PQconninfoOptions[] = {
 		"SSL-Mode", "", 12,		/* sizeof("verify-full") == 12 */
 	offsetof(struct pg_conn, sslmode)},
 
-	/*
-	 * "sslcompression" is no longer used, but keep it present for backwards
-	 * compatibility.
-	 */
-	{"sslcompression", NULL, NULL, NULL,
-	"SSL-Compression", "D", 1, -1},
+	{"sslcompression", "PGSSLCOMPRESSION", "0", NULL,
+		"SSL-Compression", "", 1,
+	offsetof(struct pg_conn, sslcompression)},
 
 	{"sslcert", "PGSSLCERT", NULL, NULL,
 		"SSL-Client-Cert", "", 64,
@@ -543,6 +522,23 @@ pqDropConnection(PGconn *conn, bool flushInput)
 	}
 }
 
+/*
+ * pqFreeCommandQueue
+ * Free all the entries of PGcmdQueueEntry queue passed.
+ */
+static void
+pqFreeCommandQueue(PGcmdQueueEntry *queue)
+{
+	while (queue != NULL)
+	{
+		PGcmdQueueEntry *cur = queue;
+
+		queue = cur->next;
+		if (cur->query)
+			free(cur->query);
+		free(cur);
+	}
+}
 
 /*
  *		pqDropServerData
@@ -573,6 +569,12 @@ pqDropServerData(PGconn *conn)
 		free(prev);
 	}
 	conn->notifyHead = conn->notifyTail = NULL;
+
+	pqFreeCommandQueue(conn->cmd_queue_head);
+	conn->cmd_queue_head = conn->cmd_queue_tail = NULL;
+
+	pqFreeCommandQueue(conn->cmd_queue_recycle);
+	conn->cmd_queue_recycle = NULL;
 
 	/* Reset ParameterStatus data, as well as variables deduced from it */
 	pstatus = conn->pstatus;
@@ -1581,15 +1583,6 @@ PQsetdbLogin(const char *pghost, const char *pgport, const char *pgoptions,
 			goto oom_error;
 	}
 
-	if (pgtty && pgtty[0] != '\0')
-	{
-		if (conn->pgtty)
-			free(conn->pgtty);
-		conn->pgtty = strdup(pgtty);
-		if (!conn->pgtty)
-			goto oom_error;
-	}
-
 	if (login && login[0] != '\0')
 	{
 		if (conn->pguser)
@@ -2489,6 +2482,7 @@ keep_going:						/* We will come back to here until there is
 		/* Drop any PGresult we might have, too */
 		conn->asyncStatus = PGASYNC_IDLE;
 		conn->xactStatus = PQTRANS_IDLE;
+		conn->pipelineStatus = PQ_PIPELINE_OFF;
 		pqClearAsyncResult(conn);
 
 		/* Reset conn->status to put the state machine in the right state */
@@ -2918,6 +2912,16 @@ keep_going:						/* We will come back to here until there is
 #ifdef USE_SSL
 
 				/*
+				 * Enable the libcrypto callbacks before checking if SSL needs
+				 * to be done.  This is done before sending the startup packet
+				 * as depending on the type of authentication done, like MD5
+				 * or SCRAM that use cryptohashes, the callbacks would be
+				 * required even without a SSL connection
+				 */
+				if (pqsecure_initialize(conn, false, true) < 0)
+					goto error_return;
+
+				/*
 				 * If SSL is enabled and we haven't already got encryption of
 				 * some sort running, request SSL instead of sending the
 				 * startup message.
@@ -3028,8 +3032,14 @@ keep_going:						/* We will come back to here until there is
 					{
 						/* mark byte consumed */
 						conn->inStart = conn->inCursor;
-						/* Set up global SSL state if required */
-						if (pqsecure_initialize(conn) != 0)
+
+						/*
+						 * Set up global SSL state if required.  The crypto
+						 * state has already been set if libpq took care of
+						 * doing that, so there is no need to make that happen
+						 * again.
+						 */
+						if (pqsecure_initialize(conn, true, false) != 0)
 							goto error_return;
 					}
 					else if (SSLok == 'N')
@@ -3931,6 +3941,7 @@ makeEmptyPGconn(void)
 
 	conn->status = CONNECTION_BAD;
 	conn->asyncStatus = PGASYNC_IDLE;
+	conn->pipelineStatus = PQ_PIPELINE_OFF;
 	conn->xactStatus = PQTRANS_IDLE;
 	conn->options_valid = false;
 	conn->nonblocking = false;
@@ -3941,6 +3952,7 @@ makeEmptyPGconn(void)
 	conn->verbosity = PQERRORS_DEFAULT;
 	conn->show_context = PQSHOW_CONTEXT_ERRORS;
 	conn->sock = PGINVALID_SOCKET;
+	conn->Pfdebug = NULL;
 
 	/*
 	 * We try to send at least 8K at a time, which is the usual size of pipe
@@ -4031,8 +4043,6 @@ freePGconn(PGconn *conn)
 		free(conn->pghostaddr);
 	if (conn->pgport)
 		free(conn->pgport);
-	if (conn->pgtty)
-		free(conn->pgtty);
 	if (conn->connect_timeout)
 		free(conn->connect_timeout);
 	if (conn->pgtcp_user_timeout)
@@ -4083,6 +4093,8 @@ freePGconn(PGconn *conn)
 		free(conn->sslcrl);
 	if (conn->sslcrldir)
 		free(conn->sslcrldir);
+	if (conn->sslcompression)
+		free(conn->sslcompression);
 	if (conn->requirepeer)
 		free(conn->requirepeer);
 	if (conn->ssl_min_protocol_version)
@@ -4098,8 +4110,6 @@ freePGconn(PGconn *conn)
 	if (conn->connip)
 		free(conn->connip);
 	/* Note that conn->Pfdebug is not ours to close or free */
-	if (conn->last_query)
-		free(conn->last_query);
 	if (conn->write_err_msg)
 		free(conn->write_err_msg);
 	if (conn->inBuffer)
@@ -4188,6 +4198,7 @@ closePGconn(PGconn *conn)
 	conn->status = CONNECTION_BAD;	/* Well, not really _bad_ - just absent */
 	conn->asyncStatus = PGASYNC_IDLE;
 	conn->xactStatus = PQTRANS_IDLE;
+	conn->pipelineStatus = PQ_PIPELINE_OFF;
 	pqClearAsyncResult(conn);	/* deallocate result */
 	resetPQExpBuffer(&conn->errorMessage);
 	release_conn_addrinfo(conn);
@@ -6633,12 +6644,16 @@ PQport(const PGconn *conn)
 	return "";
 }
 
+/*
+ * No longer does anything, but the function remains for API backwards
+ * compatibility.
+ */
 char *
 PQtty(const PGconn *conn)
 {
 	if (!conn)
 		return NULL;
-	return conn->pgtty;
+	return "";
 }
 
 char *
@@ -6734,6 +6749,15 @@ PQbackendPID(const PGconn *conn)
 	if (!conn || conn->status != CONNECTION_OK)
 		return 0;
 	return conn->be_pid;
+}
+
+PGpipelineStatus
+PQpipelineStatus(const PGconn *conn)
+{
+	if (!conn)
+		return PQ_PIPELINE_OFF;
+
+	return conn->pipelineStatus;
 }
 
 int
@@ -6834,27 +6858,6 @@ PQsetErrorContextVisibility(PGconn *conn, PGContextVisibility show_context)
 	old = conn->show_context;
 	conn->show_context = show_context;
 	return old;
-}
-
-void
-PQtrace(PGconn *conn, FILE *debug_port)
-{
-	if (conn == NULL)
-		return;
-	PQuntrace(conn);
-	conn->Pfdebug = debug_port;
-}
-
-void
-PQuntrace(PGconn *conn)
-{
-	if (conn == NULL)
-		return;
-	if (conn->Pfdebug)
-	{
-		fflush(conn->Pfdebug);
-		conn->Pfdebug = NULL;
-	}
 }
 
 PQnoticeReceiver

@@ -3551,6 +3551,48 @@ repeat('Pg', 4) <returnvalue>PgPgPgPg</returnvalue>
        </para></entry>
       </row>
 
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>unistr</primary>
+        </indexterm>
+        <function>unistr</function> ( <type>text</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Evaluate escaped Unicode characters in argument.  Unicode characters
+        can be specified as
+        <literal>\<replaceable>XXXX</replaceable></literal> (4 hexadecimal
+        digits), <literal>\+<replaceable>XXXXXX</replaceable></literal> (6
+        hexadecimal digits),
+        <literal>\u<replaceable>XXXX</replaceable></literal> (4 hexadecimal
+        digits), or <literal>\U<replaceable>XXXXXXXX</replaceable></literal>
+        (8 hexadecimal digits).  To specify a backslash, write two
+        backslashes.  All other characters are taken literally.
+       </para>
+
+       <para>
+        If the server encoding is not UTF-8, the Unicode code point identified
+        by one of these escape sequences is converted to the actual server
+        encoding; an error is reported if that's not possible.
+       </para>
+
+       <para>
+        This function provides a (non-standard) alternative to string
+        constants with Unicode escapes (see <xref
+        linkend="sql-syntax-strings-uescape"/>).
+       </para>
+
+       <para>
+        <literal>unistr('d\0061t\+000061')</literal>
+        <returnvalue>data</returnvalue>
+       </para>
+       <para>
+        <literal>unistr('d\u0061t\U00000061')</literal>
+        <returnvalue>data</returnvalue>
+       </para></entry>
+      </row>
+
      </tbody>
     </tgroup>
    </table>
@@ -4010,6 +4052,28 @@ SELECT format('Testing %3$s, %2$s, %s', 'one', 'two', 'three');
      </thead>
 
      <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>bit_count</primary>
+        </indexterm>
+        <indexterm>
+         <primary>popcount</primary>
+         <see>bit_count</see>
+        </indexterm>
+        <function>bit_count</function> ( <parameter>bytes</parameter> <type>bytea</type> )
+        <returnvalue>bigint</returnvalue>
+       </para>
+       <para>
+        Returns the number of bits set in the binary string (also known as
+        <quote>popcount</quote>).
+       </para>
+       <para>
+        <literal>bit_count('\x1234567890'::bytea)</literal>
+        <returnvalue>31</returnvalue>
+       </para></entry>
+      </row>
+
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
@@ -4714,6 +4778,24 @@ SELECT format('Testing %3$s, %2$s, %s', 'one', 'two', 'three');
      </thead>
 
      <tbody>
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>bit_count</primary>
+        </indexterm>
+        <function>bit_count</function> ( <type>bit</type> )
+        <returnvalue>bigint</returnvalue>
+       </para>
+       <para>
+        Returns the number of bits set in the bit string (also known as
+        <quote>popcount</quote>).
+       </para>
+       <para>
+        <literal>bit_count(B'10111')</literal>
+        <returnvalue>4</returnvalue>
+       </para></entry>
+      </row>
+
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
@@ -8692,6 +8774,20 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
 
        <row>
         <entry role="func_table_entry"><para role="func_signature">
+         <function>date_bin</function> ( <type>interval</type>, <type>timestamp</type>, <type>timestamp</type> )
+         <returnvalue>timestamp</returnvalue>
+        </para>
+        <para>
+         Bin input into specified interval aligned with specified origin; see <xref linkend="functions-datetime-bin"/>
+        </para>
+        <para>
+         <literal>date_bin('15 minutes', timestamp '2001-02-16 20:38:40', timestamp '2001-02-16 20:05:00')</literal>
+         <returnvalue>2001-02-16 20:35:00</returnvalue>
+        </para></entry>
+       </row>
+
+       <row>
+        <entry role="func_table_entry"><para role="func_signature">
          <indexterm>
           <primary>date_part</primary>
          </indexterm>
@@ -8776,7 +8872,7 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
           <primary>extract</primary>
          </indexterm>
          <function>extract</function> ( <parameter>field</parameter> <literal>from</literal> <type>timestamp</type> )
-         <returnvalue>double precision</returnvalue>
+         <returnvalue>numeric</returnvalue>
         </para>
         <para>
          Get timestamp subfield; see <xref linkend="functions-datetime-extract"/>
@@ -8790,7 +8886,7 @@ SELECT regexp_match('abc01234xyz', '(?:(.*?)(\d+)(.*)){1,1}');
        <row>
         <entry role="func_table_entry"><para role="func_signature">
          <function>extract</function> ( <parameter>field</parameter> <literal>from</literal> <type>interval</type> )
-         <returnvalue>double precision</returnvalue>
+         <returnvalue>numeric</returnvalue>
         </para>
         <para>
          Get interval subfield; see <xref linkend="functions-datetime-extract"/>
@@ -9305,7 +9401,7 @@ EXTRACT(<replaceable>field</replaceable> FROM <replaceable>source</replaceable>)
     well.)  <replaceable>field</replaceable> is an identifier or
     string that selects what field to extract from the source value.
     The <function>extract</function> function returns values of type
-    <type>double precision</type>.
+    <type>numeric</type>.
     The following are valid field names:
 
     <!-- alphabetical -->
@@ -9729,6 +9825,10 @@ date_part('<replaceable>field</replaceable>', <replaceable>source</replaceable>)
     be a string value, not a name.  The valid field names for
     <function>date_part</function> are the same as for
     <function>extract</function>.
+    For historical reasons, the <function>date_part</function> function
+    returns values of type <type>double precision</type>.  This can result in
+    a loss of precision in certain uses.  Using <function>extract</function>
+    is recommended instead.
    </para>
 
 <screen>
@@ -9825,6 +9925,42 @@ SELECT date_trunc('day', TIMESTAMP WITH TIME ZONE '2001-02-16 20:38:40+00', 'Aus
 SELECT date_trunc('hour', INTERVAL '3 days 02:47:33');
 <lineannotation>Result: </lineannotation><computeroutput>3 days 02:00:00</computeroutput>
 </screen>
+   </para>
+  </sect2>
+
+  <sect2 id="functions-datetime-bin">
+   <title><function>date_bin</function></title>
+
+   <indexterm>
+    <primary>date_bin</primary>
+   </indexterm>
+
+   <para>
+    The function <function>date_bin</function> <quote>bins</quote> the input
+    timestamp into the specified interval (the <firstterm>stride</firstterm>)
+    aligned with a specified origin.
+   </para>
+
+   <para>
+    Examples:
+<screen>
+SELECT date_bin('15 minutes', TIMESTAMP '2020-02-11 15:44:17', TIMESTAMP '2001-01-01');
+<lineannotation>Result: </lineannotation><computeroutput>2020-02-11 15:30:00</computeroutput>
+
+SELECT date_bin('15 minutes', TIMESTAMP '2020-02-11 15:44:17', TIMESTAMP '2001-01-01 00:02:30');
+<lineannotation>Result: </lineannotation><computeroutput>2020-02-11 15:32:30</computeroutput>
+</screen>
+   </para>
+
+   <para>
+    In the case of full units (1 minute, 1 hour, etc.), it gives the same result as
+    the analogous <function>date_trunc</function> call, but the difference is
+    that <function>date_bin</function> can truncate to an arbitrary interval.
+   </para>
+
+   <para>
+    The <parameter>stride</parameter> interval cannot contain units of month
+    or larger.
    </para>
   </sect2>
 
@@ -24784,6 +24920,26 @@ SELECT collation for ('foo' COLLATE "de_DE");
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_log_backend_memory_contexts</primary>
+        </indexterm>
+        <function>pg_log_backend_memory_contexts</function> ( <parameter>pid</parameter> <type>integer</type> )
+        <returnvalue>boolean</returnvalue>
+       </para>
+       <para>
+        Requests to log the memory contexts whose backend process has
+        the specified process ID.  These memory contexts will be logged at
+        <literal>LOG</literal> message level. They will appear in
+        the server log based on the log configuration set
+        (See <xref linkend="runtime-config-logging"/> for more information),
+        but will not be sent to the client whatever the setting of
+        <xref linkend="guc-client-min-messages"/>.
+        Only superusers can request to log the memory contexts.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_reload_conf</primary>
         </indexterm>
         <function>pg_reload_conf</function> ()
@@ -24849,6 +25005,38 @@ SELECT collation for ('foo' COLLATE "de_DE");
     The role of an active backend can be found from the
     <structfield>usename</structfield> column of the
     <structname>pg_stat_activity</structname> view.
+   </para>
+
+   <para>
+    <function>pg_log_backend_memory_contexts</function> can be used
+    to log the memory contexts of the backend process. For example,
+<programlisting>
+postgres=# SELECT pg_log_backend_memory_contexts(pg_backend_pid());
+ pg_log_backend_memory_contexts 
+--------------------------------
+ t
+(1 row)
+</programlisting>
+One message for each memory context will be logged. For example:
+<screen>
+LOG:  logging memory contexts of PID 10377
+STATEMENT:  SELECT pg_log_backend_memory_contexts(pg_backend_pid());
+LOG:  level: 0; TopMemoryContext: 80800 total in 6 blocks; 14432 free (5 chunks); 66368 used
+LOG:  level: 1; pgstat TabStatusArray lookup hash table: 8192 total in 1 blocks; 1408 free (0 chunks); 6784 used
+LOG:  level: 1; TopTransactionContext: 8192 total in 1 blocks; 7720 free (1 chunks); 472 used
+LOG:  level: 1; RowDescriptionContext: 8192 total in 1 blocks; 6880 free (0 chunks); 1312 used
+LOG:  level: 1; MessageContext: 16384 total in 2 blocks; 5152 free (0 chunks); 11232 used
+LOG:  level: 1; Operator class cache: 8192 total in 1 blocks; 512 free (0 chunks); 7680 used
+LOG:  level: 1; smgr relation table: 16384 total in 2 blocks; 4544 free (3 chunks); 11840 used
+LOG:  level: 1; TransactionAbortContext: 32768 total in 1 blocks; 32504 free (0 chunks); 264 used
+...
+LOG:  level: 1; ErrorContext: 8192 total in 1 blocks; 7928 free (3 chunks); 264 used
+LOG:  Grand total: 1651920 bytes in 201 blocks; 622360 free (88 chunks); 1029560 used
+</screen>
+    For more than 100 child contexts under the same parent one,
+    100 child contexts and a summary of the remaining ones will be logged.
+    Note that frequent calls to this function could incur significant overhead,
+    because it may generate a large number of log messages.
    </para>
 
   </sect2>
@@ -25344,7 +25532,24 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         <returnvalue>boolean</returnvalue>
        </para>
        <para>
-        Returns true if recovery is paused.
+        Returns true if recovery pause is requested.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_get_wal_replay_pause_state</primary>
+        </indexterm>
+        <function>pg_get_wal_replay_pause_state</function> ()
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns recovery pause state.  The return values are <literal>
+        not paused</literal> if pause is not requested, <literal>
+        pause requested</literal> if pause is requested but recovery is
+        not yet paused and, <literal>paused</literal> if the recovery is
+        actually paused.
        </para></entry>
       </row>
 
@@ -25383,10 +25588,15 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         <returnvalue>void</returnvalue>
        </para>
        <para>
-        Pauses recovery.  While recovery is paused, no further database
-        changes are applied.  If hot standby is active, all new queries will
-        see the same consistent snapshot of the database, and no further query
-        conflicts will be generated until recovery is resumed.
+        Request to pause recovery.  A request doesn't mean that recovery stops
+        right away.  If you want a guarantee that recovery is actually paused,
+        you need to check for the recovery pause state returned by
+        <function>pg_get_wal_replay_pause_state()</function>.  Note that
+        <function>pg_is_wal_replay_paused()</function> returns whether a request
+        is made.  While recovery is paused, no further database changes are applied.
+        If hot standby is active, all new queries will see the same consistent
+        snapshot of the database, and no further query conflicts will be generated
+        until recovery is resumed.
        </para>
        <para>
         This function is restricted to superusers by default, but other users
@@ -25970,8 +26180,8 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
    <para>
     The functions shown in <xref linkend="functions-admin-dbsize"/> calculate
     the disk space usage of database objects, or assist in presentation
-    of usage results.
-    All these functions return sizes measured in bytes.  If an OID that does
+    or understanding of usage results.  <literal>bigint</literal> results
+    are measured in bytes.  If an OID that does
     not represent an existing object is passed to one of these
     functions, <literal>NULL</literal> is returned.
    </para>
@@ -26003,6 +26213,20 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         Shows the number of bytes used to store any individual data value.  If
         applied directly to a table column value, this reflects any
         compression that was done.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_column_compression</primary>
+        </indexterm>
+        <function>pg_column_compression</function> ( <type>"any"</type> )
+        <returnvalue>integer</returnvalue>
+       </para>
+       <para>
+        Shows the compression algorithm that was used to compress a
+        an individual variable-length value.
        </para></entry>
       </row>
 

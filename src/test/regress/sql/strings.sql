@@ -693,6 +693,8 @@ set standard_conforming_strings = off;
 
 select 'a\\bcd' as f1, 'a\\b\'cd' as f2, 'a\\b\'''cd' as f3, 'abcd\\'   as f4, 'ab\\\'cd' as f5, '\\\\' as f6;
 
+reset standard_conforming_strings;
+
 
 --
 -- Additional string functions
@@ -742,3 +744,18 @@ SELECT btrim(E'\\000trim\\000'::bytea, ''::bytea);
 SELECT encode(overlay(E'Th\\000omas'::bytea placing E'Th\\001omas'::bytea from 2),'escape');
 SELECT encode(overlay(E'Th\\000omas'::bytea placing E'\\002\\003'::bytea from 8),'escape');
 SELECT encode(overlay(E'Th\\000omas'::bytea placing E'\\002\\003'::bytea from 5 for 3),'escape');
+
+SELECT bit_count('\x1234567890'::bytea);
+
+SELECT unistr('\0064at\+0000610');
+SELECT unistr('d\u0061t\U000000610');
+SELECT unistr('a\\b');
+-- errors:
+SELECT unistr('wrong: \db99');
+SELECT unistr('wrong: \db99\0061');
+SELECT unistr('wrong: \+00db99\+000061');
+SELECT unistr('wrong: \+2FFFFF');
+SELECT unistr('wrong: \udb99\u0061');
+SELECT unistr('wrong: \U0000db99\U00000061');
+SELECT unistr('wrong: \U002FFFFF');
+SELECT unistr('wrong: \xyz');

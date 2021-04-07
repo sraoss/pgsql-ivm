@@ -761,8 +761,6 @@ gistinitpage(Page page, uint32 f)
 	PageInit(page, pageSize, sizeof(GISTPageOpaqueData));
 
 	opaque = GistPageGetOpaque(page);
-	/* page was already zeroed by PageInit, so this is not needed: */
-	/* memset(&(opaque->nsn), 0, sizeof(GistNSN)); */
 	opaque->rightlink = InvalidBlockNumber;
 	opaque->flags = f;
 	opaque->gist_page_id = GIST_PAGE_ID;
@@ -1036,7 +1034,7 @@ gistGetFakeLSN(Relation rel)
 
 		return counter++;
 	}
-	else if (rel->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT)
+	else if (RelationIsPermanent(rel))
 	{
 		/*
 		 * WAL-logging on this relation will start after commit, so its LSNs

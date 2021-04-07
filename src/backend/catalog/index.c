@@ -30,6 +30,7 @@
 #include "access/relscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
+#include "access/toast_compression.h"
 #include "access/transam.h"
 #include "access/visibilitymap.h"
 #include "access/xact.h"
@@ -348,6 +349,7 @@ ConstructTupleDescriptor(Relation heapRelation,
 			to->attbyval = from->attbyval;
 			to->attstorage = from->attstorage;
 			to->attalign = from->attalign;
+			to->attcompression = from->attcompression;
 		}
 		else
 		{
@@ -377,6 +379,15 @@ ConstructTupleDescriptor(Relation heapRelation,
 			to->attstorage = typeTup->typstorage;
 			to->attalign = typeTup->typalign;
 			to->atttypmod = exprTypmod(indexkey);
+
+			/*
+			 * For expression columns, set attcompression invalid, since
+			 * there's no table column from which to copy the value. Whenever
+			 * we actually need to compress a value, we'll use whatever the
+			 * current value of default_compression_method is at that point
+			 * in time.
+			 */
+			to->attcompression = InvalidCompressionMethod;
 
 			ReleaseSysCache(tuple);
 
@@ -1837,7 +1848,7 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 		List	   *ancestors = get_partition_ancestors(oldIndexId);
 		Oid			parentIndexRelid = linitial_oid(ancestors);
 
-		DeleteInheritsTuple(oldIndexId, parentIndexRelid);
+		DeleteInheritsTuple(oldIndexId, parentIndexRelid, false, NULL);
 		StoreSingleInheritance(newIndexId, parentIndexRelid, 1);
 
 		list_free(ancestors);
@@ -2487,7 +2498,7 @@ index_drop(Oid indexId, bool concurrent, bool concurrent_lock_mode)
 	/*
 	 * fix INHERITS relation
 	 */
-	DeleteInheritsTuple(indexId, InvalidOid);
+	DeleteInheritsTuple(indexId, InvalidOid, false, NULL);
 
 	/*
 	 * We are presently too lazy to attempt to compute the new correct value

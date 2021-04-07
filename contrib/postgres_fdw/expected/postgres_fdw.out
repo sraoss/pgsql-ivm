@@ -163,6 +163,7 @@ ALTER SERVER testserver1 OPTIONS (
 	keepalives_interval 'value',
 	tcp_user_timeout 'value',
 	-- requiressl 'value',
+	sslcompression 'value',
 	sslmode 'value',
 	sslcert 'value',
 	sslkey 'value',
@@ -1601,6 +1602,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
  20 |  0 | AAA020
 (10 rows)
 
+SET enable_resultcache TO off;
 -- right outer join + left outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
@@ -1627,6 +1629,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT
  20 |  0 | AAA020
 (10 rows)
 
+RESET enable_resultcache;
 -- left outer join + right outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
@@ -2138,22 +2141,25 @@ SELECT t1c1, avg(t1c1 + t2c1) FROM (SELECT t1.c1, t2.c1 FROM ft1 t1 JOIN ft2 t2 
 -- join with lateral reference
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1."C 1" FROM "S 1"."T 1" t1, LATERAL (SELECT DISTINCT t2.c1, t3.c1 FROM ft1 t2, ft2 t3 WHERE t2.c1 = t3.c1 AND t2.c2 = t1.c2) q ORDER BY t1."C 1" OFFSET 10 LIMIT 10;
-                                                                             QUERY PLAN                                                                             
---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+                                                                                   QUERY PLAN                                                                                   
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
  Limit
    Output: t1."C 1"
    ->  Nested Loop
          Output: t1."C 1"
          ->  Index Scan using t1_pkey on "S 1"."T 1" t1
                Output: t1."C 1", t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
-         ->  HashAggregate
-               Output: t2.c1, t3.c1
-               Group Key: t2.c1, t3.c1
-               ->  Foreign Scan
-                     Output: t2.c1, t3.c1
-                     Relations: (public.ft1 t2) INNER JOIN (public.ft2 t3)
-                     Remote SQL: SELECT r1."C 1", r2."C 1" FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")) AND ((r1.c2 = $1::integer))))
-(13 rows)
+         ->  Result Cache
+               Cache Key: t1.c2
+               ->  Subquery Scan on q
+                     ->  HashAggregate
+                           Output: t2.c1, t3.c1
+                           Group Key: t2.c1, t3.c1
+                           ->  Foreign Scan
+                                 Output: t2.c1, t3.c1
+                                 Relations: (public.ft1 t2) INNER JOIN (public.ft2 t3)
+                                 Remote SQL: SELECT r1."C 1", r2."C 1" FROM ("S 1"."T 1" r1 INNER JOIN "S 1"."T 1" r2 ON (((r1."C 1" = r2."C 1")) AND ((r1.c2 = $1::integer))))
+(16 rows)
 
 SELECT t1."C 1" FROM "S 1"."T 1" t1, LATERAL (SELECT DISTINCT t2.c1, t3.c1 FROM ft1 t2, ft2 t3 WHERE t2.c1 = t3.c1 AND t2.c2 = t1.c2) q ORDER BY t1."C 1" OFFSET 10 LIMIT 10;
  C 1 
@@ -5502,13 +5508,13 @@ UPDATE ft2 AS target SET (c2, c7) = (
         FROM ft2 AS src
         WHERE target.c1 = src.c1
 ) WHERE c1 > 1100;
-                                                                    QUERY PLAN                                                                     
----------------------------------------------------------------------------------------------------------------------------------------------------
+                                                      QUERY PLAN                                                       
+-----------------------------------------------------------------------------------------------------------------------
  Update on public.ft2 target
    Remote SQL: UPDATE "S 1"."T 1" SET c2 = $2, c7 = $3 WHERE ctid = $1
    ->  Foreign Scan on public.ft2 target
-         Output: target.c1, $1, NULL::integer, target.c3, target.c4, target.c5, target.c6, $2, target.c8, (SubPlan 1 (returns $1,$2)), target.ctid
-         Remote SQL: SELECT "C 1", c3, c4, c5, c6, c8, ctid FROM "S 1"."T 1" WHERE (("C 1" > 1100)) FOR UPDATE
+         Output: $1, $2, (SubPlan 1 (returns $1,$2)), target.ctid, target.*
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1" WHERE (("C 1" > 1100)) FOR UPDATE
          SubPlan 1 (returns $1,$2)
            ->  Foreign Scan on public.ft2 src
                  Output: (src.c2 * 10), src.c7
@@ -5538,9 +5544,9 @@ UPDATE ft2 SET c3 = 'bar' WHERE postgres_fdw_abs(c1) > 2000 RETURNING *;        
    Output: c1, c2, c3, c4, c5, c6, c7, c8
    Remote SQL: UPDATE "S 1"."T 1" SET c3 = $2 WHERE ctid = $1 RETURNING "C 1", c2, c3, c4, c5, c6, c7, c8
    ->  Foreign Scan on public.ft2
-         Output: c1, c2, NULL::integer, 'bar'::text, c4, c5, c6, c7, c8, ctid
+         Output: 'bar'::text, ctid, ft2.*
          Filter: (postgres_fdw_abs(ft2.c1) > 2000)
-         Remote SQL: SELECT "C 1", c2, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1" FOR UPDATE
+         Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1" FOR UPDATE
 (7 rows)
 
 UPDATE ft2 SET c3 = 'bar' WHERE postgres_fdw_abs(c1) > 2000 RETURNING *;
@@ -5569,11 +5575,11 @@ UPDATE ft2 SET c3 = 'baz'
    Output: ft2.c1, ft2.c2, ft2.c3, ft2.c4, ft2.c5, ft2.c6, ft2.c7, ft2.c8, ft4.c1, ft4.c2, ft4.c3, ft5.c1, ft5.c2, ft5.c3
    Remote SQL: UPDATE "S 1"."T 1" SET c3 = $2 WHERE ctid = $1 RETURNING "C 1", c2, c3, c4, c5, c6, c7, c8
    ->  Nested Loop
-         Output: ft2.c1, ft2.c2, NULL::integer, 'baz'::text, ft2.c4, ft2.c5, ft2.c6, ft2.c7, ft2.c8, ft2.ctid, ft4.*, ft5.*, ft4.c1, ft4.c2, ft4.c3, ft5.c1, ft5.c2, ft5.c3
+         Output: 'baz'::text, ft2.ctid, ft2.*, ft4.*, ft5.*, ft4.c1, ft4.c2, ft4.c3, ft5.c1, ft5.c2, ft5.c3
          Join Filter: (ft2.c2 === ft4.c1)
          ->  Foreign Scan on public.ft2
-               Output: ft2.c1, ft2.c2, ft2.c4, ft2.c5, ft2.c6, ft2.c7, ft2.c8, ft2.ctid
-               Remote SQL: SELECT "C 1", c2, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1" WHERE (("C 1" > 2000)) FOR UPDATE
+               Output: ft2.ctid, ft2.*, ft2.c2
+               Remote SQL: SELECT "C 1", c2, c3, c4, c5, c6, c7, c8, ctid FROM "S 1"."T 1" WHERE (("C 1" > 2000)) FOR UPDATE
          ->  Foreign Scan
                Output: ft4.*, ft4.c1, ft4.c2, ft4.c3, ft5.*, ft5.c1, ft5.c2, ft5.c3
                Relations: (public.ft4) INNER JOIN (public.ft5)
@@ -6265,7 +6271,7 @@ UPDATE rw_view SET b = b + 5;
  Update on public.foreign_tbl
    Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
    ->  Foreign Scan on public.foreign_tbl
-         Output: foreign_tbl.a, (foreign_tbl.b + 5), foreign_tbl.ctid
+         Output: (foreign_tbl.b + 5), foreign_tbl.ctid, foreign_tbl.*
          Remote SQL: SELECT a, b, ctid FROM public.base_tbl WHERE ((a < b)) FOR UPDATE
 (5 rows)
 
@@ -6279,7 +6285,7 @@ UPDATE rw_view SET b = b + 15;
  Update on public.foreign_tbl
    Remote SQL: UPDATE public.base_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
    ->  Foreign Scan on public.foreign_tbl
-         Output: foreign_tbl.a, (foreign_tbl.b + 15), foreign_tbl.ctid
+         Output: (foreign_tbl.b + 15), foreign_tbl.ctid, foreign_tbl.*
          Remote SQL: SELECT a, b, ctid FROM public.base_tbl WHERE ((a < b)) FOR UPDATE
 (5 rows)
 
@@ -6347,13 +6353,13 @@ SELECT * FROM foreign_tbl;
 
 EXPLAIN (VERBOSE, COSTS OFF)
 UPDATE rw_view SET b = b + 5;
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Update on public.parent_tbl
    Foreign Update on public.foreign_tbl parent_tbl_1
      Remote SQL: UPDATE public.child_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
    ->  Foreign Scan on public.foreign_tbl parent_tbl_1
-         Output: parent_tbl_1.a, (parent_tbl_1.b + 5), parent_tbl_1.ctid
+         Output: (parent_tbl_1.b + 5), parent_tbl_1.tableoid, parent_tbl_1.ctid, parent_tbl_1.*
          Remote SQL: SELECT a, b, ctid FROM public.child_tbl WHERE ((a < b)) FOR UPDATE
 (6 rows)
 
@@ -6362,13 +6368,13 @@ ERROR:  new row violates check option for view "rw_view"
 DETAIL:  Failing row contains (20, 20).
 EXPLAIN (VERBOSE, COSTS OFF)
 UPDATE rw_view SET b = b + 15;
-                                       QUERY PLAN                                       
-----------------------------------------------------------------------------------------
+                                           QUERY PLAN                                            
+-------------------------------------------------------------------------------------------------
  Update on public.parent_tbl
    Foreign Update on public.foreign_tbl parent_tbl_1
      Remote SQL: UPDATE public.child_tbl SET b = $2 WHERE ctid = $1 RETURNING a, b
    ->  Foreign Scan on public.foreign_tbl parent_tbl_1
-         Output: parent_tbl_1.a, (parent_tbl_1.b + 15), parent_tbl_1.ctid
+         Output: (parent_tbl_1.b + 15), parent_tbl_1.tableoid, parent_tbl_1.ctid, parent_tbl_1.*
          Remote SQL: SELECT a, b, ctid FROM public.child_tbl WHERE ((a < b)) FOR UPDATE
 (6 rows)
 
@@ -6685,7 +6691,7 @@ UPDATE rem1 set f1 = 10;          -- all columns should be transmitted
  Update on public.rem1
    Remote SQL: UPDATE public.loc1 SET f1 = $2, f2 = $3 WHERE ctid = $1
    ->  Foreign Scan on public.rem1
-         Output: 10, f2, ctid, rem1.*
+         Output: 10, ctid, rem1.*
          Remote SQL: SELECT f1, f2, ctid FROM public.loc1 FOR UPDATE
 (5 rows)
 
@@ -6918,7 +6924,7 @@ UPDATE rem1 set f2 = '';          -- can't be pushed down
  Update on public.rem1
    Remote SQL: UPDATE public.loc1 SET f1 = $2, f2 = $3 WHERE ctid = $1
    ->  Foreign Scan on public.rem1
-         Output: f1, ''::text, ctid, rem1.*
+         Output: ''::text, ctid, rem1.*
          Remote SQL: SELECT f1, f2, ctid FROM public.loc1 FOR UPDATE
 (5 rows)
 
@@ -6942,7 +6948,7 @@ UPDATE rem1 set f2 = '';          -- can't be pushed down
  Update on public.rem1
    Remote SQL: UPDATE public.loc1 SET f2 = $2 WHERE ctid = $1 RETURNING f1, f2
    ->  Foreign Scan on public.rem1
-         Output: f1, ''::text, ctid, rem1.*
+         Output: ''::text, ctid, rem1.*
          Remote SQL: SELECT f1, f2, ctid FROM public.loc1 FOR UPDATE
 (5 rows)
 
@@ -7252,18 +7258,22 @@ select * from bar where f1 in (select f1 from foo) for share;
 -- Check UPDATE with inherited target and an inherited source table
 explain (verbose, costs off)
 update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
-                                           QUERY PLAN                                            
--------------------------------------------------------------------------------------------------
+                                              QUERY PLAN                                               
+-------------------------------------------------------------------------------------------------------
  Update on public.bar
-   Update on public.bar
-   Foreign Update on public.bar2 bar_1
+   Update on public.bar bar_1
+   Foreign Update on public.bar2 bar_2
      Remote SQL: UPDATE public.loct2 SET f2 = $2 WHERE ctid = $1
    ->  Hash Join
-         Output: bar.f1, (bar.f2 + 100), bar.ctid, foo.ctid, foo.*, foo.tableoid
+         Output: (bar.f2 + 100), foo.ctid, bar.tableoid, bar.ctid, (NULL::record), foo.*, foo.tableoid
          Inner Unique: true
          Hash Cond: (bar.f1 = foo.f1)
-         ->  Seq Scan on public.bar
-               Output: bar.f1, bar.f2, bar.ctid
+         ->  Append
+               ->  Seq Scan on public.bar bar_1
+                     Output: bar_1.f2, bar_1.f1, bar_1.tableoid, bar_1.ctid, NULL::record
+               ->  Foreign Scan on public.bar2 bar_2
+                     Output: bar_2.f2, bar_2.f1, bar_2.tableoid, bar_2.ctid, bar_2.*
+                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
          ->  Hash
                Output: foo.ctid, foo.f1, foo.*, foo.tableoid
                ->  HashAggregate
@@ -7275,25 +7285,7 @@ update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
                            ->  Foreign Scan on public.foo2 foo_2
                                  Output: foo_2.ctid, foo_2.f1, foo_2.*, foo_2.tableoid
                                  Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
-   ->  Hash Join
-         Output: bar_1.f1, (bar_1.f2 + 100), bar_1.f3, bar_1.ctid, foo.ctid, foo.*, foo.tableoid
-         Inner Unique: true
-         Hash Cond: (bar_1.f1 = foo.f1)
-         ->  Foreign Scan on public.bar2 bar_1
-               Output: bar_1.f1, bar_1.f2, bar_1.f3, bar_1.ctid
-               Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
-         ->  Hash
-               Output: foo.ctid, foo.f1, foo.*, foo.tableoid
-               ->  HashAggregate
-                     Output: foo.ctid, foo.f1, foo.*, foo.tableoid
-                     Group Key: foo.f1
-                     ->  Append
-                           ->  Seq Scan on public.foo foo_1
-                                 Output: foo_1.ctid, foo_1.f1, foo_1.*, foo_1.tableoid
-                           ->  Foreign Scan on public.foo2 foo_2
-                                 Output: foo_2.ctid, foo_2.f1, foo_2.*, foo_2.tableoid
-                                 Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct1
-(39 rows)
+(25 rows)
 
 update bar set f2 = f2 + 100 where f1 in (select f1 from foo);
 select tableoid::regclass, * from bar order by 1,2;
@@ -7313,39 +7305,24 @@ update bar set f2 = f2 + 100
 from
   ( select f1 from foo union all select f1+3 from foo ) ss
 where bar.f1 = ss.f1;
-                                      QUERY PLAN                                      
---------------------------------------------------------------------------------------
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Update on public.bar
-   Update on public.bar
-   Foreign Update on public.bar2 bar_1
+   Update on public.bar bar_1
+   Foreign Update on public.bar2 bar_2
      Remote SQL: UPDATE public.loct2 SET f2 = $2 WHERE ctid = $1
-   ->  Hash Join
-         Output: bar.f1, (bar.f2 + 100), bar.ctid, (ROW(foo.f1))
-         Hash Cond: (foo.f1 = bar.f1)
-         ->  Append
-               ->  Seq Scan on public.foo
-                     Output: ROW(foo.f1), foo.f1
-               ->  Foreign Scan on public.foo2 foo_1
-                     Output: ROW(foo_1.f1), foo_1.f1
-                     Remote SQL: SELECT f1 FROM public.loct1
-               ->  Seq Scan on public.foo foo_2
-                     Output: ROW((foo_2.f1 + 3)), (foo_2.f1 + 3)
-               ->  Foreign Scan on public.foo2 foo_3
-                     Output: ROW((foo_3.f1 + 3)), (foo_3.f1 + 3)
-                     Remote SQL: SELECT f1 FROM public.loct1
-         ->  Hash
-               Output: bar.f1, bar.f2, bar.ctid
-               ->  Seq Scan on public.bar
-                     Output: bar.f1, bar.f2, bar.ctid
    ->  Merge Join
-         Output: bar_1.f1, (bar_1.f2 + 100), bar_1.f3, bar_1.ctid, (ROW(foo.f1))
-         Merge Cond: (bar_1.f1 = foo.f1)
+         Output: (bar.f2 + 100), (ROW(foo.f1)), bar.tableoid, bar.ctid, (NULL::record)
+         Merge Cond: (bar.f1 = foo.f1)
          ->  Sort
-               Output: bar_1.f1, bar_1.f2, bar_1.f3, bar_1.ctid
-               Sort Key: bar_1.f1
-               ->  Foreign Scan on public.bar2 bar_1
-                     Output: bar_1.f1, bar_1.f2, bar_1.f3, bar_1.ctid
-                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
+               Output: bar.f2, bar.f1, bar.tableoid, bar.ctid, (NULL::record)
+               Sort Key: bar.f1
+               ->  Append
+                     ->  Seq Scan on public.bar bar_1
+                           Output: bar_1.f2, bar_1.f1, bar_1.tableoid, bar_1.ctid, NULL::record
+                     ->  Foreign Scan on public.bar2 bar_2
+                           Output: bar_2.f2, bar_2.f1, bar_2.tableoid, bar_2.ctid, bar_2.*
+                           Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
          ->  Sort
                Output: (ROW(foo.f1)), foo.f1
                Sort Key: foo.f1
@@ -7360,7 +7337,7 @@ where bar.f1 = ss.f1;
                      ->  Foreign Scan on public.foo2 foo_3
                            Output: ROW((foo_3.f1 + 3)), (foo_3.f1 + 3)
                            Remote SQL: SELECT f1 FROM public.loct1
-(45 rows)
+(30 rows)
 
 update bar set f2 = f2 + 100
 from
@@ -7486,18 +7463,19 @@ ERROR:  WHERE CURRENT OF is not supported for this table type
 rollback;
 explain (verbose, costs off)
 delete from foo where f1 < 5 returning *;
-                                   QUERY PLAN                                   
---------------------------------------------------------------------------------
+                                      QUERY PLAN                                      
+--------------------------------------------------------------------------------------
  Delete on public.foo
-   Output: foo.f1, foo.f2
-   Delete on public.foo
-   Foreign Delete on public.foo2 foo_1
-   ->  Index Scan using i_foo_f1 on public.foo
-         Output: foo.ctid
-         Index Cond: (foo.f1 < 5)
-   ->  Foreign Delete on public.foo2 foo_1
-         Remote SQL: DELETE FROM public.loct1 WHERE ((f1 < 5)) RETURNING f1, f2
-(9 rows)
+   Output: foo_1.f1, foo_1.f2
+   Delete on public.foo foo_1
+   Foreign Delete on public.foo2 foo_2
+   ->  Append
+         ->  Index Scan using i_foo_f1 on public.foo foo_1
+               Output: foo_1.tableoid, foo_1.ctid
+               Index Cond: (foo_1.f1 < 5)
+         ->  Foreign Delete on public.foo2 foo_2
+               Remote SQL: DELETE FROM public.loct1 WHERE ((f1 < 5)) RETURNING f1, f2
+(10 rows)
 
 delete from foo where f1 < 5 returning *;
  f1 | f2 
@@ -7511,17 +7489,20 @@ delete from foo where f1 < 5 returning *;
 
 explain (verbose, costs off)
 update bar set f2 = f2 + 100 returning *;
-                                  QUERY PLAN                                  
-------------------------------------------------------------------------------
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
  Update on public.bar
-   Output: bar.f1, bar.f2
-   Update on public.bar
-   Foreign Update on public.bar2 bar_1
-   ->  Seq Scan on public.bar
-         Output: bar.f1, (bar.f2 + 100), bar.ctid
-   ->  Foreign Update on public.bar2 bar_1
-         Remote SQL: UPDATE public.loct2 SET f2 = (f2 + 100) RETURNING f1, f2
-(8 rows)
+   Output: bar_1.f1, bar_1.f2
+   Update on public.bar bar_1
+   Foreign Update on public.bar2 bar_2
+   ->  Result
+         Output: (bar.f2 + 100), bar.tableoid, bar.ctid, (NULL::record)
+         ->  Append
+               ->  Seq Scan on public.bar bar_1
+                     Output: bar_1.f2, bar_1.tableoid, bar_1.ctid, NULL::record
+               ->  Foreign Update on public.bar2 bar_2
+                     Remote SQL: UPDATE public.loct2 SET f2 = (f2 + 100) RETURNING f1, f2
+(11 rows)
 
 update bar set f2 = f2 + 100 returning *;
  f1 | f2  
@@ -7546,15 +7527,18 @@ update bar set f2 = f2 + 100;
                                                QUERY PLAN                                               
 --------------------------------------------------------------------------------------------------------
  Update on public.bar
-   Update on public.bar
-   Foreign Update on public.bar2 bar_1
+   Update on public.bar bar_1
+   Foreign Update on public.bar2 bar_2
      Remote SQL: UPDATE public.loct2 SET f1 = $2, f2 = $3, f3 = $4 WHERE ctid = $1 RETURNING f1, f2, f3
-   ->  Seq Scan on public.bar
-         Output: bar.f1, (bar.f2 + 100), bar.ctid
-   ->  Foreign Scan on public.bar2 bar_1
-         Output: bar_1.f1, (bar_1.f2 + 100), bar_1.f3, bar_1.ctid, bar_1.*
-         Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
-(9 rows)
+   ->  Result
+         Output: (bar.f2 + 100), bar.tableoid, bar.ctid, (NULL::record)
+         ->  Append
+               ->  Seq Scan on public.bar bar_1
+                     Output: bar_1.f2, bar_1.tableoid, bar_1.ctid, NULL::record
+               ->  Foreign Scan on public.bar2 bar_2
+                     Output: bar_2.f2, bar_2.tableoid, bar_2.ctid, bar_2.*
+                     Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 FOR UPDATE
+(12 rows)
 
 update bar set f2 = f2 + 100;
 NOTICE:  trig_row_before(23, skidoo) BEFORE ROW UPDATE ON bar2
@@ -7571,19 +7555,20 @@ NOTICE:  trig_row_after(23, skidoo) AFTER ROW UPDATE ON bar2
 NOTICE:  OLD: (7,277,77),NEW: (7,377,77)
 explain (verbose, costs off)
 delete from bar where f2 < 400;
-                                         QUERY PLAN                                          
----------------------------------------------------------------------------------------------
+                                            QUERY PLAN                                             
+---------------------------------------------------------------------------------------------------
  Delete on public.bar
-   Delete on public.bar
-   Foreign Delete on public.bar2 bar_1
+   Delete on public.bar bar_1
+   Foreign Delete on public.bar2 bar_2
      Remote SQL: DELETE FROM public.loct2 WHERE ctid = $1 RETURNING f1, f2, f3
-   ->  Seq Scan on public.bar
-         Output: bar.ctid
-         Filter: (bar.f2 < 400)
-   ->  Foreign Scan on public.bar2 bar_1
-         Output: bar_1.ctid, bar_1.*
-         Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 WHERE ((f2 < 400)) FOR UPDATE
-(10 rows)
+   ->  Append
+         ->  Seq Scan on public.bar bar_1
+               Output: bar_1.tableoid, bar_1.ctid, NULL::record
+               Filter: (bar_1.f2 < 400)
+         ->  Foreign Scan on public.bar2 bar_2
+               Output: bar_2.tableoid, bar_2.ctid, bar_2.*
+               Remote SQL: SELECT f1, f2, f3, ctid FROM public.loct2 WHERE ((f2 < 400)) FOR UPDATE
+(11 rows)
 
 delete from bar where f2 < 400;
 NOTICE:  trig_row_before(23, skidoo) BEFORE ROW DELETE ON bar2
@@ -7614,23 +7599,28 @@ analyze remt1;
 analyze remt2;
 explain (verbose, costs off)
 update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
-                                                                  QUERY PLAN                                                                   
------------------------------------------------------------------------------------------------------------------------------------------------
+                                                   QUERY PLAN                                                   
+----------------------------------------------------------------------------------------------------------------
  Update on public.parent
-   Output: parent.a, parent.b, remt2.a, remt2.b
-   Update on public.parent
-   Foreign Update on public.remt1 parent_1
+   Output: parent_1.a, parent_1.b, remt2.a, remt2.b
+   Update on public.parent parent_1
+   Foreign Update on public.remt1 parent_2
+     Remote SQL: UPDATE public.loct1 SET b = $2 WHERE ctid = $1 RETURNING a, b
    ->  Nested Loop
-         Output: parent.a, (parent.b || remt2.b), parent.ctid, remt2.*, remt2.a, remt2.b
+         Output: (parent.b || remt2.b), remt2.*, remt2.a, remt2.b, parent.tableoid, parent.ctid, (NULL::record)
          Join Filter: (parent.a = remt2.a)
-         ->  Seq Scan on public.parent
-               Output: parent.a, parent.b, parent.ctid
-         ->  Foreign Scan on public.remt2
+         ->  Append
+               ->  Seq Scan on public.parent parent_1
+                     Output: parent_1.b, parent_1.a, parent_1.tableoid, parent_1.ctid, NULL::record
+               ->  Foreign Scan on public.remt1 parent_2
+                     Output: parent_2.b, parent_2.a, parent_2.tableoid, parent_2.ctid, parent_2.*
+                     Remote SQL: SELECT a, b, ctid FROM public.loct1 FOR UPDATE
+         ->  Materialize
                Output: remt2.b, remt2.*, remt2.a
-               Remote SQL: SELECT a, b FROM public.loct2
-   ->  Foreign Update
-         Remote SQL: UPDATE public.loct1 r4 SET b = (r4.b || r2.b) FROM public.loct2 r2 WHERE ((r4.a = r2.a)) RETURNING r4.a, r4.b, r2.a, r2.b
-(14 rows)
+               ->  Foreign Scan on public.remt2
+                     Output: remt2.b, remt2.*, remt2.a
+                     Remote SQL: SELECT a, b FROM public.loct2
+(19 rows)
 
 update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a returning *;
  a |   b    | a |  b  
@@ -7641,23 +7631,28 @@ update parent set b = parent.b || remt2.b from remt2 where parent.a = remt2.a re
 
 explain (verbose, costs off)
 delete from parent using remt2 where parent.a = remt2.a returning parent;
-                                                    QUERY PLAN                                                    
-------------------------------------------------------------------------------------------------------------------
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
  Delete on public.parent
-   Output: parent.*
-   Delete on public.parent
-   Foreign Delete on public.remt1 parent_1
+   Output: parent_1.*
+   Delete on public.parent parent_1
+   Foreign Delete on public.remt1 parent_2
+     Remote SQL: DELETE FROM public.loct1 WHERE ctid = $1 RETURNING a, b
    ->  Nested Loop
-         Output: parent.ctid, remt2.*
+         Output: remt2.*, parent.tableoid, parent.ctid
          Join Filter: (parent.a = remt2.a)
-         ->  Seq Scan on public.parent
-               Output: parent.ctid, parent.a
-         ->  Foreign Scan on public.remt2
+         ->  Append
+               ->  Seq Scan on public.parent parent_1
+                     Output: parent_1.a, parent_1.tableoid, parent_1.ctid
+               ->  Foreign Scan on public.remt1 parent_2
+                     Output: parent_2.a, parent_2.tableoid, parent_2.ctid
+                     Remote SQL: SELECT a, ctid FROM public.loct1 FOR UPDATE
+         ->  Materialize
                Output: remt2.*, remt2.a
-               Remote SQL: SELECT a, b FROM public.loct2
-   ->  Foreign Delete
-         Remote SQL: DELETE FROM public.loct1 r4 USING public.loct2 r2 WHERE ((r4.a = r2.a)) RETURNING r4.a, r4.b
-(14 rows)
+               ->  Foreign Scan on public.remt2
+                     Output: remt2.*, remt2.a
+                     Remote SQL: SELECT a, b FROM public.loct2
+(19 rows)
 
 delete from parent using remt2 where parent.a = remt2.a returning parent;
    parent   
@@ -7836,29 +7831,25 @@ DETAIL:  Failing row contains (2, foo).
 CONTEXT:  remote SQL command: UPDATE public.loct SET a = 2 WHERE ((b = 'foo'::text)) RETURNING a, b
 -- But the reverse is allowed
 update utrtest set a = 1 where b = 'qux' returning *;
- a |  b  
----+-----
- 1 | qux
-(1 row)
-
+ERROR:  cannot route tuples into foreign table to be updated "remp"
 select tableoid::regclass, * FROM utrtest;
  tableoid | a |  b  
 ----------+---+-----
  remp     | 1 | foo
- remp     | 1 | qux
+ locp     | 2 | qux
 (2 rows)
 
 select tableoid::regclass, * FROM remp;
  tableoid | a |  b  
 ----------+---+-----
  remp     | 1 | foo
- remp     | 1 | qux
-(2 rows)
+(1 row)
 
 select tableoid::regclass, * FROM locp;
- tableoid | a | b 
-----------+---+---
-(0 rows)
+ tableoid | a |  b  
+----------+---+-----
+ locp     | 2 | qux
+(1 row)
 
 -- The executor should not let unexercised FDWs shut down
 update utrtest set a = 1 where b = 'foo';
@@ -7870,38 +7861,35 @@ insert into utrtest values (2, 'qux');
 -- Check case where the foreign partition is a subplan target rel
 explain (verbose, costs off)
 update utrtest set a = 1 where a = 1 or a = 2 returning *;
-                                          QUERY PLAN                                          
-----------------------------------------------------------------------------------------------
+                                             QUERY PLAN                                             
+----------------------------------------------------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b
    Foreign Update on public.remp utrtest_1
    Update on public.locp utrtest_2
-   ->  Foreign Update on public.remp utrtest_1
-         Remote SQL: UPDATE public.loct SET a = 1 WHERE (((a = 1) OR (a = 2))) RETURNING a, b
-   ->  Seq Scan on public.locp utrtest_2
-         Output: 1, utrtest_2.b, utrtest_2.ctid
-         Filter: ((utrtest_2.a = 1) OR (utrtest_2.a = 2))
-(9 rows)
+   ->  Append
+         ->  Foreign Update on public.remp utrtest_1
+               Remote SQL: UPDATE public.loct SET a = 1 WHERE (((a = 1) OR (a = 2))) RETURNING a, b
+         ->  Seq Scan on public.locp utrtest_2
+               Output: 1, utrtest_2.tableoid, utrtest_2.ctid, NULL::record
+               Filter: ((utrtest_2.a = 1) OR (utrtest_2.a = 2))
+(10 rows)
 
 -- The new values are concatenated with ' triggered !'
 update utrtest set a = 1 where a = 1 or a = 2 returning *;
- a |        b        
----+-----------------
- 1 | qux triggered !
-(1 row)
-
+ERROR:  cannot route tuples into foreign table to be updated "remp"
 delete from utrtest;
 insert into utrtest values (2, 'qux');
 -- Check case where the foreign partition isn't a subplan target rel
 explain (verbose, costs off)
 update utrtest set a = 1 where a = 2 returning *;
-                   QUERY PLAN                   
-------------------------------------------------
+                      QUERY PLAN                       
+-------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b
    Update on public.locp utrtest_1
    ->  Seq Scan on public.locp utrtest_1
-         Output: 1, utrtest_1.b, utrtest_1.ctid
+         Output: 1, utrtest_1.tableoid, utrtest_1.ctid
          Filter: (utrtest_1.a = 2)
 (6 rows)
 
@@ -7922,66 +7910,51 @@ insert into utrtest values (2, 'qux');
 -- with a direct modification plan
 explain (verbose, costs off)
 update utrtest set a = 1 returning *;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b
    Foreign Update on public.remp utrtest_1
    Update on public.locp utrtest_2
-   ->  Foreign Update on public.remp utrtest_1
-         Remote SQL: UPDATE public.loct SET a = 1 RETURNING a, b
-   ->  Seq Scan on public.locp utrtest_2
-         Output: 1, utrtest_2.b, utrtest_2.ctid
-(8 rows)
+   ->  Append
+         ->  Foreign Update on public.remp utrtest_1
+               Remote SQL: UPDATE public.loct SET a = 1 RETURNING a, b
+         ->  Seq Scan on public.locp utrtest_2
+               Output: 1, utrtest_2.tableoid, utrtest_2.ctid, NULL::record
+(9 rows)
 
 update utrtest set a = 1 returning *;
- a |  b  
----+-----
- 1 | foo
- 1 | qux
-(2 rows)
-
+ERROR:  cannot route tuples into foreign table to be updated "remp"
 delete from utrtest;
 insert into utrtest values (1, 'foo');
 insert into utrtest values (2, 'qux');
 -- with a non-direct modification plan
 explain (verbose, costs off)
 update utrtest set a = 1 from (values (1), (2)) s(x) where a = s.x returning *;
-                                    QUERY PLAN                                    
-----------------------------------------------------------------------------------
+                                           QUERY PLAN                                           
+------------------------------------------------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b, "*VALUES*".column1
    Foreign Update on public.remp utrtest_1
      Remote SQL: UPDATE public.loct SET a = $2 WHERE ctid = $1 RETURNING a, b
    Update on public.locp utrtest_2
    ->  Hash Join
-         Output: 1, utrtest_1.b, utrtest_1.ctid, "*VALUES*".*, "*VALUES*".column1
-         Hash Cond: (utrtest_1.a = "*VALUES*".column1)
-         ->  Foreign Scan on public.remp utrtest_1
-               Output: utrtest_1.b, utrtest_1.ctid, utrtest_1.a
-               Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
+         Output: 1, "*VALUES*".*, "*VALUES*".column1, utrtest.tableoid, utrtest.ctid, utrtest.*
+         Hash Cond: (utrtest.a = "*VALUES*".column1)
+         ->  Append
+               ->  Foreign Scan on public.remp utrtest_1
+                     Output: utrtest_1.a, utrtest_1.tableoid, utrtest_1.ctid, utrtest_1.*
+                     Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
+               ->  Seq Scan on public.locp utrtest_2
+                     Output: utrtest_2.a, utrtest_2.tableoid, utrtest_2.ctid, NULL::record
          ->  Hash
                Output: "*VALUES*".*, "*VALUES*".column1
                ->  Values Scan on "*VALUES*"
                      Output: "*VALUES*".*, "*VALUES*".column1
-   ->  Hash Join
-         Output: 1, utrtest_2.b, utrtest_2.ctid, "*VALUES*".*, "*VALUES*".column1
-         Hash Cond: (utrtest_2.a = "*VALUES*".column1)
-         ->  Seq Scan on public.locp utrtest_2
-               Output: utrtest_2.b, utrtest_2.ctid, utrtest_2.a
-         ->  Hash
-               Output: "*VALUES*".*, "*VALUES*".column1
-               ->  Values Scan on "*VALUES*"
-                     Output: "*VALUES*".*, "*VALUES*".column1
-(24 rows)
+(18 rows)
 
 update utrtest set a = 1 from (values (1), (2)) s(x) where a = s.x returning *;
- a |  b  | x 
----+-----+---
- 1 | foo | 1
- 1 | qux | 2
-(2 rows)
-
+ERROR:  cannot route tuples into foreign table to be updated "remp"
 -- Change the definition of utrtest so that the foreign partition get updated
 -- after the local partition
 delete from utrtest;
@@ -7997,50 +7970,45 @@ insert into utrtest values (3, 'xyzzy');
 -- with a direct modification plan
 explain (verbose, costs off)
 update utrtest set a = 3 returning *;
-                           QUERY PLAN                            
------------------------------------------------------------------
+                                QUERY PLAN                                 
+---------------------------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b
    Update on public.locp utrtest_1
    Foreign Update on public.remp utrtest_2
-   ->  Seq Scan on public.locp utrtest_1
-         Output: 3, utrtest_1.b, utrtest_1.ctid
-   ->  Foreign Update on public.remp utrtest_2
-         Remote SQL: UPDATE public.loct SET a = 3 RETURNING a, b
-(8 rows)
+   ->  Append
+         ->  Seq Scan on public.locp utrtest_1
+               Output: 3, utrtest_1.tableoid, utrtest_1.ctid, NULL::record
+         ->  Foreign Update on public.remp utrtest_2
+               Remote SQL: UPDATE public.loct SET a = 3 RETURNING a, b
+(9 rows)
 
 update utrtest set a = 3 returning *; -- ERROR
 ERROR:  cannot route tuples into foreign table to be updated "remp"
 -- with a non-direct modification plan
 explain (verbose, costs off)
 update utrtest set a = 3 from (values (2), (3)) s(x) where a = s.x returning *;
-                                    QUERY PLAN                                    
-----------------------------------------------------------------------------------
+                                             QUERY PLAN                                              
+-----------------------------------------------------------------------------------------------------
  Update on public.utrtest
    Output: utrtest_1.a, utrtest_1.b, "*VALUES*".column1
    Update on public.locp utrtest_1
    Foreign Update on public.remp utrtest_2
      Remote SQL: UPDATE public.loct SET a = $2 WHERE ctid = $1 RETURNING a, b
    ->  Hash Join
-         Output: 3, utrtest_1.b, utrtest_1.ctid, "*VALUES*".*, "*VALUES*".column1
-         Hash Cond: (utrtest_1.a = "*VALUES*".column1)
-         ->  Seq Scan on public.locp utrtest_1
-               Output: utrtest_1.b, utrtest_1.ctid, utrtest_1.a
+         Output: 3, "*VALUES*".*, "*VALUES*".column1, utrtest.tableoid, utrtest.ctid, (NULL::record)
+         Hash Cond: (utrtest.a = "*VALUES*".column1)
+         ->  Append
+               ->  Seq Scan on public.locp utrtest_1
+                     Output: utrtest_1.a, utrtest_1.tableoid, utrtest_1.ctid, NULL::record
+               ->  Foreign Scan on public.remp utrtest_2
+                     Output: utrtest_2.a, utrtest_2.tableoid, utrtest_2.ctid, utrtest_2.*
+                     Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
          ->  Hash
                Output: "*VALUES*".*, "*VALUES*".column1
                ->  Values Scan on "*VALUES*"
                      Output: "*VALUES*".*, "*VALUES*".column1
-   ->  Hash Join
-         Output: 3, utrtest_2.b, utrtest_2.ctid, "*VALUES*".*, "*VALUES*".column1
-         Hash Cond: (utrtest_2.a = "*VALUES*".column1)
-         ->  Foreign Scan on public.remp utrtest_2
-               Output: utrtest_2.b, utrtest_2.ctid, utrtest_2.a
-               Remote SQL: SELECT a, b, ctid FROM public.loct FOR UPDATE
-         ->  Hash
-               Output: "*VALUES*".*, "*VALUES*".column1
-               ->  Values Scan on "*VALUES*"
-                     Output: "*VALUES*".*, "*VALUES*".column1
-(24 rows)
+(18 rows)
 
 update utrtest set a = 3 from (values (2), (3)) s(x) where a = s.x returning *; -- ERROR
 ERROR:  cannot route tuples into foreign table to be updated "remp"
@@ -8260,6 +8228,8 @@ ALTER TABLE import_source."x 5" DROP COLUMN c1;
 CREATE TABLE import_source.t4 (c1 int) PARTITION BY RANGE (c1);
 CREATE TABLE import_source.t4_part PARTITION OF import_source.t4
   FOR VALUES FROM (1) TO (100);
+CREATE TABLE import_source.t4_part2 PARTITION OF import_source.t4
+  FOR VALUES FROM (100) TO (200);
 CREATE SCHEMA import_dest1;
 IMPORT FOREIGN SCHEMA import_source FROM SERVER loopback INTO import_dest1;
 \det+ import_dest1.*
@@ -8451,27 +8421,29 @@ FDW options: (schema_name 'import_source', table_name 'x 5')
 
 -- Check LIMIT TO and EXCEPT
 CREATE SCHEMA import_dest4;
-IMPORT FOREIGN SCHEMA import_source LIMIT TO (t1, nonesuch)
+IMPORT FOREIGN SCHEMA import_source LIMIT TO (t1, nonesuch, t4_part)
   FROM SERVER loopback INTO import_dest4;
 \det+ import_dest4.*
-                                     List of foreign tables
-    Schema    | Table |  Server  |                  FDW options                   | Description 
---------------+-------+----------+------------------------------------------------+-------------
- import_dest4 | t1    | loopback | (schema_name 'import_source', table_name 't1') | 
-(1 row)
+                                        List of foreign tables
+    Schema    |  Table  |  Server  |                     FDW options                     | Description 
+--------------+---------+----------+-----------------------------------------------------+-------------
+ import_dest4 | t1      | loopback | (schema_name 'import_source', table_name 't1')      | 
+ import_dest4 | t4_part | loopback | (schema_name 'import_source', table_name 't4_part') | 
+(2 rows)
 
-IMPORT FOREIGN SCHEMA import_source EXCEPT (t1, "x 4", nonesuch)
+IMPORT FOREIGN SCHEMA import_source EXCEPT (t1, "x 4", nonesuch, t4_part)
   FROM SERVER loopback INTO import_dest4;
 \det+ import_dest4.*
-                                     List of foreign tables
-    Schema    | Table |  Server  |                   FDW options                   | Description 
---------------+-------+----------+-------------------------------------------------+-------------
- import_dest4 | t1    | loopback | (schema_name 'import_source', table_name 't1')  | 
- import_dest4 | t2    | loopback | (schema_name 'import_source', table_name 't2')  | 
- import_dest4 | t3    | loopback | (schema_name 'import_source', table_name 't3')  | 
- import_dest4 | t4    | loopback | (schema_name 'import_source', table_name 't4')  | 
- import_dest4 | x 5   | loopback | (schema_name 'import_source', table_name 'x 5') | 
-(5 rows)
+                                        List of foreign tables
+    Schema    |  Table  |  Server  |                     FDW options                     | Description 
+--------------+---------+----------+-----------------------------------------------------+-------------
+ import_dest4 | t1      | loopback | (schema_name 'import_source', table_name 't1')      | 
+ import_dest4 | t2      | loopback | (schema_name 'import_source', table_name 't2')      | 
+ import_dest4 | t3      | loopback | (schema_name 'import_source', table_name 't3')      | 
+ import_dest4 | t4      | loopback | (schema_name 'import_source', table_name 't4')      | 
+ import_dest4 | t4_part | loopback | (schema_name 'import_source', table_name 't4_part') | 
+ import_dest4 | x 5     | loopback | (schema_name 'import_source', table_name 'x 5')     | 
+(6 rows)
 
 -- Assorted error cases
 IMPORT FOREIGN SCHEMA import_source FROM SERVER loopback INTO import_dest4;
@@ -8781,8 +8753,8 @@ INSERT INTO pagg_tab_p2 SELECT i % 30, i % 50, to_char(i/30, 'FM0000') FROM gene
 INSERT INTO pagg_tab_p3 SELECT i % 30, i % 50, to_char(i/30, 'FM0000') FROM generate_series(1, 3000) i WHERE (i % 30) < 30 and (i % 30) >= 20;
 -- Create foreign partitions
 CREATE FOREIGN TABLE fpagg_tab_p1 PARTITION OF pagg_tab FOR VALUES FROM (0) TO (10) SERVER loopback OPTIONS (table_name 'pagg_tab_p1');
-CREATE FOREIGN TABLE fpagg_tab_p2 PARTITION OF pagg_tab FOR VALUES FROM (10) TO (20) SERVER loopback OPTIONS (table_name 'pagg_tab_p2');;
-CREATE FOREIGN TABLE fpagg_tab_p3 PARTITION OF pagg_tab FOR VALUES FROM (20) TO (30) SERVER loopback OPTIONS (table_name 'pagg_tab_p3');;
+CREATE FOREIGN TABLE fpagg_tab_p2 PARTITION OF pagg_tab FOR VALUES FROM (10) TO (20) SERVER loopback OPTIONS (table_name 'pagg_tab_p2');
+CREATE FOREIGN TABLE fpagg_tab_p3 PARTITION OF pagg_tab FOR VALUES FROM (20) TO (30) SERVER loopback OPTIONS (table_name 'pagg_tab_p3');
 ANALYZE pagg_tab;
 ANALYZE fpagg_tab_p1;
 ANALYZE fpagg_tab_p2;
@@ -8945,7 +8917,7 @@ DO $d$
     END;
 $d$;
 ERROR:  invalid option "password"
-HINT:  Valid options in this context are: service, passfile, channel_binding, connect_timeout, dbname, host, hostaddr, port, options, application_name, keepalives, keepalives_idle, keepalives_interval, keepalives_count, tcp_user_timeout, sslmode, sslcert, sslkey, sslrootcert, sslcrl, sslcrldir, requirepeer, ssl_min_protocol_version, ssl_max_protocol_version, gssencmode, krbsrvname, gsslib, target_session_attrs, use_remote_estimate, fdw_startup_cost, fdw_tuple_cost, extensions, updatable, fetch_size, batch_size
+HINT:  Valid options in this context are: service, passfile, channel_binding, connect_timeout, dbname, host, hostaddr, port, options, application_name, keepalives, keepalives_idle, keepalives_interval, keepalives_count, tcp_user_timeout, sslmode, sslcompression, sslcert, sslkey, sslrootcert, sslcrl, sslcrldir, requirepeer, ssl_min_protocol_version, ssl_max_protocol_version, gssencmode, krbsrvname, gsslib, target_session_attrs, use_remote_estimate, fdw_startup_cost, fdw_tuple_cost, extensions, updatable, fetch_size, batch_size, async_capable, keep_connections
 CONTEXT:  SQL statement "ALTER SERVER loopback_nopw OPTIONS (ADD password 'dummypw')"
 PL/pgSQL function inline_code_block line 3 at EXECUTE
 -- If we add a password for our user mapping instead, we should get a different
@@ -9281,6 +9253,27 @@ DROP USER MAPPING FOR regress_multi_conn_user2 SERVER loopback;
 DROP ROLE regress_multi_conn_user1;
 DROP ROLE regress_multi_conn_user2;
 -- ===================================================================
+-- Test foreign server level option keep_connections
+-- ===================================================================
+-- By default, the connections associated with foreign server are cached i.e.
+-- keep_connections option is on. Set it to off.
+ALTER SERVER loopback OPTIONS (keep_connections 'off');
+-- connection to loopback server is closed at the end of xact
+-- as keep_connections was set to off.
+SELECT 1 FROM ft1 LIMIT 1;
+ ?column? 
+----------
+        1
+(1 row)
+
+-- No cached connections, so no records should be output.
+SELECT server_name FROM postgres_fdw_get_connections() ORDER BY 1;
+ server_name 
+-------------
+(0 rows)
+
+ALTER SERVER loopback OPTIONS (SET keep_connections 'on');
+-- ===================================================================
 -- batch insert
 -- ===================================================================
 BEGIN;
@@ -9427,12 +9420,520 @@ CREATE TABLE batch_cp_up_test1 PARTITION OF batch_cp_upd_test
 INSERT INTO batch_cp_upd_test VALUES (1), (2);
 -- The following moves a row from the local partition to the foreign one
 UPDATE batch_cp_upd_test t SET a = 1 FROM (VALUES (1), (2)) s(a) WHERE t.a = s.a;
+ERROR:  cannot route tuples into foreign table to be updated "batch_cp_upd_test1_f"
 SELECT tableoid::regclass, * FROM batch_cp_upd_test;
        tableoid       | a 
 ----------------------+---
  batch_cp_upd_test1_f | 1
- batch_cp_upd_test1_f | 1
+ batch_cp_up_test1    | 2
 (2 rows)
 
 -- Clean up
 DROP TABLE batch_table, batch_cp_upd_test CASCADE;
+-- ===================================================================
+-- test asynchronous execution
+-- ===================================================================
+ALTER SERVER loopback OPTIONS (DROP extensions);
+ALTER SERVER loopback OPTIONS (ADD async_capable 'true');
+ALTER SERVER loopback2 OPTIONS (ADD async_capable 'true');
+CREATE TABLE async_pt (a int, b int, c text) PARTITION BY RANGE (a);
+CREATE TABLE base_tbl1 (a int, b int, c text);
+CREATE TABLE base_tbl2 (a int, b int, c text);
+CREATE FOREIGN TABLE async_p1 PARTITION OF async_pt FOR VALUES FROM (1000) TO (2000)
+  SERVER loopback OPTIONS (table_name 'base_tbl1');
+CREATE FOREIGN TABLE async_p2 PARTITION OF async_pt FOR VALUES FROM (2000) TO (3000)
+  SERVER loopback2 OPTIONS (table_name 'base_tbl2');
+INSERT INTO async_p1 SELECT 1000 + i, i, to_char(i, 'FM0000') FROM generate_series(0, 999, 5) i;
+INSERT INTO async_p2 SELECT 2000 + i, i, to_char(i, 'FM0000') FROM generate_series(0, 999, 5) i;
+ANALYZE async_pt;
+-- simple queries
+CREATE TABLE result_tbl (a int, b int, c text);
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b % 100 = 0;
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE (((b % 100) = 0))
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2 WHERE (((b % 100) = 0))
+(8 rows)
+
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b % 100 = 0;
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1000 |   0 | 0000
+ 1100 | 100 | 0100
+ 1200 | 200 | 0200
+ 1300 | 300 | 0300
+ 1400 | 400 | 0400
+ 1500 | 500 | 0500
+ 1600 | 600 | 0600
+ 1700 | 700 | 0700
+ 1800 | 800 | 0800
+ 1900 | 900 | 0900
+ 2000 |   0 | 0000
+ 2100 | 100 | 0100
+ 2200 | 200 | 0200
+ 2300 | 300 | 0300
+ 2400 | 400 | 0400
+ 2500 | 500 | 0500
+ 2600 | 600 | 0600
+ 2700 | 700 | 0700
+ 2800 | 800 | 0800
+ 2900 | 900 | 0900
+(20 rows)
+
+DELETE FROM result_tbl;
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Filter: (async_pt_1.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Filter: (async_pt_2.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+(10 rows)
+
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1505 | 505 | 0505
+ 2505 | 505 | 0505
+(2 rows)
+
+DELETE FROM result_tbl;
+-- Check case where multiple partitions use the same connection
+CREATE TABLE base_tbl3 (a int, b int, c text);
+CREATE FOREIGN TABLE async_p3 PARTITION OF async_pt FOR VALUES FROM (3000) TO (4000)
+  SERVER loopback2 OPTIONS (table_name 'base_tbl3');
+INSERT INTO async_p3 SELECT 3000 + i, i, to_char(i, 'FM0000') FROM generate_series(0, 999, 5) i;
+ANALYZE async_pt;
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Filter: (async_pt_1.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Filter: (async_pt_2.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+         ->  Async Foreign Scan on public.async_p3 async_pt_3
+               Output: async_pt_3.a, async_pt_3.b, async_pt_3.c
+               Filter: (async_pt_3.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl3
+(14 rows)
+
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1505 | 505 | 0505
+ 2505 | 505 | 0505
+ 3505 | 505 | 0505
+(3 rows)
+
+DELETE FROM result_tbl;
+DROP FOREIGN TABLE async_p3;
+DROP TABLE base_tbl3;
+-- Check case where the partitioned table has local/remote partitions
+CREATE TABLE async_p3 PARTITION OF async_pt FOR VALUES FROM (3000) TO (4000);
+INSERT INTO async_p3 SELECT 3000 + i, i, to_char(i, 'FM0000') FROM generate_series(0, 999, 5) i;
+ANALYZE async_pt;
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Filter: (async_pt_1.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Filter: (async_pt_2.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+         ->  Seq Scan on public.async_p3 async_pt_3
+               Output: async_pt_3.a, async_pt_3.b, async_pt_3.c
+               Filter: (async_pt_3.b === 505)
+(13 rows)
+
+INSERT INTO result_tbl SELECT * FROM async_pt WHERE b === 505;
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1505 | 505 | 0505
+ 2505 | 505 | 0505
+ 3505 | 505 | 0505
+(3 rows)
+
+DELETE FROM result_tbl;
+-- partitionwise joins
+SET enable_partitionwise_join TO true;
+CREATE TABLE join_tbl (a1 int, b1 int, c1 text, a2 int, b2 int, c2 text);
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO join_tbl SELECT * FROM async_pt t1, async_pt t2 WHERE t1.a = t2.a AND t1.b = t2.b AND t1.b % 100 = 0;
+                                                                                           QUERY PLAN                                                                                            
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Insert on public.join_tbl
+   ->  Append
+         ->  Async Foreign Scan
+               Output: t1_1.a, t1_1.b, t1_1.c, t2_1.a, t2_1.b, t2_1.c
+               Relations: (public.async_p1 t1_1) INNER JOIN (public.async_p1 t2_1)
+               Remote SQL: SELECT r5.a, r5.b, r5.c, r8.a, r8.b, r8.c FROM (public.base_tbl1 r5 INNER JOIN public.base_tbl1 r8 ON (((r5.a = r8.a)) AND ((r5.b = r8.b)) AND (((r5.b % 100) = 0))))
+         ->  Async Foreign Scan
+               Output: t1_2.a, t1_2.b, t1_2.c, t2_2.a, t2_2.b, t2_2.c
+               Relations: (public.async_p2 t1_2) INNER JOIN (public.async_p2 t2_2)
+               Remote SQL: SELECT r6.a, r6.b, r6.c, r9.a, r9.b, r9.c FROM (public.base_tbl2 r6 INNER JOIN public.base_tbl2 r9 ON (((r6.a = r9.a)) AND ((r6.b = r9.b)) AND (((r6.b % 100) = 0))))
+         ->  Hash Join
+               Output: t1_3.a, t1_3.b, t1_3.c, t2_3.a, t2_3.b, t2_3.c
+               Hash Cond: ((t2_3.a = t1_3.a) AND (t2_3.b = t1_3.b))
+               ->  Seq Scan on public.async_p3 t2_3
+                     Output: t2_3.a, t2_3.b, t2_3.c
+               ->  Hash
+                     Output: t1_3.a, t1_3.b, t1_3.c
+                     ->  Seq Scan on public.async_p3 t1_3
+                           Output: t1_3.a, t1_3.b, t1_3.c
+                           Filter: ((t1_3.b % 100) = 0)
+(20 rows)
+
+INSERT INTO join_tbl SELECT * FROM async_pt t1, async_pt t2 WHERE t1.a = t2.a AND t1.b = t2.b AND t1.b % 100 = 0;
+SELECT * FROM join_tbl ORDER BY a1;
+  a1  | b1  |  c1  |  a2  | b2  |  c2  
+------+-----+------+------+-----+------
+ 1000 |   0 | 0000 | 1000 |   0 | 0000
+ 1100 | 100 | 0100 | 1100 | 100 | 0100
+ 1200 | 200 | 0200 | 1200 | 200 | 0200
+ 1300 | 300 | 0300 | 1300 | 300 | 0300
+ 1400 | 400 | 0400 | 1400 | 400 | 0400
+ 1500 | 500 | 0500 | 1500 | 500 | 0500
+ 1600 | 600 | 0600 | 1600 | 600 | 0600
+ 1700 | 700 | 0700 | 1700 | 700 | 0700
+ 1800 | 800 | 0800 | 1800 | 800 | 0800
+ 1900 | 900 | 0900 | 1900 | 900 | 0900
+ 2000 |   0 | 0000 | 2000 |   0 | 0000
+ 2100 | 100 | 0100 | 2100 | 100 | 0100
+ 2200 | 200 | 0200 | 2200 | 200 | 0200
+ 2300 | 300 | 0300 | 2300 | 300 | 0300
+ 2400 | 400 | 0400 | 2400 | 400 | 0400
+ 2500 | 500 | 0500 | 2500 | 500 | 0500
+ 2600 | 600 | 0600 | 2600 | 600 | 0600
+ 2700 | 700 | 0700 | 2700 | 700 | 0700
+ 2800 | 800 | 0800 | 2800 | 800 | 0800
+ 2900 | 900 | 0900 | 2900 | 900 | 0900
+ 3000 |   0 | 0000 | 3000 |   0 | 0000
+ 3100 | 100 | 0100 | 3100 | 100 | 0100
+ 3200 | 200 | 0200 | 3200 | 200 | 0200
+ 3300 | 300 | 0300 | 3300 | 300 | 0300
+ 3400 | 400 | 0400 | 3400 | 400 | 0400
+ 3500 | 500 | 0500 | 3500 | 500 | 0500
+ 3600 | 600 | 0600 | 3600 | 600 | 0600
+ 3700 | 700 | 0700 | 3700 | 700 | 0700
+ 3800 | 800 | 0800 | 3800 | 800 | 0800
+ 3900 | 900 | 0900 | 3900 | 900 | 0900
+(30 rows)
+
+DELETE FROM join_tbl;
+RESET enable_partitionwise_join;
+-- Test interaction of async execution with plan-time partition pruning
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT * FROM async_pt WHERE a < 3000;
+                                 QUERY PLAN                                  
+-----------------------------------------------------------------------------
+ Append
+   ->  Async Foreign Scan on public.async_p1 async_pt_1
+         Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+         Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE ((a < 3000))
+   ->  Async Foreign Scan on public.async_p2 async_pt_2
+         Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+         Remote SQL: SELECT a, b, c FROM public.base_tbl2 WHERE ((a < 3000))
+(7 rows)
+
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT * FROM async_pt WHERE a < 2000;
+                              QUERY PLAN                               
+-----------------------------------------------------------------------
+ Foreign Scan on public.async_p1 async_pt
+   Output: async_pt.a, async_pt.b, async_pt.c
+   Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE ((a < 2000))
+(3 rows)
+
+-- Test interaction of async execution with run-time partition pruning
+SET plan_cache_mode TO force_generic_plan;
+PREPARE async_pt_query (int, int) AS
+  INSERT INTO result_tbl SELECT * FROM async_pt WHERE a < $1 AND b === $2;
+EXPLAIN (VERBOSE, COSTS OFF)
+EXECUTE async_pt_query (3000, 505);
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         Subplans Removed: 1
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Filter: (async_pt_1.b === $2)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE ((a < $1::integer))
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Filter: (async_pt_2.b === $2)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2 WHERE ((a < $1::integer))
+(11 rows)
+
+EXECUTE async_pt_query (3000, 505);
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1505 | 505 | 0505
+ 2505 | 505 | 0505
+(2 rows)
+
+DELETE FROM result_tbl;
+EXPLAIN (VERBOSE, COSTS OFF)
+EXECUTE async_pt_query (2000, 505);
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Insert on public.result_tbl
+   ->  Append
+         Subplans Removed: 2
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Filter: (async_pt_1.b === $2)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE ((a < $1::integer))
+(7 rows)
+
+EXECUTE async_pt_query (2000, 505);
+SELECT * FROM result_tbl ORDER BY a;
+  a   |  b  |  c   
+------+-----+------
+ 1505 | 505 | 0505
+(1 row)
+
+DELETE FROM result_tbl;
+RESET plan_cache_mode;
+CREATE TABLE local_tbl(a int, b int, c text);
+INSERT INTO local_tbl VALUES (1505, 505, 'foo'), (2505, 505, 'bar');
+ANALYZE local_tbl;
+CREATE INDEX base_tbl1_idx ON base_tbl1 (a);
+CREATE INDEX base_tbl2_idx ON base_tbl2 (a);
+CREATE INDEX async_p3_idx ON async_p3 (a);
+ANALYZE base_tbl1;
+ANALYZE base_tbl2;
+ANALYZE async_p3;
+ALTER FOREIGN TABLE async_p1 OPTIONS (use_remote_estimate 'true');
+ALTER FOREIGN TABLE async_p2 OPTIONS (use_remote_estimate 'true');
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT * FROM local_tbl, async_pt WHERE local_tbl.a = async_pt.a AND local_tbl.c = 'bar';
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Nested Loop
+   Output: local_tbl.a, local_tbl.b, local_tbl.c, async_pt.a, async_pt.b, async_pt.c
+   ->  Seq Scan on public.local_tbl
+         Output: local_tbl.a, local_tbl.b, local_tbl.c
+         Filter: (local_tbl.c = 'bar'::text)
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 async_pt_1
+               Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1 WHERE (($1::integer = a))
+         ->  Async Foreign Scan on public.async_p2 async_pt_2
+               Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2 WHERE (($1::integer = a))
+         ->  Seq Scan on public.async_p3 async_pt_3
+               Output: async_pt_3.a, async_pt_3.b, async_pt_3.c
+               Filter: (local_tbl.a = async_pt_3.a)
+(15 rows)
+
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+SELECT * FROM local_tbl, async_pt WHERE local_tbl.a = async_pt.a AND local_tbl.c = 'bar';
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Nested Loop (actual rows=1 loops=1)
+   ->  Seq Scan on local_tbl (actual rows=1 loops=1)
+         Filter: (c = 'bar'::text)
+         Rows Removed by Filter: 1
+   ->  Append (actual rows=1 loops=1)
+         ->  Async Foreign Scan on async_p1 async_pt_1 (never executed)
+         ->  Async Foreign Scan on async_p2 async_pt_2 (actual rows=1 loops=1)
+         ->  Seq Scan on async_p3 async_pt_3 (never executed)
+               Filter: (local_tbl.a = a)
+(9 rows)
+
+SELECT * FROM local_tbl, async_pt WHERE local_tbl.a = async_pt.a AND local_tbl.c = 'bar';
+  a   |  b  |  c  |  a   |  b  |  c   
+------+-----+-----+------+-----+------
+ 2505 | 505 | bar | 2505 | 505 | 0505
+(1 row)
+
+ALTER FOREIGN TABLE async_p1 OPTIONS (DROP use_remote_estimate);
+ALTER FOREIGN TABLE async_p2 OPTIONS (DROP use_remote_estimate);
+DROP TABLE local_tbl;
+DROP INDEX base_tbl1_idx;
+DROP INDEX base_tbl2_idx;
+DROP INDEX async_p3_idx;
+-- Test that pending requests are processed properly
+SET enable_mergejoin TO false;
+SET enable_hashjoin TO false;
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT * FROM async_pt t1, async_p2 t2 WHERE t1.a = t2.a AND t1.b === 505;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Nested Loop
+   Output: t1.a, t1.b, t1.c, t2.a, t2.b, t2.c
+   Join Filter: (t1.a = t2.a)
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 t1_1
+               Output: t1_1.a, t1_1.b, t1_1.c
+               Filter: (t1_1.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1
+         ->  Async Foreign Scan on public.async_p2 t1_2
+               Output: t1_2.a, t1_2.b, t1_2.c
+               Filter: (t1_2.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+         ->  Seq Scan on public.async_p3 t1_3
+               Output: t1_3.a, t1_3.b, t1_3.c
+               Filter: (t1_3.b === 505)
+   ->  Materialize
+         Output: t2.a, t2.b, t2.c
+         ->  Foreign Scan on public.async_p2 t2
+               Output: t2.a, t2.b, t2.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+(20 rows)
+
+SELECT * FROM async_pt t1, async_p2 t2 WHERE t1.a = t2.a AND t1.b === 505;
+  a   |  b  |  c   |  a   |  b  |  c   
+------+-----+------+------+-----+------
+ 2505 | 505 | 0505 | 2505 | 505 | 0505
+(1 row)
+
+EXPLAIN (VERBOSE, COSTS OFF)
+SELECT * FROM async_pt t1 WHERE t1.b === 505 LIMIT 1;
+                           QUERY PLAN                           
+----------------------------------------------------------------
+ Limit
+   Output: t1.a, t1.b, t1.c
+   ->  Append
+         ->  Async Foreign Scan on public.async_p1 t1_1
+               Output: t1_1.a, t1_1.b, t1_1.c
+               Filter: (t1_1.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl1
+         ->  Async Foreign Scan on public.async_p2 t1_2
+               Output: t1_2.a, t1_2.b, t1_2.c
+               Filter: (t1_2.b === 505)
+               Remote SQL: SELECT a, b, c FROM public.base_tbl2
+         ->  Seq Scan on public.async_p3 t1_3
+               Output: t1_3.a, t1_3.b, t1_3.c
+               Filter: (t1_3.b === 505)
+(14 rows)
+
+SELECT * FROM async_pt t1 WHERE t1.b === 505 LIMIT 1;
+  a   |  b  |  c   
+------+-----+------
+ 3505 | 505 | 0505
+(1 row)
+
+-- Check with foreign modify
+CREATE TABLE local_tbl (a int, b int, c text);
+INSERT INTO local_tbl VALUES (1505, 505, 'foo');
+CREATE TABLE base_tbl3 (a int, b int, c text);
+CREATE FOREIGN TABLE remote_tbl (a int, b int, c text)
+  SERVER loopback OPTIONS (table_name 'base_tbl3');
+INSERT INTO remote_tbl VALUES (2505, 505, 'bar');
+CREATE TABLE base_tbl4 (a int, b int, c text);
+CREATE FOREIGN TABLE insert_tbl (a int, b int, c text)
+  SERVER loopback OPTIONS (table_name 'base_tbl4');
+EXPLAIN (VERBOSE, COSTS OFF)
+INSERT INTO insert_tbl (SELECT * FROM local_tbl UNION ALL SELECT * FROM remote_tbl);
+                               QUERY PLAN                                
+-------------------------------------------------------------------------
+ Insert on public.insert_tbl
+   Remote SQL: INSERT INTO public.base_tbl4(a, b, c) VALUES ($1, $2, $3)
+   Batch Size: 1
+   ->  Append
+         ->  Seq Scan on public.local_tbl
+               Output: local_tbl.a, local_tbl.b, local_tbl.c
+         ->  Async Foreign Scan on public.remote_tbl
+               Output: remote_tbl.a, remote_tbl.b, remote_tbl.c
+               Remote SQL: SELECT a, b, c FROM public.base_tbl3
+(9 rows)
+
+INSERT INTO insert_tbl (SELECT * FROM local_tbl UNION ALL SELECT * FROM remote_tbl);
+SELECT * FROM insert_tbl ORDER BY a;
+  a   |  b  |  c  
+------+-----+-----
+ 1505 | 505 | foo
+ 2505 | 505 | bar
+(2 rows)
+
+-- Check with direct modify
+EXPLAIN (VERBOSE, COSTS OFF)
+WITH t AS (UPDATE remote_tbl SET c = c || c RETURNING *)
+INSERT INTO join_tbl SELECT * FROM async_pt LEFT JOIN t ON (async_pt.a = t.a AND async_pt.b = t.b) WHERE async_pt.b === 505;
+                                       QUERY PLAN                                       
+----------------------------------------------------------------------------------------
+ Insert on public.join_tbl
+   CTE t
+     ->  Update on public.remote_tbl
+           Output: remote_tbl.a, remote_tbl.b, remote_tbl.c
+           ->  Foreign Update on public.remote_tbl
+                 Remote SQL: UPDATE public.base_tbl3 SET c = (c || c) RETURNING a, b, c
+   ->  Nested Loop Left Join
+         Output: async_pt.a, async_pt.b, async_pt.c, t.a, t.b, t.c
+         Join Filter: ((async_pt.a = t.a) AND (async_pt.b = t.b))
+         ->  Append
+               ->  Async Foreign Scan on public.async_p1 async_pt_1
+                     Output: async_pt_1.a, async_pt_1.b, async_pt_1.c
+                     Filter: (async_pt_1.b === 505)
+                     Remote SQL: SELECT a, b, c FROM public.base_tbl1
+               ->  Async Foreign Scan on public.async_p2 async_pt_2
+                     Output: async_pt_2.a, async_pt_2.b, async_pt_2.c
+                     Filter: (async_pt_2.b === 505)
+                     Remote SQL: SELECT a, b, c FROM public.base_tbl2
+               ->  Seq Scan on public.async_p3 async_pt_3
+                     Output: async_pt_3.a, async_pt_3.b, async_pt_3.c
+                     Filter: (async_pt_3.b === 505)
+         ->  CTE Scan on t
+               Output: t.a, t.b, t.c
+(23 rows)
+
+WITH t AS (UPDATE remote_tbl SET c = c || c RETURNING *)
+INSERT INTO join_tbl SELECT * FROM async_pt LEFT JOIN t ON (async_pt.a = t.a AND async_pt.b = t.b) WHERE async_pt.b === 505;
+SELECT * FROM join_tbl ORDER BY a1;
+  a1  | b1  |  c1  |  a2  | b2  |   c2   
+------+-----+------+------+-----+--------
+ 1505 | 505 | 0505 |      |     | 
+ 2505 | 505 | 0505 | 2505 | 505 | barbar
+ 3505 | 505 | 0505 |      |     | 
+(3 rows)
+
+DELETE FROM join_tbl;
+RESET enable_mergejoin;
+RESET enable_hashjoin;
+-- Clean up
+DROP TABLE async_pt;
+DROP TABLE base_tbl1;
+DROP TABLE base_tbl2;
+DROP TABLE result_tbl;
+DROP TABLE local_tbl;
+DROP FOREIGN TABLE remote_tbl;
+DROP FOREIGN TABLE insert_tbl;
+DROP TABLE base_tbl3;
+DROP TABLE base_tbl4;
+DROP TABLE join_tbl;
+ALTER SERVER loopback OPTIONS (DROP async_capable);
+ALTER SERVER loopback2 OPTIONS (DROP async_capable);

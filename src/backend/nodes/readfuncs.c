@@ -271,6 +271,7 @@ _readQuery(void)
 	READ_NODE_FIELD(onConflict);
 	READ_NODE_FIELD(returningList);
 	READ_NODE_FIELD(groupClause);
+	READ_BOOL_FIELD(groupDistinct);
 	READ_NODE_FIELD(groupingSets);
 	READ_NODE_FIELD(havingQual);
 	READ_NODE_FIELD(windowClause);
@@ -1345,6 +1346,7 @@ _readJoinExpr(void)
 	READ_NODE_FIELD(larg);
 	READ_NODE_FIELD(rarg);
 	READ_NODE_FIELD(usingClause);
+	READ_NODE_FIELD(join_using_alias);
 	READ_NODE_FIELD(quals);
 	READ_NODE_FIELD(alias);
 	READ_INT_FIELD(rtindex);
@@ -1449,6 +1451,7 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(joinaliasvars);
 			READ_NODE_FIELD(joinleftcols);
 			READ_NODE_FIELD(joinrightcols);
+			READ_NODE_FIELD(join_using_alias);
 			break;
 		case RTE_FUNCTION:
 			READ_NODE_FIELD(functions);
@@ -1615,6 +1618,7 @@ ReadCommonPlan(Plan *local_node)
 	READ_INT_FIELD(plan_width);
 	READ_BOOL_FIELD(parallel_aware);
 	READ_BOOL_FIELD(parallel_safe);
+	READ_BOOL_FIELD(async_capable);
 	READ_INT_FIELD(plan_node_id);
 	READ_NODE_FIELD(targetlist);
 	READ_NODE_FIELD(qual);
@@ -1682,7 +1686,7 @@ _readModifyTable(void)
 	READ_UINT_FIELD(rootRelation);
 	READ_BOOL_FIELD(partColsUpdated);
 	READ_NODE_FIELD(resultRelations);
-	READ_NODE_FIELD(plans);
+	READ_NODE_FIELD(updateColnosLists);
 	READ_NODE_FIELD(withCheckOptionLists);
 	READ_NODE_FIELD(returningLists);
 	READ_NODE_FIELD(fdwPrivLists);
@@ -1711,6 +1715,7 @@ _readAppend(void)
 
 	READ_BITMAPSET_FIELD(apprelids);
 	READ_NODE_FIELD(appendplans);
+	READ_INT_FIELD(nasyncplans);
 	READ_INT_FIELD(first_partial_plan);
 	READ_NODE_FIELD(part_prune_info);
 
@@ -2203,6 +2208,26 @@ _readMaterial(void)
 	READ_LOCALS_NO_FIELDS(Material);
 
 	ReadCommonPlan(&local_node->plan);
+
+	READ_DONE();
+}
+
+/*
+ * _readResultCache
+ */
+static ResultCache *
+_readResultCache(void)
+{
+	READ_LOCALS(ResultCache);
+
+	ReadCommonPlan(&local_node->plan);
+
+	READ_INT_FIELD(numKeys);
+	READ_OID_ARRAY(hashOperators, local_node->numKeys);
+	READ_OID_ARRAY(collations, local_node->numKeys);
+	READ_NODE_FIELD(param_exprs);
+	READ_BOOL_FIELD(singlerow);
+	READ_UINT_FIELD(est_entries);
 
 	READ_DONE();
 }
@@ -2895,6 +2920,8 @@ parseNodeString(void)
 		return_value = _readHashJoin();
 	else if (MATCH("MATERIAL", 8))
 		return_value = _readMaterial();
+	else if (MATCH("RESULTCACHE", 11))
+		return_value = _readResultCache();
 	else if (MATCH("SORT", 4))
 		return_value = _readSort();
 	else if (MATCH("INCREMENTALSORT", 15))

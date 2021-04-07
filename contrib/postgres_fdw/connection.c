@@ -59,9 +59,12 @@ typedef struct ConnCacheEntry
 	bool		have_error;		/* have any subxacts aborted in this xact? */
 	bool		changing_xact_state;	/* xact state change in process */
 	bool		invalidated;	/* true if reconnect is pending */
+	bool		keep_connections;	/* setting value of keep_connections
+									 * server option */
 	Oid			serverid;		/* foreign server OID used to get server name */
 	uint32		server_hashvalue;	/* hash value of foreign server OID */
 	uint32		mapping_hashvalue;	/* hash value of user mapping OID */
+	PgFdwConnState state;		/* extra per-connection state */
 } ConnCacheEntry;
 
 /*
@@ -115,9 +118,12 @@ static bool disconnect_cached_connections(Oid serverid);
  * will_prep_stmt must be true if caller intends to create any prepared
  * statements.  Since those don't go away automatically at transaction end
  * (not even on error), we need this flag to cue manual cleanup.
+ *
+ * If state is not NULL, *state receives the per-connection state associated
+ * with the PGconn.
  */
 PGconn *
-GetConnection(UserMapping *user, bool will_prep_stmt)
+GetConnection(UserMapping *user, bool will_prep_stmt, PgFdwConnState **state)
 {
 	bool		found;
 	bool		retry = false;
@@ -196,6 +202,9 @@ GetConnection(UserMapping *user, bool will_prep_stmt)
 	 */
 	PG_TRY();
 	{
+		/* Process a pending asynchronous request if any. */
+		if (entry->state.pendingAreq)
+			process_pending_request(entry->state.pendingAreq);
 		/* Start a new transaction or subtransaction if needed. */
 		begin_remote_xact(entry);
 	}
@@ -264,6 +273,10 @@ GetConnection(UserMapping *user, bool will_prep_stmt)
 	/* Remember if caller will prepare statements */
 	entry->have_prep_stmt |= will_prep_stmt;
 
+	/* If caller needs access to the per-connection state, return it. */
+	if (state)
+		*state = &entry->state;
+
 	return entry->conn;
 }
 
@@ -275,6 +288,7 @@ static void
 make_new_connection(ConnCacheEntry *entry, UserMapping *user)
 {
 	ForeignServer *server = GetForeignServer(user->serverid);
+	ListCell   *lc;
 
 	Assert(entry->conn == NULL);
 
@@ -291,6 +305,27 @@ make_new_connection(ConnCacheEntry *entry, UserMapping *user)
 	entry->mapping_hashvalue =
 		GetSysCacheHashValue1(USERMAPPINGOID,
 							  ObjectIdGetDatum(user->umid));
+	memset(&entry->state, 0, sizeof(entry->state));
+
+	/*
+	 * Determine whether to keep the connection that we're about to make here
+	 * open even after the transaction using it ends, so that the subsequent
+	 * transactions can re-use it.
+	 *
+	 * It's enough to determine this only when making new connection because
+	 * all the connections to the foreign server whose keep_connections option
+	 * is changed will be closed and re-made later.
+	 *
+	 * By default, all the connections to any foreign servers are kept open.
+	 */
+	entry->keep_connections = true;
+	foreach(lc, server->options)
+	{
+		DefElem    *def = (DefElem *) lfirst(lc);
+
+		if (strcmp(def->defname, "keep_connections") == 0)
+			entry->keep_connections = defGetBoolean(def);
+	}
 
 	/* Now try to make the connection */
 	entry->conn = connect_pg_server(server, user);
@@ -648,8 +683,12 @@ GetPrepStmtNumber(PGconn *conn)
  * Caller is responsible for the error handling on the result.
  */
 PGresult *
-pgfdw_exec_query(PGconn *conn, const char *query)
+pgfdw_exec_query(PGconn *conn, const char *query, PgFdwConnState *state)
 {
+	/* First, process a pending asynchronous request, if any. */
+	if (state && state->pendingAreq)
+		process_pending_request(state->pendingAreq);
+
 	/*
 	 * Submit a query.  Since we don't use non-blocking mode, this also can
 	 * block.  But its risk is relatively small, so we ignore that for now.
@@ -940,6 +979,8 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 					{
 						entry->have_prep_stmt = false;
 						entry->have_error = false;
+						/* Also reset per-connection state */
+						memset(&entry->state, 0, sizeof(entry->state));
 					}
 
 					/* Disarm changing_xact_state if it all worked. */
@@ -952,14 +993,16 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 		entry->xact_depth = 0;
 
 		/*
-		 * If the connection isn't in a good idle state or it is marked as
-		 * invalid, then discard it to recover. Next GetConnection will open a
-		 * new connection.
+		 * If the connection isn't in a good idle state, it is marked as
+		 * invalid or keep_connections option of its server is disabled, then
+		 * discard it to recover. Next GetConnection will open a new
+		 * connection.
 		 */
 		if (PQstatus(entry->conn) != CONNECTION_OK ||
 			PQtransactionStatus(entry->conn) != PQTRANS_IDLE ||
 			entry->changing_xact_state ||
-			entry->invalidated)
+			entry->invalidated ||
+			!entry->keep_connections)
 		{
 			elog(DEBUG3, "discarding connection %p", entry->conn);
 			disconnect_pg_server(entry);
@@ -1172,6 +1215,10 @@ pgfdw_reject_incomplete_xact_state_change(ConnCacheEntry *entry)
  * Cancel the currently-in-progress query (whose query text we do not have)
  * and ignore the result.  Returns true if we successfully cancel the query
  * and discard any pending result, and false if not.
+ *
+ * XXX: if the query was one sent by fetch_more_data_begin(), we could get the
+ * query text from the pendingAreq saved in the per-connection state, then
+ * report the query using it.
  */
 static bool
 pgfdw_cancel_query(PGconn *conn)

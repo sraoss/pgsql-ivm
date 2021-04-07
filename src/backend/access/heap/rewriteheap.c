@@ -323,10 +323,10 @@ end_heap_rewrite(RewriteState state)
 						state->rs_blockno,
 						state->rs_buffer,
 						true);
-		RelationOpenSmgr(state->rs_new_rel);
 
 		PageSetChecksumInplace(state->rs_buffer, state->rs_blockno);
 
+		RelationOpenSmgr(state->rs_new_rel);
 		smgrextend(state->rs_new_rel->rd_smgr, MAIN_FORKNUM, state->rs_blockno,
 				   (char *) state->rs_buffer, true);
 	}
@@ -339,7 +339,11 @@ end_heap_rewrite(RewriteState state)
 	 * wrote before the checkpoint.
 	 */
 	if (RelationNeedsWAL(state->rs_new_rel))
+	{
+		/* for an empty table, this could be first smgr access */
+		RelationOpenSmgr(state->rs_new_rel);
 		smgrimmedsync(state->rs_new_rel->rd_smgr, MAIN_FORKNUM);
+	}
 
 	logical_end_heap_rewrite(state);
 
@@ -672,7 +676,11 @@ raw_heap_insert(RewriteState state, HeapTuple tup)
 
 		if (len + saveFreeSpace > pageFreeSpace)
 		{
-			/* Doesn't fit, so write out the existing page */
+			/*
+			 * Doesn't fit, so write out the existing page.  It always
+			 * contains a tuple.  Hence, unlike RelationGetBufferForTuple(),
+			 * enforce saveFreeSpace unconditionally.
+			 */
 
 			/* XLOG stuff */
 			if (RelationNeedsWAL(state->rs_new_rel))

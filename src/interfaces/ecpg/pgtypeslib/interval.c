@@ -155,7 +155,7 @@ DecodeISO8601Interval(char *str,
 			{
 				case 'Y':
 					tm->tm_year += val;
-					tm->tm_mon += (fval * 12);
+					tm->tm_mon += (fval * MONTHS_PER_YEAR);
 					break;
 				case 'M':
 					tm->tm_mon += val;
@@ -191,7 +191,7 @@ DecodeISO8601Interval(char *str,
 						return DTERR_BAD_FORMAT;
 
 					tm->tm_year += val;
-					tm->tm_mon += (fval * 12);
+					tm->tm_mon += (fval * MONTHS_PER_YEAR);
 					if (unit == '\0')
 						return 0;
 					if (unit == 'T')
@@ -694,7 +694,7 @@ AddVerboseIntPart(char *cp, int value, const char *units,
 	}
 	else if (*is_before)
 		value = -value;
-	sprintf(cp, " %d %s%s", value, units, (value == 1) ? "" : "s");
+	sprintf(cp, " %d %s%s", value, units, (abs(value) == 1) ? "" : "s");
 	*is_zero = false;
 	return cp + strlen(cp);
 }
@@ -711,7 +711,7 @@ AddPostgresIntPart(char *cp, int value, const char *units,
 			(*is_before && value > 0) ? "+" : "",
 			value,
 			units,
-			(value != 1) ? "s" : "");
+			(abs(value) != 1) ? "s" : "");
 
 	/*
 	 * Each nonzero field sets is_before for (only) the next one.  This is a

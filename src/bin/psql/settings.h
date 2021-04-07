@@ -134,6 +134,7 @@ typedef struct _psqlSettings
 	bool		quiet;
 	bool		singleline;
 	bool		singlestep;
+	bool		hide_compression;
 	bool		hide_tableam;
 	int			fetch_count;
 	int			histsize;
@@ -147,6 +148,7 @@ typedef struct _psqlSettings
 	const char *prompt2;
 	const char *prompt3;
 	PGVerbosity verbosity;		/* current error verbosity level */
+	bool		show_all_results;
 	PGContextVisibility show_context;	/* current context display level */
 } PsqlSettings;
 

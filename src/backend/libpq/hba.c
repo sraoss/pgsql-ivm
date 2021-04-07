@@ -1753,6 +1753,37 @@ parse_hba_auth_opt(char *name, char *val, HbaLine *hbaline,
 			return false;
 		}
 	}
+	else if (strcmp(name, "clientname") == 0)
+	{
+		if (hbaline->conntype != ctHostSSL)
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("clientname can only be configured for \"hostssl\" rows"),
+					 errcontext("line %d of configuration file \"%s\"",
+								line_num, HbaFileName)));
+			*err_msg = "clientname can only be configured for \"hostssl\" rows";
+			return false;
+		}
+
+		if (strcmp(val, "CN") == 0)
+		{
+			hbaline->clientcertname = clientCertCN;
+		}
+		else if (strcmp(val, "DN") == 0)
+		{
+			hbaline->clientcertname = clientCertDN;
+		}
+		else
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("invalid value for clientname: \"%s\"", val),
+					 errcontext("line %d of configuration file \"%s\"",
+								line_num, HbaFileName)));
+			return false;
+		}
+	}
 	else if (strcmp(name, "pamservice") == 0)
 	{
 		REQUIRE_AUTH_OPTION(uaPAM, "pamservice", "pam");
@@ -3109,4 +3140,28 @@ void
 hba_getauthmethod(hbaPort *port)
 {
 	check_hba(port);
+}
+
+
+/*
+ * Return the name of the auth method in use ("gss", "md5", "trust", etc.).
+ *
+ * The return value is statically allocated (see the UserAuthName array) and
+ * should not be freed.
+ */
+const char *
+hba_authname(hbaPort *port)
+{
+	UserAuth	auth_method;
+
+	Assert(port->hba);
+	auth_method = port->hba->auth_method;
+
+	if (auth_method < 0 || USER_AUTH_LAST < auth_method)
+	{
+		/* Should never happen. */
+		elog(FATAL, "port has out-of-bounds UserAuth: %d", auth_method);
+	}
+
+	return UserAuthName[auth_method];
 }

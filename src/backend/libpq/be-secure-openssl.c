@@ -81,7 +81,6 @@ static const char *ssl_protocol_version_to_string(int v);
 int
 be_tls_init(bool isServerStart)
 {
-	STACK_OF(X509_NAME) * root_cert_list = NULL;
 	SSL_CTX    *context;
 	int			ssl_ver_min = -1;
 	int			ssl_ver_max = -1;
@@ -100,6 +99,10 @@ be_tls_init(bool isServerStart)
 	}
 
 	/*
+	 * Create a new SSL context into which we'll load all the configuration
+	 * settings.  If we fail partway through, we can avoid memory leakage by
+	 * freeing this context; we don't install it as active until the end.
+	 *
 	 * We use SSLv23_method() because it can negotiate use of the highest
 	 * mutually supported protocol version, while alternatives like
 	 * TLSv1_2_method() permit only one specific version.  Note that we don't
@@ -272,6 +275,8 @@ be_tls_init(bool isServerStart)
 	 */
 	if (ssl_ca_file[0])
 	{
+		STACK_OF(X509_NAME) * root_cert_list;
+
 		if (SSL_CTX_load_verify_locations(context, ssl_ca_file, NULL) != 1 ||
 			(root_cert_list = SSL_load_client_CA_file(ssl_ca_file)) == NULL)
 		{
@@ -281,6 +286,25 @@ be_tls_init(bool isServerStart)
 							ssl_ca_file, SSLerrmessage(ERR_get_error()))));
 			goto error;
 		}
+
+		/*
+		 * Tell OpenSSL to send the list of root certs we trust to clients in
+		 * CertificateRequests.  This lets a client with a keystore select the
+		 * appropriate client certificate to send to us.  Also, this ensures
+		 * that the SSL context will "own" the root_cert_list and remember to
+		 * free it when no longer needed.
+		 */
+		SSL_CTX_set_client_CA_list(context, root_cert_list);
+
+		/*
+		 * Always ask for SSL client cert, but don't fail if it's not
+		 * presented.  We might fail such connections later, depending on what
+		 * we find in pg_hba.conf.
+		 */
+		SSL_CTX_set_verify(context,
+						   (SSL_VERIFY_PEER |
+							SSL_VERIFY_CLIENT_ONCE),
+						   verify_cb);
 	}
 
 	/*----------
@@ -297,7 +321,7 @@ be_tls_init(bool isServerStart)
 			/* Set the flags to check against the complete CRL chain */
 			if (X509_STORE_load_locations(cvstore,
 										  ssl_crl_file[0] ? ssl_crl_file : NULL,
-										  ssl_crl_dir[0]  ? ssl_crl_dir : NULL)
+										  ssl_crl_dir[0] ? ssl_crl_dir : NULL)
 				== 1)
 			{
 				X509_STORE_set_flags(cvstore,
@@ -331,26 +355,6 @@ be_tls_init(bool isServerStart)
 		}
 	}
 
-	if (ssl_ca_file[0])
-	{
-		/*
-		 * Always ask for SSL client cert, but don't fail if it's not
-		 * presented.  We might fail such connections later, depending on what
-		 * we find in pg_hba.conf.
-		 */
-		SSL_CTX_set_verify(context,
-						   (SSL_VERIFY_PEER |
-							SSL_VERIFY_CLIENT_ONCE),
-						   verify_cb);
-
-		/*
-		 * Tell OpenSSL to send the list of root certs we trust to clients in
-		 * CertificateRequests.  This lets a client with a keystore select the
-		 * appropriate client certificate to send to us.
-		 */
-		SSL_CTX_set_client_CA_list(context, root_cert_list);
-	}
-
 	/*
 	 * Success!  Replace any existing SSL_context.
 	 */
@@ -369,6 +373,7 @@ be_tls_init(bool isServerStart)
 
 	return 0;
 
+	/* Clean up by releasing working context. */
 error:
 	if (context)
 		SSL_CTX_free(context);
@@ -546,22 +551,26 @@ aloop:
 	/* Get client certificate, if available. */
 	port->peer = SSL_get_peer_certificate(port->ssl);
 
-	/* and extract the Common Name from it. */
+	/* and extract the Common Name and Distinguished Name from it. */
 	port->peer_cn = NULL;
+	port->peer_dn = NULL;
 	port->peer_cert_valid = false;
 	if (port->peer != NULL)
 	{
 		int			len;
+		X509_NAME  *x509name = X509_get_subject_name(port->peer);
+		char	   *peer_dn;
+		BIO		   *bio = NULL;
+		BUF_MEM    *bio_buf = NULL;
 
-		len = X509_NAME_get_text_by_NID(X509_get_subject_name(port->peer),
-										NID_commonName, NULL, 0);
+		len = X509_NAME_get_text_by_NID(x509name, NID_commonName, NULL, 0);
 		if (len != -1)
 		{
 			char	   *peer_cn;
 
 			peer_cn = MemoryContextAlloc(TopMemoryContext, len + 1);
-			r = X509_NAME_get_text_by_NID(X509_get_subject_name(port->peer),
-										  NID_commonName, peer_cn, len + 1);
+			r = X509_NAME_get_text_by_NID(x509name, NID_commonName, peer_cn,
+										  len + 1);
 			peer_cn[len] = '\0';
 			if (r != len)
 			{
@@ -585,6 +594,47 @@ aloop:
 
 			port->peer_cn = peer_cn;
 		}
+
+		bio = BIO_new(BIO_s_mem());
+		if (!bio)
+		{
+			pfree(port->peer_cn);
+			port->peer_cn = NULL;
+			return -1;
+		}
+		/*
+		 * RFC2253 is the closest thing to an accepted standard format for
+		 * DNs. We have documented how to produce this format from a
+		 * certificate. It uses commas instead of slashes for delimiters,
+		 * which make regular expression matching a bit easier. Also note that
+		 * it prints the Subject fields in reverse order.
+		 */
+		X509_NAME_print_ex(bio, x509name, 0, XN_FLAG_RFC2253);
+		if (BIO_get_mem_ptr(bio, &bio_buf) <= 0)
+		{
+			BIO_free(bio);
+			pfree(port->peer_cn);
+			port->peer_cn = NULL;
+			return -1;
+		}
+		peer_dn = MemoryContextAlloc(TopMemoryContext, bio_buf->length + 1);
+		memcpy(peer_dn, bio_buf->data, bio_buf->length);
+		len = bio_buf->length;
+		BIO_free(bio);
+		peer_dn[len] = '\0';
+		if (len != strlen(peer_dn))
+		{
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("SSL certificate's distinguished name contains embedded null")));
+			pfree(peer_dn);
+			pfree(port->peer_cn);
+			port->peer_cn = NULL;
+			return -1;
+		}
+
+		port->peer_dn = peer_dn;
+
 		port->peer_cert_valid = true;
 	}
 
@@ -612,6 +662,12 @@ be_tls_close(Port *port)
 	{
 		pfree(port->peer_cn);
 		port->peer_cn = NULL;
+	}
+
+	if (port->peer_dn)
+	{
+		pfree(port->peer_dn);
+		port->peer_dn = NULL;
 	}
 }
 
@@ -917,6 +973,7 @@ load_dh_file(char *filename, bool isServerStart)
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("invalid DH parameters: %s",
 						SSLerrmessage(ERR_get_error()))));
+		DH_free(dh);
 		return NULL;
 	}
 	if (codes & DH_CHECK_P_NOT_PRIME)
@@ -924,6 +981,7 @@ load_dh_file(char *filename, bool isServerStart)
 		ereport(isServerStart ? FATAL : LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("invalid DH parameters: p is not prime")));
+		DH_free(dh);
 		return NULL;
 	}
 	if ((codes & DH_NOT_SUITABLE_GENERATOR) &&
@@ -932,6 +990,7 @@ load_dh_file(char *filename, bool isServerStart)
 		ereport(isServerStart ? FATAL : LOG,
 				(errcode(ERRCODE_CONFIG_FILE_ERROR),
 				 errmsg("invalid DH parameters: neither suitable generator or safe prime")));
+		DH_free(dh);
 		return NULL;
 	}
 

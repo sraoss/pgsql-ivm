@@ -758,7 +758,7 @@ fetch_remote_table_info(char *nspname, char *relname,
 
 	if (res->status != WALRCV_OK_TUPLES)
 		ereport(ERROR,
-				(errmsg("could not fetch table info for table \"%s.%s\": %s",
+				(errmsg("could not fetch table info for table \"%s.%s\" from publisher: %s",
 						nspname, relname, res->err)));
 
 	/* We don't know the number of rows coming, so allocate enough space. */
@@ -1043,17 +1043,24 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 					  0, NULL);
 	if (res->status != WALRCV_OK_COMMAND)
 		ereport(ERROR,
-				(errmsg("table copy could not start transaction on publisher"),
-				 errdetail("The error was: %s", res->err)));
+				(errmsg("table copy could not start transaction on publisher: %s",
+						res->err)));
 	walrcv_clear_result(res);
 
 	/*
 	 * Create a new permanent logical decoding slot. This slot will be used
 	 * for the catchup phase after COPY is done, so tell it to use the
 	 * snapshot to make the final data consistent.
+	 *
+	 * Prevent cancel/die interrupts while creating slot here because it is
+	 * possible that before the server finishes this command, a concurrent
+	 * drop subscription happens which would complete without removing this
+	 * slot leading to a dangling slot on the server.
 	 */
+	HOLD_INTERRUPTS();
 	walrcv_create_slot(wrconn, slotname, false /* permanent */ ,
 					   CRS_USE_SNAPSHOT, origin_startpos);
+	RESUME_INTERRUPTS();
 
 	/*
 	 * Setup replication origin tracking. The purpose of doing this before the
@@ -1096,8 +1103,8 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	res = walrcv_exec(wrconn, "COMMIT", 0, NULL);
 	if (res->status != WALRCV_OK_COMMAND)
 		ereport(ERROR,
-				(errmsg("table copy could not finish transaction on publisher"),
-				 errdetail("The error was: %s", res->err)));
+				(errmsg("table copy could not finish transaction on publisher: %s",
+						res->err)));
 	walrcv_clear_result(res);
 
 	table_close(rel, NoLock);

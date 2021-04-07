@@ -1052,13 +1052,14 @@ WHERE p1.conproc = 0 OR
 SELECT p.oid, p.proname, c.oid, c.conname
 FROM pg_proc p, pg_conversion c
 WHERE p.oid = c.conproc AND
-    (p.prorettype != 'void'::regtype OR p.proretset OR
-     p.pronargs != 5 OR
+    (p.prorettype != 'int4'::regtype OR p.proretset OR
+     p.pronargs != 6 OR
      p.proargtypes[0] != 'int4'::regtype OR
      p.proargtypes[1] != 'int4'::regtype OR
      p.proargtypes[2] != 'cstring'::regtype OR
      p.proargtypes[3] != 'internal'::regtype OR
-     p.proargtypes[4] != 'int4'::regtype);
+     p.proargtypes[4] != 'int4'::regtype OR
+     p.proargtypes[5] != 'bool'::regtype);
  oid | proname | oid | conname 
 -----+---------+-----+---------
 (0 rows)
@@ -2037,6 +2038,7 @@ ORDER BY 1, 2, 3;
        2742 |           16 | @@
        3580 |            1 | <
        3580 |            1 | <<
+       3580 |            1 | =
        3580 |            2 | &<
        3580 |            2 | <=
        3580 |            3 | &&
@@ -2100,7 +2102,7 @@ ORDER BY 1, 2, 3;
        4000 |           28 | ^@
        4000 |           29 | <^
        4000 |           30 | >^
-(123 rows)
+(124 rows)
 
 -- Check that all opclass search operators have selectivity estimators.
 -- This is not absolutely required, but it seems a reasonable thing

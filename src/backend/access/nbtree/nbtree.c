@@ -774,93 +774,6 @@ _bt_parallel_advance_array_keys(IndexScanDesc scan)
 }
 
 /*
- * _bt_vacuum_needs_cleanup() -- Checks if index needs cleanup
- *
- * Called by btvacuumcleanup when btbulkdelete was never called because no
- * tuples needed to be deleted by VACUUM.
- *
- * When we return false, VACUUM can even skip the cleanup-only call to
- * btvacuumscan (i.e. there will be no btvacuumscan call for this index at
- * all).  Otherwise, a cleanup-only btvacuumscan call is required.
- */
-static bool
-_bt_vacuum_needs_cleanup(IndexVacuumInfo *info)
-{
-	Buffer		metabuf;
-	Page		metapg;
-	BTMetaPageData *metad;
-	BTOptions  *relopts;
-	float8		cleanup_scale_factor;
-	uint32		btm_version;
-	BlockNumber prev_num_delpages;
-	float8		prev_num_heap_tuples;
-
-	/*
-	 * Copy details from metapage to local variables quickly.
-	 *
-	 * Note that we deliberately avoid using cached version of metapage here.
-	 */
-	metabuf = _bt_getbuf(info->index, BTREE_METAPAGE, BT_READ);
-	metapg = BufferGetPage(metabuf);
-	metad = BTPageGetMeta(metapg);
-	btm_version = metad->btm_version;
-
-	if (btm_version < BTREE_NOVAC_VERSION)
-	{
-		/*
-		 * Metapage needs to be dynamically upgraded to store fields that are
-		 * only present when btm_version >= BTREE_NOVAC_VERSION
-		 */
-		_bt_relbuf(info->index, metabuf);
-		return true;
-	}
-
-	prev_num_delpages = metad->btm_last_cleanup_num_delpages;
-	prev_num_heap_tuples = metad->btm_last_cleanup_num_heap_tuples;
-	_bt_relbuf(info->index, metabuf);
-
-	/*
-	 * If the underlying table has received a sufficiently high number of
-	 * insertions since the last VACUUM operation that called btvacuumscan(),
-	 * then have the current VACUUM operation call btvacuumscan() now.  This
-	 * happens when the statistics are deemed stale.
-	 *
-	 * XXX: We should have a more principled way of determining what
-	 * "staleness" means. The  vacuum_cleanup_index_scale_factor GUC (and the
-	 * index-level storage param) seem hard to tune in a principled way.
-	 */
-	relopts = (BTOptions *) info->index->rd_options;
-	cleanup_scale_factor = (relopts &&
-							relopts->vacuum_cleanup_index_scale_factor >= 0)
-		? relopts->vacuum_cleanup_index_scale_factor
-		: vacuum_cleanup_index_scale_factor;
-
-	if (cleanup_scale_factor <= 0 ||
-		info->num_heap_tuples < 0 ||
-		prev_num_heap_tuples <= 0 ||
-		(info->num_heap_tuples - prev_num_heap_tuples) /
-		prev_num_heap_tuples >= cleanup_scale_factor)
-		return true;
-
-	/*
-	 * Trigger cleanup in rare cases where prev_num_delpages exceeds 5% of the
-	 * total size of the index.  We can reasonably expect (though are not
-	 * guaranteed) to be able to recycle this many pages if we decide to do a
-	 * btvacuumscan call during the ongoing btvacuumcleanup.
-	 *
-	 * Our approach won't reliably avoid "wasted" cleanup-only btvacuumscan
-	 * calls.  That is, we can end up scanning the entire index without ever
-	 * placing even 1 of the prev_num_delpages pages in the free space map, at
-	 * least in certain narrow cases (see nbtree/README section on recycling
-	 * deleted pages for details).  This rarely matters in practice.
-	 */
-	if (prev_num_delpages > RelationGetNumberOfBlocks(info->index) / 20)
-		return true;
-
-	return false;
-}
-
-/*
  * Bulk deletion of all index entries pointing to a set of heap tuples.
  * The set of target tuples is specified via a callback routine that tells
  * whether any given heap tuple (identified by ItemPointer) is being deleted.
@@ -920,53 +833,49 @@ btvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	if (stats == NULL)
 	{
 		/* Check if VACUUM operation can entirely avoid btvacuumscan() call */
-		if (!_bt_vacuum_needs_cleanup(info))
+		if (!_bt_vacuum_needs_cleanup(info->index))
 			return NULL;
 
 		/*
 		 * Since we aren't going to actually delete any leaf items, there's no
-		 * need to go through all the vacuum-cycle-ID pushups here
+		 * need to go through all the vacuum-cycle-ID pushups here.
+		 *
+		 * Posting list tuples are a source of inaccuracy for cleanup-only
+		 * scans.  btvacuumscan() will assume that the number of index tuples
+		 * from each page can be used as num_index_tuples, even though
+		 * num_index_tuples is supposed to represent the number of TIDs in the
+		 * index.  This naive approach can underestimate the number of tuples
+		 * in the index significantly.
+		 *
+		 * We handle the problem by making num_index_tuples an estimate in
+		 * cleanup-only case.
 		 */
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
 		btvacuumscan(info, stats, NULL, NULL, 0);
+		stats->estimated_count = true;
 	}
 
 	/*
-	 * By here, we know for sure that this VACUUM operation won't be skipping
-	 * its btvacuumscan() call.  Maintain the count of the current number of
-	 * heap tuples in the metapage.  Also maintain the num_delpages value.
-	 * This information will be used by _bt_vacuum_needs_cleanup() during
-	 * future VACUUM operations that don't need to call btbulkdelete().
+	 * Maintain num_delpages value in metapage for _bt_vacuum_needs_cleanup().
 	 *
 	 * num_delpages is the number of deleted pages now in the index that were
-	 * not safe to place in the FSM to be recycled just yet.  We expect that
-	 * it will almost certainly be possible to place all of these pages in the
-	 * FSM during the next VACUUM operation.  That factor alone might cause
-	 * _bt_vacuum_needs_cleanup() to force the next VACUUM to proceed with a
-	 * btvacuumscan() call.
-	 *
-	 * Note: We must delay the _bt_set_cleanup_info() call until this late
-	 * stage of VACUUM (the btvacuumcleanup() phase), to keep num_heap_tuples
-	 * accurate.  The btbulkdelete()-time num_heap_tuples value is generally
-	 * just pg_class.reltuples for the heap relation _before_ VACUUM began.
-	 * In general cleanup info should describe the state of the index/table
-	 * _after_ VACUUM finishes.
+	 * not safe to place in the FSM to be recycled just yet.  num_delpages is
+	 * greater than 0 only when _bt_pagedel() actually deleted pages during
+	 * our call to btvacuumscan().  Even then, _bt_pendingfsm_finalize() must
+	 * have failed to place any newly deleted pages in the FSM just moments
+	 * ago.  (Actually, there are edge cases where recycling of the current
+	 * VACUUM's newly deleted pages does not even become safe by the time the
+	 * next VACUUM comes around.  See nbtree/README.)
 	 */
 	Assert(stats->pages_deleted >= stats->pages_free);
 	num_delpages = stats->pages_deleted - stats->pages_free;
-	_bt_set_cleanup_info(info->index, num_delpages, info->num_heap_tuples);
+	_bt_set_cleanup_info(info->index, num_delpages);
 
 	/*
 	 * It's quite possible for us to be fooled by concurrent page splits into
 	 * double-counting some index tuples, so disbelieve any total that exceeds
 	 * the underlying heap's count ... if we know that accurately.  Otherwise
 	 * this might just make matters worse.
-	 *
-	 * Posting list tuples are another source of inaccuracy.  Cleanup-only
-	 * btvacuumscan calls assume that the number of index tuples can be used
-	 * as num_index_tuples, even though num_index_tuples is supposed to
-	 * represent the number of TIDs in the index.  This naive approach can
-	 * underestimate the number of tuples in the index.
 	 */
 	if (!info->estimated_count)
 	{
@@ -1016,7 +925,6 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * pages in the index at the end of the VACUUM command.)
 	 */
 	stats->num_pages = 0;
-	stats->estimated_count = false;
 	stats->num_index_tuples = 0;
 	stats->pages_deleted = 0;
 	stats->pages_free = 0;
@@ -1032,6 +940,14 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	vstate.pagedelcontext = AllocSetContextCreate(CurrentMemoryContext,
 												  "_bt_pagedel",
 												  ALLOCSET_DEFAULT_SIZES);
+
+	/* Initialize vstate fields used by _bt_pendingfsm_finalize */
+	vstate.bufsize = 0;
+	vstate.maxbufsize = 0;
+	vstate.pendingpages = NULL;
+	vstate.npendingpages = 0;
+	/* Consider applying _bt_pendingfsm_finalize optimization */
+	_bt_pendingfsm_init(rel, &vstate, (callback == NULL));
 
 	/*
 	 * The outer loop iterates over all index pages except the metapage, in
@@ -1091,17 +1007,15 @@ btvacuumscan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	MemoryContextDelete(vstate.pagedelcontext);
 
 	/*
-	 * If we found any recyclable pages (and recorded them in the FSM), then
-	 * forcibly update the upper-level FSM pages to ensure that searchers can
-	 * find them.  It's possible that the pages were also found during
-	 * previous scans and so this is a waste of time, but it's cheap enough
-	 * relative to scanning the index that it shouldn't matter much, and
-	 * making sure that free pages are available sooner not later seems
-	 * worthwhile.
+	 * If there were any calls to _bt_pagedel() during scan of the index then
+	 * see if any of the resulting pages can be placed in the FSM now.  When
+	 * it's not safe we'll have to leave it up to a future VACUUM operation.
 	 *
-	 * Note that if no recyclable pages exist, we don't bother vacuuming the
-	 * FSM at all.
+	 * Finally, if we placed any pages in the FSM (either just now or during
+	 * the scan), forcibly update the upper-level FSM pages to ensure that
+	 * searchers can find them.
 	 */
+	_bt_pendingfsm_finalize(rel, &vstate);
 	if (stats->pages_free > 0)
 		IndexFreeSpaceMapVacuum(rel);
 }
@@ -1299,10 +1213,10 @@ backtrack:
 				 * as long as the callback function only considers whether the
 				 * index tuple refers to pre-cutoff heap tuples that were
 				 * certainly already pruned away during VACUUM's initial heap
-				 * scan by the time we get here. (heapam's XLOG_HEAP2_CLEAN
-				 * and XLOG_HEAP2_CLEANUP_INFO records produce conflicts using
-				 * a latestRemovedXid value for the pointed-to heap tuples, so
-				 * there is no need to produce our own conflict now.)
+				 * scan by the time we get here. (heapam's XLOG_HEAP2_PRUNE
+				 * records produce conflicts using a latestRemovedXid value
+				 * for the pointed-to heap tuples, so there is no need to
+				 * produce our own conflict now.)
 				 *
 				 * Backends with snapshots acquired after a VACUUM starts but
 				 * before it finishes could have visibility cutoff with a
@@ -1421,7 +1335,10 @@ backtrack:
 		 * We don't count the number of live TIDs during cleanup-only calls to
 		 * btvacuumscan (i.e. when callback is not set).  We count the number
 		 * of index tuples directly instead.  This avoids the expense of
-		 * directly examining all of the tuples on each page.
+		 * directly examining all of the tuples on each page.  VACUUM will
+		 * treat num_index_tuples as an estimate in cleanup-only case, so it
+		 * doesn't matter that this underestimates num_index_tuples
+		 * significantly in some cases.
 		 */
 		if (minoff > maxoff)
 			attempt_pagedel = (blkno == scanblkno);

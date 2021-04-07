@@ -1217,9 +1217,9 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * input column numbers more easily.
 		 */
 		l_nscolumns = l_nsitem->p_nscolumns;
-		l_colnames = l_nsitem->p_rte->eref->colnames;
+		l_colnames = l_nsitem->p_names->colnames;
 		r_nscolumns = r_nsitem->p_nscolumns;
-		r_colnames = r_nsitem->p_rte->eref->colnames;
+		r_colnames = r_nsitem->p_names->colnames;
 
 		/*
 		 * Natural join does not explicitly specify columns; must generate
@@ -1264,6 +1264,13 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 
 			j->usingClause = rlist;
 		}
+
+		/*
+		 * If a USING clause alias was specified, save the USING columns as
+		 * its column list.
+		 */
+		if (j->join_using_alias)
+			j->join_using_alias->colnames = j->usingClause;
 
 		/*
 		 * Now transform the join qualifications, if any.
@@ -1460,6 +1467,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 										   res_colvars,
 										   l_colnos,
 										   r_colnos,
+										   j->join_using_alias,
 										   j->alias,
 										   true);
 
@@ -1469,7 +1477,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * Now that we know the join RTE's rangetable index, we can fix up the
 		 * res_nscolumns data in places where it should contain that.
 		 */
-		Assert(res_colindex == list_length(nsitem->p_rte->eref->colnames));
+		Assert(res_colindex == list_length(nsitem->p_names->colnames));
 		for (k = 0; k < res_colindex; k++)
 		{
 			ParseNamespaceColumn *nscol = res_nscolumns + k;
@@ -1492,6 +1500,30 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			pstate->p_joinexprs = lappend(pstate->p_joinexprs, NULL);
 		pstate->p_joinexprs = lappend(pstate->p_joinexprs, j);
 		Assert(list_length(pstate->p_joinexprs) == j->rtindex);
+
+		/*
+		 * If the join has a USING alias, build a ParseNamespaceItem for that
+		 * and add it to the list of nsitems in the join's input.
+		 */
+		if (j->join_using_alias)
+		{
+			ParseNamespaceItem *jnsitem;
+
+			jnsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
+			jnsitem->p_names = j->join_using_alias;
+			jnsitem->p_rte = nsitem->p_rte;
+			jnsitem->p_rtindex = nsitem->p_rtindex;
+			/* no need to copy the first N columns, just use res_nscolumns */
+			jnsitem->p_nscolumns = res_nscolumns;
+			/* set default visibility flags; might get changed later */
+			jnsitem->p_rel_visible = true;
+			jnsitem->p_cols_visible = true;
+			jnsitem->p_lateral_only = false;
+			jnsitem->p_lateral_ok = true;
+			/* Per SQL, we must check for alias conflicts */
+			checkNameSpaceConflicts(pstate, list_make1(jnsitem), my_namespace);
+			my_namespace = lappend(my_namespace, jnsitem);
+		}
 
 		/*
 		 * Prepare returned namespace list.  If the JOIN has an alias then it
