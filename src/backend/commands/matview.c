@@ -2896,7 +2896,7 @@ calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 	{
 		/* Replace the modified table with the old delta table and calculate the old view delta. */
 		lfirst(lc) = union_ENRs(rte, table->table_id, table->old_rtes, "old", queryEnv);
-		refresh_matview_datafill(dest_old, query, queryEnv, tupdesc_old, NULL);
+		refresh_matview_datafill(dest_old, query, queryEnv, tupdesc_old, "");
 	}
 
 	/* Generate new delta */
@@ -2904,7 +2904,7 @@ calc_delta(MV_TriggerTable *table, List *rte_path, Query *query,
 	{
 		/* Replace the modified table with the new delta table and calculate the new view delta*/
 		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
-		refresh_matview_datafill(dest_new, query, queryEnv, tupdesc_new, NULL);
+		refresh_matview_datafill(dest_new, query, queryEnv, tupdesc_new, "");
 	}
 }
 
