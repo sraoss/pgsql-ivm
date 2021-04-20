@@ -63,9 +63,10 @@
  <para>
   Now you need only <command>SELECT</command> from a foreign table to access
   the data stored in its underlying remote table.  You can also modify
-  the remote table using <command>INSERT</command>, <command>UPDATE</command>, or
-  <command>DELETE</command>.  (Of course, the remote user you have specified
-  in your user mapping must have privileges to do these things.)
+  the remote table using <command>INSERT</command>, <command>UPDATE</command>,
+  <command>DELETE</command>, or <command>TRUNCATE</command>.
+  (Of course, the remote user you have specified in your user mapping must
+  have privileges to do these things.)
  </para>
 
  <para>
@@ -437,6 +438,31 @@ OPTIONS (ADD password_required 'false');
   </sect3>
 
   <sect3>
+   <title>Truncatability Options</title>
+
+   <para>
+    By default all foreign tables using <filename>postgres_fdw</filename> are assumed
+    to be truncatable.  This may be overridden using the following option:
+   </para>
+
+   <variablelist>
+
+    <varlistentry>
+     <term><literal>truncatable</literal></term>
+     <listitem>
+      <para>
+       This option controls whether <filename>postgres_fdw</filename> allows
+       foreign tables to be truncated using <command>TRUNCATE</command>
+       command. It can be specified for a foreign table or a foreign server.
+       A table-level option overrides a server-level option.
+       The default is <literal>true</literal>.
+      </para>
+     </listitem>
+    </varlistentry>
+   </variablelist>
+  </sect3>
+
+  <sect3>
    <title>Importing Options</title>
 
    <para>
@@ -525,8 +551,9 @@ OPTIONS (ADD password_required 'false');
     <title>Connection Management Options</title>
 
     <para>
-     By default all the open connections that <filename>postgres_fdw</filename>
-     established to the foreign servers are kept in local session for re-use.
+     By default, all connections that <filename>postgres_fdw</filename>
+     establishes to foreign servers are kept open in the local session
+     for re-use.
     </para>
  
     <variablelist>
@@ -536,11 +563,11 @@ OPTIONS (ADD password_required 'false');
       <listitem>
        <para>
         This option controls whether <filename>postgres_fdw</filename> keeps
-        the connections to the foreign server open so that the subsequent
+        the connections to the foreign server open so that subsequent
         queries can re-use them. It can only be specified for a foreign server.
         The default is <literal>on</literal>. If set to <literal>off</literal>,
         all connections to this foreign server will be discarded at the end of
-        transaction.
+        each transaction.
       </para>
       </listitem>
      </varlistentry>

@@ -191,7 +191,6 @@ static int	interactive_getc(void);
 static int	SocketBackend(StringInfo inBuf);
 static int	ReadCommand(StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
-static List *pg_rewrite_query(Query *query);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
 static int	errdetail_params(ParamListInfo params);
@@ -668,6 +667,7 @@ pg_analyze_and_rewrite_params(RawStmt *parsetree,
 	ParseState *pstate;
 	Query	   *query;
 	List	   *querytree_list;
+	JumbleState *jstate = NULL;
 
 	Assert(query_string != NULL);	/* required as of 8.4 */
 
@@ -686,10 +686,15 @@ pg_analyze_and_rewrite_params(RawStmt *parsetree,
 
 	query = transformTopLevelStmt(pstate, parsetree);
 
+	if (compute_query_id)
+		jstate = JumbleQuery(query, query_string);
+
 	if (post_parse_analyze_hook)
-		(*post_parse_analyze_hook) (pstate, query);
+		(*post_parse_analyze_hook) (pstate, query, jstate);
 
 	free_parsestate(pstate);
+
+	pgstat_report_queryid(query->queryId, false);
 
 	if (log_parser_stats)
 		ShowUsage("PARSE ANALYSIS STATISTICS");
@@ -710,7 +715,7 @@ pg_analyze_and_rewrite_params(RawStmt *parsetree,
  * Note: query must just have come from the parser, because we do not do
  * AcquireRewriteLocks() on it.
  */
-static List *
+List *
 pg_rewrite_query(Query *query)
 {
 	List	   *querytree_list;
@@ -909,6 +914,7 @@ pg_plan_queries(List *querytrees, const char *query_string, int cursorOptions,
 			stmt->utilityStmt = query->utilityStmt;
 			stmt->stmt_location = query->stmt_location;
 			stmt->stmt_len = query->stmt_len;
+			stmt->queryId = query->queryId;
 		}
 		else
 		{
@@ -1024,6 +1030,8 @@ exec_simple_query(const char *query_string)
 		Portal		portal;
 		DestReceiver *receiver;
 		int16		format;
+
+		pgstat_report_queryid(0, true);
 
 		/*
 		 * Get the command name for use in status display (it also becomes the

@@ -704,6 +704,7 @@ ForeignScanState
 ForeignServer
 ForeignServerInfo
 ForeignTable
+ForeignTruncateInfo
 ForkNumber
 FormData_pg_aggregate
 FormData_pg_am
@@ -2558,6 +2559,7 @@ TmFromChar
 TmToChar
 ToastAttrInfo
 ToastTupleContext
+ToastedAttribute
 TocEntry
 TokenAuxData
 TokenizedLine
@@ -2802,6 +2804,10 @@ XLogPageHeader
 XLogPageHeaderData
 XLogPageReadCB
 XLogPageReadPrivate
+XLogPrefetcher
+XLogPrefetcherFilter
+XLogPrefetchState
+XLogPrefetchStats
 XLogReaderRoutine
 XLogReaderState
 XLogRecData

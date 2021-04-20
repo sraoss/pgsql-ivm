@@ -549,6 +549,18 @@ static const SchemaQuery Query_for_list_of_selectables = {
 	.result = "pg_catalog.quote_ident(c.relname)",
 };
 
+/* Relations supporting TRUNCATE */
+static const SchemaQuery Query_for_list_of_truncatables = {
+	.catname = "pg_catalog.pg_class c",
+	.selcondition =
+	"c.relkind IN (" CppAsString2(RELKIND_RELATION) ", "
+	CppAsString2(RELKIND_FOREIGN_TABLE) ", "
+	CppAsString2(RELKIND_PARTITIONED_TABLE) ")",
+	.viscondition = "pg_catalog.pg_table_is_visible(c.oid)",
+	.namespace = "c.relnamespace",
+	.result = "pg_catalog.quote_ident(c.relname)",
+};
+
 /* Relations supporting GRANT are currently same as those supporting SELECT */
 #define Query_for_list_of_grantables Query_for_list_of_selectables
 
@@ -3838,14 +3850,14 @@ psql_completion(const char *text, int start, int end)
 
 /* TRUNCATE */
 	else if (Matches("TRUNCATE"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables,
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_truncatables,
 								   " UNION SELECT 'TABLE'"
 								   " UNION SELECT 'ONLY'");
 	else if (Matches("TRUNCATE", "TABLE"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables,
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_truncatables,
 								   " UNION SELECT 'ONLY'");
 	else if (HeadMatches("TRUNCATE") && TailMatches("ONLY"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables, NULL);
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_truncatables, NULL);
 	else if (Matches("TRUNCATE", MatchAny) ||
 			 Matches("TRUNCATE", "TABLE|ONLY", MatchAny) ||
 			 Matches("TRUNCATE", "TABLE", "ONLY", MatchAny))
@@ -3992,6 +4004,8 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH_QUERY(Query_for_list_of_fdws);
 	else if (TailMatchesCS("\\df*"))
 		COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(Query_for_list_of_functions, NULL);
+	else if (HeadMatchesCS("\\df*"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes, NULL);
 
 	else if (TailMatchesCS("\\dFd*"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_ts_dictionaries);
@@ -4009,6 +4023,9 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH_QUERY(Query_for_list_of_languages);
 	else if (TailMatchesCS("\\dn*"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_schemas);
+	/* no support for completing operators, but we can complete types: */
+	else if (HeadMatchesCS("\\do*", MatchAny))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes, NULL);
 	else if (TailMatchesCS("\\dp") || TailMatchesCS("\\z"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_grantables, NULL);
 	else if (TailMatchesCS("\\dPi*"))
@@ -4126,7 +4143,7 @@ psql_completion(const char *text, int start, int end)
 		matches = complete_from_variables(text, "", "", false);
 	else if (TailMatchesCS("\\set", MatchAny))
 	{
-		if (TailMatchesCS("AUTOCOMMIT|ON_ERROR_STOP|QUIET|SHOW_ALL_RESULTS|"
+		if (TailMatchesCS("AUTOCOMMIT|ON_ERROR_STOP|QUIET|"
 						  "SINGLELINE|SINGLESTEP"))
 			COMPLETE_WITH_CS("on", "off");
 		else if (TailMatchesCS("COMP_KEYWORD_CASE"))

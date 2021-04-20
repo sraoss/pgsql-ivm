@@ -1309,6 +1309,7 @@ _outScalarArrayOpExpr(StringInfo str, const ScalarArrayOpExpr *node)
 
 	WRITE_OID_FIELD(opno);
 	WRITE_OID_FIELD(opfuncid);
+	WRITE_OID_FIELD(hashfuncid);
 	WRITE_BOOL_FIELD(useOr);
 	WRITE_OID_FIELD(inputcollid);
 	WRITE_NODE_FIELD(args);
@@ -2836,6 +2837,14 @@ _outSelectStmt(StringInfo str, const SelectStmt *node)
 }
 
 static void
+_outReturnStmt(StringInfo str, const ReturnStmt *node)
+{
+	WRITE_NODE_TYPE("RETURN");
+
+	WRITE_NODE_FIELD(returnval);
+}
+
+static void
 _outPLAssignStmt(StringInfo str, const PLAssignStmt *node)
 {
 	WRITE_NODE_TYPE("PLASSIGN");
@@ -3047,6 +3056,7 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_BOOL_FIELD(hasModifyingCTE);
 	WRITE_BOOL_FIELD(hasForUpdate);
 	WRITE_BOOL_FIELD(hasRowSecurity);
+	WRITE_BOOL_FIELD(isReturn);
 	WRITE_NODE_FIELD(cteList);
 	WRITE_NODE_FIELD(rtable);
 	WRITE_NODE_FIELD(jointree);
@@ -4337,6 +4347,9 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_SelectStmt:
 				_outSelectStmt(str, obj);
+				break;
+			case T_ReturnStmt:
+				_outReturnStmt(str, obj);
 				break;
 			case T_PLAssignStmt:
 				_outPLAssignStmt(str, obj);

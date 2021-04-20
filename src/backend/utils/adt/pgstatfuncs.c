@@ -569,7 +569,7 @@ pg_stat_get_progress_info(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_activity(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_ACTIVITY_COLS	29
+#define PG_STAT_GET_ACTIVITY_COLS	30
 	int			num_backends = pgstat_fetch_stat_numbackends();
 	int			curr_backend;
 	int			pid = PG_ARGISNULL(0) ? -1 : PG_GETARG_INT32(0);
@@ -914,6 +914,10 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				values[27] = BoolGetDatum(false);	/* GSS Encryption not in
 													 * use */
 			}
+			if (beentry->st_queryid == 0)
+				nulls[29] = true;
+			else
+				values[29] = UInt64GetDatum(beentry->st_queryid);
 		}
 		else
 		{
@@ -941,6 +945,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			nulls[26] = true;
 			nulls[27] = true;
 			nulls[28] = true;
+			nulls[29] = true;
 		}
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
@@ -2279,7 +2284,7 @@ pg_stat_get_archiver(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_replication_slots(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_REPLICATION_SLOT_COLS 8
+#define PG_STAT_GET_REPLICATION_SLOT_COLS 10
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc	tupdesc;
 	Tuplestorestate *tupstore;
@@ -2323,18 +2328,20 @@ pg_stat_get_replication_slots(PG_FUNCTION_ARGS)
 		MemSet(values, 0, sizeof(values));
 		MemSet(nulls, 0, sizeof(nulls));
 
-		values[0] = PointerGetDatum(cstring_to_text(s->slotname));
+		values[0] = CStringGetTextDatum(NameStr(s->slotname));
 		values[1] = Int64GetDatum(s->spill_txns);
 		values[2] = Int64GetDatum(s->spill_count);
 		values[3] = Int64GetDatum(s->spill_bytes);
 		values[4] = Int64GetDatum(s->stream_txns);
 		values[5] = Int64GetDatum(s->stream_count);
 		values[6] = Int64GetDatum(s->stream_bytes);
+		values[7] = Int64GetDatum(s->total_txns);
+		values[8] = Int64GetDatum(s->total_bytes);
 
 		if (s->stat_reset_timestamp == 0)
-			nulls[7] = true;
+			nulls[9] = true;
 		else
-			values[7] = TimestampTzGetDatum(s->stat_reset_timestamp);
+			values[9] = TimestampTzGetDatum(s->stat_reset_timestamp);
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}

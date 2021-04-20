@@ -3812,6 +3812,7 @@ make_partition_op_expr(PartitionKey key, int keynum,
 					saopexpr = makeNode(ScalarArrayOpExpr);
 					saopexpr->opno = operoid;
 					saopexpr->opfuncid = get_opcode(operoid);
+					saopexpr->hashfuncid = InvalidOid;
 					saopexpr->useOr = true;
 					saopexpr->inputcollid = key->partcollation[keynum];
 					saopexpr->args = list_make2(arg1, arrexpr);
@@ -4067,7 +4068,7 @@ get_qual_for_list(Relation parent, PartitionBoundSpec *spec)
 	if (!list_has_null)
 	{
 		/*
-		 * Gin up a "col IS NOT NULL" test that will be AND'd with the main
+		 * Gin up a "col IS NOT NULL" test that will be ANDed with the main
 		 * expression.  This might seem redundant, but the partition routing
 		 * machinery needs it.
 		 */

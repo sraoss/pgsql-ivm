@@ -2714,6 +2714,14 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 				else
 					appendStringInfoString(buf, unpack_sql_state(edata->sqlerrcode));
 				break;
+			case 'Q':
+				if (padding != 0)
+					appendStringInfo(buf, "%*lld", padding,
+							(long long) pgstat_get_my_queryid());
+				else
+					appendStringInfo(buf, "%lld",
+							(long long) pgstat_get_my_queryid());
+				break;
 			default:
 				/* format error - ignore it */
 				break;
@@ -2956,6 +2964,10 @@ write_csvlog(ErrorData *edata)
 		if (leader && leader->pid != MyProcPid)
 			appendStringInfo(&buf, "%d", leader->pid);
 	}
+	appendStringInfoChar(&buf, ',');
+
+	/* query id */
+	appendStringInfo(&buf, "%lld", (long long) pgstat_get_my_queryid());
 
 	appendStringInfoChar(&buf, '\n');
 

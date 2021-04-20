@@ -12148,6 +12148,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	char	   *proretset;
 	char	   *prosrc;
 	char	   *probin;
+	char	   *prosqlbody;
 	char	   *funcargs;
 	char	   *funciargs;
 	char	   *funcresult;
@@ -12194,7 +12195,7 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 						 "provolatile,\n"
 						 "proisstrict,\n"
 						 "prosecdef,\n"
-						 "(SELECT lanname FROM pg_catalog.pg_language WHERE oid = prolang) AS lanname,\n");
+						 "lanname,\n");
 
 	if (fout->remoteVersion >= 80300)
 		appendPQExpBufferStr(query,
@@ -12214,9 +12215,9 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 		 * pg_get_function_result instead of examining proallargtypes etc.
 		 */
 		appendPQExpBufferStr(query,
-							 "pg_catalog.pg_get_function_arguments(oid) AS funcargs,\n"
-							 "pg_catalog.pg_get_function_identity_arguments(oid) AS funciargs,\n"
-							 "pg_catalog.pg_get_function_result(oid) AS funcresult,\n");
+							 "pg_catalog.pg_get_function_arguments(p.oid) AS funcargs,\n"
+							 "pg_catalog.pg_get_function_identity_arguments(p.oid) AS funciargs,\n"
+							 "pg_catalog.pg_get_function_result(p.oid) AS funcresult,\n");
 	}
 	else if (fout->remoteVersion >= 80100)
 		appendPQExpBufferStr(query,
@@ -12259,21 +12260,39 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 
 	if (fout->remoteVersion >= 120000)
 		appendPQExpBufferStr(query,
-							 "prosupport\n");
+							 "prosupport,\n");
 	else
 		appendPQExpBufferStr(query,
-							 "'-' AS prosupport\n");
+							 "'-' AS prosupport,\n");
+
+	if (fout->remoteVersion >= 140000)
+		appendPQExpBufferStr(query,
+							 "pg_get_function_sqlbody(p.oid) AS prosqlbody\n");
+	else
+		appendPQExpBufferStr(query,
+							 "NULL AS prosqlbody\n");
 
 	appendPQExpBuffer(query,
-					  "FROM pg_catalog.pg_proc "
-					  "WHERE oid = '%u'::pg_catalog.oid",
+					  "FROM pg_catalog.pg_proc p, pg_catalog.pg_language l\n"
+					  "WHERE p.oid = '%u'::pg_catalog.oid "
+					  "AND l.oid = p.prolang",
 					  finfo->dobj.catId.oid);
 
 	res = ExecuteSqlQueryForSingleRow(fout, query->data);
 
 	proretset = PQgetvalue(res, 0, PQfnumber(res, "proretset"));
-	prosrc = PQgetvalue(res, 0, PQfnumber(res, "prosrc"));
-	probin = PQgetvalue(res, 0, PQfnumber(res, "probin"));
+	if (PQgetisnull(res, 0, PQfnumber(res, "prosqlbody")))
+	{
+		prosrc = PQgetvalue(res, 0, PQfnumber(res, "prosrc"));
+		probin = PQgetvalue(res, 0, PQfnumber(res, "probin"));
+		prosqlbody = NULL;
+	}
+	else
+	{
+		prosrc = NULL;
+		probin = NULL;
+		prosqlbody = PQgetvalue(res, 0, PQfnumber(res, "prosqlbody"));
+	}
 	if (fout->remoteVersion >= 80400)
 	{
 		funcargs = PQgetvalue(res, 0, PQfnumber(res, "funcargs"));
@@ -12310,7 +12329,11 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	 * versions would set it to "-".  There are no known cases in which prosrc
 	 * is unused, so the tests below for "-" are probably useless.
 	 */
-	if (probin[0] != '\0' && strcmp(probin, "-") != 0)
+	if (prosqlbody)
+	{
+		appendPQExpBufferStr(asPart, prosqlbody);
+	}
+	else if (probin[0] != '\0' && strcmp(probin, "-") != 0)
 	{
 		appendPQExpBufferStr(asPart, "AS ");
 		appendStringLiteralAH(asPart, probin, fout);
@@ -18270,7 +18293,8 @@ processExtensionTables(Archive *fout, ExtensionInfo extinfo[],
 	 * Note that we create TableDataInfo objects even in schemaOnly mode, ie,
 	 * user data in a configuration table is treated like schema data. This
 	 * seems appropriate since system data in a config table would get
-	 * reloaded by CREATE EXTENSION.
+	 * reloaded by CREATE EXTENSION.  If the extension is not listed in the
+	 * list of extensions to be included, none of its data is dumped.
 	 */
 	for (i = 0; i < numExtensions; i++)
 	{
@@ -18281,6 +18305,15 @@ processExtensionTables(Archive *fout, ExtensionInfo extinfo[],
 		char	  **extconditionarray = NULL;
 		int			nconfigitems = 0;
 		int			nconditionitems = 0;
+
+		/*
+		 * Check if this extension is listed as to include in the dump.  If
+		 * not, any table data associated with it is discarded.
+		 */
+		if (extension_include_oids.head != NULL &&
+			!simple_oid_list_member(&extension_include_oids,
+									curext->dobj.catId.oid))
+			continue;
 
 		if (strlen(extconfig) != 0 || strlen(extcondition) != 0)
 		{

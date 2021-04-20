@@ -106,6 +106,7 @@ static bool contain_leaked_vars_walker(Node *node, void *context);
 static Relids find_nonnullable_rels_walker(Node *node, bool top_level);
 static List *find_nonnullable_vars_walker(Node *node, bool top_level);
 static bool is_strict_saop(ScalarArrayOpExpr *expr, bool falseOK);
+static bool convert_saop_to_hashed_saop_walker(Node *node, void *context);
 static Node *eval_const_expressions_mutator(Node *node,
 											eval_const_expressions_context *context);
 static bool contain_non_const_walker(Node *node, void *context);
@@ -2100,6 +2101,69 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	context.estimate = false;	/* safe transformations only */
 	return eval_const_expressions_mutator(node, &context);
 }
+
+#define MIN_ARRAY_SIZE_FOR_HASHED_SAOP 9
+/*--------------------
+ * convert_saop_to_hashed_saop
+ *
+ * Recursively search 'node' for ScalarArrayOpExprs and fill in the hash
+ * function for any ScalarArrayOpExpr that looks like it would be useful to
+ * evaluate using a hash table rather than a linear search.
+ *
+ * We'll use a hash table if all of the following conditions are met:
+ * 1. The 2nd argument of the array contain only Consts.
+ * 2. useOr is true.
+ * 3. There's valid hash function for both left and righthand operands and
+ *	  these hash functions are the same.
+ * 4. If the array contains enough elements for us to consider it to be
+ *	  worthwhile using a hash table rather than a linear search.
+ */
+void
+convert_saop_to_hashed_saop(Node *node)
+{
+	(void) convert_saop_to_hashed_saop_walker(node, NULL);
+}
+
+static bool
+convert_saop_to_hashed_saop_walker(Node *node, void *context)
+{
+	if (node == NULL)
+		return false;
+
+	if (IsA(node, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) node;
+		Expr	   *arrayarg = (Expr *) lsecond(saop->args);
+		Oid			lefthashfunc;
+		Oid			righthashfunc;
+
+		if (saop->useOr && arrayarg && IsA(arrayarg, Const) &&
+			!((Const *) arrayarg)->constisnull &&
+			get_op_hash_functions(saop->opno, &lefthashfunc, &righthashfunc) &&
+			lefthashfunc == righthashfunc)
+		{
+			Datum		arrdatum = ((Const *) arrayarg)->constvalue;
+			ArrayType  *arr = (ArrayType *) DatumGetPointer(arrdatum);
+			int			nitems;
+
+			/*
+			 * Only fill in the hash functions if the array looks large enough
+			 * for it to be worth hashing instead of doing a linear search.
+			 */
+			nitems = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
+
+			if (nitems >= MIN_ARRAY_SIZE_FOR_HASHED_SAOP)
+			{
+				/* Looks good. Fill in the hash functions */
+				saop->hashfuncid = lefthashfunc;
+			}
+			return true;
+		}
+	}
+
+	return expression_tree_walker(node, convert_saop_to_hashed_saop_walker, NULL);
+}
+
 
 /*--------------------
  * estimate_expression_value
@@ -4274,6 +4338,27 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
 
+	/* If we have prosqlbody, pay attention to that not prosrc */
+	tmp = SysCacheGetAttr(PROCOID,
+						  func_tuple,
+						  Anum_pg_proc_prosqlbody,
+						  &isNull);
+	if (!isNull)
+	{
+		Node	   *n;
+		List	   *querytree_list;
+
+		n = stringToNode(TextDatumGetCString(tmp));
+		if (IsA(n, List))
+			querytree_list = linitial_node(List, castNode(List, n));
+		else
+			querytree_list = list_make1(n);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+	}
+	else
+	{
 	/*
 	 * Set up to handle parameters while parsing the function body.  We need a
 	 * dummy FuncExpr node containing the already-simplified arguments to pass
@@ -4317,6 +4402,7 @@ inline_function(Oid funcid, Oid result_type, Oid result_collid,
 	querytree = transformTopLevelStmt(pstate, linitial(raw_parsetree_list));
 
 	free_parsestate(pstate);
+	}
 
 	/*
 	 * The single command must be a simple "SELECT expression".
@@ -4820,6 +4906,31 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	sqlerrcontext.previous = error_context_stack;
 	error_context_stack = &sqlerrcontext;
 
+	/* If we have prosqlbody, pay attention to that not prosrc */
+	tmp = SysCacheGetAttr(PROCOID,
+						  func_tuple,
+						  Anum_pg_proc_prosqlbody,
+						  &isNull);
+	if (!isNull)
+	{
+		Node	   *n;
+
+		n = stringToNode(TextDatumGetCString(tmp));
+		if (IsA(n, List))
+			querytree_list = linitial_node(List, castNode(List, n));
+		else
+			querytree_list = list_make1(n);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+
+		querytree_list = pg_rewrite_query(querytree);
+		if (list_length(querytree_list) != 1)
+			goto fail;
+		querytree = linitial(querytree_list);
+	}
+	else
+	{
 	/*
 	 * Set up to handle parameters while parsing the function body.  We can
 	 * use the FuncExpr just created as the input for
@@ -4828,18 +4939,6 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	pinfo = prepare_sql_fn_parse_info(func_tuple,
 									  (Node *) fexpr,
 									  fexpr->inputcollid);
-
-	/*
-	 * Also resolve the actual function result tupdesc, if composite.  If the
-	 * function is just declared to return RECORD, dig the info out of the AS
-	 * clause.
-	 */
-	functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
-	if (functypclass == TYPEFUNC_RECORD)
-		rettupdesc = BuildDescFromLists(rtfunc->funccolnames,
-										rtfunc->funccoltypes,
-										rtfunc->funccoltypmods,
-										rtfunc->funccolcollations);
 
 	/*
 	 * Parse, analyze, and rewrite (unlike inline_function(), we can't skip
@@ -4857,6 +4956,19 @@ inline_set_returning_function(PlannerInfo *root, RangeTblEntry *rte)
 	if (list_length(querytree_list) != 1)
 		goto fail;
 	querytree = linitial(querytree_list);
+	}
+
+	/*
+	 * Also resolve the actual function result tupdesc, if composite.  If the
+	 * function is just declared to return RECORD, dig the info out of the AS
+	 * clause.
+	 */
+	functypclass = get_expr_result_type((Node *) fexpr, NULL, &rettupdesc);
+	if (functypclass == TYPEFUNC_RECORD)
+		rettupdesc = BuildDescFromLists(rtfunc->funccolnames,
+										rtfunc->funccoltypes,
+										rtfunc->funccoltypmods,
+										rtfunc->funccolcollations);
 
 	/*
 	 * The single command must be a plain SELECT.

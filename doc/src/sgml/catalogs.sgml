@@ -6026,6 +6026,17 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
 
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>prosqlbody</structfield> <type>pg_node_tree</type>
+      </para>
+      <para>
+       Pre-parsed SQL function body.  This is used for SQL-language
+       functions when the body is given in SQL-standard notation
+       rather than as a string literal.  It's null in other cases.
+       </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>proconfig</structfield> <type>text[]</type>
       </para>
       <para>
@@ -6048,9 +6059,16 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
   <para>
    For compiled functions, both built-in and dynamically loaded,
    <structfield>prosrc</structfield> contains the function's C-language
-   name (link symbol).  For all other currently-known language types,
+   name (link symbol).
+   For SQL-language functions, <structfield>prosrc</structfield> contains
+   the function's source text if that is specified as a string literal;
+   but if the function body is specified in SQL-standard style,
+   <structfield>prosrc</structfield> is unused (typically it's an empty
+   string) and <structfield>prosqlbody</structfield> contains the
+   pre-parsed definition.
+   For all other currently-known language types,
    <structfield>prosrc</structfield> contains the function's source
-   text.  <structfield>probin</structfield> is unused except for
+   text.  <structfield>probin</structfield> is null except for
    dynamically-loaded C functions, for which it gives the name of the
    shared library file containing the function.
   </para>
