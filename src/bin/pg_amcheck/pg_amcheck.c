@@ -61,6 +61,13 @@ typedef struct AmcheckOptions
 	bool		show_progress;
 	int			jobs;
 
+	/*
+	 * Whether to install missing extensions, and optionally the name of the
+	 * schema in which to install the extension's objects.
+	 */
+	bool		install_missing;
+	char	   *install_schema;
+
 	/* Objects to check or not to check, as lists of PatternInfo structs. */
 	PatternInfoArray include;
 	PatternInfoArray exclude;
@@ -109,6 +116,8 @@ static AmcheckOptions opts = {
 	.strict_names = true,
 	.show_progress = false,
 	.jobs = 1,
+	.install_missing = false,
+	.install_schema = "pg_catalog",
 	.include = {NULL, 0},
 	.exclude = {NULL, 0},
 	.excludetbl = false,
@@ -259,6 +268,7 @@ main(int argc, char *argv[])
 		{"no-strict-names", no_argument, NULL, 10},
 		{"heapallindexed", no_argument, NULL, 11},
 		{"parent-check", no_argument, NULL, 12},
+		{"install-missing", optional_argument, NULL, 13},
 
 		{NULL, 0, NULL, 0}
 	};
@@ -319,8 +329,7 @@ main(int argc, char *argv[])
 				opts.jobs = atoi(optarg);
 				if (opts.jobs < 1)
 				{
-					fprintf(stderr,
-							_("number of parallel jobs must be at least 1\n"));
+					pg_log_error("number of parallel jobs must be at least 1");
 					exit(1);
 				}
 				break;
@@ -393,7 +402,7 @@ main(int argc, char *argv[])
 					opts.skip = "all frozen";
 				else
 				{
-					fprintf(stderr, _("invalid skip option\n"));
+					pg_log_error("invalid skip option");
 					exit(1);
 				}
 				break;
@@ -401,14 +410,12 @@ main(int argc, char *argv[])
 				opts.startblock = strtol(optarg, &endptr, 10);
 				if (*endptr != '\0')
 				{
-					fprintf(stderr,
-							_("invalid start block\n"));
+					pg_log_error("invalid start block");
 					exit(1);
 				}
 				if (opts.startblock > MaxBlockNumber || opts.startblock < 0)
 				{
-					fprintf(stderr,
-							_("start block out of bounds\n"));
+					pg_log_error("start block out of bounds");
 					exit(1);
 				}
 				break;
@@ -416,14 +423,12 @@ main(int argc, char *argv[])
 				opts.endblock = strtol(optarg, &endptr, 10);
 				if (*endptr != '\0')
 				{
-					fprintf(stderr,
-							_("invalid end block\n"));
+					pg_log_error("invalid end block");
 					exit(1);
 				}
 				if (opts.endblock > MaxBlockNumber || opts.endblock < 0)
 				{
-					fprintf(stderr,
-							_("end block out of bounds\n"));
+					pg_log_error("end block out of bounds");
 					exit(1);
 				}
 				break;
@@ -440,6 +445,11 @@ main(int argc, char *argv[])
 			case 12:
 				opts.parent_check = true;
 				break;
+			case 13:
+				opts.install_missing = true;
+				if (optarg)
+					opts.install_schema = pg_strdup(optarg);
+				break;
 			default:
 				fprintf(stderr,
 						_("Try \"%s --help\" for more information.\n"),
@@ -450,8 +460,7 @@ main(int argc, char *argv[])
 
 	if (opts.endblock >= 0 && opts.endblock < opts.startblock)
 	{
-		fprintf(stderr,
-				_("end block precedes start block\n"));
+		pg_log_error("end block precedes start block");
 		exit(1);
 	}
 
@@ -547,6 +556,29 @@ main(int argc, char *argv[])
 			if (conn != NULL)
 				disconnectDatabase(conn);
 			conn = connectDatabase(&cparams, progname, opts.echo, false, true);
+		}
+
+		/*
+		 * Optionally install amcheck if not already installed in this
+		 * database.
+		 */
+		if (opts.install_missing)
+		{
+			char *schema;
+			char *install_sql;
+
+			/*
+			 * Must re-escape the schema name for each database, as the
+			 * escaping rules may change.
+			 */
+			schema = PQescapeIdentifier(conn, opts.install_schema,
+										strlen(opts.install_schema));
+			install_sql = psprintf("CREATE EXTENSION IF NOT EXISTS amcheck WITH SCHEMA %s",
+								   schema);
+
+			executeCommand(conn, install_sql, opts.echo);
+			pfree(install_sql);
+			pfree(schema);
 		}
 
 		/*
@@ -1159,6 +1191,7 @@ help(const char *progname)
 	printf(_("  -V, --version                  output version information, then exit\n"));
 	printf(_("  -P, --progress                 show progress information\n"));
 	printf(_("  -?, --help                     show this help, then exit\n"));
+	printf(_("      --install-missing          install missing extensions\n"));
 
 	printf(_("\nReport bugs to <%s>.\n"), PACKAGE_BUGREPORT);
 	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
