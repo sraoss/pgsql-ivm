@@ -70,6 +70,13 @@
  </para>
 
  <para>
+  Note that the <literal>ONLY</literal> option specified in
+  <command>SELECT</command>, <command>UPDATE</command>,
+  <command>DELETE</command> or <command>TRUNCATE</command>
+  has no effect when accessing or modifying the remote table.
+ </para>
+
+ <para>
   Note that <filename>postgres_fdw</filename> currently lacks support for
   <command>INSERT</command> statements with an <literal>ON CONFLICT DO
   UPDATE</literal> clause.  However, the <literal>ON CONFLICT DO NOTHING</literal>
@@ -452,10 +459,16 @@ OPTIONS (ADD password_required 'false');
      <listitem>
       <para>
        This option controls whether <filename>postgres_fdw</filename> allows
-       foreign tables to be truncated using <command>TRUNCATE</command>
+       foreign tables to be truncated using the <command>TRUNCATE</command>
        command. It can be specified for a foreign table or a foreign server.
        A table-level option overrides a server-level option.
        The default is <literal>true</literal>.
+      </para>
+
+      <para>
+       Of course, if the remote table is not in fact truncatable, an error
+       would occur anyway.  Use of this option primarily allows the error to
+       be thrown locally without querying the remote server.
       </para>
      </listitem>
     </varlistentry>
