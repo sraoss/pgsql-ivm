@@ -1138,7 +1138,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
-					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, false, NoLock, NULL) != NIL)
+					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
