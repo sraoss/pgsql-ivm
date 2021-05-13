@@ -323,6 +323,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	{
 		check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
 
+		/* check if the query is supported in IMMV definition */
 		if(contain_mutable_functions((Node *)query))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -330,6 +331,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 					 errhint("functions must be marked IMMUTABLE")));
 
 		check_ivm_restriction_walker((Node *) query, &ctx, 0);
+
+		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
 		query_immv = copyObject(query);
 	}
@@ -358,7 +361,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 * and is executed repeatedly.  (See also the same hack in EXPLAIN and
 		 * PREPARE.)
 		 */
-
 		rewritten = QueryRewrite(copyObject(query));
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
@@ -448,6 +450,14 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 /*
  * rewriteQueryForIMMV -- rewrite view definition query for IMMV
+ *
+ * count(*) is added for counting distinct tuples in views.
+ * Also, additional hidden columns are added for aggregate values.
+ *
+ * EXISTS sublink is rewritten to LATERAL subquery with HAVING
+ * clause to check count(*) > 0. In addition, a counting column
+ * referring to count(*) in this subquery is added to the original
+ * target list.
  */
 Query *
 rewriteQueryForIMMV(Query *query, List *colNames)
@@ -461,6 +471,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 
 	rewritten = copyObject(query);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
 	/*
 	 * If this query has EXISTS clause, rewrite query and
 	 * add __ivm_exists_count_X__ column.
@@ -474,7 +485,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 		/* rewrite EXISTS sublink to LATERAL subquery */
 		rewrite_query_for_exists_subquery(rewritten);
 
-		/* Add count(*) using EXISTS clause */
+		/* Add counting column referring to count(*) in EXISTS clause */
 		foreach(lc, rewritten->rtable)
 		{
 			char *columnName;
@@ -490,7 +501,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
 			if (columnName == NULL)
 				continue;
-			countCol = (Node *)makeVar(varno ,attnum,
+			countCol = (Node *)makeVar(varno, attnum,
 						INT8OID, -1, InvalidOid, 0);
 
 
@@ -520,28 +531,22 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 						 errmsg("GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view")));
 		}
 	}
+	/* Convert DISTINCT to GROUP BY.  count(*) will be added afterward. */
 	else if (!rewritten->hasAggs && rewritten->distinctClause)
 		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
 
-
+	/* Add additional columns for aggregate values */
 	if (rewritten->hasAggs)
 	{
 		ListCell *lc;
 		List *agg_counts = NIL;
 		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
-		Const	*dmy_arg = makeConst(INT4OID,
-									 -1,
-									 InvalidOid,
-									 sizeof(int32),
-									 Int32GetDatum(1),
-									 false,
-									 true); /* pass by value */
 
 		foreach(lc, rewritten->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 			TargetEntry *tle_count;
-			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno-1)));
+			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno - 1)));
 
 
 			if (IsA(tle->expr, Aggref))
@@ -550,14 +555,23 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 				const char *aggname = get_func_name(aggref->aggfnoid);
 
 				/*
-				 * For aggregate functions except to count, add count func with the same arg parameters.
-				 * Also, add sum func for agv.
+				 * For aggregate functions except to count, add count() func with the same arg parameters.
+				 * This count result is used for determining if the aggregate value should be NULL or not.
+				 * Also, add sum() func for avg because we need to calculate an average value as sum/count.
 				 *
 				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
 				 * of adding new duplicated one.
 				 */
 				if (strcmp(aggname, "count") != 0)
 				{
+					Const	*dmy_arg = makeConst(INT4OID,
+												-1,
+												InvalidOid,
+												sizeof(int32),
+												Int32GetDatum(1),
+												false,
+												true); /* pass by value */
+
 					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
@@ -593,7 +607,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 					}
 					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
 
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					/* Make a Func with dummy args, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
 					((Aggref *)node)->args = aggref->args;
 
@@ -608,10 +622,9 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			}
 		}
 		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
-
 	}
 
-	/* Add count(*) for counting algorithm */
+	/* Add count(*) for counting distinct tuples in views */
 	if (rewritten->distinctClause || rewritten->hasAggs)
 	{
 		fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
@@ -1148,12 +1161,12 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
 
-					if (rte->rtekind ==  RTE_VALUES)
+					if (rte->rtekind == RTE_VALUES)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("VALUES is not supported on incrementally maintainable materialized view")));
 
-					if (rte->rtekind ==  RTE_SUBQUERY)
+					if (rte->rtekind == RTE_SUBQUERY)
 					{
 						if (ctx->has_outerjoin)
 							ereport(ERROR,
@@ -1781,14 +1794,14 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	query->cteList = NIL;
 
 	/*
-	 * Collect primary key attributes from all tables used in query. The attributes
+	 * Collect primary key attributes from all tables used in query. The key attributes
 	 * sets for each table are stored in key_attnos_list in order by RTE index.
 	 */
 	i = 1;
 	foreach(lc, query->rtable)
 	{
 		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
-		Bitmapset *key_attnos = NULL;
+		Bitmapset *key_attnos;
 		bool	has_pkey = true;
 
 		/* for subqueries, scan recursively */
@@ -1805,15 +1818,21 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 			*constraintList = lappend_oid(*constraintList, constraintOid);
 			has_pkey = (key_attnos != NULL);
 		}
+		/* for other RTEs, store NULL into key_attnos_list */
+		else
+			key_attnos = NULL;
 
-		/* If any table has no primary key or its pkey constraint is deferrable, return NULL. */
+		/*
+		 * If any table or subquery has no primary key or its pkey constraint is deferrable,
+		 * we cannot get key attributes for this query, so return NULL.
+		 */
 		if (!has_pkey)
 			return NULL;
 
 		key_attnos_list = lappend(key_attnos_list, key_attnos);
 	}
 
-	/* Collect attnos that is derived primary key attributes from the target list */
+	/* Collect key attributes appearing in the target list */
 	i = 1;
 	foreach(lc, query->targetList)
 	{
@@ -1824,8 +1843,13 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 			Var *var = (Var*) tle->expr;
 			Bitmapset *attnos = list_nth(key_attnos_list, var->varno - 1);
 
+			/* check if this attribute is from a base table's primary key */
 			if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber, attnos))
 			{
+				/*
+				 * Remove found key attributes from key_attnos_list, and add this
+				 * to the result list.
+				 */
 				bms_del_member(attnos, var->varattno - FirstLowInvalidHeapAttributeNumber);
 				keys = bms_add_member(keys, i - FirstLowInvalidHeapAttributeNumber);
 			}
@@ -1833,13 +1857,14 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 		i++;
 	}
 
-	/*
-	 * If any primary key attribute that is derived from a table used in FROM clause
-	 * does not exist in the target, return NULL.
-	 */
-
+	/* Collect relations appearing in the FROM clause */
 	rels_in_from = pull_varnos_of_level(&root, (Node *)query->jointree, 0);
 
+	/*
+	 * Check if all key attributes of relations in FROM are appearing in the target
+	 * list.  If an attribute remains in key_attnos_list in spite of the table is used
+	 * in FROM clause, the target is missing this key attribute, so we return NULL.
+	 */
 	i=1;
 	foreach(lc, key_attnos_list)
 	{

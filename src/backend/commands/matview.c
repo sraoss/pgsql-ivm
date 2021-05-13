@@ -229,7 +229,7 @@ static RangeTblEntry *get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *tabl
 				 QueryEnvironment *queryEnv);
 static RangeTblEntry *union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 		   QueryEnvironment *queryEnv);
-static Query *rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate);
+static Query *rewrite_query_for_distinct_and_aggregates(Query *query, ParseState *pstate);
 
 static IvmMaintenanceGraph *make_maintenance_graph(Query *query, Relation matviewRel);
 static List *get_normalized_form(Query *query, Node *jtnode);
@@ -455,11 +455,9 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	dataQuery = get_matview_query(matviewRel);
 
-	/* If use IMMV, need to rewrite matview query */
+	/* For IMMV, we need to rewrite matview query */
 	if (!stmt->skipData && RelationIsIVM(matviewRel))
 		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
-
-
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more
@@ -1562,7 +1560,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 	rewritten = copyObject(query);
 
-	/* Replace resnames in a target list with materialized view's attnames*/
+	/* Replace resnames in a target list with materialized view's attnames */
 	i = 0;
 	foreach (lc, rewritten->targetList)
 	{
@@ -1582,8 +1580,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables,
 												  entry->xid, entry->cid,
 												  pstate, NIL);
-	/* Rewrite for counting algorithm and aggregates functions */
-	rewritten = rewrite_query_for_counting_and_aggregates(rewritten, pstate);
+	/* Rewrite for DISTINCT clause and aggregates functions */
+	rewritten = rewrite_query_for_distinct_and_aggregates(rewritten, pstate);
 
 	/* Create tuplestores to store view deltas */
 	if (entry->has_old)
@@ -1665,7 +1663,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 				use_count = true;
 			}
 
-			/* For outer join query, we need additional rewrites.*/
+			/* For outer join query, we need additional rewrites. */
 			if (!in_exists && hasOuterJoins)
 			{
 				int index;
@@ -2071,24 +2069,17 @@ union_ENRs(RangeTblEntry *rte, Oid relid, List *enr_rtes, const char *prefix,
 }
 
 /*
- * rewrite_query_for_counting_and_aggregates
+ * rewrite_query_for_distinct_and_aggregates
  *
- * Rewrite query for counting algorithm and aggregate functions.
+ * Rewrite query for counting DISTINCT clause and aggregate functions.
  */
 static Query *
-rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
+rewrite_query_for_distinct_and_aggregates(Query *query, ParseState *pstate)
 {
 	TargetEntry *tle_count;
 	FuncCall *fn;
 	Node *node;
 	int varno = 0;
-	Const	*dmy_arg = makeConst(INT4OID,
-								 -1,
-								 InvalidOid,
-								 sizeof(int32),
-								 Int32GetDatum(1),
-								 false,
-								 true);
 	ListCell *tbl_lc;
 
 	/* For aggregate views */
@@ -2108,8 +2099,9 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 				const char *aggname = get_func_name(aggref->aggfnoid);
 
 				/*
-				 * For aggregate functions except to count, add count func with the same arg parameters.
-				 * Also, add sum func for agv.
+				 * For aggregate functions except to count, add count() func with the same arg parameters.
+				 * This count result is used for determining if the aggregate value should be NULL or not.
+				 * Also, add sum() func for avg because we need to calculate an average value as sum/count.
 				 *
 				 * XXX: need some generalization
 				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
@@ -2117,6 +2109,14 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 				 */
 				if (strcmp(aggname, "count") != 0)
 				{
+					Const	*dmy_arg = makeConst(INT4OID,
+												-1,
+												InvalidOid,
+												sizeof(int32),
+												Int32GetDatum(1),
+												false,
+												true);
+
 					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
@@ -2152,7 +2152,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 					}
 					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
 
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+					/* Make a Func with dummy args, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
 					((Aggref *)node)->args = aggref->args;
 
@@ -2169,7 +2169,7 @@ rewrite_query_for_counting_and_aggregates(Query *query, ParseState *pstate)
 			query->targetList = list_concat(query->targetList, agg_counts);
 	}
 
-	/* Add count(*) using EXISTS clause */
+	/* Add count(*) used for EXISTS clause */
 	foreach(tbl_lc, query->rtable)
 	{
 		RangeTblEntry *rte = (RangeTblEntry *)lfirst(tbl_lc);
@@ -2287,7 +2287,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				Expr *opexpr;
 
 				SubLink *sublink = (SubLink *)node;
-				/* raise ERROR if not has exist clause */
+				/* raise ERROR if there is non-EXISTS sublink */
 				if (sublink->subLinkType != EXISTS_SUBLINK)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -2295,7 +2295,8 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 							 errhint("subquery in WHERE clause only supports subquery with EXISTS clause")));
 
 				subselect = (Query *)sublink->subselect;
-				/* raise ERROR if it is CTE */
+
+				/* raise ERROR if the sublink has CTE */
 				if (subselect->cteList)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -2311,7 +2312,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				snprintf(aliasName, sizeof(aliasName), "__ivm_exists_subquery_%d__", *count);
 				snprintf(columnName, sizeof(columnName), "__ivm_exists_count_%d__", *count);
 
-				/* add COUNT(*) for counting exists condition */
+				/* add COUNT(*) for counting rows that meet exists condition */
 				fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 				fn->agg_star = true;
 				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
@@ -2323,28 +2324,20 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				subselect->targetList = list_concat(subselect->targetList, list_make1(tle_count));
 				subselect->hasAggs = true;
 
-				/* add subquery in from clause */
+				/* add a sub-query whth LATERAL into from clause */
 				alias = makeAlias(aliasName, NIL);
-				/* it means that LATERAL is enable if fourth argument is true */
-				nsitem = addRangeTableEntryForSubquery(pstate,subselect,alias,true,true);
+				nsitem = addRangeTableEntryForSubquery(pstate, subselect, alias, true, true);
 				rte = nsitem->p_rte;
-
 				query->rtable = lappend(query->rtable, rte);
 
+				/* assume the new RTE is at the end */
 				rtr = makeNode(RangeTblRef);
-				/* assume new rte is at end */
 				rtr->rtindex = list_length(query->rtable);
-
 				((FromExpr *)query->jointree)->fromlist = lappend(((FromExpr *)query->jointree)->fromlist, rtr);
 
-
-				fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
-				fn->agg_star = true;
-
-				fn_node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
-
 				/*
-				 * it means using int84gt( '>' operator). it will be replaced to make_op().
+				 * EXISTS condition is converted to HAVING count(*) > 0.
+				 * We use make_opcllause() to get int84gt( '>' operator). We might be able to use make_op().
 				 */
 				opId = OpernameGetOprid(list_make1(makeString(">")), INT8OID, INT4OID);
 				opexpr = make_opclause(opId, BOOLOID, false,
@@ -3763,7 +3756,9 @@ get_matching_condition_string(List *keys)
 /*
  * get_returning_string
  *
- * Build a string for RETURNING clause used in apply_old_delta.
+ * Build a string for RETURNING clause of UPDATE used in apply_old_delta_with_count.
+ * This clause returns ctid and a boolean value that indicates if we need to
+ * recalculate min or max value, for each updated row.
  */
 static char *
 get_returning_string(List *minmax_list, List *is_min_list, List *keys)
