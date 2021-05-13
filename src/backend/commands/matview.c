@@ -632,14 +632,9 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		if (!stmt->skipData)
 			pgstat_count_heap_insert(matviewRel, processed);
 	}
+
 	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
-	{
-		Relids	relids = NULL;
-
-		CreateIvmTriggersOnBaseTables(dataQuery, (Node *)dataQuery, matviewOid, &relids);
-		bms_free(relids);
-	}
-
+		CreateIvmTriggersOnBaseTables(dataQuery, matviewOid);
 
 	table_close(matviewRel, NoLock);
 
@@ -1295,22 +1290,17 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 {
 	TriggerData *trigdata = (TriggerData *) fcinfo->context;
 	char	   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
+	char	   *ex_lock_text = trigdata->tg_trigger->tgargs[1];
 	Oid			matviewOid;
-	Relation	matviewRel;
 	MV_TriggerHashEntry *entry;
 	bool	found;
-	Query	*query;
-	RangeTblEntry *rte;
+	bool	ex_lock;
 
 	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
+	ex_lock = DatumGetBool(DirectFunctionCall1(boolin, CStringGetDatum(ex_lock_text)));
 
-	matviewRel = table_open(matviewOid, RowExclusiveLock);
-	query = get_matview_query(matviewRel);
-	rte = list_nth(query->rtable, PRS2_NEW_VARNO);
-
-	/* If the view has only one table, we can use a weaker lock. */
-	if (list_length(query->rtable) > PRS2_NEW_VARNO + 1 &&
-		rte->rtekind != RTE_RELATION)
+	/* If the view has more than one tables, we have to use an exclusive lock. */
+	if (ex_lock)
 	{
 		/*
 		 * Wait for concurrent transactions which update this materialized view at
@@ -1337,7 +1327,8 @@ IVM_immediate_before(PG_FUNCTION_ARGS)
 							relname)));
 		}
 	}
-	table_close(matviewRel, NoLock);
+	else
+		LockRelationOid(matviewOid, RowExclusiveLock);
 
 	/*
 	 * On the first call initialize the hashtable
