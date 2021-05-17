@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Test TRUNCATE
 use strict;
 use warnings;
@@ -182,4 +185,5 @@ $node_publisher->wait_for_catchup('sub1');
 
 $result = $node_subscriber->safe_psql('postgres',
 	"SELECT count(*), min(a), max(a) FROM tab1");
-is($result, qq(0||), 'truncate replicated in synchronous logical replication');
+is($result, qq(0||),
+	'truncate replicated in synchronous logical replication');

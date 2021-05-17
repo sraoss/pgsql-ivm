@@ -39,6 +39,12 @@
 
 #define JUMBLE_SIZE				1024	/* query serialization buffer size */
 
+/* GUC parameters */
+int			compute_query_id = COMPUTE_QUERY_ID_AUTO;
+
+/* True when compute_query_id is ON, or AUTO and a module requests them */
+bool		query_id_enabled = false;
+
 static uint64 compute_utility_query_id(const char *str, int query_location, int query_len);
 static void AppendJumble(JumbleState *jstate,
 						 const unsigned char *item, Size size);
@@ -55,8 +61,8 @@ static void RecordConstLocation(JumbleState *jstate, int location);
 const char *
 CleanQuerytext(const char *query, int *location, int *len)
 {
-	int query_location = *location;
-	int query_len = *len;
+	int			query_location = *location;
+	int			query_len = *len;
 
 	/* First apply starting offset, unless it's -1 (unknown). */
 	if (query_location >= 0)
@@ -95,11 +101,14 @@ JumbleState *
 JumbleQuery(Query *query, const char *querytext)
 {
 	JumbleState *jstate = NULL;
+
+	Assert(IsQueryIdEnabled());
+
 	if (query->utilityStmt)
 	{
 		query->queryId = compute_utility_query_id(querytext,
-												 query->stmt_location,
-												 query->stmt_len);
+												  query->stmt_location,
+												  query->stmt_len);
 	}
 	else
 	{
@@ -132,17 +141,30 @@ JumbleQuery(Query *query, const char *querytext)
 }
 
 /*
+ * Enables query identifier computation.
+ *
+ * Third-party plugins can use this function to inform core that they require
+ * a query identifier to be computed.
+ */
+void
+EnableQueryId(void)
+{
+	if (compute_query_id != COMPUTE_QUERY_ID_OFF)
+		query_id_enabled = true;
+}
+
+/*
  * Compute a query identifier for the given utility query string.
  */
 static uint64
 compute_utility_query_id(const char *query_text, int query_location, int query_len)
 {
-	uint64 queryId;
+	uint64		queryId;
 	const char *sql;
 
 	/*
-	 * Confine our attention to the relevant part of the string, if the
-	 * query is a portion of a multi-statement source string.
+	 * Confine our attention to the relevant part of the string, if the query
+	 * is a portion of a multi-statement source string.
 	 */
 	sql = CleanQuerytext(query_text, &query_location, &query_len);
 
@@ -150,9 +172,8 @@ compute_utility_query_id(const char *query_text, int query_location, int query_l
 											   query_len, 0));
 
 	/*
-	 * If we are unlucky enough to get a hash of zero(invalid), use
-	 * queryID as 2 instead, queryID 1 is already in use for normal
-	 * statements.
+	 * If we are unlucky enough to get a hash of zero(invalid), use queryID as
+	 * 2 instead, queryID 1 is already in use for normal statements.
 	 */
 	if (queryId == UINT64CONST(0))
 		queryId = UINT64CONST(2);

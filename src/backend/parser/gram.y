@@ -263,7 +263,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 }
 
 %type <node>	stmt toplevel_stmt schema_stmt routine_body_stmt
-		AlterEventTrigStmt
+		AlterEventTrigStmt AlterCollationStmt
 		AlterDatabaseStmt AlterDatabaseSetStmt AlterDomainStmt AlterEnumStmt
 		AlterFdwStmt AlterForeignServerStmt AlterGroupStmt
 		AlterObjectDependsStmt AlterObjectSchemaStmt AlterOwnerStmt
@@ -903,6 +903,7 @@ toplevel_stmt:
 
 stmt:
 			AlterEventTrigStmt
+			| AlterCollationStmt
 			| AlterDatabaseStmt
 			| AlterDatabaseSetStmt
 			| AlterDefaultPrivilegesStmt
@@ -2681,14 +2682,6 @@ alter_table_cmd:
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					n->subtype = AT_NoForceRowSecurity;
-					$$ = (Node *)n;
-				}
-			/* ALTER INDEX <name> ALTER COLLATION ... REFRESH VERSION */
-			| ALTER COLLATION any_name REFRESH VERSION_P
-				{
-					AlterTableCmd *n = makeNode(AlterTableCmd);
-					n->subtype = AT_AlterCollationRefreshVersion;
-					n->object = $3;
 					$$ = (Node *)n;
 				}
 			| alter_generic_options
@@ -10384,6 +10377,21 @@ drop_option:
 					$$ = makeDefElem("force", NULL, @1);
 				}
 		;
+
+/*****************************************************************************
+ *
+ *		ALTER COLLATION
+ *
+ *****************************************************************************/
+
+AlterCollationStmt: ALTER COLLATION any_name REFRESH VERSION_P
+				{
+					AlterCollationStmt *n = makeNode(AlterCollationStmt);
+					n->collname = $3;
+					$$ = (Node *)n;
+				}
+		;
+
 
 /*****************************************************************************
  *

@@ -362,9 +362,9 @@ ExecAppend(PlanState *pstate)
 		}
 
 		/*
-		 * wait or poll async events if any. We do this before checking for
-		 * the end of iteration, because it might drain the remaining async
-		 * subplans.
+		 * wait or poll for async events if any. We do this before checking
+		 * for the end of iteration, because it might drain the remaining
+		 * async subplans.
 		 */
 		if (node->as_nasyncremain > 0)
 			ExecAppendAsyncEventWait(node);
@@ -440,7 +440,7 @@ ExecReScanAppend(AppendState *node)
 
 		/*
 		 * If chgParam of subnode is not null then plan will be re-scanned by
-		 * first ExecProcNode.
+		 * first ExecProcNode or by first ExecAsyncRequest.
 		 */
 		if (subnode->chgParam == NULL)
 			ExecReScan(subnode);
@@ -566,9 +566,9 @@ choose_next_subplan_locally(AppendState *node)
 
 	/*
 	 * If first call then have the bms member function choose the first valid
-	 * sync subplan by initializing whichplan to -1.  If there happen to be
-	 * no valid sync subplans then the bms member function will handle that
-	 * by returning a negative number which will allow us to exit returning a
+	 * sync subplan by initializing whichplan to -1.  If there happen to be no
+	 * valid sync subplans then the bms member function will handle that by
+	 * returning a negative number which will allow us to exit returning a
 	 * false value.
 	 */
 	if (whichplan == INVALID_SUBPLAN_INDEX)
@@ -911,7 +911,7 @@ ExecAppendAsyncGetNext(AppendState *node, TupleTableSlot **result)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		/* Wait or poll async events. */
+		/* Wait or poll for async events. */
 		ExecAppendAsyncEventWait(node);
 
 		/* Request a tuple asynchronously. */
@@ -925,8 +925,8 @@ ExecAppendAsyncGetNext(AppendState *node, TupleTableSlot **result)
 
 	/*
 	 * If all sync subplans are complete, we're totally done scanning the
-	 * given node.  Otherwise, we're done with the asynchronous stuff but
-	 * must continue scanning the sync subplans.
+	 * given node.  Otherwise, we're done with the asynchronous stuff but must
+	 * continue scanning the sync subplans.
 	 */
 	if (node->as_syncdone)
 	{
@@ -1003,7 +1003,7 @@ ExecAppendAsyncEventWait(AppendState *node)
 {
 	int			nevents = node->as_nasyncplans + 1;
 	long		timeout = node->as_syncdone ? -1 : 0;
-	WaitEvent   occurred_event[EVENT_BUFFER_SIZE];
+	WaitEvent	occurred_event[EVENT_BUFFER_SIZE];
 	int			noccurred;
 	int			i;
 
@@ -1054,8 +1054,8 @@ ExecAppendAsyncEventWait(AppendState *node)
 
 			/*
 			 * Mark it as no longer needing a callback.  We must do this
-			 * before dispatching the callback in case the callback resets
-			 * the flag.
+			 * before dispatching the callback in case the callback resets the
+			 * flag.
 			 */
 			Assert(areq->callback_pending);
 			areq->callback_pending = false;
@@ -1084,7 +1084,7 @@ ExecAsyncAppendResponse(AsyncRequest *areq)
 	/* Nothing to do if the request is pending. */
 	if (!areq->request_complete)
 	{
-		/* The request would have been pending for a callback */
+		/* The request would have been pending for a callback. */
 		Assert(areq->callback_pending);
 		return;
 	}

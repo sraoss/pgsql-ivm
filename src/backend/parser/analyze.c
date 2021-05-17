@@ -124,7 +124,7 @@ parse_analyze(RawStmt *parseTree, const char *sourceText,
 
 	query = transformTopLevelStmt(pstate, parseTree);
 
-	if (compute_query_id)
+	if (IsQueryIdEnabled())
 		jstate = JumbleQuery(query, sourceText);
 
 	if (post_parse_analyze_hook)
@@ -163,7 +163,7 @@ parse_analyze_varparams(RawStmt *parseTree, const char *sourceText,
 	/* make sure all is well with parameter types */
 	check_variable_parameters(pstate, query);
 
-	if (compute_query_id)
+	if (IsQueryIdEnabled())
 		jstate = JumbleQuery(query, sourceText);
 
 	if (post_parse_analyze_hook)
@@ -2752,7 +2752,7 @@ transformDeclareCursorStmt(ParseState *pstate, DeclareCursorStmt *stmt)
 		(stmt->options & CURSOR_OPT_NO_SCROLL))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_DEFINITION),
-				 /* translator: %s is a SQL keyword */
+		/* translator: %s is a SQL keyword */
 				 errmsg("cannot specify both %s and %s",
 						"SCROLL", "NO SCROLL")));
 
@@ -2760,7 +2760,7 @@ transformDeclareCursorStmt(ParseState *pstate, DeclareCursorStmt *stmt)
 		(stmt->options & CURSOR_OPT_INSENSITIVE))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_DEFINITION),
-				 /* translator: %s is a SQL keyword */
+		/* translator: %s is a SQL keyword */
 				 errmsg("cannot specify both %s and %s",
 						"ASENSITIVE", "INSENSITIVE")));
 
