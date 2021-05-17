@@ -436,7 +436,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			if (!into->skipData)
 			{
 				Assert(query_immv != NULL);
-				CreateIvmTriggersOnBaseTables(query_immv, matviewOid);
+				CreateIvmTriggersOnBaseTables(query_immv, matviewOid, true);
 			}
 			table_close(matviewRel, NoLock);
 		}
@@ -895,11 +895,16 @@ intorel_destroy(DestReceiver *self)
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
  */
 void
-CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid)
+CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create)
 {
 	Relids	relids = NULL;
 	bool	ex_lock = false;
-	RangeTblEntry *rte = list_nth(qry->rtable, PRS2_NEW_VARNO);
+	Index	first_rtindex = is_create ? 1 : PRS2_NEW_VARNO + 1;
+	RangeTblEntry *rte;
+
+	/* Immediately return if we don't have any base tables. */
+	if (list_length(qry->rtable) < first_rtindex)
+		return;
 
 	/*
 	 * If the view has more than one base tables, we need an exclusive lock
@@ -913,7 +918,9 @@ CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid)
 	 * and upgrading the lock level after this increases probability of
 	 * deadlock.
 	 */
-	if (list_length(qry->rtable) > PRS2_NEW_VARNO + 1 ||
+
+	rte = list_nth(qry->rtable, first_rtindex - 1);
+	if (list_length(qry->rtable) > first_rtindex ||
 		rte->rtekind != RTE_RELATION)
 		ex_lock = true;
 
