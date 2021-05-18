@@ -101,7 +101,8 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
-static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing);
+static void CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock);
+static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
 static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
@@ -424,7 +425,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		{
 			Oid matviewOid = address.objectId;
 			Relation matviewRel = table_open(matviewOid, NoLock);
-			Relids	relids = NULL;
 
 			/*
 			 * Mark relisivm field, if it's a matview and into->ivm is true.
@@ -438,8 +438,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			if (!into->skipData)
 			{
 				Assert(query_immv != NULL);
-				CreateIvmTriggersOnBaseTables(query_immv, (Node *)query_immv, matviewOid, &relids);
-				bms_free(relids);
+				CreateIvmTriggersOnBaseTables(query_immv, matviewOid, true);
 			}
 			table_close(matviewRel, NoLock);
 		}
@@ -643,72 +642,6 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	return rewritten;
 }
 
-/*
- * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
- */
-void
-CreateIvmTriggersOnBaseTables(Query *qry, Node *node, Oid matviewOid, Relids *relids)
-{
-	if (node == NULL)
-		return;
-	if (IsA(node, Query))
-	{
-		Query *query = (Query *) node;
-		ListCell *lc;
-
-		CreateIvmTriggersOnBaseTables(qry, (Node *)query->jointree, matviewOid, relids);
-		foreach(lc, query->cteList)
-		{
-			CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
-			Assert(IsA(cte->ctequery, Query));
-			CreateIvmTriggersOnBaseTables((Query *) cte->ctequery, cte->ctequery, matviewOid, relids);
-		}
-	}
-	else if (IsA(node, RangeTblRef))
-	{
-		int			rti = ((RangeTblRef *) node)->rtindex;
-		RangeTblEntry *rte = rt_fetch(rti, qry->rtable);
-
-		if (rte->rtekind == RTE_RELATION)
-		{
-			if (!bms_is_member(rte->relid, *relids))
-			{
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE);
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER);
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER);
-				CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER);
-
-				*relids = bms_add_member(*relids, rte->relid);
-			}
-		}
-		else if (rte->rtekind == RTE_SUBQUERY)
-		{
-			Query *subquery = rte->subquery;
-			Assert(rte->subquery != NULL);
-
-			CreateIvmTriggersOnBaseTables(subquery, (Node *)subquery, matviewOid, relids);
-		}
-	}
-	else if (IsA(node, FromExpr))
-	{
-		FromExpr   *f = (FromExpr *) node;
-		ListCell   *l;
-
-		foreach(l, f->fromlist)
-			CreateIvmTriggersOnBaseTables(qry, lfirst(l), matviewOid, relids);
-	}
-	else if (IsA(node, JoinExpr))
-	{
-		JoinExpr   *j = (JoinExpr *) node;
-
-		CreateIvmTriggersOnBaseTables(qry, j->larg, matviewOid, relids);
-		CreateIvmTriggersOnBaseTables(qry, j->rarg, matviewOid, relids);
-	}
-	else
-		elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
-}
 
 /*
  * GetIntoRelEFlags --- compute executor flags needed for CREATE TABLE AS
@@ -972,10 +905,127 @@ intorel_destroy(DestReceiver *self)
 }
 
 /*
+ * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
+ */
+void
+CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create)
+{
+	Relids	relids = NULL;
+	bool	ex_lock = false;
+	Index	first_rtindex = is_create ? 1 : PRS2_NEW_VARNO + 1;
+	RangeTblEntry *rte;
+
+	/* Immediately return if we don't have any base tables. */
+	if (list_length(qry->rtable) < first_rtindex)
+		return;
+
+	/*
+	 * If the view has more than one base tables, we need an exclusive lock
+	 * on the view so that the view would be maintained serially to avoid
+	 * the inconsistency that occurs when two base tables are modified in
+	 * concurrent transactions. However, if the view has only one table,
+	 * we can use a weaker lock.
+	 *
+	 * The type of lock should be determined here, because if we check the
+	 * view definition at maintenance time, we need to acquire a weaker lock,
+	 * and upgrading the lock level after this increases probability of
+	 * deadlock.
+	 */
+
+	rte = list_nth(qry->rtable, first_rtindex - 1);
+	if (list_length(qry->rtable) > first_rtindex ||
+		rte->rtekind != RTE_RELATION)
+		ex_lock = true;
+
+	CreateIvmTriggersOnBaseTables_recurse(qry, (Node *)qry, matviewOid, &relids, ex_lock);
+
+	bms_free(relids);
+}
+
+static void
+CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock)
+{
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
+	if (node == NULL)
+		return;
+
+	switch (nodeTag(node))
+	{
+		case T_Query:
+			{
+				Query *query = (Query *) node;
+				ListCell *lc;
+
+				CreateIvmTriggersOnBaseTables_recurse(qry, (Node *)query->jointree, matviewOid, relids, ex_lock);
+				foreach(lc, query->cteList)
+				{
+					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+					Assert(IsA(cte->ctequery, Query));
+					CreateIvmTriggersOnBaseTables_recurse((Query *) cte->ctequery, cte->ctequery, matviewOid, relids, ex_lock);
+				}
+			}
+			break;
+
+		case T_RangeTblRef:
+			{
+				int			rti = ((RangeTblRef *) node)->rtindex;
+				RangeTblEntry *rte = rt_fetch(rti, qry->rtable);
+
+				if (rte->rtekind == RTE_RELATION)
+				{
+					if (!bms_is_member(rte->relid, *relids))
+					{
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_BEFORE, ex_lock);
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_BEFORE, ex_lock);
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_BEFORE, ex_lock);
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_INSERT, TRIGGER_TYPE_AFTER, ex_lock);
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_DELETE, TRIGGER_TYPE_AFTER, ex_lock);
+						CreateIvmTrigger(rte->relid, matviewOid, TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_AFTER, ex_lock);
+
+						*relids = bms_add_member(*relids, rte->relid);
+					}
+				}
+				else if (rte->rtekind == RTE_SUBQUERY)
+				{
+					Query *subquery = rte->subquery;
+					Assert(rte->subquery != NULL);
+
+					CreateIvmTriggersOnBaseTables_recurse(subquery, (Node *)subquery, matviewOid, relids, ex_lock);
+				}
+			}
+			break;
+
+		case T_FromExpr:
+			{
+				FromExpr   *f = (FromExpr *) node;
+				ListCell   *l;
+
+				foreach(l, f->fromlist)
+					CreateIvmTriggersOnBaseTables_recurse(qry, lfirst(l), matviewOid, relids, ex_lock);
+			}
+			break;
+
+		case T_JoinExpr:
+			{
+				JoinExpr   *j = (JoinExpr *) node;
+
+				CreateIvmTriggersOnBaseTables_recurse(qry, j->larg, matviewOid, relids, ex_lock);
+				CreateIvmTriggersOnBaseTables_recurse(qry, j->rarg, matviewOid, relids, ex_lock);
+			}
+			break;
+
+		default:
+			elog(ERROR, "unrecognized node type: %d", (int) nodeTag(node));
+	}
+}
+
+/*
  * CreateIvmTrigger -- create IVM trigger on a base table
  */
 static void
-CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
+CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock)
 {
 	ObjectAddress	refaddr;
 	ObjectAddress	address;
@@ -1042,8 +1092,10 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing)
 	ivm_trigger->deferrable = false;
 	ivm_trigger->initdeferred = false;
 	ivm_trigger->constrrel = NULL;
-	ivm_trigger->args = list_make1(makeString(
-		DatumGetPointer(DirectFunctionCall1(oidout, ObjectIdGetDatum(viewOid)))));
+	ivm_trigger->args = list_make2(
+		makeString(DatumGetPointer(DirectFunctionCall1(oidout, ObjectIdGetDatum(viewOid)))),
+		makeString(DatumGetPointer(DirectFunctionCall1(boolout, BoolGetDatum(ex_lock))))
+		);
 
 	address = CreateTrigger(ivm_trigger, NULL, relOid, InvalidOid, InvalidOid,
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
