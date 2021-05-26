@@ -327,13 +327,13 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
 
 		/* check if the query is supported in IMMV definition */
-		if(contain_mutable_functions((Node *)query))
+		if(contain_mutable_functions((Node *) query))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("mutable function is not supported on incrementally maintainable materialized view"),
 					 errhint("functions must be marked IMMUTABLE")));
 
-		check_ivm_restriction((Node *)query, &ctx);
+		check_ivm_restriction((Node *) query, &ctx);
 
 		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -434,7 +434,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			SetMatViewIVMState(matviewRel, true);
 
 			/* Create an index on incremental maintainable materialized view, if possible */
-			CreateIndexOnIMMV((Query *)into->viewQuery, matviewRel);
+			CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel);
 
 			/* Create triggers on incremental maintainable materialized view */
 			if (!into->skipData)
@@ -577,7 +577,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 
 					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
+					((Aggref *) node)->args = aggref->args;
 
 					tle_count = makeTargetEntry((Expr *) node,
 												next_resno,
@@ -610,7 +610,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 
 					/* Make a Func with dummy args, and then override this by the original agg's args. */
 					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-					((Aggref *)node)->args = aggref->args;
+					((Aggref *) node)->args = aggref->args;
 
 					tle_count = makeTargetEntry((Expr *) node,
 												next_resno,
@@ -1109,7 +1109,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 }
 
 /*
- *
+ * check_ivm_restriction --- look for specify nodes in the query tree
  */
 static void
 check_ivm_restriction(Node *node, check_ivm_restriction_context *context)
@@ -1118,9 +1118,6 @@ check_ivm_restriction(Node *node, check_ivm_restriction_context *context)
 	check_ivm_restriction_walker(node, context);
 }
 
-/*
- * check_ivm_restriction_walker --- look for specify nodes in the query tree
- */
 static bool
 check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
 {
@@ -1397,34 +1394,12 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
 				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 				break;
 			}
-		case T_FromExpr:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
-				break;
-			}
 		case T_Var:
 			{
 				Var	*variable = (Var *) node;
 				/* If EXISTS subquery refers to vars of the upper query, collect these vars */
 				if (variable->varlevelsup > 0 && ctx->in_exists_subquery)
 					ctx->exists_qual_vars = lappend(ctx->exists_qual_vars, node);
-				break;
-			}
-		case T_BoolExpr:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
-				break;
-			}
-		case T_NullIfExpr: /* same as OpExpr */
-		case T_DistinctExpr: /* same as OpExpr */
-		case T_OpExpr:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
-				break;
-			}
-		case T_CaseExpr:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 				break;
 			}
 		case T_SubLink:
@@ -1481,18 +1456,22 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
 							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
 				break;
 			}
+		case T_FromExpr:
+		case T_NullIfExpr: /* same as OpExpr */
+		case T_DistinctExpr: /* same as OpExpr */
+		case T_OpExpr:
+		case T_BoolExpr:
+		case T_CaseExpr:
+		case T_SubPlan:
+		case T_GroupingFunc:
+		case T_WindowFunc:
 		case T_FuncExpr:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
-				break;
-			}
 		case T_CoerceViaIO:
+		case T_List:
 			{
 				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 				break;
 			}
-		case T_List:
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 		default:
 			/* do nothing */
 			break;
