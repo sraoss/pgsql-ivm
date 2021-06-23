@@ -31,9 +31,9 @@ PostgresNode - class representing PostgreSQL server instance
   # as well as the psql exit code. Pass some extra psql
   # options. If there's an error from psql raise an exception.
   my ($stdout, $stderr, $timed_out);
-  my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(60)',
+  my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(600)',
 	  stdout => \$stdout, stderr => \$stderr,
-	  timeout => 30, timed_out => \$timed_out,
+	  timeout => 180, timed_out => \$timed_out,
 	  extra_params => ['--single-transaction'],
 	  on_error_die => 1)
   print "Sleep timed out" if $timed_out;
@@ -1248,10 +1248,8 @@ sub _set_pg_version
 	local %ENV = $self->_get_env();
 
 	# We only want the version field
-	open my $fh, "-|", $pg_config, "--version"
-	  or BAIL_OUT("$pg_config failed: $!");
-	my $version_line = <$fh>;
-	close $fh or die;
+	my $version_line = qx{$pg_config --version};
+	BAIL_OUT("$pg_config failed: $!") if $?;
 
 	$self->{_pg_version} = PostgresVersion->new($version_line);
 
@@ -1615,9 +1613,9 @@ If given, it must be an array reference containing additional parameters to B<ps
 e.g.
 
 	my ($stdout, $stderr, $timed_out);
-	my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(60)',
+	my $cmdret = $node->psql('postgres', 'SELECT pg_sleep(600)',
 		stdout => \$stdout, stderr => \$stderr,
-		timeout => 30, timed_out => \$timed_out,
+		timeout => 180, timed_out => \$timed_out,
 		extra_params => ['--single-transaction'])
 
 will set $cmdret to undef and $timed_out to a true value.
@@ -2129,7 +2127,7 @@ sub poll_query_until
 
 	my $cmd = [
 		$self->installed_command('psql'),
-		'-XAt', '-c', $query, '-d', $self->connstr($dbname)
+		'-XAt', '-d', $self->connstr($dbname)
 	];
 	my ($stdout, $stderr);
 	my $max_attempts = 180 * 10;
@@ -2137,12 +2135,15 @@ sub poll_query_until
 
 	while ($attempts < $max_attempts)
 	{
-		my $result = IPC::Run::run $cmd, '>', \$stdout, '2>', \$stderr;
+		my $result = IPC::Run::run $cmd, '<', \$query,
+		  '>', \$stdout, '2>', \$stderr;
 
 		$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stdout);
+		$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
+		chomp($stderr);
 
-		if ($stdout eq $expected)
+		if ($stdout eq $expected && $stderr eq '')
 		{
 			return 1;
 		}
@@ -2155,8 +2156,6 @@ sub poll_query_until
 
 	# The query result didn't change in 180 seconds. Give up. Print the
 	# output from the last attempt, hopefully that's useful for debugging.
-	$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
-	chomp($stderr);
 	diag qq(poll_query_until timed out executing this query:
 $query
 expecting this output:
