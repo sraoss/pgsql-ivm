@@ -571,7 +571,15 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 }
 
 /*
- * makeIvmAggColumn -- make aggregation column which is added by ivm
+ * makeIvmAggColumn -- make aggregate column which is added by ivm
+ *
+ * If tle contains an aggreagate function, a additional aggregate
+ * column is added for caluculating delta or check deleteing tuple
+ * on IMMV. The aggreagate column created based on resname and
+ * next_resno, are added to the agg_counts.
+ *
+ * Currently, sum() or count() aggregate column is added with the
+ * column name __ivm_sum_(resname)__ or __ivm_count_(resname)__ .
  */
 void
 makeIvmAggColumn(Node *tle, char *resname, AttrNumber *next_resno, ParseState *pstate, List **agg_counts)
