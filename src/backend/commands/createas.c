@@ -1114,7 +1114,6 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 static void
 check_ivm_restriction(Node *node, check_ivm_restriction_context *context)
 {
-	//check_ivm_restriction_context *context;
 	check_ivm_restriction_walker(node, context);
 }
 
@@ -1238,7 +1237,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
 						ctx->has_subquery = true;
 
 						ctx->sublevels_up++;
-						check_ivm_restriction_walker(rte->subquery, ctx);
+						check_ivm_restriction_walker((Node *)rte->subquery, ctx);
 						ctx->sublevels_up--;
 					}
 				}
@@ -1456,24 +1455,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
 							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
 				break;
 			}
-		case T_FromExpr:
-		case T_NullIfExpr: /* same as OpExpr */
-		case T_DistinctExpr: /* same as OpExpr */
-		case T_OpExpr:
-		case T_BoolExpr:
-		case T_CaseExpr:
-		case T_SubPlan:
-		case T_GroupingFunc:
-		case T_WindowFunc:
-		case T_FuncExpr:
-		case T_CoerceViaIO:
-		case T_List:
-			{
-				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
-				break;
-			}
 		default:
-			/* do nothing */
+			expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 			break;
 	}
 	return false;
