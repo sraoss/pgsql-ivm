@@ -104,7 +104,7 @@ static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock);
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
-static void check_ivm_restriction(Node *node, check_ivm_restriction_context *context);
+static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx);
 static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
@@ -324,8 +324,6 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 	if (is_matview && into->ivm)
 	{
-		check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
-
 		/* check if the query is supported in IMMV definition */
 		if(contain_mutable_functions((Node *) query))
 			ereport(ERROR,
@@ -333,7 +331,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 					 errmsg("mutable function is not supported on incrementally maintainable materialized view"),
 					 errhint("functions must be marked IMMUTABLE")));
 
-		check_ivm_restriction((Node *) query, &ctx);
+		check_ivm_restriction((Node *) query);
 
 		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -1112,9 +1110,11 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
  * check_ivm_restriction --- look for specify nodes in the query tree
  */
 static void
-check_ivm_restriction(Node *node, check_ivm_restriction_context *context)
+check_ivm_restriction(Node *node)
 {
-	check_ivm_restriction_walker(node, context);
+	check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
+
+	check_ivm_restriction_walker(node, &ctx);
 }
 
 static bool
