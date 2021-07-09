@@ -2077,16 +2077,17 @@ rewrite_query_for_distinct_and_aggregates(Query *query, ParseState *pstate)
 	if (query->hasAggs)
 	{
 		ListCell *lc;
-		List *agg_counts = NIL;
+		List *aggs = NIL;
 		AttrNumber next_resno = list_length(query->targetList) + 1;
 
 		foreach(lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 
-			makeIvmAggColumn((Node *)tle->expr, tle->resname, &next_resno, pstate, &agg_counts);
+			if (IsA(tle->expr, Aggref))
+				makeIvmAggColumn(pstate, (Aggref *)tle->expr, tle->resname, &next_resno, &aggs);
 		}
-		query->targetList = list_concat(query->targetList, agg_counts);
+		query->targetList = list_concat(query->targetList, aggs);
 	}
 
 	/* Add count(*) used for EXISTS clause */
