@@ -1378,7 +1378,7 @@ include_dir 'conf.d'
           <listitem>
            <para>
             Disables anonymous cipher suites that do no authentication.  Such
-            cipher suites are vulnerable to man-in-the-middle attacks and
+            cipher suites are vulnerable to <acronym>MITM</acronym> attacks and
             therefore should not be used.
            </para>
           </listitem>
@@ -1892,6 +1892,12 @@ include_dir 'conf.d'
         may be allocated, so be careful not to set the default value
         too high.  It may be useful to control for this by separately
         setting <xref linkend="guc-autovacuum-work-mem"/>.
+       </para>
+       <para>
+        Additionally, <command>VACUUM</command> is only able to utilize up to
+        a maximum of <literal>1GB</literal> of memory, so
+        <varname>maintenance_work_mem</varname> values higher than this have
+        no effect on <command>VACUUM</command>.
        </para>
       </listitem>
      </varlistentry>
@@ -3128,23 +3134,27 @@ include_dir 'conf.d'
      </varlistentry>
 
      <varlistentry id="guc-wal-compression" xreflabel="wal_compression">
-      <term><varname>wal_compression</varname> (<type>boolean</type>)
+      <term><varname>wal_compression</varname> (<type>enum</type>)
       <indexterm>
        <primary><varname>wal_compression</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
        <para>
-        When this parameter is <literal>on</literal>, the <productname>PostgreSQL</productname>
+        This parameter enables compression of WAL using the specified
+        compression method.
+        When enabled, the <productname>PostgreSQL</productname>
         server compresses full page images written to WAL when
         <xref linkend="guc-full-page-writes"/> is on or during a base backup.
         A compressed page image will be decompressed during WAL replay.
-        The default value is <literal>off</literal>.
-        Only superusers can change this setting.
+        The supported methods are <literal>pglz</literal> and
+        <literal>lz4</literal> (if <productname>PostgreSQL</productname> was
+        compiled with <option>--with-lz4</option>). The default value is
+        <literal>off</literal>. Only superusers can change this setting.
        </para>
 
        <para>
-        Turning this parameter on can reduce the WAL volume without
+        Enabling compression can reduce the WAL volume without
         increasing the risk of unrecoverable data corruption,
         but at the cost of some extra CPU spent on the compression during
         WAL logging and on the decompression during WAL replay.
@@ -5008,15 +5018,15 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-resultcache" xreflabel="enable_resultcache">
-      <term><varname>enable_resultcache</varname> (<type>boolean</type>)
+     <varlistentry id="guc-enable-memoize" xreflabel="enable_memoize">
+      <term><varname>enable_memoize</varname> (<type>boolean</type>)
       <indexterm>
-       <primary><varname>enable_resultcache</varname> configuration parameter</primary>
+       <primary><varname>enable_memoize</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
        <para>
-        Enables or disables the query planner's use of result cache plans for
+        Enables or disables the query planner's use of memoize plans for
         caching results from parameterized scans inside nested-loop joins.
         This plan type allows scans to the underlying plans to be skipped when
         the results for the current parameters are already in the cache.  Less
@@ -7007,7 +7017,7 @@ local0.*    /var/log/postgresql
             </row>
             <row>
              <entry><literal>%Q</literal></entry>
-             <entry>query identifier of the current query.  Query
+             <entry>Query identifier of the current query.  Query
              identifiers are not computed by default, so this field
              will be zero unless <xref linkend="guc-compute-query-id"/>
              parameter is enabled or a third-party module that computes
@@ -8420,6 +8430,68 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
 
        <para>
         Consult <xref linkend="sql-set-transaction"/> for more information.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-isolation" xreflabel="transaction_isolation">
+      <term><varname>transaction_isolation</varname> (<type>enum</type>)
+      <indexterm>
+       <primary>transaction isolation level</primary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_isolation</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's isolation level.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-isolation"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-read-only" xreflabel="transaction_read_only">
+      <term><varname>transaction_read_only</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary>read-only transaction</primary>
+       <secondary>setting default</secondary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_read_only</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's read-only status.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-read-only"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-transaction-deferrable" xreflabel="transaction_deferrable">
+      <term><varname>transaction_deferrable</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary>deferrable transaction</primary>
+       <secondary>setting default</secondary>
+      </indexterm>
+      <indexterm>
+       <primary><varname>transaction_deferrable</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        This parameter reflects the current transaction's deferrability status.
+        At the beginning of each transaction, it is set to the current value
+        of <xref linkend="guc-default-transaction-deferrable"/>.
+        Any subsequent attempt to change it is equivalent to a <xref
+        linkend="sql-set-transaction"/> command.
        </para>
       </listitem>
      </varlistentry>
@@ -9863,28 +9935,6 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-remove-temp-files-after-crash" xreflabel="remove_temp_files_after_crash">
-      <term><varname>remove_temp_files_after_crash</varname> (<type>boolean</type>)
-      <indexterm>
-       <primary><varname>remove_temp_files_after_crash</varname> configuration parameter</primary>
-      </indexterm>
-      </term>
-      <listitem>
-       <para>
-        When set to <literal>on</literal>, which is the default,
-        <productname>PostgreSQL</productname> will automatically remove
-        temporary files after a backend crash. If disabled, the files will be
-        retained and may be used for debugging, for example. Repeated crashes
-        may however result in accumulation of useless files.
-       </para>
-
-       <para>
-        This parameter can only be set in the <filename>postgresql.conf</filename>
-        file or on the server command line.
-       </para>
-      </listitem>
-     </varlistentry>
-
      <varlistentry id="guc-data-sync-retry" xreflabel="data_sync_retry">
       <term><varname>data_sync_retry</varname> (<type>boolean</type>)
       <indexterm>
@@ -9951,7 +10001,8 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
         appear only in kernel logs.
        </para>
        <para>
-        This parameter can only be set at server start.
+        This parameter can only be set in the
+        <filename>postgresql.conf</filename> file or on the server command line.
        </para>
       </listitem>
      </varlistentry>
@@ -10352,10 +10403,10 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-debug-invalidate-system-caches-always" xreflabel="debug_invalidate_system_caches_always">
-      <term><varname>debug_invalidate_system_caches_always</varname> (<type>integer</type>)
+     <varlistentry id="guc-debug-discard-caches" xreflabel="debug_discard_caches">
+      <term><varname>debug_discard_caches</varname> (<type>integer</type>)
       <indexterm>
-       <primary><varname>debug_invalidate_system_caches_always</varname> configuration parameter</primary>
+       <primary><varname>debug_discard_caches</varname> configuration parameter</primary>
       </indexterm>
       </term>
       <listitem>
@@ -10380,7 +10431,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
 
        <para>
         This parameter is supported when
-        <symbol>CLOBBER_CACHE_ENABLED</symbol> was defined at compile time
+        <symbol>DISCARD_CACHES_ENABLED</symbol> was defined at compile time
         (which happens automatically when using the
         <application>configure</application> option
         <option>--enable-cassert</option>).  In production builds, its value
@@ -10908,6 +10959,25 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
         Determines whether tuple deforming is JIT compiled, when JIT
         compilation is activated (see <xref linkend="jit-decision"/>).
         The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-remove-temp-files-after-crash" xreflabel="remove_temp_files_after_crash">
+      <term><varname>remove_temp_files_after_crash</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>remove_temp_files_after_crash</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        When set to <literal>on</literal>, which is the default,
+        <productname>PostgreSQL</productname> will automatically remove
+        temporary files after a backend crash. If disabled, the files will be
+        retained and may be used for debugging, for example. Repeated crashes
+        may however result in accumulation of useless files. This parameter
+        can only be set in the <filename>postgresql.conf</filename> file or on
+        the server command line.
        </para>
       </listitem>
      </varlistentry>

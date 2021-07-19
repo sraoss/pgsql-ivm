@@ -36,6 +36,7 @@
 #include "executor/nodeLimit.h"
 #include "executor/nodeLockRows.h"
 #include "executor/nodeMaterial.h"
+#include "executor/nodeMemoize.h"
 #include "executor/nodeMergeAppend.h"
 #include "executor/nodeMergejoin.h"
 #include "executor/nodeModifyTable.h"
@@ -44,7 +45,6 @@
 #include "executor/nodeProjectSet.h"
 #include "executor/nodeRecursiveunion.h"
 #include "executor/nodeResult.h"
-#include "executor/nodeResultCache.h"
 #include "executor/nodeSamplescan.h"
 #include "executor/nodeSeqscan.h"
 #include "executor/nodeSetOp.h"
@@ -255,8 +255,8 @@ ExecReScan(PlanState *node)
 			ExecReScanMaterial((MaterialState *) node);
 			break;
 
-		case T_ResultCacheState:
-			ExecReScanResultCache((ResultCacheState *) node);
+		case T_MemoizeState:
+			ExecReScanMemoize((MemoizeState *) node);
 			break;
 
 		case T_SortState:
@@ -438,13 +438,10 @@ ExecSupportsMarkRestore(Path *pathnode)
 			return true;
 
 		case T_CustomScan:
-			{
-				CustomPath *customPath = castNode(CustomPath, pathnode);
+			if (castNode(CustomPath, pathnode)->flags & CUSTOMPATH_SUPPORT_MARK_RESTORE)
+				return true;
+			return false;
 
-				if (customPath->flags & CUSTOMPATH_SUPPORT_MARK_RESTORE)
-					return true;
-				return false;
-			}
 		case T_Result:
 
 			/*
@@ -567,12 +564,8 @@ ExecSupportsBackwardScan(Plan *node)
 			return ExecSupportsBackwardScan(((SubqueryScan *) node)->subplan);
 
 		case T_CustomScan:
-			{
-				uint32		flags = ((CustomScan *) node)->flags;
-
-				if (flags & CUSTOMPATH_SUPPORT_BACKWARD_SCAN)
-					return true;
-			}
+			if (((CustomScan *) node)->flags & CUSTOMPATH_SUPPORT_BACKWARD_SCAN)
+				return true;
 			return false;
 
 		case T_SeqScan:

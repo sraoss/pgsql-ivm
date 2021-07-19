@@ -370,7 +370,7 @@ WalReceiverMain(void)
 					 "pg_walreceiver_%lld",
 					 (long long int) walrcv_get_backend_pid(wrconn));
 
-			walrcv_create_slot(wrconn, slotname, true, 0, NULL);
+			walrcv_create_slot(wrconn, slotname, true, false, 0, NULL);
 
 			SpinLockAcquire(&walrcv->mutex);
 			strlcpy(walrcv->slotname, slotname, NAMEDATALEN);
@@ -885,8 +885,6 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 
 		if (recvFile < 0 || !XLByteInSeg(recptr, recvSegNo, wal_segment_size))
 		{
-			bool		use_existent;
-
 			/*
 			 * fsync() and close current file before we switch to next one. We
 			 * would otherwise have to reopen this file to fsync it later
@@ -923,8 +921,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 
 			/* Create/use new log file */
 			XLByteToSeg(recptr, recvSegNo, wal_segment_size);
-			use_existent = true;
-			recvFile = XLogFileInit(recvSegNo, &use_existent, true);
+			recvFile = XLogFileInit(recvSegNo);
 			recvFileTLI = ThisTimeLineID;
 		}
 

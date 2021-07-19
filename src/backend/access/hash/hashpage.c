@@ -531,7 +531,7 @@ _hash_init_metabuffer(Buffer buf, double num_tuples, RegProcedure procid,
 	pageopaque = (HashPageOpaque) PageGetSpecialPointer(page);
 	pageopaque->hasho_prevblkno = InvalidBlockNumber;
 	pageopaque->hasho_nextblkno = InvalidBlockNumber;
-	pageopaque->hasho_bucket = -1;
+	pageopaque->hasho_bucket = InvalidBucket;
 	pageopaque->hasho_flag = LH_META_PAGE;
 	pageopaque->hasho_page_id = HASHO_PAGE_ID;
 
@@ -1013,7 +1013,7 @@ _hash_alloc_buckets(Relation rel, BlockNumber firstblock, uint32 nblocks)
 
 	ovflopaque->hasho_prevblkno = InvalidBlockNumber;
 	ovflopaque->hasho_nextblkno = InvalidBlockNumber;
-	ovflopaque->hasho_bucket = -1;
+	ovflopaque->hasho_bucket = InvalidBucket;
 	ovflopaque->hasho_flag = LH_UNUSED_PAGE;
 	ovflopaque->hasho_page_id = HASHO_PAGE_ID;
 
@@ -1024,9 +1024,9 @@ _hash_alloc_buckets(Relation rel, BlockNumber firstblock, uint32 nblocks)
 					zerobuf.data,
 					true);
 
-	RelationOpenSmgr(rel);
 	PageSetChecksumInplace(page, lastblock);
-	smgrextend(rel->rd_smgr, MAIN_FORKNUM, lastblock, zerobuf.data, false);
+	smgrextend(RelationGetSmgr(rel), MAIN_FORKNUM, lastblock, zerobuf.data,
+			   false);
 
 	return true;
 }

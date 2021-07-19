@@ -11,7 +11,7 @@ use TestLib;
 use PostgresNode;
 
 use File::Path qw(rmtree);
-use Test::More tests => 14;
+use Test::More tests => $TestLib::windows_os ? 15 : 19;
 use Time::HiRes qw(usleep);
 
 $ENV{PGDATABASE} = 'postgres';
@@ -176,21 +176,44 @@ ok( !find_in_log(
 # Advance WAL again, the slot loses the oldest segment.
 my $logstart = get_log_size($node_primary);
 advance_wal($node_primary, 7);
-$node_primary->safe_psql('postgres', "CHECKPOINT;");
 
-# WARNING should be issued
-ok( find_in_log(
-		$node_primary,
-		"invalidating slot \"rep1\" because its restart_lsn [0-9A-F/]+ exceeds max_slot_wal_keep_size",
-		$logstart),
-	'check that the warning is logged');
+# wait until the WARNING is issued
+my $invalidated = 0;
+for (my $i = 0; $i < 10000; $i++)
+{
+	if (find_in_log(
+			$node_primary,
+			"invalidating slot \"rep1\" because its restart_lsn [0-9A-F/]+ exceeds max_slot_wal_keep_size",
+			$logstart))
+	{
+		$invalidated = 1;
+		last;
+	}
+	usleep(100_000);
+}
+ok($invalidated, 'check that slot invalidation has been logged');
 
-# This slot should be broken
-$result = $node_primary->safe_psql('postgres',
-	"SELECT slot_name, active, restart_lsn IS NULL, wal_status, safe_wal_size FROM pg_replication_slots WHERE slot_name = 'rep1'"
-);
+$result = $node_primary->safe_psql(
+	'postgres',
+	qq[
+	SELECT slot_name, active, restart_lsn IS NULL, wal_status, safe_wal_size
+	FROM pg_replication_slots WHERE slot_name = 'rep1']);
 is($result, "rep1|f|t|lost|",
 	'check that the slot became inactive and the state "lost" persists');
+
+# The invalidated slot shouldn't keep the old-segment horizon back;
+# see bug #17103: https://postgr.es/m/17103-004130e8f27782c9@postgresql.org
+# Test for this by creating a new slot and comparing its restart LSN
+# to the oldest existing file.
+my $redoseg = $node_primary->safe_psql('postgres',
+	"SELECT pg_walfile_name(lsn) FROM pg_create_physical_replication_slot('s2', true)"
+);
+my $oldestseg = $node_primary->safe_psql('postgres',
+	"SELECT pg_ls_dir AS f FROM pg_ls_dir('pg_wal') WHERE pg_ls_dir ~ '^[0-9A-F]{24}\$' ORDER BY 1 LIMIT 1"
+);
+$node_primary->safe_psql('postgres',
+	qq[SELECT pg_drop_replication_slot('s2')]);
+is($oldestseg, $redoseg, "check that segments have been removed");
 
 # The standby no longer can connect to the primary
 $logstart = get_log_size($node_standby);
@@ -211,8 +234,8 @@ for (my $i = 0; $i < 10000; $i++)
 }
 ok($failed, 'check that replication has been broken');
 
-$node_primary->stop('immediate');
-$node_standby->stop('immediate');
+$node_primary->stop;
+$node_standby->stop;
 
 my $node_primary2 = get_new_node('primary2');
 $node_primary2->init(allows_streaming => 1);
@@ -252,6 +275,97 @@ my @result =
 		 SELECT 'finished';",
 		timeout => '60'));
 is($result[1], 'finished', 'check if checkpoint command is not blocked');
+
+$node_primary2->stop;
+$node_standby->stop;
+
+# The next test depends on Perl's `kill`, which apparently is not
+# portable to Windows.  (It would be nice to use Test::More's `subtest`,
+# but that's not in the ancient version we require.)
+if ($TestLib::windows_os)
+{
+	done_testing();
+	exit;
+}
+
+# Get a slot terminated while the walsender is active
+# We do this by sending SIGSTOP to the walsender.  Skip this on Windows.
+my $node_primary3 = get_new_node('primary3');
+$node_primary3->init(allows_streaming => 1, extra => ['--wal-segsize=1']);
+$node_primary3->append_conf(
+	'postgresql.conf', qq(
+	min_wal_size = 2MB
+	max_wal_size = 2MB
+	log_checkpoints = yes
+	max_slot_wal_keep_size = 1MB
+	));
+$node_primary3->start;
+$node_primary3->safe_psql('postgres',
+	"SELECT pg_create_physical_replication_slot('rep3')");
+# Take backup
+$backup_name = 'my_backup';
+$node_primary3->backup($backup_name);
+# Create standby
+my $node_standby3 = get_new_node('standby_3');
+$node_standby3->init_from_backup($node_primary3, $backup_name,
+	has_streaming => 1);
+$node_standby3->append_conf('postgresql.conf', "primary_slot_name = 'rep3'");
+$node_standby3->start;
+$node_primary3->wait_for_catchup($node_standby3->name, 'replay');
+my $senderpid = $node_primary3->safe_psql('postgres',
+	"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walsender'");
+like($senderpid, qr/^[0-9]+$/, "have walsender pid $senderpid");
+my $receiverpid = $node_standby3->safe_psql('postgres',
+	"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walreceiver'");
+like($receiverpid, qr/^[0-9]+$/, "have walreceiver pid $receiverpid");
+
+$logstart = get_log_size($node_primary3);
+# freeze walsender and walreceiver. Slot will still be active, but walreceiver
+# won't get anything anymore.
+kill 'STOP', $senderpid, $receiverpid;
+advance_wal($node_primary3, 2);
+
+my $max_attempts = 180;
+while ($max_attempts-- >= 0)
+{
+	if (find_in_log(
+			$node_primary3,
+			"terminating process $senderpid to release replication slot \"rep3\"",
+			$logstart))
+	{
+		ok(1, "walsender termination logged");
+		last;
+	}
+	sleep 1;
+}
+
+# Now let the walsender continue; slot should be killed now.
+# (Must not let walreceiver run yet; otherwise the standby could start another
+# one before the slot can be killed)
+kill 'CONT', $senderpid;
+$node_primary3->poll_query_until('postgres',
+	"SELECT wal_status FROM pg_replication_slots WHERE slot_name = 'rep3'",
+	"lost")
+  or die "timed out waiting for slot to be lost";
+
+$max_attempts = 180;
+while ($max_attempts-- >= 0)
+{
+	if (find_in_log(
+			$node_primary3,
+			'invalidating slot "rep3" because its restart_lsn', $logstart))
+	{
+		ok(1, "slot invalidation logged");
+		last;
+	}
+	sleep 1;
+}
+
+# Now let the walreceiver continue, so that the node can be stopped cleanly
+kill 'CONT', $receiverpid;
+
+$node_primary3->stop;
+$node_standby3->stop;
 
 #####################################
 # Advance WAL of $node by $n segments

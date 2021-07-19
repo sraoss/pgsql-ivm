@@ -84,11 +84,10 @@ typedef struct ReplicationSlotPersistentData
 	XLogRecPtr	confirmed_flush;
 
 	/*
-	 * LSN at which we found a consistent point at the time of slot creation.
-	 * This is also the point where we have exported a snapshot for the
-	 * initial copy.
+	 * LSN at which we enabled two_phase commit for this slot or LSN at which
+	 * we found a consistent point at the time of slot creation.
 	 */
-	XLogRecPtr	initial_consistent_point;
+	XLogRecPtr	two_phase_at;
 
 	/*
 	 * Allow decoding of prepared transactions?
@@ -214,7 +213,7 @@ extern void ReplicationSlotsComputeRequiredLSN(void);
 extern XLogRecPtr ReplicationSlotsComputeLogicalRestartLSN(void);
 extern bool ReplicationSlotsCountDBSlots(Oid dboid, int *nslots, int *nactive);
 extern void ReplicationSlotsDropDBSlots(Oid dboid);
-extern void InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno);
+extern bool InvalidateObsoleteReplicationSlots(XLogSegNo oldestSegno);
 extern ReplicationSlot *SearchNamedReplicationSlot(const char *name, bool need_lock);
 extern void ReplicationSlotNameForTablesync(Oid suboid, Oid relid, char *syncslotname, int szslot);
 extern void ReplicationSlotDropAtPubNode(WalReceiverConn *wrconn, char *slotname, bool missing_ok);

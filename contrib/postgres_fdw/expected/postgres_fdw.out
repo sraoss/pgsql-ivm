@@ -1602,7 +1602,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL 
  20 |  0 | AAA020
 (10 rows)
 
-SET enable_resultcache TO off;
+SET enable_memoize TO off;
 -- right outer join + left outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
@@ -1629,7 +1629,7 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT
  20 |  0 | AAA020
 (10 rows)
 
-RESET enable_resultcache;
+RESET enable_memoize;
 -- left outer join + right outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
@@ -2149,7 +2149,7 @@ SELECT t1."C 1" FROM "S 1"."T 1" t1, LATERAL (SELECT DISTINCT t2.c1, t3.c1 FROM 
          Output: t1."C 1"
          ->  Index Scan using t1_pkey on "S 1"."T 1" t1
                Output: t1."C 1", t1.c2, t1.c3, t1.c4, t1.c5, t1.c6, t1.c7, t1.c8
-         ->  Result Cache
+         ->  Memoize
                Cache Key: t1.c2
                ->  Subquery Scan on q
                      ->  HashAggregate
@@ -4096,15 +4096,17 @@ DROP TABLE reind_fdw_parent;
 -- conversion error
 -- ===================================================================
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE int;
-SELECT * FROM ft1 WHERE c1 = 1;  -- ERROR
+SELECT * FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8) WHERE x1 = 1;  -- ERROR
 ERROR:  invalid input syntax for type integer: "foo"
-CONTEXT:  column "c8" of foreign table "ft1"
-SELECT  ft1.c1,  ft2.c2, ft1.c8 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
+CONTEXT:  column "x8" of foreign table "ftx"
+SELECT ftx.x1, ft2.c2, ftx.x8 FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
+  WHERE ftx.x1 = ft2.c1 AND ftx.x1 = 1; -- ERROR
 ERROR:  invalid input syntax for type integer: "foo"
-CONTEXT:  column "c8" of foreign table "ft1"
-SELECT  ft1.c1,  ft2.c2, ft1 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
+CONTEXT:  column "x8" of foreign table "ftx"
+SELECT ftx.x1, ft2.c2, ftx FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
+  WHERE ftx.x1 = ft2.c1 AND ftx.x1 = 1; -- ERROR
 ERROR:  invalid input syntax for type integer: "foo"
-CONTEXT:  whole-row reference to foreign table "ft1"
+CONTEXT:  whole-row reference to foreign table "ftx"
 SELECT sum(c2), array_agg(c8) FROM ft1 GROUP BY c8; -- ERROR
 ERROR:  invalid input syntax for type integer: "foo"
 CONTEXT:  processing expression at position 2 in select list
@@ -6851,6 +6853,26 @@ DROP TRIGGER trig_row_before ON rem1;
 DROP TRIGGER trig_row_after ON rem1;
 DROP TRIGGER trig_local_before ON loc1;
 -- Test direct foreign table modification functionality
+EXPLAIN (verbose, costs off)
+DELETE FROM rem1;                 -- can be pushed down
+                 QUERY PLAN                  
+---------------------------------------------
+ Delete on public.rem1
+   ->  Foreign Delete on public.rem1
+         Remote SQL: DELETE FROM public.loc1
+(3 rows)
+
+EXPLAIN (verbose, costs off)
+DELETE FROM rem1 WHERE false;     -- currently can't be pushed down
+                      QUERY PLAN                       
+-------------------------------------------------------
+ Delete on public.rem1
+   Remote SQL: DELETE FROM public.loc1 WHERE ctid = $1
+   ->  Result
+         Output: ctid
+         One-Time Filter: false
+(5 rows)
+
 -- Test with statement-level triggers
 CREATE TRIGGER trig_stmt_before
 	BEFORE DELETE OR INSERT OR UPDATE ON rem1
@@ -9225,7 +9247,7 @@ CREATE FOREIGN TABLE ft1_nopw (
 	c7 char(10) default 'ft1',
 	c8 user_enum
 ) SERVER loopback_nopw OPTIONS (schema_name 'public', table_name 'ft1');
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 ERROR:  password is required
 DETAIL:  Non-superusers must provide a password in the user mapping.
 -- If we add a password to the connstr it'll fail, because we don't allow passwords
@@ -9244,7 +9266,7 @@ PL/pgSQL function inline_code_block line 3 at EXECUTE
 --
 -- This won't work with installcheck, but neither will most of the FDW checks.
 ALTER USER MAPPING FOR CURRENT_USER SERVER loopback_nopw OPTIONS (ADD password 'dummypw');
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 ERROR:  password is required
 DETAIL:  Non-superuser cannot connect if the server does not request a password.
 HINT:  Target server's authentication method must be changed or password_required=false set in the user mapping attributes.
@@ -9252,7 +9274,7 @@ HINT:  Target server's authentication method must be changed or password_require
 ALTER USER MAPPING FOR CURRENT_USER SERVER loopback_nopw OPTIONS (ADD password_required 'false');
 ERROR:  password_required=false is superuser-only
 HINT:  User mappings with the password_required option set to false may only be created or modified by the superuser
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 ERROR:  password is required
 DETAIL:  Non-superuser cannot connect if the server does not request a password.
 HINT:  Target server's authentication method must be changed or password_required=false set in the user mapping attributes.
@@ -9261,10 +9283,10 @@ RESET ROLE;
 ALTER USER MAPPING FOR regress_nosuper SERVER loopback_nopw OPTIONS (ADD password_required 'false');
 SET ROLE regress_nosuper;
 -- Should finally work now
-SELECT * FROM ft1_nopw LIMIT 1;
-  c1  | c2 | c3 | c4 | c5 | c6 |     c7     | c8 
-------+----+----+----+----+----+------------+----
- 1111 |  2 |    |    |    |    | ft1        | 
+SELECT 1 FROM ft1_nopw LIMIT 1;
+ ?column? 
+----------
+        1
 (1 row)
 
 -- unpriv user also cannot set sslcert / sslkey on the user mapping
@@ -9281,16 +9303,16 @@ HINT:  User mappings with the sslcert or sslkey options set may only be created 
 DROP USER MAPPING FOR CURRENT_USER SERVER loopback_nopw;
 -- This will fail again as it'll resolve the user mapping for public, which
 -- lacks password_required=false
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 ERROR:  password is required
 DETAIL:  Non-superusers must provide a password in the user mapping.
 RESET ROLE;
 -- The user mapping for public is passwordless and lacks the password_required=false
 -- mapping option, but will work because the current user is a superuser.
-SELECT * FROM ft1_nopw LIMIT 1;
-  c1  | c2 | c3 | c4 | c5 | c6 |     c7     | c8 
-------+----+----+----+----+----+------------+----
- 1111 |  2 |    |    |    |    | ft1        | 
+SELECT 1 FROM ft1_nopw LIMIT 1;
+ ?column? 
+----------
+        1
 (1 row)
 
 -- cleanup
@@ -9318,11 +9340,11 @@ WARNING:  there is no transaction in progress
 -- Change application_name of remote connection to special one
 -- so that we can easily terminate the connection later.
 ALTER SERVER loopback OPTIONS (application_name 'fdw_retry_check');
--- If debug_invalidate_system_caches_always is active, it results in
+-- If debug_discard_caches is active, it results in
 -- dropping remote connections after every transaction, making it
 -- impossible to test termination meaningfully.  So turn that off
 -- for this test.
-SET debug_invalidate_system_caches_always = 0;
+SET debug_discard_caches = 0;
 -- Make sure we have a remote connection.
 SELECT 1 FROM ft1 LIMIT 1;
  ?column? 
@@ -9364,7 +9386,7 @@ SELECT 1 FROM ft1 LIMIT 1;    -- should fail
 ERROR:  08006
 \set VERBOSITY default
 COMMIT;
-RESET debug_invalidate_system_caches_always;
+RESET debug_discard_caches;
 -- =============================================================================
 -- test connection invalidation cases and postgres_fdw_get_connections function
 -- =============================================================================
@@ -10478,3 +10500,22 @@ DROP TABLE result_tbl;
 DROP TABLE join_tbl;
 ALTER SERVER loopback OPTIONS (DROP async_capable);
 ALTER SERVER loopback2 OPTIONS (DROP async_capable);
+-- ===================================================================
+-- test invalid server and foreign table options
+-- ===================================================================
+-- Invalid fdw_startup_cost option
+CREATE SERVER inv_scst FOREIGN DATA WRAPPER postgres_fdw
+	OPTIONS(fdw_startup_cost '100$%$#$#');
+ERROR:  invalid value for floating point option "fdw_startup_cost": 100$%$#$#
+-- Invalid fdw_tuple_cost option
+CREATE SERVER inv_scst FOREIGN DATA WRAPPER postgres_fdw
+	OPTIONS(fdw_tuple_cost '100$%$#$#');
+ERROR:  invalid value for floating point option "fdw_tuple_cost": 100$%$#$#
+-- Invalid fetch_size option
+CREATE FOREIGN TABLE inv_fsz (c1 int )
+	SERVER loopback OPTIONS (fetch_size '100$%$#$#');
+ERROR:  invalid value for integer option "fetch_size": 100$%$#$#
+-- Invalid batch_size option
+CREATE FOREIGN TABLE inv_bsz (c1 int )
+	SERVER loopback OPTIONS (batch_size '100$%$#$#');
+ERROR:  invalid value for integer option "batch_size": 100$%$#$#

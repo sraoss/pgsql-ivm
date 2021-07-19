@@ -176,7 +176,7 @@ sub GenerateFiles
 
 			if ($package_version !~ /^(\d+)(?:\.(\d+))?/)
 			{
-				confess "Bad format of version: $self->{strver}\n";
+				confess "Bad format of version: $package_version\n";
 			}
 			$majorver = sprintf("%d", $1);
 			$minorver = sprintf("%d", $2 ? $2 : 0);
@@ -239,16 +239,19 @@ sub GenerateFiles
 		HAVE_CRYPTO_LOCK           => undef,
 		HAVE_DECL_FDATASYNC        => 0,
 		HAVE_DECL_F_FULLFSYNC      => 0,
-		HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER => undef,
-		HAVE_DECL_LLVMCREATEPERFJITEVENTLISTENER    => undef,
+		HAVE_DECL_LLVMCREATEGDBREGISTRATIONLISTENER => 0,
+		HAVE_DECL_LLVMCREATEPERFJITEVENTLISTENER    => 0,
 		HAVE_DECL_LLVMGETHOSTCPUNAME                => 0,
 		HAVE_DECL_LLVMGETHOSTCPUFEATURES            => 0,
 		HAVE_DECL_LLVMORCGETSYMBOLADDRESSIN         => 0,
-		HAVE_DECL_POSIX_FADVISE                     => undef,
+		HAVE_DECL_POSIX_FADVISE                     => 0,
+		HAVE_DECL_PREADV                            => 0,
+		HAVE_DECL_PWRITEV                           => 0,
 		HAVE_DECL_RTLD_GLOBAL                       => 0,
 		HAVE_DECL_RTLD_NOW                          => 0,
-		HAVE_DECL_STRLCAT                           => undef,
-		HAVE_DECL_STRLCPY                           => undef,
+		HAVE_DECL_SIGWAIT                           => 0,
+		HAVE_DECL_STRLCAT                           => 0,
+		HAVE_DECL_STRLCPY                           => 0,
 		HAVE_DECL_STRNLEN                           => 1,
 		HAVE_DECL_STRTOLL                           => 1,
 		HAVE_DECL_STRTOULL                          => 1,
@@ -302,7 +305,6 @@ sub GenerateFiles
 		HAVE_LDAP_INITIALIZE                        => undef,
 		HAVE_LIBCRYPTO                              => undef,
 		HAVE_LIBLDAP                                => undef,
-		HAVE_LIBLDAP_R                              => undef,
 		HAVE_LIBLZ4                                 => undef,
 		HAVE_LIBM                                   => undef,
 		HAVE_LIBPAM                                 => undef,
@@ -331,12 +333,12 @@ sub GenerateFiles
 		HAVE_PAM_PAM_APPL_H         => undef,
 		HAVE_POLL                   => undef,
 		HAVE_POLL_H                 => undef,
+		HAVE_POSIX_DECL_SIGWAIT     => undef,
 		HAVE_POSIX_FADVISE          => undef,
 		HAVE_POSIX_FALLOCATE        => undef,
 		HAVE_PPC_LWARX_MUTEX_HINT   => undef,
 		HAVE_PPOLL                  => undef,
 		HAVE_PREAD                  => undef,
-		HAVE_PREADV                 => undef,
 		HAVE_PSTAT                  => undef,
 		HAVE_PS_STRINGS             => undef,
 		HAVE_PTHREAD                => undef,
@@ -344,7 +346,6 @@ sub GenerateFiles
 		HAVE_PTHREAD_IS_THREADED_NP => undef,
 		HAVE_PTHREAD_PRIO_INHERIT   => undef,
 		HAVE_PWRITE                 => undef,
-		HAVE_PWRITEV                => undef,
 		HAVE_RANDOM                 => undef,
 		HAVE_READLINE_H             => undef,
 		HAVE_READLINE_HISTORY_H     => undef,

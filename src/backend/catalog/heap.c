@@ -415,8 +415,6 @@ heap_create(const char *relname,
 	 */
 	if (create_storage)
 	{
-		RelationOpenSmgr(rel);
-
 		switch (rel->rd_rel->relkind)
 		{
 			case RELKIND_VIEW:
@@ -2295,7 +2293,7 @@ StoreAttrDefault(Relation rel, AttrNumber attnum,
 		valuesAtt[Anum_pg_attribute_atthasdef - 1] = true;
 		replacesAtt[Anum_pg_attribute_atthasdef - 1] = true;
 
-		if (rel->rd_rel->relkind == RELKIND_RELATION  && add_column_mode &&
+		if (rel->rd_rel->relkind == RELKIND_RELATION && add_column_mode &&
 			!attgenerated)
 		{
 			expr2 = expression_planner(expr2);

@@ -22,6 +22,14 @@
 
 #include "nodes/pg_list.h"
 
+/*
+ * two_phase tri-state values. See comments atop worker.c to know more about
+ * these states.
+ */
+#define LOGICALREP_TWOPHASE_STATE_DISABLED 'd'
+#define LOGICALREP_TWOPHASE_STATE_PENDING 'p'
+#define LOGICALREP_TWOPHASE_STATE_ENABLED 'e'
+
 /* ----------------
  *		pg_subscription definition. cpp turns this into
  *		typedef struct FormData_pg_subscription
@@ -57,6 +65,8 @@ CATALOG(pg_subscription,6100,SubscriptionRelationId) BKI_SHARED_RELATION BKI_ROW
 
 	bool		substream;		/* Stream in-progress transactions. */
 
+	char		subtwophasestate;	/* Stream two-phase transactions */
+
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	/* Connection string to the publisher */
 	text		subconninfo BKI_FORCE_NOT_NULL;
@@ -78,10 +88,8 @@ DECLARE_TOAST(pg_subscription, 4183, 4184);
 #define PgSubscriptionToastTable 4183
 #define PgSubscriptionToastIndex 4184
 
-DECLARE_UNIQUE_INDEX_PKEY(pg_subscription_oid_index, 6114, on pg_subscription using btree(oid oid_ops));
-#define SubscriptionObjectIndexId 6114
-DECLARE_UNIQUE_INDEX(pg_subscription_subname_index, 6115, on pg_subscription using btree(subdbid oid_ops, subname name_ops));
-#define SubscriptionNameIndexId 6115
+DECLARE_UNIQUE_INDEX_PKEY(pg_subscription_oid_index, 6114, SubscriptionObjectIndexId, on pg_subscription using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX(pg_subscription_subname_index, 6115, SubscriptionNameIndexId, on pg_subscription using btree(subdbid oid_ops, subname name_ops));
 
 typedef struct Subscription
 {
@@ -94,6 +102,7 @@ typedef struct Subscription
 	bool		binary;			/* Indicates if the subscription wants data in
 								 * binary format */
 	bool		stream;			/* Allow streaming in-progress transactions. */
+	char		twophasestate;	/* Allow streaming two-phase transactions */
 	char	   *conninfo;		/* Connection string to the publisher */
 	char	   *slotname;		/* Name of the replication slot */
 	char	   *synccommit;		/* Synchronous commit setting for worker */

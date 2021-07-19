@@ -28,7 +28,6 @@
 #include "fe-auth.h"
 #include "libpq-fe.h"
 #include "libpq-int.h"
-#include "lib/stringinfo.h"
 #include "mb/pg_wchar.h"
 #include "pg_config_paths.h"
 #include "port/pg_bswap.h"
@@ -517,11 +516,7 @@ pqDropConnection(PGconn *conn, bool flushInput)
 #endif
 	if (conn->sasl_state)
 	{
-		/*
-		 * XXX: if support for more authentication mechanisms is added, this
-		 * needs to call the right 'free' function.
-		 */
-		pg_fe_scram_free(conn->sasl_state);
+		conn->sasl->free(conn->sasl_state);
 		conn->sasl_state = NULL;
 	}
 }
@@ -5163,7 +5158,7 @@ parseServiceFile(const char *serviceFile,
 				i;
 	FILE	   *f;
 	char	   *line;
-	StringInfoData linebuf;
+	char		buf[1024];
 
 	*group_found = false;
 
@@ -5175,18 +5170,26 @@ parseServiceFile(const char *serviceFile,
 		return 1;
 	}
 
-	initStringInfo(&linebuf);
-
-	while (pg_get_line_buf(f, &linebuf))
+	while ((line = fgets(buf, sizeof(buf), f)) != NULL)
 	{
+		int			len;
+
 		linenr++;
 
-		/* ignore whitespace at end of line, especially the newline */
-		while (linebuf.len > 0 &&
-			   isspace((unsigned char) linebuf.data[linebuf.len - 1]))
-			linebuf.data[--linebuf.len] = '\0';
+		if (strlen(line) >= sizeof(buf) - 1)
+		{
+			appendPQExpBuffer(errorMessage,
+							  libpq_gettext("line %d too long in service file \"%s\"\n"),
+							  linenr,
+							  serviceFile);
+			result = 2;
+			goto exit;
+		}
 
-		line = linebuf.data;
+		/* ignore whitespace at end of line, especially the newline */
+		len = strlen(line);
+		while (len > 0 && isspace((unsigned char) line[len - 1]))
+			line[--len] = '\0';
 
 		/* ignore leading whitespace too */
 		while (*line && isspace((unsigned char) line[0]))
@@ -5303,7 +5306,6 @@ parseServiceFile(const char *serviceFile,
 
 exit:
 	fclose(f);
-	pfree(linebuf.data);
 
 	return result;
 }
@@ -7248,6 +7250,11 @@ pqGetHomeDirectory(char *buf, int bufsize)
 /*
  * To keep the API consistent, the locking stubs are always provided, even
  * if they are not required.
+ *
+ * Since we neglected to provide any error-return convention in the
+ * pgthreadlock_t API, we can't do much except Assert upon failure of any
+ * mutex primitive.  Fortunately, such failures appear to be nonexistent in
+ * the field.
  */
 
 static void
@@ -7267,7 +7274,7 @@ default_threadlock(int acquire)
 		if (singlethread_lock == NULL)
 		{
 			if (pthread_mutex_init(&singlethread_lock, NULL))
-				PGTHREAD_ERROR("failed to initialize mutex");
+				Assert(false);
 		}
 		InterlockedExchange(&mutex_initlock, 0);
 	}
@@ -7275,12 +7282,12 @@ default_threadlock(int acquire)
 	if (acquire)
 	{
 		if (pthread_mutex_lock(&singlethread_lock))
-			PGTHREAD_ERROR("failed to lock mutex");
+			Assert(false);
 	}
 	else
 	{
 		if (pthread_mutex_unlock(&singlethread_lock))
-			PGTHREAD_ERROR("failed to unlock mutex");
+			Assert(false);
 	}
 #endif
 }

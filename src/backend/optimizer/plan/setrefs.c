@@ -752,19 +752,19 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			set_hash_references(root, plan, rtoffset);
 			break;
 
-		case T_ResultCache:
+		case T_Memoize:
 			{
-				ResultCache *rcplan = (ResultCache *) plan;
+				Memoize    *mplan = (Memoize *) plan;
 
 				/*
-				 * Result Cache does not evaluate its targetlist.  It just
-				 * uses the same targetlist from its outer subnode.
+				 * Memoize does not evaluate its targetlist.  It just uses the
+				 * same targetlist from its outer subnode.
 				 */
 				set_dummy_tlist_references(plan, rtoffset);
 
-				rcplan->param_exprs = fix_scan_list(root, rcplan->param_exprs,
-													rtoffset,
-													NUM_EXEC_TLIST(plan));
+				mplan->param_exprs = fix_scan_list(root, mplan->param_exprs,
+												   rtoffset,
+												   NUM_EXEC_TLIST(plan));
 				break;
 			}
 
@@ -1687,6 +1687,9 @@ fix_expr_common(PlannerInfo *root, Node *node)
 
 		if (!OidIsValid(saop->hashfuncid))
 			record_plan_function_dependency(root, saop->hashfuncid);
+
+		if (!OidIsValid(saop->negfuncid))
+			record_plan_function_dependency(root, saop->negfuncid);
 	}
 	else if (IsA(node, Const))
 	{
@@ -2952,11 +2955,11 @@ record_plan_function_dependency(PlannerInfo *root, Oid funcid)
 	 * For performance reasons, we don't bother to track built-in functions;
 	 * we just assume they'll never change (or at least not in ways that'd
 	 * invalidate plans using them).  For this purpose we can consider a
-	 * built-in function to be one with OID less than FirstBootstrapObjectId.
+	 * built-in function to be one with OID less than FirstUnpinnedObjectId.
 	 * Note that the OID generator guarantees never to generate such an OID
 	 * after startup, even at OID wraparound.
 	 */
-	if (funcid >= (Oid) FirstBootstrapObjectId)
+	if (funcid >= (Oid) FirstUnpinnedObjectId)
 	{
 		PlanInvalItem *inval_item = makeNode(PlanInvalItem);
 
@@ -2992,7 +2995,7 @@ record_plan_type_dependency(PlannerInfo *root, Oid typid)
 	 * As in record_plan_function_dependency, ignore the possibility that
 	 * someone would change a built-in domain.
 	 */
-	if (typid >= (Oid) FirstBootstrapObjectId)
+	if (typid >= (Oid) FirstUnpinnedObjectId)
 	{
 		PlanInvalItem *inval_item = makeNode(PlanInvalItem);
 

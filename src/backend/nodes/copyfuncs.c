@@ -950,12 +950,12 @@ _copyMaterial(const Material *from)
 
 
 /*
- * _copyResultCache
+ * _copyMemoize
  */
-static ResultCache *
-_copyResultCache(const ResultCache *from)
+static Memoize *
+_copyMemoize(const Memoize *from)
 {
-	ResultCache *newnode = makeNode(ResultCache);
+	Memoize    *newnode = makeNode(Memoize);
 
 	/*
 	 * copy node superclass fields
@@ -1718,6 +1718,7 @@ _copyScalarArrayOpExpr(const ScalarArrayOpExpr *from)
 	COPY_SCALAR_FIELD(opno);
 	COPY_SCALAR_FIELD(opfuncid);
 	COPY_SCALAR_FIELD(hashfuncid);
+	COPY_SCALAR_FIELD(negfuncid);
 	COPY_SCALAR_FIELD(useOr);
 	COPY_SCALAR_FIELD(inputcollid);
 	COPY_NODE_FIELD(args);
@@ -5079,8 +5080,8 @@ copyObjectImpl(const void *from)
 		case T_Material:
 			retval = _copyMaterial(from);
 			break;
-		case T_ResultCache:
-			retval = _copyResultCache(from);
+		case T_Memoize:
+			retval = _copyMemoize(from);
 			break;
 		case T_Sort:
 			retval = _copySort(from);

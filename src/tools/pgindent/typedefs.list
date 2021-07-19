@@ -113,6 +113,7 @@ Append
 AppendPath
 AppendRelInfo
 AppendState
+ApplyExecutionData
 ApplySubXactData
 Archive
 ArchiveEntryPtrType
@@ -1163,6 +1164,7 @@ IpcSemaphoreKey
 IsForeignPathAsyncCapable_function
 IsForeignRelUpdatable_function
 IsForeignScanParallelSafe_function
+IsoConnInfo
 IspellDict
 Item
 ItemId
@@ -1388,12 +1390,15 @@ LogicalOutputPluginWriterUpdateProgress
 LogicalOutputPluginWriterWrite
 LogicalRepBeginData
 LogicalRepCommitData
+LogicalRepCommitPreparedTxnData
 LogicalRepCtxStruct
 LogicalRepMsgType
 LogicalRepPartMapEntry
+LogicalRepPreparedTxnData
 LogicalRepRelId
 LogicalRepRelMapEntry
 LogicalRepRelation
+LogicalRepRollbackPreparedTxnData
 LogicalRepTupleData
 LogicalRepTyp
 LogicalRepWorker
@@ -1419,6 +1424,13 @@ Material
 MaterialPath
 MaterialState
 MdfdVec
+Memoize
+MemoizeEntry
+MemoizeInstrumentation
+MemoizeKey
+MemoizePath
+MemoizeState
+MemoizeTuple
 MemoryContext
 MemoryContextCallback
 MemoryContextCallbackFunction
@@ -1683,7 +1695,6 @@ PLpgSQL_stmt_return
 PLpgSQL_stmt_return_next
 PLpgSQL_stmt_return_query
 PLpgSQL_stmt_rollback
-PLpgSQL_stmt_set
 PLpgSQL_stmt_type
 PLpgSQL_stmt_while
 PLpgSQL_trigtype
@@ -1872,6 +1883,9 @@ PerlInterpreter
 Perl_check_t
 Perl_ppaddr_t
 Permutation
+PermutationStep
+PermutationStepBlocker
+PermutationStepBlockerType
 PgArchData
 PgBackendGSSStatus
 PgBackendSSLStatus
@@ -2218,13 +2232,6 @@ RestoreOptions
 RestorePass
 RestrictInfo
 Result
-ResultCache
-ResultCacheEntry
-ResultCacheInstrumentation
-ResultCacheKey
-ResultCachePath
-ResultCacheState
-ResultCacheTuple
 ResultRelInfo
 ResultState
 ReturnSetInfo
@@ -2380,10 +2387,10 @@ SharedInvalSmgrMsg
 SharedInvalSnapshotMsg
 SharedInvalidationMessage
 SharedJitInstrumentation
+SharedMemoizeInfo
 SharedRecordTableEntry
 SharedRecordTableKey
 SharedRecordTypmodRegistry
-SharedResultCacheInfo
 SharedSortInfo
 SharedTuplestore
 SharedTuplestoreAccessor
@@ -2416,7 +2423,6 @@ SlabBlock
 SlabChunk
 SlabContext
 SlabSlot
-SlotAcquireBehavior
 SlotErrCallbackArg
 SlotNumber
 SlruCtl
@@ -2496,6 +2502,7 @@ StatsData
 StatsElem
 StatsExtInfo
 StdAnalyzeData
+StdRdOptIndexCleanup
 StdRdOptions
 Step
 StopList
@@ -2507,6 +2514,7 @@ StringInfoData
 StripnullState
 SubLink
 SubLinkType
+SubOpts
 SubPlan
 SubPlanState
 SubRemoveRels
@@ -2777,7 +2785,7 @@ UserOpts
 VacAttrStats
 VacAttrStatsP
 VacErrPhase
-VacOptTernaryValue
+VacOptValue
 VacuumParams
 VacuumRelation
 VacuumStmt
@@ -2839,6 +2847,7 @@ WaitEventSet
 WaitEventTimeout
 WaitPMResult
 WalCloseMethod
+WalCompression
 WalLevel
 WalRcvData
 WalRcvExecResult
@@ -3266,6 +3275,8 @@ mbcharacter_incrementer
 mbdisplaylen_converter
 mblen_converter
 mbstr_verifier
+memoize_hash
+memoize_iterator
 metastring
 mix_data_t
 mixedStruct
@@ -3313,6 +3324,7 @@ pgParameterStatus
 pg_atomic_flag
 pg_atomic_uint32
 pg_atomic_uint64
+pg_be_sasl_mech
 pg_checksum_context
 pg_checksum_raw_context
 pg_checksum_type
@@ -3328,6 +3340,7 @@ pg_enc
 pg_enc2gettext
 pg_enc2name
 pg_encname
+pg_fe_sasl_mech
 pg_funcptr_t
 pg_gssinfo
 pg_hmac_ctx
@@ -3470,8 +3483,6 @@ remoteDep
 rendezvousHashEntry
 replace_rte_variables_callback
 replace_rte_variables_context
-resultcache_hash
-resultcache_iterator
 ret_type
 rewind_source
 rewrite_event

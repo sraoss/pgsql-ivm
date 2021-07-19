@@ -502,12 +502,12 @@ SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 FULL JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT 
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) FULL JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
-SET enable_resultcache TO off;
+SET enable_memoize TO off;
 -- right outer join + left outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 RIGHT JOIN ft2 t2 ON (t1.c1 = t2.c1) LEFT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
-RESET enable_resultcache;
+RESET enable_memoize;
 -- left outer join + right outer join
 EXPLAIN (VERBOSE, COSTS OFF)
 SELECT t1.c1, t2.c2, t3.c3 FROM ft2 t1 LEFT JOIN ft2 t2 ON (t1.c1 = t2.c1) RIGHT JOIN ft4 t3 ON (t2.c1 = t3.c1) OFFSET 10 LIMIT 10;
@@ -1129,9 +1129,11 @@ DROP TABLE reind_fdw_parent;
 -- conversion error
 -- ===================================================================
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE int;
-SELECT * FROM ft1 WHERE c1 = 1;  -- ERROR
-SELECT  ft1.c1,  ft2.c2, ft1.c8 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
-SELECT  ft1.c1,  ft2.c2, ft1 FROM ft1, ft2 WHERE ft1.c1 = ft2.c1 AND ft1.c1 = 1; -- ERROR
+SELECT * FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8) WHERE x1 = 1;  -- ERROR
+SELECT ftx.x1, ft2.c2, ftx.x8 FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
+  WHERE ftx.x1 = ft2.c1 AND ftx.x1 = 1; -- ERROR
+SELECT ftx.x1, ft2.c2, ftx FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
+  WHERE ftx.x1 = ft2.c1 AND ftx.x1 = 1; -- ERROR
 SELECT sum(c2), array_agg(c8) FROM ft1 GROUP BY c8; -- ERROR
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE user_enum;
 
@@ -1736,6 +1738,10 @@ DROP TRIGGER trig_local_before ON loc1;
 
 
 -- Test direct foreign table modification functionality
+EXPLAIN (verbose, costs off)
+DELETE FROM rem1;                 -- can be pushed down
+EXPLAIN (verbose, costs off)
+DELETE FROM rem1 WHERE false;     -- currently can't be pushed down
 
 -- Test with statement-level triggers
 CREATE TRIGGER trig_stmt_before
@@ -2746,7 +2752,7 @@ CREATE FOREIGN TABLE ft1_nopw (
 	c8 user_enum
 ) SERVER loopback_nopw OPTIONS (schema_name 'public', table_name 'ft1');
 
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 -- If we add a password to the connstr it'll fail, because we don't allow passwords
 -- in connstrs only in user mappings.
@@ -2764,13 +2770,13 @@ $d$;
 
 ALTER USER MAPPING FOR CURRENT_USER SERVER loopback_nopw OPTIONS (ADD password 'dummypw');
 
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 -- Unpriv user cannot make the mapping passwordless
 ALTER USER MAPPING FOR CURRENT_USER SERVER loopback_nopw OPTIONS (ADD password_required 'false');
 
 
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 RESET ROLE;
 
@@ -2780,7 +2786,7 @@ ALTER USER MAPPING FOR regress_nosuper SERVER loopback_nopw OPTIONS (ADD passwor
 SET ROLE regress_nosuper;
 
 -- Should finally work now
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 -- unpriv user also cannot set sslcert / sslkey on the user mapping
 -- first set password_required so we see the right error messages
@@ -2794,13 +2800,13 @@ DROP USER MAPPING FOR CURRENT_USER SERVER loopback_nopw;
 
 -- This will fail again as it'll resolve the user mapping for public, which
 -- lacks password_required=false
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 RESET ROLE;
 
 -- The user mapping for public is passwordless and lacks the password_required=false
 -- mapping option, but will work because the current user is a superuser.
-SELECT * FROM ft1_nopw LIMIT 1;
+SELECT 1 FROM ft1_nopw LIMIT 1;
 
 -- cleanup
 DROP USER MAPPING FOR public SERVER loopback_nopw;
@@ -2825,11 +2831,11 @@ ROLLBACK;
 -- so that we can easily terminate the connection later.
 ALTER SERVER loopback OPTIONS (application_name 'fdw_retry_check');
 
--- If debug_invalidate_system_caches_always is active, it results in
+-- If debug_discard_caches is active, it results in
 -- dropping remote connections after every transaction, making it
 -- impossible to test termination meaningfully.  So turn that off
 -- for this test.
-SET debug_invalidate_system_caches_always = 0;
+SET debug_discard_caches = 0;
 
 -- Make sure we have a remote connection.
 SELECT 1 FROM ft1 LIMIT 1;
@@ -2855,7 +2861,7 @@ SELECT 1 FROM ft1 LIMIT 1;    -- should fail
 \set VERBOSITY default
 COMMIT;
 
-RESET debug_invalidate_system_caches_always;
+RESET debug_discard_caches;
 
 -- =============================================================================
 -- test connection invalidation cases and postgres_fdw_get_connections function
@@ -3337,3 +3343,19 @@ DROP TABLE join_tbl;
 
 ALTER SERVER loopback OPTIONS (DROP async_capable);
 ALTER SERVER loopback2 OPTIONS (DROP async_capable);
+
+-- ===================================================================
+-- test invalid server and foreign table options
+-- ===================================================================
+-- Invalid fdw_startup_cost option
+CREATE SERVER inv_scst FOREIGN DATA WRAPPER postgres_fdw
+	OPTIONS(fdw_startup_cost '100$%$#$#');
+-- Invalid fdw_tuple_cost option
+CREATE SERVER inv_scst FOREIGN DATA WRAPPER postgres_fdw
+	OPTIONS(fdw_tuple_cost '100$%$#$#');
+-- Invalid fetch_size option
+CREATE FOREIGN TABLE inv_fsz (c1 int )
+	SERVER loopback OPTIONS (fetch_size '100$%$#$#');
+-- Invalid batch_size option
+CREATE FOREIGN TABLE inv_bsz (c1 int )
+	SERVER loopback OPTIONS (batch_size '100$%$#$#');

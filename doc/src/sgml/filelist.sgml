@@ -89,6 +89,7 @@
 <!ENTITY spgist     SYSTEM "spgist.sgml">
 <!ENTITY gin        SYSTEM "gin.sgml">
 <!ENTITY brin       SYSTEM "brin.sgml">
+<!ENTITY hash       SYSTEM "hash.sgml">
 <!ENTITY planstats    SYSTEM "planstats.sgml">
 <!ENTITY tableam    SYSTEM "tableam.sgml">
 <!ENTITY indexam    SYSTEM "indexam.sgml">
@@ -169,7 +170,7 @@
 <!ENTITY sourcerepo SYSTEM "sourcerepo.sgml">
 
 <!ENTITY release    SYSTEM "release.sgml">
-<!ENTITY release-14     SYSTEM "release-14.sgml">
+<!ENTITY release-15     SYSTEM "release-15.sgml">
 
 <!ENTITY limits     SYSTEM "limits.sgml">
 <!ENTITY acronyms   SYSTEM "acronyms.sgml">

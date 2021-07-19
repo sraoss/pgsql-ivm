@@ -392,9 +392,7 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 		if (strcmp(defel->defname, "sequence_name") == 0)
 		{
 			if (nameEl)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
+				errorConflictingDefElem(defel, cxt->pstate);
 			nameEl = defel;
 			nameEl_idx = foreach_current_index(option);
 		}
@@ -976,8 +974,9 @@ transformTableLikeClause(CreateStmtContext *cxt, TableLikeClause *table_like_cla
 		relation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("\"%s\" is not a table, view, materialized view, composite type, or foreign table",
-						RelationGetRelationName(relation))));
+				 errmsg("relation \"%s\" is invalid in LIKE clause",
+						RelationGetRelationName(relation)),
+				 errdetail_relkind_not_supported(relation->rd_rel->relkind)));
 
 	cancel_parser_errposition_callback(&pcbstate);
 

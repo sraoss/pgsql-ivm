@@ -49,7 +49,8 @@ typedef struct XLogDumpConfig
 	bool		stats_per_record;
 
 	/* filter options */
-	int			filter_by_rmgr;
+	bool		filter_by_rmgr[RM_MAX_ID + 1];
+	bool		filter_by_rmgr_enabled;
 	TransactionId filter_by_xid;
 	bool		filter_by_xid_enabled;
 } XLogDumpConfig;
@@ -537,18 +538,29 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 				   blk);
 			if (XLogRecHasBlockImage(record, block_id))
 			{
-				if (record->blocks[block_id].bimg_info &
-					BKPIMAGE_IS_COMPRESSED)
+				uint8		bimg_info = record->blocks[block_id].bimg_info;
+
+				if (BKPIMAGE_COMPRESSED(bimg_info))
 				{
+					const char *method;
+
+					if ((bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
+						method = "pglz";
+					else if ((bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
+						method = "lz4";
+					else
+						method = "unknown";
+
 					printf(" (FPW%s); hole: offset: %u, length: %u, "
-						   "compression saved: %u",
+						   "compression saved: %u, method: %s",
 						   XLogRecBlockImageApply(record, block_id) ?
 						   "" : " for WAL verification",
 						   record->blocks[block_id].hole_offset,
 						   record->blocks[block_id].hole_length,
 						   BLCKSZ -
 						   record->blocks[block_id].hole_length -
-						   record->blocks[block_id].bimg_len);
+						   record->blocks[block_id].bimg_len,
+						   method);
 				}
 				else
 				{
@@ -814,7 +826,8 @@ main(int argc, char **argv)
 	config.stop_after_records = -1;
 	config.already_displayed_records = 0;
 	config.follow = false;
-	config.filter_by_rmgr = -1;
+	/* filter_by_rmgr array was zeroed by memset above */
+	config.filter_by_rmgr_enabled = false;
 	config.filter_by_xid = InvalidTransactionId;
 	config.filter_by_xid_enabled = false;
 	config.stats = false;
@@ -873,12 +886,12 @@ main(int argc, char **argv)
 					{
 						if (pg_strcasecmp(optarg, RmgrDescTable[i].rm_name) == 0)
 						{
-							config.filter_by_rmgr = i;
+							config.filter_by_rmgr[i] = true;
+							config.filter_by_rmgr_enabled = true;
 							break;
 						}
 					}
-
-					if (config.filter_by_rmgr == -1)
+					if (i > RM_MAX_ID)
 					{
 						pg_log_error("resource manager \"%s\" does not exist",
 									 optarg);
@@ -1087,8 +1100,8 @@ main(int argc, char **argv)
 		}
 
 		/* apply all specified filters */
-		if (config.filter_by_rmgr != -1 &&
-			config.filter_by_rmgr != record->xl_rmid)
+		if (config.filter_by_rmgr_enabled &&
+			!config.filter_by_rmgr[record->xl_rmid])
 			continue;
 
 		if (config.filter_by_xid_enabled &&

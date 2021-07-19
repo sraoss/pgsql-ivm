@@ -832,6 +832,7 @@ _readScalarArrayOpExpr(void)
 	READ_OID_FIELD(opno);
 	READ_OID_FIELD(opfuncid);
 	READ_OID_FIELD(hashfuncid);
+	READ_OID_FIELD(negfuncid);
 	READ_BOOL_FIELD(useOr);
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
@@ -2216,12 +2217,12 @@ _readMaterial(void)
 }
 
 /*
- * _readResultCache
+ * _readMemoize
  */
-static ResultCache *
-_readResultCache(void)
+static Memoize *
+_readMemoize(void)
 {
-	READ_LOCALS(ResultCache);
+	READ_LOCALS(Memoize);
 
 	ReadCommonPlan(&local_node->plan);
 
@@ -2923,8 +2924,8 @@ parseNodeString(void)
 		return_value = _readHashJoin();
 	else if (MATCH("MATERIAL", 8))
 		return_value = _readMaterial();
-	else if (MATCH("RESULTCACHE", 11))
-		return_value = _readResultCache();
+	else if (MATCH("MEMOIZE", 7))
+		return_value = _readMemoize();
 	else if (MATCH("SORT", 4))
 		return_value = _readSort();
 	else if (MATCH("INCREMENTALSORT", 15))
