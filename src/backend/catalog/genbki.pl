@@ -26,6 +26,8 @@ my $output_path = '';
 my $major_version;
 my $include_path;
 
+my $num_errors = 0;
+
 GetOptions(
 	'output:s'       => \$output_path,
 	'set-version:s'  => \$major_version,
@@ -167,15 +169,17 @@ foreach my $oid (keys %oidcounts)
 die "found $found duplicate OID(s) in catalog data\n" if $found;
 
 
-# Oids not specified in the input files are automatically assigned,
-# starting at FirstGenbkiObjectId, extending up to FirstBootstrapObjectId.
+# OIDs not specified in the input files are automatically assigned,
+# starting at FirstGenbkiObjectId, extending up to FirstUnpinnedObjectId.
+# We allow such OIDs to be assigned independently within each catalog.
 my $FirstGenbkiObjectId =
   Catalog::FindDefinedSymbol('access/transam.h', $include_path,
 	'FirstGenbkiObjectId');
-my $FirstBootstrapObjectId =
+my $FirstUnpinnedObjectId =
   Catalog::FindDefinedSymbol('access/transam.h', $include_path,
-	'FirstBootstrapObjectId');
-my $GenbkiNextOid = $FirstGenbkiObjectId;
+	'FirstUnpinnedObjectId');
+# Hash of next available OID, indexed by catalog name.
+my %GenbkiNextOids;
 
 
 # Fetch some special data that we will substitute into the output file.
@@ -467,6 +471,14 @@ EOM
 	printf $def "#define %s %s\n",
 	  $catalog->{rowtype_oid_macro}, $catalog->{rowtype_oid}
 	  if $catalog->{rowtype_oid_macro};
+
+	foreach my $index (@{ $catalog->{indexing} })
+	{
+		printf $def "#define %s %s\n",
+		  $index->{index_oid_macro}, $index->{index_oid}
+		  if $index->{index_oid_macro};
+	}
+
 	print $def "\n";
 
 	# .bki CREATE command for this catalog
@@ -563,8 +575,7 @@ EOM
 			# Assign oid if oid column exists and no explicit assignment in row
 			if ($attname eq "oid" and not defined $bki_values{$attname})
 			{
-				$bki_values{$attname} = $GenbkiNextOid;
-				$GenbkiNextOid++;
+				$bki_values{$attname} = assign_next_oid($catname);
 			}
 
 			# Replace OID synonyms with OIDs per the appropriate lookup rule.
@@ -668,11 +679,6 @@ foreach my $declaration (@index_decls)
 
 # last command in the BKI file: build the indexes declared above
 print $bki "build indices\n";
-
-# check that we didn't overrun available OIDs
-die
-  "genbki OID counter reached $GenbkiNextOid, overrunning FirstBootstrapObjectId\n"
-  if $GenbkiNextOid > $FirstBootstrapObjectId;
 
 # Now generate system_constraints.sql
 
@@ -792,7 +798,7 @@ Catalog::RenameTempFile($schemafile,       $tmpext);
 Catalog::RenameTempFile($fk_info_file,     $tmpext);
 Catalog::RenameTempFile($constraints_file, $tmpext);
 
-exit 0;
+exit ($num_errors != 0 ? 1 : 0);
 
 #################### Subroutines ########################
 
@@ -894,11 +900,12 @@ sub morph_row_for_pgattr
 	# Copy the type data from pg_type, and add some type-dependent items
 	my $type = $types{$atttype};
 
-	$row->{atttypid}   = $type->{oid};
-	$row->{attlen}     = $type->{typlen};
-	$row->{attbyval}   = $type->{typbyval};
-	$row->{attstorage} = $type->{typstorage};
-	$row->{attalign}   = $type->{typalign};
+	$row->{atttypid}       = $type->{oid};
+	$row->{attlen}         = $type->{typlen};
+	$row->{attbyval}       = $type->{typbyval};
+	$row->{attalign}       = $type->{typalign};
+	$row->{attstorage}     = $type->{typstorage};
+	$row->{attcompression} = '\0';
 
 	# set attndims if it's an array type
 	$row->{attndims} = $type->{typcategory} eq 'A' ? '1' : '0';
@@ -906,9 +913,6 @@ sub morph_row_for_pgattr
 	# collation-aware catalog columns must use C collation
 	$row->{attcollation} =
 	  $type->{typcollation} ne '0' ? $C_COLLATION_OID : 0;
-
-	$row->{attcompression} =
-	  $type->{typstorage} ne 'p' && $type->{typstorage} ne 'e' ? 'p' : '\0';
 
 	if (defined $attr->{forcenotnull})
 	{
@@ -1022,8 +1026,7 @@ sub morph_row_for_schemapg
 # Perform OID lookups on an array of OID names.
 # If we don't have a unique value to substitute, warn and
 # leave the entry unchanged.
-# (A warning seems sufficient because the bootstrap backend will reject
-# non-numeric values anyway.  So we might as well detect multiple problems
+# (We don't exit right away so that we can detect multiple problems
 # within this genbki.pl run.)
 sub lookup_oids
 {
@@ -1043,16 +1046,20 @@ sub lookup_oids
 			push @lookupoids, $lookupname;
 			if ($lookupname eq '-' or $lookupname eq '0')
 			{
-				warn sprintf
-				  "invalid zero OID reference in %s.dat field %s line %s\n",
-				  $catname, $attname, $bki_values->{line_number}
-				  if !$lookup_opt;
+				if (!$lookup_opt)
+				{
+					warn sprintf
+					  "invalid zero OID reference in %s.dat field %s line %s\n",
+					  $catname, $attname, $bki_values->{line_number};
+					$num_errors++;
+				}
 			}
 			else
 			{
 				warn sprintf
 				  "unresolved OID reference \"%s\" in %s.dat field %s line %s\n",
 				  $lookupname, $catname, $attname, $bki_values->{line_number};
+				$num_errors++;
 			}
 		}
 	}
@@ -1079,6 +1086,25 @@ sub form_pg_type_symbol
 	my $arraystr = $1 ? 'ARRAY' : '';
 	my $name = uc $2;
 	return $name . $arraystr . 'OID';
+}
+
+# Assign an unused OID within the specified catalog.
+sub assign_next_oid
+{
+	my $catname = shift;
+
+	# Initialize, if no previous request for this catalog.
+	$GenbkiNextOids{$catname} = $FirstGenbkiObjectId
+	  if !defined($GenbkiNextOids{$catname});
+
+	my $result = $GenbkiNextOids{$catname}++;
+
+	# Check that we didn't overrun available OIDs
+	die
+	  "genbki OID counter for $catname reached $result, overrunning FirstUnpinnedObjectId\n"
+	  if $result >= $FirstUnpinnedObjectId;
+
+	return $result;
 }
 
 sub usage

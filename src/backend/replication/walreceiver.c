@@ -279,10 +279,13 @@ WalReceiverMain(void)
 	PG_SETMASK(&UnBlockSig);
 
 	/* Establish the connection to the primary for XLOG streaming */
-	wrconn = walrcv_connect(conninfo, false, cluster_name[0] ? cluster_name : "walreceiver", &err);
+	wrconn = walrcv_connect(conninfo, false,
+							cluster_name[0] ? cluster_name : "walreceiver",
+							&err);
 	if (!wrconn)
 		ereport(ERROR,
-				(errmsg("could not connect to the primary server: %s", err)));
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("could not connect to the primary server: %s", err)));
 
 	/*
 	 * Save user-visible connection string.  This clobbers the original
@@ -328,7 +331,8 @@ WalReceiverMain(void)
 		if (strcmp(primary_sysid, standby_sysid) != 0)
 		{
 			ereport(ERROR,
-					(errmsg("database system identifier differs between the primary and standby"),
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("database system identifier differs between the primary and standby"),
 					 errdetail("The primary's identifier is %s, the standby's identifier is %s.",
 							   primary_sysid, standby_sysid)));
 		}
@@ -339,7 +343,8 @@ WalReceiverMain(void)
 		 */
 		if (primaryTLI < startpointTLI)
 			ereport(ERROR,
-					(errmsg("highest timeline %u of the primary is behind recovery timeline %u",
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("highest timeline %u of the primary is behind recovery timeline %u",
 							primaryTLI, startpointTLI)));
 
 		/*
@@ -365,7 +370,7 @@ WalReceiverMain(void)
 					 "pg_walreceiver_%lld",
 					 (long long int) walrcv_get_backend_pid(wrconn));
 
-			walrcv_create_slot(wrconn, slotname, true, 0, NULL);
+			walrcv_create_slot(wrconn, slotname, true, false, 0, NULL);
 
 			SpinLockAcquire(&walrcv->mutex);
 			strlcpy(walrcv->slotname, slotname, NAMEDATALEN);
@@ -425,7 +430,8 @@ WalReceiverMain(void)
 				 */
 				if (!RecoveryInProgress())
 					ereport(FATAL,
-							(errmsg("cannot continue WAL streaming, recovery has already ended")));
+							(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+							 errmsg("cannot continue WAL streaming, recovery has already ended")));
 
 				/* Process any requests or signals received recently */
 				ProcessWalRcvInterrupts();
@@ -551,7 +557,8 @@ WalReceiverMain(void)
 
 						if (now >= timeout)
 							ereport(ERROR,
-									(errmsg("terminating walreceiver due to timeout")));
+									(errcode(ERRCODE_CONNECTION_FAILURE),
+									 errmsg("terminating walreceiver due to timeout")));
 
 						/*
 						 * We didn't receive anything new, for half of
@@ -878,8 +885,6 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 
 		if (recvFile < 0 || !XLByteInSeg(recptr, recvSegNo, wal_segment_size))
 		{
-			bool		use_existent;
-
 			/*
 			 * fsync() and close current file before we switch to next one. We
 			 * would otherwise have to reopen this file to fsync it later
@@ -916,8 +921,7 @@ XLogWalRcvWrite(char *buf, Size nbytes, XLogRecPtr recptr)
 
 			/* Create/use new log file */
 			XLByteToSeg(recptr, recvSegNo, wal_segment_size);
-			use_existent = true;
-			recvFile = XLogFileInit(recvSegNo, &use_existent, true);
+			recvFile = XLogFileInit(recvSegNo);
 			recvFileTLI = ThisTimeLineID;
 		}
 

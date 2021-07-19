@@ -975,8 +975,8 @@ PostgreSQL documentation
        <para>
         Do not output commands to set <acronym>TOAST</acronym> compression
         methods.
-        With this option, all objects will be created using whichever
-        compression method is the default during restore.
+        With this option, all columns will be restored with the default
+        compression setting.
        </para>
       </listitem>
      </varlistentry>
@@ -1405,7 +1405,12 @@ CREATE DATABASE foo WITH TEMPLATE template0;
    servers.  It is then up to the user to reactivate the subscriptions in a
    suitable way.  If the involved hosts have changed, the connection
    information might have to be changed.  It might also be appropriate to
-   truncate the target tables before initiating a new full table copy.
+   truncate the target tables before initiating a new full table copy.  If users
+   intend to copy initial data during refresh they must create the slot with
+   <literal>two_phase = false</literal>.  After the initial sync, the
+   <literal>two_phase</literal> option will be automatically enabled by the
+   subscriber if the subscription had been originally created with
+   <literal>two_phase = true</literal> option.
   </para>
  </refsect1>
 
@@ -1413,7 +1418,7 @@ CREATE DATABASE foo WITH TEMPLATE template0;
   <title>Examples</title>
 
   <para>
-   To dump a database called <literal>mydb</literal> into a SQL-script file:
+   To dump a database called <literal>mydb</literal> into an SQL-script file:
 <screen>
 <prompt>$</prompt> <userinput>pg_dump mydb &gt; db.sql</userinput>
 </screen>

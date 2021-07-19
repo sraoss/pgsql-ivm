@@ -349,7 +349,7 @@
       <term>AuthenticationSSPI</term>
       <listitem>
        <para>
-        The frontend must now initiate a SSPI negotiation. The frontend
+        The frontend must now initiate an SSPI negotiation. The frontend
         will send a GSSResponse with the first part of the SSPI
         data stream in response to this. If further messages are needed,
         the server will respond with AuthenticationGSSContinue.
@@ -1605,7 +1605,7 @@ more details on SCRAM-SHA-256 and SCRAM-SHA-256-PLUS.
 <para>
   One or more server-challenge and client-response message will follow. Each
   server-challenge is sent in an AuthenticationSASLContinue message, followed
-  by a response from client in an SASLResponse message. The particulars of
+  by a response from client in a SASLResponse message. The particulars of
   the messages are mechanism specific.
 </para>
 </step>
@@ -1914,7 +1914,7 @@ The commands accepted in replication mode are:
   </varlistentry>
 
   <varlistentry id="protocol-replication-create-slot" xreflabel="CREATE_REPLICATION_SLOT">
-   <term><literal>CREATE_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> [ <literal>TEMPORARY</literal> ] { <literal>PHYSICAL</literal> [ <literal>RESERVE_WAL</literal> ] | <literal>LOGICAL</literal> <replaceable class="parameter">output_plugin</replaceable> [ <literal>EXPORT_SNAPSHOT</literal> | <literal>NOEXPORT_SNAPSHOT</literal> | <literal>USE_SNAPSHOT</literal> ] }
+   <term><literal>CREATE_REPLICATION_SLOT</literal> <replaceable class="parameter">slot_name</replaceable> [ <literal>TEMPORARY</literal> ] { <literal>PHYSICAL</literal> [ <literal>RESERVE_WAL</literal> ] | <literal>LOGICAL</literal> <replaceable class="parameter">output_plugin</replaceable> [ <literal>EXPORT_SNAPSHOT</literal> | <literal>NOEXPORT_SNAPSHOT</literal> | <literal>USE_SNAPSHOT</literal> | <literal>TWO_PHASE</literal> ] }
      <indexterm><primary>CREATE_REPLICATION_SLOT</primary></indexterm>
     </term>
     <listitem>
@@ -1951,6 +1951,20 @@ The commands accepted in replication mode are:
          Specify that this replication slot is a temporary one. Temporary
          slots are not saved to disk and are automatically dropped on error
          or when the session has finished.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry>
+       <term><literal>TWO_PHASE</literal></term>
+       <listitem>
+        <para>
+         Specify that this logical replication slot supports decoding of two-phase
+         transactions. With this option, two-phase commands like
+         <literal>PREPARE TRANSACTION</literal>, <literal>COMMIT PREPARED</literal>
+         and <literal>ROLLBACK PREPARED</literal> are decoded and transmitted.
+         The transaction will be decoded and transmitted at
+         <literal>PREPARE TRANSACTION</literal> time.
         </para>
        </listitem>
       </varlistentry>
@@ -2797,11 +2811,17 @@ The commands accepted in replication mode are:
      </term>
      <listitem>
       <para>
-       Protocol version. Currently versions <literal>1</literal> and
-       <literal>2</literal> are supported. The version <literal>2</literal>
-       is supported only for server version 14 and above, and it allows
-       streaming of large in-progress transactions.
-     </para>
+       Protocol version. Currently versions <literal>1</literal>, <literal>2</literal>,
+       and <literal>3</literal> are supported.
+      </para>
+      <para>
+       Version <literal>2</literal> is supported only for server version 14
+       and above, and it allows streaming of large in-progress transactions.
+      </para>
+      <para>
+       Version <literal>3</literal> is supported only for server version 15
+       and above, and it allows streaming of two-phase transactions.
+      </para>
      </listitem>
     </varlistentry>
 
@@ -2857,10 +2877,11 @@ The commands accepted in replication mode are:
   <para>
    The logical replication protocol sends individual transactions one by one.
    This means that all messages between a pair of Begin and Commit messages
-   belong to the same transaction. It also sends changes of large in-progress
-   transactions between a pair of Stream Start and Stream Stop messages. The
-   last stream of such a transaction contains Stream Commit or Stream Abort
-   message.
+   belong to the same transaction. Similarly, all messages between a pair of
+   Begin Prepare and Prepare messages belong to the same transaction.
+   It also sends changes of large in-progress transactions between a pair of
+   Stream Start and Stream Stop messages. The last stream of such a transaction 
+   contains a Stream Commit or Stream Abort message.
   </para>
 
   <para>
@@ -6226,7 +6247,7 @@ message.
 <listitem>
 <para>
         Internal query: the text of a failed internally-generated command.
-        This could be, for example, a SQL query issued by a PL/pgSQL function.
+        This could be, for example, an SQL query issued by a PL/pgSQL function.
 </para>
 </listitem>
 </varlistentry>
@@ -6498,6 +6519,18 @@ Message
 </para>
 </listitem>
 </varlistentry>
+
+<varlistentry>
+<term>
+        Int32
+</term>
+<listitem>
+<para>
+                Length of the content.
+</para>
+</listitem>
+</varlistentry>
+
 <varlistentry>
 <term>
         Byte<replaceable>n</replaceable>
@@ -7365,6 +7398,272 @@ Stream Abort
 </variablelist>
 
 <para>
+The following messages (Begin Prepare, Prepare, Commit Prepared, Rollback Prepared)
+are available since protocol version 3.
+</para>
+
+<variablelist>
+
+<varlistentry>
+
+<term>Begin Prepare</term>
+<listitem>
+<para>
+
+<variablelist>
+
+<varlistentry>
+<term>Byte1('b')</term>
+<listitem><para>
+                Identifies the message as the beginning of a two-phase transaction message.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The LSN of the prepare.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The end LSN of the prepared transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                Prepare timestamp of the transaction. The value is in number
+                of microseconds since PostgreSQL epoch (2000-01-01).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int32</term>
+<listitem><para>
+                Xid of the transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>String</term>
+<listitem><para>
+                The user defined GID of the two-phase transaction.
+</para></listitem>
+</varlistentry>
+
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+
+<term>Prepare</term>
+<listitem>
+<para>
+
+<variablelist>
+
+<varlistentry>
+<term>Byte1('P')</term>
+<listitem><para>
+                Identifies the message as a two-phase prepared transaction message.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int8</term>
+<listitem><para>
+                Flags; currently unused (must be 0).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The LSN of the prepare.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The end LSN of the prepared transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                Prepare timestamp of the transaction. The value is in number
+                of microseconds since PostgreSQL epoch (2000-01-01).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int32</term>
+<listitem><para>
+                Xid of the transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>String</term>
+<listitem><para>
+                The user defined GID of the two-phase transaction.
+</para></listitem>
+</varlistentry>
+
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+
+<term>Commit Prepared</term>
+<listitem>
+<para>
+
+<variablelist>
+
+<varlistentry>
+<term>Byte1('K')</term>
+<listitem><para>
+                Identifies the message as the commit of a two-phase transaction message.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int8</term>
+<listitem><para>
+                Flags; currently unused (must be 0).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The LSN of the commit prepared.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The end LSN of the commit prepared transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                Commit timestamp of the transaction. The value is in number
+                of microseconds since PostgreSQL epoch (2000-01-01).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int32</term>
+<listitem><para>
+                Xid of the transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>String</term>
+<listitem><para>
+                The user defined GID of the two-phase transaction.
+</para></listitem>
+</varlistentry>
+
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+
+<term>Rollback Prepared</term>
+<listitem>
+<para>
+
+<variablelist>
+
+<varlistentry>
+<term>Byte1('r')</term>
+<listitem><para>
+                Identifies the message as the rollback of a two-phase transaction message.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int8</term>
+<listitem><para>
+                Flags; currently unused (must be 0).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The end LSN of the prepared transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                The end LSN of the rollback prepared transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                Prepare timestamp of the transaction. The value is in number
+                of microseconds since PostgreSQL epoch (2000-01-01).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int64</term>
+<listitem><para>
+                Rollback timestamp of the transaction. The value is in number
+                of microseconds since PostgreSQL epoch (2000-01-01).
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>Int32</term>
+<listitem><para>
+                Xid of the transaction.
+</para></listitem>
+</varlistentry>
+
+<varlistentry>
+<term>String</term>
+<listitem><para>
+                The user defined GID of the two-phase transaction.
+</para></listitem>
+</varlistentry>
+
+</variablelist>
+
+</para>
+</listitem>
+</varlistentry>
+
+</variablelist>
+
+<para>
 
 The following message parts are shared by the above messages.
 
@@ -7430,6 +7729,19 @@ TupleData
 </para>
 </listitem>
 </varlistentry>
+</variablelist>
+        Or
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('b')
+</term>
+<listitem>
+<para>
+                Identifies the data as binary formatted value.
+</para>
+</listitem>
+</varlistentry>
 <varlistentry>
 <term>
         Int32
@@ -7446,8 +7758,8 @@ TupleData
 </term>
 <listitem>
 <para>
-                The value of the column, in text format.  (A future release
-                might support additional formats.)
+                The value of the column, either in binary or in text format.
+                (As specified in the preceding format byte).
                 <replaceable>n</replaceable> is the above length.
 
 </para>

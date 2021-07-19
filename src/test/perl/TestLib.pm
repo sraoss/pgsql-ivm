@@ -104,17 +104,39 @@ BEGIN
 	delete $ENV{LC_ALL};
 	$ENV{LC_MESSAGES} = 'C';
 
-	delete $ENV{PGCONNECT_TIMEOUT};
-	delete $ENV{PGDATA};
-	delete $ENV{PGDATABASE};
-	delete $ENV{PGHOSTADDR};
-	delete $ENV{PGREQUIRESSL};
-	delete $ENV{PGSERVICE};
-	delete $ENV{PGSSLMODE};
-	delete $ENV{PGUSER};
-	delete $ENV{PGPORT};
-	delete $ENV{PGHOST};
-	delete $ENV{PG_COLOR};
+	# This list should be kept in sync with pg_regress.c.
+	my @envkeys = qw (
+	  PGCHANNELBINDING
+	  PGCLIENTENCODING
+	  PGCONNECT_TIMEOUT
+	  PGDATA
+	  PGDATABASE
+	  PGGSSENCMODE
+	  PGGSSLIB
+	  PGHOSTADDR
+	  PGKRBSRVNAME
+	  PGPASSFILE
+	  PGPASSWORD
+	  PGREQUIREPEER
+	  PGREQUIRESSL
+	  PGSERVICE
+	  PGSERVICEFILE
+	  PGSSLCERT
+	  PGSSLCRL
+	  PGSSLCRLDIR
+	  PGSSLKEY
+	  PGSSLMAXPROTOCOLVERSION
+	  PGSSLMINPROTOCOLVERSION
+	  PGSSLMODE
+	  PGSSLROOTCERT
+	  PGSSLSNI
+	  PGTARGETSESSIONATTRS
+	  PGUSER
+	  PGPORT
+	  PGHOST
+	  PG_COLOR
+	);
+	delete @ENV{@envkeys};
 
 	$ENV{PGAPPNAME} = basename($0);
 
@@ -353,9 +375,29 @@ sub system_or_bail
 {
 	if (system_log(@_) != 0)
 	{
-		BAIL_OUT("system $_[0] failed");
+		if ($? == -1)
+		{
+			BAIL_OUT(
+				sprintf(
+					"failed to execute command \"%s\": $!", join(" ", @_)));
+		}
+		elsif ($? & 127)
+		{
+			BAIL_OUT(
+				sprintf(
+					"command \"%s\" died with signal %d",
+					join(" ", @_),
+					$? & 127));
+		}
+		else
+		{
+			BAIL_OUT(
+				sprintf(
+					"command \"%s\" exited with value %d",
+					join(" ", @_),
+					$? >> 8));
+		}
 	}
-	return;
 }
 
 =pod

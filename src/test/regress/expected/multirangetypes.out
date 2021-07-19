@@ -7,12 +7,17 @@ select ''::textmultirange;
 ERROR:  malformed multirange literal: ""
 LINE 1: select ''::textmultirange;
                ^
-DETAIL:  Missing left bracket.
+DETAIL:  Missing left brace.
 select '{,}'::textmultirange;
 ERROR:  malformed multirange literal: "{,}"
 LINE 1: select '{,}'::textmultirange;
                ^
 DETAIL:  Expected range start.
+select '{(,)}.'::textmultirange;
+ERROR:  malformed multirange literal: "{(,)}."
+LINE 1: select '{(,)}.'::textmultirange;
+               ^
+DETAIL:  Junk after closing right brace.
 select '{[a,c),}'::textmultirange;
 ERROR:  malformed multirange literal: "{[a,c),}"
 LINE 1: select '{[a,c),}'::textmultirange;
@@ -2236,10 +2241,112 @@ analyze test_multirange_gist;
 SET enable_seqscan    = t;
 SET enable_indexscan  = f;
 SET enable_bitmapscan = f;
+select count(*) from test_multirange_gist where mr = '{}'::int4multirange;
+ count 
+-------
+   500
+(1 row)
+
 select count(*) from test_multirange_gist where mr @> 'empty'::int4range;
  count 
 -------
   3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr && 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr <@ 'empty'::int4range;
+ count 
+-------
+   500
+(1 row)
+
+select count(*) from test_multirange_gist where mr << 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr >> 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &< 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &> 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr -|- 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ count 
+-------
+  3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ count 
+-------
+  3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr && '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr <@ '{}'::int4multirange;
+ count 
+-------
+   500
+(1 row)
+
+select count(*) from test_multirange_gist where mr << '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr >> '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &< '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &> '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr -|- '{}'::int4multirange;
+ count 
+-------
+     0
 (1 row)
 
 select count(*) from test_multirange_gist where mr = int4multirange(int4range(10,20), int4range(30,40), int4range(50,60));
@@ -2360,6 +2467,114 @@ select count(*) from test_multirange_gist where mr -|- int4multirange(int4range(
 SET enable_seqscan    = f;
 SET enable_indexscan  = t;
 SET enable_bitmapscan = f;
+select count(*) from test_multirange_gist where mr = '{}'::int4multirange;
+ count 
+-------
+   500
+(1 row)
+
+select count(*) from test_multirange_gist where mr @> 'empty'::int4range;
+ count 
+-------
+  3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr && 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr <@ 'empty'::int4range;
+ count 
+-------
+   500
+(1 row)
+
+select count(*) from test_multirange_gist where mr << 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr >> 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &< 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &> 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr -|- 'empty'::int4range;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ count 
+-------
+  3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr @> '{}'::int4multirange;
+ count 
+-------
+  3700
+(1 row)
+
+select count(*) from test_multirange_gist where mr && '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr <@ '{}'::int4multirange;
+ count 
+-------
+   500
+(1 row)
+
+select count(*) from test_multirange_gist where mr << '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr >> '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &< '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr &> '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
+select count(*) from test_multirange_gist where mr -|- '{}'::int4multirange;
+ count 
+-------
+     0
+(1 row)
+
 select count(*) from test_multirange_gist where mr @> 'empty'::int4range;
  count 
 -------

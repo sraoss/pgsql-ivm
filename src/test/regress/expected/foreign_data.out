@@ -95,6 +95,8 @@ CREATE FOREIGN DATA WRAPPER test_fdw HANDLER invalid_fdw_handler;  -- ERROR
 ERROR:  function invalid_fdw_handler must return type fdw_handler
 CREATE FOREIGN DATA WRAPPER test_fdw HANDLER test_fdw_handler HANDLER invalid_fdw_handler;  -- ERROR
 ERROR:  conflicting or redundant options
+LINE 1: ...GN DATA WRAPPER test_fdw HANDLER test_fdw_handler HANDLER in...
+                                                             ^
 CREATE FOREIGN DATA WRAPPER test_fdw HANDLER test_fdw_handler;
 DROP FOREIGN DATA WRAPPER test_fdw;
 -- ALTER FOREIGN DATA WRAPPER
@@ -201,6 +203,8 @@ ALTER FOREIGN DATA WRAPPER foo HANDLER invalid_fdw_handler;  -- ERROR
 ERROR:  function invalid_fdw_handler must return type fdw_handler
 ALTER FOREIGN DATA WRAPPER foo HANDLER test_fdw_handler HANDLER anything;  -- ERROR
 ERROR:  conflicting or redundant options
+LINE 1: ...FOREIGN DATA WRAPPER foo HANDLER test_fdw_handler HANDLER an...
+                                                             ^
 ALTER FOREIGN DATA WRAPPER foo HANDLER test_fdw_handler;
 WARNING:  changing the foreign-data wrapper handler can change behavior of existing foreign tables
 DROP FUNCTION invalid_fdw_handler();
@@ -740,7 +744,8 @@ FDW options: (delimiter ',', quote '"', "be quoted" 'value')
 (1 row)
 
 CREATE INDEX id_ft1_c2 ON ft1 (c2);                             -- ERROR
-ERROR:  cannot create index on foreign table "ft1"
+ERROR:  cannot create index on relation "ft1"
+DETAIL:  This operation is not supported for foreign tables.
 SELECT * FROM ft1;                                              -- ERROR
 ERROR:  foreign-data wrapper "dummy" has no handler
 EXPLAIN SELECT * FROM ft1;                                      -- ERROR
@@ -864,7 +869,8 @@ LINE 1: ALTER FOREIGN TABLE ft1 ADD PRIMARY KEY (c7);
                                     ^
 ALTER FOREIGN TABLE ft1 ADD CONSTRAINT ft1_c9_check CHECK (c9 < 0) NOT VALID;
 ALTER FOREIGN TABLE ft1 ALTER CONSTRAINT ft1_c9_check DEFERRABLE; -- ERROR
-ERROR:  "ft1" is not a table
+ERROR:  ALTER action ALTER CONSTRAINT cannot be performed on relation "ft1"
+DETAIL:  This operation is not supported for foreign tables.
 ALTER FOREIGN TABLE ft1 DROP CONSTRAINT ft1_c9_check;
 ALTER FOREIGN TABLE ft1 DROP CONSTRAINT no_const;               -- ERROR
 ERROR:  constraint "no_const" of relation "ft1" does not exist

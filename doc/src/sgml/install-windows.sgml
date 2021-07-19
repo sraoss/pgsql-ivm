@@ -102,7 +102,7 @@
  <para>
   The tools for building using <productname>Visual C++</productname> or
   <productname>Platform SDK</productname> are in the
-  <filename>src/tools/msvc</filename> directory. When building, make sure
+  <filename>src\tools\msvc</filename> directory. When building, make sure
   there are no tools from <productname>MinGW</productname> or
   <productname>Cygwin</productname> present in your system PATH. Also, make
   sure you have all the required Visual C++ tools available in the PATH. In
@@ -255,15 +255,6 @@ $ENV{MSBFLAGS}="/m";
        </para>
      </note>
 
-     <note>
-       <para>
-       The obsolete <literal>winflex</literal> binaries distributed in the
-       downloads section of the PostgreSQL web site
-       and referenced in older documentation will fail with <quote>flex: fatal
-       internal error, exec failed</quote> on 64-bit Windows hosts. Use Flex from
-       MSYS instead.
-       </para>
-     </note>
      </listitem>
     </varlistentry>
 
@@ -308,7 +299,7 @@ $ENV{MSBFLAGS}="/m";
      <term><productname>LZ4</productname></term>
      <listitem><para>
       Required for supporting <productname>LZ4</productname> compression
-      method for compressing the table data. Binaries and source can be
+      method for compressing table or WAL data. Binaries and source can be
       downloaded from
       <ulink url="https://github.com/lz4/lz4/releases"></ulink>.
      </para></listitem>

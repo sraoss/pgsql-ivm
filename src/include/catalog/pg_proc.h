@@ -91,7 +91,7 @@ CATALOG(pg_proc,1255,ProcedureRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(81,Proce
 	 * proargtypes
 	 */
 
-	/* parameter types (excludes OUT params of functions) */
+	/* parameter types (excludes OUT params) */
 	oidvector	proargtypes BKI_LOOKUP(pg_type) BKI_FORCE_NOT_NULL;
 
 #ifdef CATALOG_VARLEN
@@ -137,10 +137,8 @@ typedef FormData_pg_proc *Form_pg_proc;
 
 DECLARE_TOAST(pg_proc, 2836, 2837);
 
-DECLARE_UNIQUE_INDEX_PKEY(pg_proc_oid_index, 2690, on pg_proc using btree(oid oid_ops));
-#define ProcedureOidIndexId  2690
-DECLARE_UNIQUE_INDEX(pg_proc_proname_args_nsp_index, 2691, on pg_proc using btree(proname name_ops, proargtypes oidvector_ops, pronamespace oid_ops));
-#define ProcedureNameArgsNspIndexId  2691
+DECLARE_UNIQUE_INDEX_PKEY(pg_proc_oid_index, 2690, ProcedureOidIndexId, on pg_proc using btree(oid oid_ops));
+DECLARE_UNIQUE_INDEX(pg_proc_proname_args_nsp_index, 2691, ProcedureNameArgsNspIndexId, on pg_proc using btree(proname name_ops, proargtypes oidvector_ops, pronamespace oid_ops));
 
 #ifdef EXPOSE_TO_CLIENT_CODE
 

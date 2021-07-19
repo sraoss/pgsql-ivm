@@ -89,6 +89,7 @@ typedef struct
 	bool	has_agg;
 	List	*join_quals;
 	List	*exists_qual_vars;
+	int		sublevels_up;
 } check_ivm_restriction_context;
 
 /* utility functions for CTAS definition creation */
@@ -103,7 +104,8 @@ static void intorel_destroy(DestReceiver *self);
 
 static void CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock);
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
-static void check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth);
+static void check_ivm_restriction(Node *node);
+static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx);
 static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
 static bool is_equijoin_condition(OpExpr *op);
@@ -322,16 +324,14 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 	if (is_matview && into->ivm)
 	{
-		check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
-
 		/* check if the query is supported in IMMV definition */
-		if(contain_mutable_functions((Node *)query))
+		if(contain_mutable_functions((Node *) query))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("mutable function is not supported on incrementally maintainable materialized view"),
 					 errhint("functions must be marked IMMUTABLE")));
 
-		check_ivm_restriction_walker((Node *) query, &ctx, 0);
+		check_ivm_restriction((Node *) query);
 
 		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -355,14 +355,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 		 * rewriter.  We do not do AcquireRewriteLocks: we assume the query
 		 * either came straight from the parser, or suitable locks were
 		 * acquired by plancache.c.
-		 *
-		 * Because the rewriter and planner tend to scribble on the input, we
-		 * make a preliminary copy of the source querytree.  This prevents
-		 * problems in the case that CTAS is in a portal or plpgsql function
-		 * and is executed repeatedly.  (See also the same hack in EXPLAIN and
-		 * PREPARE.)
 		 */
-		rewritten = QueryRewrite(copyObject(query));
+		rewritten = QueryRewrite(query);
 
 		/* SELECT should never rewrite to more or less than one SELECT query */
 		if (list_length(rewritten) != 1)
@@ -432,7 +426,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			SetMatViewIVMState(matviewRel, true);
 
 			/* Create an index on incremental maintainable materialized view, if possible */
-			CreateIndexOnIMMV((Query *)into->viewQuery, matviewRel);
+			CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel);
 
 			/* Create triggers on incremental maintainable materialized view */
 			if (!into->skipData)
@@ -1119,18 +1113,22 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 	CommandCounterIncrement();
 }
 
-
 /*
- * check_ivm_restriction_walker --- look for specify nodes in the query tree
+ * check_ivm_restriction --- look for specify nodes in the query tree
  */
 static void
-check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int depth)
+check_ivm_restriction(Node *node)
 {
-	/* This can recurse, so check for excessive recursion */
-	check_stack_depth();
+	check_ivm_restriction_context ctx = {false, false, false, false, NIL, NIL};
 
+	check_ivm_restriction_walker(node, &ctx);
+}
+
+static bool
+check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx)
+{
 	if (node == NULL)
-		return;
+		return false;
 
 	switch (nodeTag(node))
 	{
@@ -1138,6 +1136,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 			{
 				Query *qry = (Query *)node;
 				ListCell   *lc;
+				List       *vars;
 
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
@@ -1182,25 +1181,27 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("recursive CTE is not supported on incrementally maintainable materialized view")));
 
-				foreach(lc, qry->cteList)
+				/* system column restrictions */
+				vars = pull_vars_of_level((Node *) qry, 0);
+				foreach(lc, vars)
 				{
-					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
-					Query	*subquery = (Query *) cte->ctequery;;
-
-					if (isIvmName(cte->ctename))
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("CTE name %s is not supported on incrementally maintainable materialized view", cte->ctename)));
-
-					check_ivm_restriction_walker((Node *) subquery, ctx, depth + 1);
+					if (IsA(lfirst(lc), Var))
+					{
+						Var *var = (Var *) lfirst(lc);
+						/* if system column, return error */
+						if (var->varattno < 0)
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("system column is not supported on incrementally maintainable materialized view")));
+					}
 				}
 
 				/* subquery restrictions */
-				if (depth > 0 && qry->distinctClause != NIL)
+				if (ctx->sublevels_up > 0 && qry->distinctClause != NIL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("DISTINCT clause in nested query are not supported on incrementally maintainable materialized view")));
-				if (depth > 0 && qry->hasAggs)
+				if (ctx->sublevels_up > 0 && qry->hasAggs)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("aggregate functions in nested query are not supported on incrementally maintainable materialized view")));
@@ -1216,6 +1217,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
+
 					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1241,31 +1243,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 						ctx->has_subquery = true;
 
-						check_ivm_restriction_walker((Node *) rte->subquery, ctx, depth + 1);
+						ctx->sublevels_up++;
+						check_ivm_restriction_walker((Node *)rte->subquery, ctx);
+						ctx->sublevels_up--;
 					}
 				}
 
-				/* search in jointree */
-				check_ivm_restriction_walker((Node *) qry->jointree, ctx, depth);
-
-				/* search in target lists */
-				foreach(lc, qry->targetList)
-				{
-					TargetEntry *tle = (TargetEntry *) lfirst(lc);
-					if (isIvmName(tle->resname))
-							ereport(ERROR,
-									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-									 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
-					if (qry->hasAggs && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
-
-					check_ivm_restriction_walker((Node *) tle->expr, ctx, depth);
-				}
+				query_tree_walker(qry, check_ivm_restriction_walker, (void *) ctx, QTW_IGNORE_RANGE_TABLE);
 
 				/* additional restriction checks for exists subquery */
-				if (ctx->exists_qual_vars != NIL && depth == 0)
+				if (ctx->exists_qual_vars != NIL && ctx->sublevels_up == 0)
 				{
 					ListCell *lc;
 
@@ -1296,9 +1283,8 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 									 errhint("targetlist must contain vars that are referred to in EXISTS subquery")));
 					}
 				}
-
 				/* additional restriction checks for outer join query */
-				if (ctx->has_outerjoin && depth == 0)
+				if (ctx->has_outerjoin && ctx->sublevels_up == 0)
 				{
 					List	*where_quals_vars = NIL;
 					List	*nonnullable_vars = find_nonnullable_vars((Node *) qry->jointree->quals);
@@ -1363,6 +1349,35 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 
 				break;
 			}
+		case T_CommonTableExpr:
+			{
+				CommonTableExpr *cte = (CommonTableExpr *) node;
+
+				if (isIvmName(cte->ctename))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CTE name %s is not supported on incrementally maintainable materialized view", cte->ctename)));
+
+				ctx->sublevels_up++;
+				check_ivm_restriction_walker(cte->ctequery, ctx);
+				ctx->sublevels_up--;
+				break;
+			}
+		case T_TargetEntry:
+			{
+				TargetEntry *tle = (TargetEntry *)node;
+				if (isIvmName(tle->resname))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
+				if (ctx->has_agg && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+
+				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
+				break;
+			}
 		case T_JoinExpr:
 			{
 				JoinExpr *joinexpr = (JoinExpr *)node;
@@ -1382,79 +1397,15 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 					ctx->has_outerjoin = true;
 					ctx->join_quals = lappend(ctx->join_quals, joinexpr->quals);
 				}
-				/* left side */
-				check_ivm_restriction_walker((Node *) joinexpr->larg, ctx, depth);
-				/* right side */
-				check_ivm_restriction_walker((Node *) joinexpr->rarg, ctx, depth);
-				check_ivm_restriction_walker((Node *) joinexpr->quals, ctx, depth);
+				expression_tree_walker(node, check_ivm_restriction_walker, ctx);
+				break;
 			}
-			break;
-		case T_FromExpr:
-			{
-				ListCell *lc;
-				FromExpr *fromexpr = (FromExpr *)node;
-				foreach(lc, fromexpr->fromlist)
-				{
-					check_ivm_restriction_walker((Node *) lfirst(lc), ctx, depth);
-				}
-
-				check_ivm_restriction_walker((Node *) fromexpr->quals, ctx, depth);
-			}
-			break;
 		case T_Var:
 			{
-				/* if system column, return error */
 				Var	*variable = (Var *) node;
-				if (variable->varattno < 0)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("system column is not supported on incrementally maintainable materialized view")));
 				/* If EXISTS subquery refers to vars of the upper query, collect these vars */
 				if (variable->varlevelsup > 0 && ctx->in_exists_subquery)
 					ctx->exists_qual_vars = lappend(ctx->exists_qual_vars, node);
-			}
-			break;
-		case T_BoolExpr:
-			{
-				BoolExpr   *boolexpr = (BoolExpr *) node;
-				ListCell   *lc;
-
-				foreach(lc, boolexpr->args)
-				{
-					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth);
-				}
-				break;
-			}
-		case T_NullIfExpr: /* same as OpExpr */
-		case T_DistinctExpr: /* same as OpExpr */
-		case T_OpExpr:
-			{
-				OpExpr	   *op = (OpExpr *) node;
-				ListCell   *lc;
-				foreach(lc, op->args)
-				{
-					Node	   *arg = (Node *) lfirst(lc);
-					check_ivm_restriction_walker(arg, ctx, depth);
-				}
-				break;
-			}
-		case T_CaseExpr:
-			{
-				CaseExpr *caseexpr = (CaseExpr *) node;
-				ListCell *lc;
-				/* result for ELSE clause */
-				check_ivm_restriction_walker((Node *) caseexpr->defresult, ctx, depth);
-				/* expr for WHEN clauses */
-				foreach(lc, caseexpr->args)
-				{
-					CaseWhen *when = (CaseWhen *) lfirst(lc);
-					Node *w_expr = (Node *) when->expr;
-					/* result for WHEN clause */
-					check_ivm_restriction_walker((Node *) when->result, ctx, depth);
-					/* expr clause*/
-					check_ivm_restriction_walker((Node *) w_expr, ctx, depth);
-				}
 				break;
 			}
 		case T_SubLink:
@@ -1466,7 +1417,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
 							 errhint("subquery in WHERE clause only supports subquery with EXISTS clause")));
-				if (depth > 0)
+				if (ctx->sublevels_up > 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("nested subquery is not supported on incrementally maintainable materialized view")));
@@ -1478,7 +1429,9 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							 errhint("subquery with outer join is not supported")));
 
 				ctx->in_exists_subquery = true;
-				check_ivm_restriction_walker(sublink->subselect, ctx, depth + 1);
+				ctx->sublevels_up++;
+				check_ivm_restriction_walker(sublink->subselect, ctx);
+				ctx->sublevels_up--;
 				ctx->in_exists_subquery = false;
 				break;
 			}
@@ -1509,19 +1462,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *ctx, int
 							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
 				break;
 			}
-		case T_SubPlan:
-		case T_GroupingFunc:
-		case T_WindowFunc:
-		case T_FuncExpr:
-		case T_SQLValueFunction:
-		case T_Const:
-		case T_Param:
 		default:
-			/* do nothing */
+			expression_tree_walker(node, check_ivm_restriction_walker, ctx);
 			break;
 	}
-
-	return;
+	return false;
 }
 
 /*

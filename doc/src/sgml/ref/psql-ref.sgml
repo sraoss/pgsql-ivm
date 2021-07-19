@@ -1044,7 +1044,7 @@ testdb=&gt;
         For <literal>\copy ... from stdin</literal>, data rows are read from the same
         source that issued the command, continuing until <literal>\.</literal>
         is read or the stream reaches <acronym>EOF</acronym>. This option is useful
-        for populating tables in-line within a SQL script file.
+        for populating tables in-line within an SQL script file.
         For <literal>\copy ... to stdout</literal>, output is sent to the same place
         as <application>psql</application> command output, and
         the <literal>COPY <replaceable>count</replaceable></literal> command status is
@@ -2243,7 +2243,7 @@ Tue Oct 26 21:40:57 CEST 1999
         <listitem>
         <para>
          Sends the current query buffer to the server, then treats
-         each column of each row of the query's output (if any) as a SQL
+         each column of each row of the query's output (if any) as an SQL
          statement to be executed.  For example, to create an index on each
          column of <structname>my_table</structname>:
 <programlisting>
@@ -2430,7 +2430,7 @@ hello 10
         </para>
         <para>
         The <command>\if</command> and <command>\elif</command> commands read
-        their argument(s) and evaluate them as a boolean expression.  If the
+        their argument(s) and evaluate them as a Boolean expression.  If the
         expression yields <literal>true</literal> then processing continues
         normally; otherwise, lines are skipped until a
         matching <command>\elif</command>, <command>\else</command>,
@@ -3003,6 +3003,16 @@ lo_import 152801
           </para>
 
           <para>
+          When using the <literal>\watch</literal> command to execute a query
+          repeatedly, the environment variable <envar>PSQL_WATCH_PAGER</envar>
+          is used to find the pager program instead, on Unix systems.  This is
+          configured separately because it may confuse traditional pagers, but
+          can be used to send output to tools that understand
+          <application>psql</application>'s output format (such as
+          <filename>pspg --stream</filename>).
+          </para>
+
+          <para>
           When the <literal>pager</literal> option is <literal>off</literal>, the pager
           program is not used. When the <literal>pager</literal> option is
           <literal>on</literal>, the pager is used when appropriate, i.e., when the
@@ -3510,7 +3520,7 @@ testdb=&gt; <userinput>\setenv LESS -imx4F</userinput>
         </para>
 
         <para>
-        Normally, <application>psql</application> will dispatch a SQL command to the
+        Normally, <application>psql</application> will dispatch an SQL command to the
         server as soon as it reaches the command-ending semicolon, even if
         more input remains on the current line.  Thus for example entering
 <programlisting>
@@ -3873,23 +3883,23 @@ bar
       </varlistentry>
 
       <varlistentry>
-        <term><varname>HIDE_TOAST_COMPRESSION</varname></term>
-        <listitem>
-        <para>
-         If this variable is set to <literal>true</literal>, column
-         compression method details are not displayed. This is mainly
-         useful for regression tests.
-        </para>
-        </listitem>
-      </varlistentry>
-
-      <varlistentry>
         <term><varname>HIDE_TABLEAM</varname></term>
         <listitem>
         <para>
          If this variable is set to <literal>true</literal>, a table's access
          method details are not displayed. This is mainly useful for
          regression tests.
+        </para>
+        </listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>HIDE_TOAST_COMPRESSION</varname></term>
+        <listitem>
+        <para>
+         If this variable is set to <literal>true</literal>, column
+         compression method details are not displayed. This is mainly
+         useful for regression tests.
         </para>
         </listitem>
       </varlistentry>
@@ -4667,6 +4677,24 @@ PSQL_EDITOR_LINENUMBER_ARG='--line '
       the first that is set is used.
       If none of them is set, the default is to use <literal>more</literal> on most
       platforms, but <literal>less</literal> on Cygwin.
+     </para>
+
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><envar>PSQL_WATCH_PAGER</envar></term>
+
+    <listitem>
+     <para>
+      When a query is executed repeatedly with the <command>\watch</command>
+      command, a pager is not used by default.  This behavior can be changed
+      by setting <envar>PSQL_WATCH_PAGER</envar> to a pager command, on Unix
+      systems.  The <literal>pspg</literal> pager (not part of
+      <productname>PostgreSQL</productname> but available in many open source
+      software distributions) can display the output of
+      <command>\watch</command> if started with the option
+      <literal>--stream</literal>.
      </para>
 
     </listitem>

@@ -142,6 +142,8 @@ typedef struct _dumpableObject
 typedef struct _namespaceInfo
 {
 	DumpableObject dobj;
+	bool		create;			/* CREATE SCHEMA, or just set owner? */
+	Oid			nspowner;
 	char	   *rolname;		/* name of owner, or empty string */
 	char	   *nspacl;
 	char	   *rnspacl;
@@ -424,6 +426,7 @@ typedef struct _triggerInfo
 	Oid			tgconstrrelid;
 	char	   *tgconstrrelname;
 	char		tgenabled;
+	bool		tgisinternal;
 	bool		tgdeferrable;
 	bool		tginitdeferred;
 	char	   *tgdef;
@@ -638,6 +641,7 @@ typedef struct _SubscriptionInfo
 	char	   *subslotname;
 	char	   *subbinary;
 	char	   *substream;
+	char	   *subtwophasestate;
 	char	   *subsynccommit;
 	char	   *subpublications;
 } SubscriptionInfo;

@@ -786,6 +786,7 @@ execute_sql_string(const char *sql)
 
 				ProcessUtility(stmt,
 							   sql,
+							   false,
 							   PROCESS_UTILITY_QUERY,
 							   NULL,
 							   NULL,
@@ -1730,30 +1731,21 @@ CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt)
 		if (strcmp(defel->defname, "schema") == 0)
 		{
 			if (d_schema)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			d_schema = defel;
 			schemaName = defGetString(d_schema);
 		}
 		else if (strcmp(defel->defname, "new_version") == 0)
 		{
 			if (d_new_version)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			d_new_version = defel;
 			versionName = defGetString(d_new_version);
 		}
 		else if (strcmp(defel->defname, "cascade") == 0)
 		{
 			if (d_cascade)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			d_cascade = defel;
 			cascade = defGetBoolean(d_cascade);
 		}
@@ -3050,10 +3042,7 @@ ExecAlterExtensionStmt(ParseState *pstate, AlterExtensionStmt *stmt)
 		if (strcmp(defel->defname, "new_version") == 0)
 		{
 			if (d_new_version)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options"),
-						 parser_errposition(pstate, defel->location)));
+				errorConflictingDefElem(defel, pstate);
 			d_new_version = defel;
 		}
 		else
@@ -3301,9 +3290,17 @@ ExecAlterExtensionContentsStmt(AlterExtensionContentsStmt *stmt,
 			break;
 	}
 
-	extension.classId = ExtensionRelationId;
-	extension.objectId = get_extension_oid(stmt->extname, false);
-	extension.objectSubId = 0;
+	/*
+	 * Find the extension and acquire a lock on it, to ensure it doesn't get
+	 * dropped concurrently.  A sharable lock seems sufficient: there's no
+	 * reason not to allow other sorts of manipulations, such as add/drop of
+	 * other objects, to occur concurrently.  Concurrently adding/dropping the
+	 * *same* object would be bad, but we prevent that by using a non-sharable
+	 * lock on the individual object, below.
+	 */
+	extension = get_object_address(OBJECT_EXTENSION,
+								   (Node *) makeString(stmt->extname),
+								   &relation, AccessShareLock, false);
 
 	/* Permission check: must own extension */
 	if (!pg_extension_ownercheck(extension.objectId, GetUserId()))

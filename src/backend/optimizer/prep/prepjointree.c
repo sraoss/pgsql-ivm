@@ -893,10 +893,9 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	ListCell   *lc;
 
 	/*
-	 * Need a modifiable copy of the subquery to hack on.  Even if we didn't
-	 * sometimes choose not to pull up below, we must do this to avoid
-	 * problems if the same subquery is referenced from multiple jointree
-	 * items (which can't happen normally, but might after rule rewriting).
+	 * Make a modifiable copy of the subquery to hack on, so that the RTE will
+	 * be left unchanged in case we decide below that we can't pull it up
+	 * after all.
 	 */
 	subquery = copyObject(rte->subquery);
 
@@ -1173,6 +1172,14 @@ pull_up_simple_subquery(PlannerInfo *root, Node *jtnode, RangeTblEntry *rte,
 	Assert(subroot->join_info_list == NIL);
 	Assert(root->placeholder_list == NIL);
 	Assert(subroot->placeholder_list == NIL);
+
+	/*
+	 * We no longer need the RTE's copy of the subquery's query tree.  Getting
+	 * rid of it saves nothing in particular so far as this level of query is
+	 * concerned; but if this query level is in turn pulled up into a parent,
+	 * we'd waste cycles copying the now-unused query tree.
+	 */
+	rte->subquery = NULL;
 
 	/*
 	 * Miscellaneous housekeeping.
@@ -1801,10 +1808,13 @@ pull_up_constant_function(PlannerInfo *root, Node *jtnode,
 
 	/*
 	 * Convert the RTE to be RTE_RESULT type, signifying that we don't need to
-	 * scan it anymore, and zero out RTE_FUNCTION-specific fields.
+	 * scan it anymore, and zero out RTE_FUNCTION-specific fields.  Also make
+	 * sure the RTE is not marked LATERAL, since elsewhere we don't expect
+	 * RTE_RESULTs to be LATERAL.
 	 */
 	rte->rtekind = RTE_RESULT;
 	rte->functions = NIL;
+	rte->lateral = false;
 
 	/*
 	 * We can reuse the RangeTblRef node.

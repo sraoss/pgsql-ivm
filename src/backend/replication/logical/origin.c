@@ -206,7 +206,7 @@ replorigin_check_prerequisites(bool check_slots, bool recoveryOK)
  * Returns InvalidOid if the node isn't known yet and missing_ok is true.
  */
 RepOriginId
-replorigin_by_name(char *roname, bool missing_ok)
+replorigin_by_name(const char *roname, bool missing_ok)
 {
 	Form_pg_replication_origin ident;
 	Oid			roident = InvalidOid;
@@ -237,7 +237,7 @@ replorigin_by_name(char *roname, bool missing_ok)
  * Needs to be called in a transaction.
  */
 RepOriginId
-replorigin_create(char *roname)
+replorigin_create(const char *roname)
 {
 	Oid			roident;
 	HeapTuple	tuple = NULL;
@@ -411,7 +411,7 @@ restart:
  * Needs to be called in a transaction.
  */
 void
-replorigin_drop_by_name(char *name, bool missing_ok, bool nowait)
+replorigin_drop_by_name(const char *name, bool missing_ok, bool nowait)
 {
 	RepOriginId roident;
 	Relation	rel;
@@ -973,8 +973,11 @@ replorigin_advance(RepOriginId node,
 
 	/*
 	 * Due to - harmless - race conditions during a checkpoint we could see
-	 * values here that are older than the ones we already have in memory.
-	 * Don't overwrite those.
+	 * values here that are older than the ones we already have in memory. We
+	 * could also see older values for prepared transactions when the prepare
+	 * is sent at a later point of time along with commit prepared and there
+	 * are other transactions commits between prepare and commit prepared. See
+	 * ReorderBufferFinishPrepared. Don't overwrite those.
 	 */
 	if (go_backward || replication_state->remote_lsn < remote_commit)
 		replication_state->remote_lsn = remote_commit;

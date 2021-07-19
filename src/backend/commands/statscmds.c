@@ -135,8 +135,9 @@ CreateStatistics(CreateStatsStmt *stmt)
 			rel->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 			ereport(ERROR,
 					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("relation \"%s\" is not a table, foreign table, or materialized view",
-							RelationGetRelationName(rel))));
+					 errmsg("cannot define statistics for relation \"%s\"",
+							RelationGetRelationName(rel)),
+					 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
 
 		/* You must own the relation to create stats on it */
 		if (!pg_class_ownercheck(RelationGetRelid(rel), stxowner))
@@ -220,26 +221,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 */
 	foreach(cell, stmt->exprs)
 	{
-		Node	   *expr = (Node *) lfirst(cell);
-		StatsElem  *selem;
-		HeapTuple	atttuple;
-		Form_pg_attribute attForm;
-		TypeCacheEntry *type;
-
-		/*
-		 * We should not get anything else than StatsElem, given the grammar.
-		 * But let's keep it as a safety.
-		 */
-		if (!IsA(expr, StatsElem))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("only simple column references and expressions are allowed in CREATE STATISTICS")));
-
-		selem = (StatsElem *) expr;
+		StatsElem  *selem = lfirst_node(StatsElem, cell);
 
 		if (selem->name)		/* column reference */
 		{
 			char	   *attname;
+			HeapTuple	atttuple;
+			Form_pg_attribute attForm;
+			TypeCacheEntry *type;
 
 			attname = selem->name;
 
@@ -273,6 +262,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 		{
 			Node	   *expr = selem->expr;
 			Oid			atttype;
+			TypeCacheEntry *type;
 
 			Assert(expr != NULL);
 
