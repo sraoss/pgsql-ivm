@@ -532,89 +532,18 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	if (rewritten->hasAggs)
 	{
 		ListCell *lc;
-		List *agg_counts = NIL;
+		List *aggs = NIL;
 		AttrNumber next_resno = list_length(rewritten->targetList) + 1;
 
 		foreach(lc, rewritten->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
-			TargetEntry *tle_count;
 			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno - 1)));
 
-
 			if (IsA(tle->expr, Aggref))
-			{
-				Aggref *aggref = (Aggref *) tle->expr;
-				const char *aggname = get_func_name(aggref->aggfnoid);
-
-				/*
-				 * For aggregate functions except to count, add count() func with the same arg parameters.
-				 * This count result is used for determining if the aggregate value should be NULL or not.
-				 * Also, add sum() func for avg because we need to calculate an average value as sum/count.
-				 *
-				 * XXX: If there are same expressions explicitly in the target list, we can use this instead
-				 * of adding new duplicated one.
-				 */
-				if (strcmp(aggname, "count") != 0)
-				{
-					Const	*dmy_arg = makeConst(INT4OID,
-												-1,
-												InvalidOid,
-												sizeof(int32),
-												Int32GetDatum(1),
-												false,
-												true); /* pass by value */
-
-					fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with a dummy arg, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
-					((Aggref *) node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												pstrdup(makeObjectName("__ivm_count",resname, "_")),
-												false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-				}
-				if (strcmp(aggname, "avg") == 0)
-				{
-					List *dmy_args = NIL;
-					ListCell *lc;
-					foreach(lc, aggref->aggargtypes)
-					{
-						Oid		typeid = lfirst_oid(lc);
-						Type	type = typeidType(typeid);
-
-						Const *con = makeConst(typeid,
-											   -1,
-											   typeTypeCollation(type),
-											   typeLen(type),
-											   (Datum) 0,
-											   true,
-											   typeByVal(type));
-						dmy_args = lappend(dmy_args, con);
-						ReleaseSysCache(type);
-
-					}
-					fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
-
-					/* Make a Func with dummy args, and then override this by the original agg's args. */
-					node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
-					((Aggref *) node)->args = aggref->args;
-
-					tle_count = makeTargetEntry((Expr *) node,
-												next_resno,
-												pstrdup(makeObjectName("__ivm_sum",resname, "_")),
-												false);
-					agg_counts = lappend(agg_counts, tle_count);
-					next_resno++;
-				}
-
-			}
+				makeIvmAggColumn(pstate, (Aggref *)tle->expr, resname, &next_resno, &aggs);
 		}
-		rewritten->targetList = list_concat(rewritten->targetList, agg_counts);
+		rewritten->targetList = list_concat(rewritten->targetList, aggs);
 	}
 
 	/* Add count(*) for counting distinct tuples in views */
@@ -636,6 +565,90 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	return rewritten;
 }
 
+/*
+ * makeIvmAggColumn -- make additional aggregate columns for IVM
+ *
+ * For an aggregate column specified by aggref, additional aggregate columns
+ * are added, which are used to calculate the new aggregate value in IMMV.
+ * An additional aggregate columns has a name based on resname
+ * (ex. ivm_count_resname), and resno specified by next_resno. The created
+ * columns are returned to aggs, and the resno for the next column is also 
+ * returned to next_resno.
+ *
+ * Currently, an additional count() is created for aggref other than count.
+ * In addition, sum() is created for avg aggregate column.
+ */
+void
+makeIvmAggColumn(ParseState *pstate, Aggref *aggref, char *resname, AttrNumber *next_resno, List **aggs)
+{
+	TargetEntry *tle_count;
+	Node *node;
+	FuncCall *fn;
+	Const	*dmy_arg = makeConst(INT4OID,
+								 -1,
+								 InvalidOid,
+								 sizeof(int32),
+								 Int32GetDatum(1),
+								 false,
+								 true); /* pass by value */
+	const char *aggname = get_func_name(aggref->aggfnoid);
+
+	/*
+	 * For aggregate functions except to count, add count() func with the same arg parameters.
+	 * This count result is used for determining if the aggregate value should be NULL or not.
+	 * Also, add sum() func for avg because we need to calculate an average value as sum/count.
+	 *
+	 * XXX: If there are same expressions explicitly in the target list, we can use this instead
+	 * of adding new duplicated one.
+	 */
+	if (strcmp(aggname, "count") != 0)
+	{
+		fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+		/* Make a Func with a dummy arg, and then override this by the original agg's args. */
+		node = ParseFuncOrColumn(pstate, fn->funcname, list_make1(dmy_arg), NULL, fn, false, -1);
+		((Aggref *)node)->args = aggref->args;
+
+		tle_count = makeTargetEntry((Expr *) node,
+									*next_resno,
+									pstrdup(makeObjectName("__ivm_count",resname, "_")),
+									false);
+		*aggs = lappend(*aggs, tle_count);
+		(*next_resno)++;
+	}
+	if (strcmp(aggname, "avg") == 0)
+	{
+		List *dmy_args = NIL;
+		ListCell *lc;
+		foreach(lc, aggref->aggargtypes)
+		{
+			Oid		typeid = lfirst_oid(lc);
+			Type	type = typeidType(typeid);
+
+			Const *con = makeConst(typeid,
+								   -1,
+								   typeTypeCollation(type),
+								   typeLen(type),
+								   (Datum) 0,
+								   true,
+								   typeByVal(type));
+			dmy_args = lappend(dmy_args, con);
+			ReleaseSysCache(type);
+		}
+		fn = makeFuncCall(list_make1(makeString("sum")), NIL, COERCE_EXPLICIT_CALL, -1);
+
+		/* Make a Func with dummy args, and then override this by the original agg's args. */
+		node = ParseFuncOrColumn(pstate, fn->funcname, dmy_args, NULL, fn, false, -1);
+		((Aggref *)node)->args = aggref->args;
+
+		tle_count = makeTargetEntry((Expr *) node,
+									*next_resno,
+									pstrdup(makeObjectName("__ivm_sum",resname, "_")),
+									false);
+		*aggs = lappend(*aggs, tle_count);
+		(*next_resno)++;
+	}
+}
 
 /*
  * GetIntoRelEFlags --- compute executor flags needed for CREATE TABLE AS

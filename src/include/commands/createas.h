@@ -29,6 +29,7 @@ extern ObjectAddress ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *st
 extern void CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create);
 
 extern Query *rewriteQueryForIMMV(Query *query, List *colNames);
+extern void makeIvmAggColumn(ParseState *pstate, Aggref *aggref, char *resname, AttrNumber *next_resno, List **aggs);
 
 extern int	GetIntoRelEFlags(IntoClause *intoClause);
 
