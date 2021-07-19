@@ -1633,6 +1633,8 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a a
 -- contain system column
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm01 AS SELECT i,j,xmin FROM mv_base_a;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm02 AS SELECT i,j FROM mv_base_a WHERE xmin = '610';
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm04 AS SELECT i,j,xmin::text AS x_min FROM mv_base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm06 AS SELECT i,j,xidsend(xmin) AS x_min FROM mv_base_a;
 -- targetlist or WHERE clause without EXISTS contain subquery
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm03 AS SELECT i,j FROM mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k < 103 );
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
