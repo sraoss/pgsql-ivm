@@ -3339,7 +3339,7 @@ _outTableSampleClause(StringInfo str, const TableSampleClause *node)
 }
 
 static void
-_outAExpr(StringInfo str, const A_Expr *node)
+_outA_Expr(StringInfo str, const A_Expr *node)
 {
 	WRITE_NODE_TYPE("AEXPR");
 
@@ -3414,12 +3414,12 @@ _outAExpr(StringInfo str, const A_Expr *node)
 }
 
 static void
-_outValue(StringInfo str, const Value *value)
+_outValue(StringInfo str, const Value *node)
 {
-	switch (value->type)
+	switch (node->type)
 	{
 		case T_Integer:
-			appendStringInfo(str, "%d", value->val.ival);
+			appendStringInfo(str, "%d", node->val.ival);
 			break;
 		case T_Float:
 
@@ -3427,7 +3427,7 @@ _outValue(StringInfo str, const Value *value)
 			 * We assume the value is a valid numeric literal and so does not
 			 * need quoting.
 			 */
-			appendStringInfoString(str, value->val.str);
+			appendStringInfoString(str, node->val.str);
 			break;
 		case T_String:
 
@@ -3436,20 +3436,20 @@ _outValue(StringInfo str, const Value *value)
 			 * but we don't want it to do anything with an empty string.
 			 */
 			appendStringInfoChar(str, '"');
-			if (value->val.str[0] != '\0')
-				outToken(str, value->val.str);
+			if (node->val.str[0] != '\0')
+				outToken(str, node->val.str);
 			appendStringInfoChar(str, '"');
 			break;
 		case T_BitString:
 			/* internal representation already has leading 'b' */
-			appendStringInfoString(str, value->val.str);
+			appendStringInfoString(str, node->val.str);
 			break;
 		case T_Null:
 			/* this is seen only within A_Const, not in transformed trees */
 			appendStringInfoString(str, "NULL");
 			break;
 		default:
-			elog(ERROR, "unrecognized node type: %d", (int) value->type);
+			elog(ERROR, "unrecognized node type: %d", (int) node->type);
 			break;
 	}
 }
@@ -3487,7 +3487,7 @@ _outRawStmt(StringInfo str, const RawStmt *node)
 }
 
 static void
-_outAConst(StringInfo str, const A_Const *node)
+_outA_Const(StringInfo str, const A_Const *node)
 {
 	WRITE_NODE_TYPE("A_CONST");
 
@@ -4431,7 +4431,7 @@ outNode(StringInfo str, const void *obj)
 				_outTableSampleClause(str, obj);
 				break;
 			case T_A_Expr:
-				_outAExpr(str, obj);
+				_outA_Expr(str, obj);
 				break;
 			case T_ColumnRef:
 				_outColumnRef(str, obj);
@@ -4443,7 +4443,7 @@ outNode(StringInfo str, const void *obj)
 				_outRawStmt(str, obj);
 				break;
 			case T_A_Const:
-				_outAConst(str, obj);
+				_outA_Const(str, obj);
 				break;
 			case T_A_Star:
 				_outA_Star(str, obj);

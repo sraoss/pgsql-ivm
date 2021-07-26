@@ -2702,7 +2702,7 @@ _copyCommonTableExpr(const CommonTableExpr *from)
 }
 
 static A_Expr *
-_copyAExpr(const A_Expr *from)
+_copyA_Expr(const A_Expr *from)
 {
 	A_Expr	   *newnode = makeNode(A_Expr);
 
@@ -2738,7 +2738,7 @@ _copyParamRef(const ParamRef *from)
 }
 
 static A_Const *
-_copyAConst(const A_Const *from)
+_copyA_Const(const A_Const *from)
 {
 	A_Const    *newnode = makeNode(A_Const);
 
@@ -2789,7 +2789,7 @@ _copyFuncCall(const FuncCall *from)
 }
 
 static A_Star *
-_copyAStar(const A_Star *from)
+_copyA_Star(const A_Star *from)
 {
 	A_Star	   *newnode = makeNode(A_Star);
 
@@ -2797,7 +2797,7 @@ _copyAStar(const A_Star *from)
 }
 
 static A_Indices *
-_copyAIndices(const A_Indices *from)
+_copyA_Indices(const A_Indices *from)
 {
 	A_Indices  *newnode = makeNode(A_Indices);
 
@@ -5715,7 +5715,7 @@ copyObjectImpl(const void *from)
 			retval = _copyDropSubscriptionStmt(from);
 			break;
 		case T_A_Expr:
-			retval = _copyAExpr(from);
+			retval = _copyA_Expr(from);
 			break;
 		case T_ColumnRef:
 			retval = _copyColumnRef(from);
@@ -5724,16 +5724,16 @@ copyObjectImpl(const void *from)
 			retval = _copyParamRef(from);
 			break;
 		case T_A_Const:
-			retval = _copyAConst(from);
+			retval = _copyA_Const(from);
 			break;
 		case T_FuncCall:
 			retval = _copyFuncCall(from);
 			break;
 		case T_A_Star:
-			retval = _copyAStar(from);
+			retval = _copyA_Star(from);
 			break;
 		case T_A_Indices:
-			retval = _copyAIndices(from);
+			retval = _copyA_Indices(from);
 			break;
 		case T_A_Indirection:
 			retval = _copyA_Indirection(from);

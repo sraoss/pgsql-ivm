@@ -988,16 +988,23 @@ repeat('Pg', 4) <returnvalue>PgPgPgPg</returnvalue>
         <returnvalue>double precision</returnvalue>
        </para>
        <para>
-        Exponentiation (unlike typical mathematical practice, multiple uses of
-        <literal>^</literal> will associate left to right)
+        Exponentiation
        </para>
        <para>
         <literal>2 ^ 3</literal>
         <returnvalue>8</returnvalue>
        </para>
        <para>
+        Unlike typical mathematical practice, multiple uses of
+        <literal>^</literal> will associate left to right by default:
+       </para>
+       <para>
         <literal>2 ^ 3 ^ 3</literal>
         <returnvalue>512</returnvalue>
+       </para>
+       <para>
+        <literal>2 ^ (3 ^ 3)</literal>
+        <returnvalue>134217728</returnvalue>
        </para></entry>
       </row>
 
@@ -19181,6 +19188,29 @@ SELECT NULLIF(value, '(none)') ...
         <returnvalue>{[1,2)}</returnvalue>
        </para></entry>
       </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>unnest</primary>
+         <secondary>for multirange</secondary>
+        </indexterm>
+        <function>unnest</function> ( <type>anymultirange</type> )
+        <returnvalue>setof anyrange</returnvalue>
+       </para>
+       <para>
+        Expands a multirange into a set of ranges.
+        The ranges are read out in storage order (ascending).
+       </para>
+       <para>
+        <literal>unnest('{[1,2), [3,4)}'::int4multirange)</literal>
+        <returnvalue></returnvalue>
+<programlisting>
+ [1,2)
+ [3,4)
+</programlisting>
+       </para></entry>
+      </row>
      </tbody>
     </tgroup>
    </table>
@@ -26563,6 +26593,7 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         be <literal>pg_catalog</literal>, but that is not a requirement; the
         collations could be installed into some other schema as well.  The
         function returns the number of new collation objects it created.
+        Use of this function is restricted to superusers.
        </para></entry>
       </row>
      </tbody>

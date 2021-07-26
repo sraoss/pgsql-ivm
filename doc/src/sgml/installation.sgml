@@ -354,31 +354,25 @@ su - postgres
   <title>Getting the Source</title>
 
   <para>
-   The <productname>PostgreSQL</productname> &version; sources can be obtained from the
-   download section of our
-   website: <ulink url="https://www.postgresql.org/download/"></ulink>.  You
-   should get a file named <filename>postgresql-&version;.tar.gz</filename>
-   or <filename>postgresql-&version;.tar.bz2</filename>. After
-   you have obtained the file, unpack it:
+   The <productname>PostgreSQL</productname> source code for released versions
+   can be obtained from the download section of our website:
+   <ulink url="https://www.postgresql.org/ftp/source/"></ulink>.
+   Download the
+   <filename>postgresql-<replaceable>version</replaceable>.tar.gz</filename>
+   or <filename>postgresql-<replaceable>version</replaceable>.tar.bz2</filename>
+   file you're interested in, then unpack it:
 <screen>
-<userinput>gunzip postgresql-&version;.tar.gz</userinput>
-<userinput>tar xf postgresql-&version;.tar</userinput>
+<userinput>tar xf postgresql-<replaceable>version</replaceable>.tar.bz2</userinput>
 </screen>
-   (Use <command>bunzip2</command> instead of <command>gunzip</command> if
-   you have the <filename>.bz2</filename> file.  Also, note that most
-   modern versions of <command>tar</command> can unpack compressed archives
-   directly, so you don't really need the
-   separate <command>gunzip</command> or <command>bunzip2</command> step.)
    This will create a directory
-   <filename>postgresql-&version;</filename> under the current directory
-   with the <productname>PostgreSQL</productname> sources.
-   Change into that directory for the rest
-   of the installation procedure.
+   <filename>postgresql-<replaceable>version</replaceable></filename> under
+   the current directory with the <productname>PostgreSQL</productname> sources.
+   Change into that directory for the rest of the installation procedure.
   </para>
 
   <para>
-   You can also get the source directly from the version control repository, see
-   <xref linkend="sourcerepo"/>.
+   Alternatively, you can use the Git version control system; see
+   <xref linkend="git"/> for more information.
   </para>
  </sect1>
 

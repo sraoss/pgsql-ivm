@@ -16,6 +16,8 @@
 #ifndef PG_DUMP_PARALLEL_H
 #define PG_DUMP_PARALLEL_H
 
+#include <limits.h>
+
 #include "pg_backup_archiver.h"
 
 /* Function to call in leader process on completion of a worker task */
@@ -32,6 +34,19 @@ typedef enum
 	WFW_ONE_IDLE,
 	WFW_ALL_IDLE
 } WFW_WaitOption;
+
+/*
+ * Maximum number of parallel jobs allowed.
+ *
+ * On Windows we can only have at most MAXIMUM_WAIT_OBJECTS (= 64 usually)
+ * parallel jobs because that's the maximum limit for the
+ * WaitForMultipleObjects() call.
+ */
+#ifdef WIN32
+#define PG_MAX_JOBS MAXIMUM_WAIT_OBJECTS
+#else
+#define PG_MAX_JOBS INT_MAX
+#endif
 
 /* ParallelSlot is an opaque struct known only within parallel.c */
 typedef struct ParallelSlot ParallelSlot;

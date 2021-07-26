@@ -173,6 +173,8 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 			/* Setting slot_name = NONE is treated as no slot name. */
 			if (strcmp(opts->slot_name, "none") == 0)
 				opts->slot_name = NULL;
+			else
+				ReplicationSlotValidateName(opts->slot_name, ERROR);
 		}
 		else if (IsSet(supported_opts, SUBOPT_COPY_DATA) &&
 				 strcmp(defel->defname, "copy_data") == 0)
@@ -894,6 +896,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_SLOT_NAME))
 				{
+					/*
+					 * The subscription must be disabled to allow slot_name as
+					 * 'none', otherwise, the apply worker will repeatedly try
+					 * to stream the data using that slot_name which neither
+					 * exists on the publisher nor the user will be allowed to
+					 * create it.
+					 */
 					if (sub->enabled && !opts.slot_name)
 						ereport(ERROR,
 								(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
