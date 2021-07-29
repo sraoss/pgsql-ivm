@@ -572,7 +572,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
  * are added, which are used to calculate the new aggregate value in IMMV.
  * An additional aggregate columns has a name based on resname
  * (ex. ivm_count_resname), and resno specified by next_resno. The created
- * columns are returned to aggs, and the resno for the next column is also 
+ * columns are returned to aggs, and the resno for the next column is also
  * returned to next_resno.
  *
  * Currently, an additional count() is created for aggref other than count.
@@ -1287,6 +1287,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 									 errhint("targetlist must contain vars that are referred to in EXISTS subquery")));
 					}
 				}
+
 				/* additional restriction checks for outer join query */
 				if (context->has_outerjoin && context->sublevels_up == 0)
 				{
