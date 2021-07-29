@@ -84,6 +84,10 @@ typedef struct
 typedef struct
 {
 	bool	has_agg;
+	bool	has_subquery;
+	bool	in_exists_subquery;	/* true, if it is in a exists subquery */
+	List	*exists_qual_vars;
+	int		sublevels_up;
 } check_ivm_restriction_context;
 
 /* utility functions for CTAS definition creation */
@@ -270,6 +274,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
+	Query	   *query_immv = NULL;
 
 	/* Check if the relation exists or not */
 	if (CreateTableAsRelExists(stmt))
@@ -327,6 +332,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 
 		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
+		query_immv = copyObject(query);
 	}
 
 	if (into->skipData)
@@ -422,7 +428,8 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 				CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel, true);
 
 				/* Create triggers on incremental maintainable materialized view */
-				CreateIvmTriggersOnBaseTables((Query *) into->viewQuery, matviewOid, true);
+				Assert(query_immv != NULL);
+				CreateIvmTriggersOnBaseTables(query_immv, matviewOid, true);
 			}
 			table_close(matviewRel, NoLock);
 		}
@@ -436,6 +443,11 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
  *
  * count(*) is added for counting distinct tuples in views.
  * Also, additional hidden columns are added for aggregate values.
+ *
+ * EXISTS sublink is rewritten to LATERAL subquery with HAVING
+ * clause to check count(*) > 0. In addition, a counting column
+ * referring to count(*) in this subquery is added to the original
+ * target list.
  */
 Query *
 rewriteQueryForIMMV(Query *query, List *colNames)
@@ -449,6 +461,50 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 
 	rewritten = copyObject(query);
 	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	/*
+	 * If this query has EXISTS clause, rewrite query and
+	 * add __ivm_exists_count_X__ column.
+	 */
+	if (rewritten->hasSubLinks)
+	{
+		ListCell *lc;
+		RangeTblEntry *rte;
+		int varno = 0;
+
+		/* rewrite EXISTS sublink to LATERAL subquery */
+		rewrite_query_for_exists_subquery(rewritten);
+
+		/* Add counting column referring to count(*) in EXISTS clause */
+		foreach(lc, rewritten->rtable)
+		{
+			char *columnName;
+			int attnum;
+			Node *countCol = NULL;
+			varno++;
+
+			rte = (RangeTblEntry *) lfirst(lc);
+			if (!rte->subquery || !rte->lateral)
+				continue;
+			pstate->p_rtable = rewritten->rtable;
+
+			columnName = getColumnNameStartWith(rte, "__ivm_exists", &attnum);
+			if (columnName == NULL)
+				continue;
+			countCol = (Node *)makeVar(varno, attnum,
+						INT8OID, -1, InvalidOid, 0);
+
+
+			if (countCol != NULL)
+			{
+				tle = makeTargetEntry((Expr *) countCol,
+											list_length(rewritten->targetList) + 1,
+											pstrdup(columnName),
+											false);
+				rewritten->targetList = list_concat(rewritten->targetList, list_make1(tle));
+			}
+		}
+	}
 
 	/* group keys must be in targetlist */
 	if (rewritten->groupClause)
@@ -926,6 +982,13 @@ CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
 
 					*relids = bms_add_member(*relids, rte->relid);
 				}
+				else if (rte->rtekind == RTE_SUBQUERY)
+				{
+					Query *subquery = rte->subquery;
+					Assert(rte->subquery != NULL);
+
+					CreateIvmTriggersOnBaseTablesRecurse(subquery, (Node *)subquery, matviewOid, relids, ex_lock);
+				}
 			}
 			break;
 
@@ -1044,7 +1107,7 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 static void
 check_ivm_restriction(Node *node)
 {
-	check_ivm_restriction_context context = {false};
+	check_ivm_restriction_context context = {false, false, false, NIL, 0};
 
 	check_ivm_restriction_walker(node, &context);
 }
@@ -1054,14 +1117,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 {
 	if (node == NULL)
 		return false;
-
-	/*
-	 * We currently don't support Sub-Query.
-	 */
-	if (IsA(node, SubPlan) || IsA(node, SubLink))
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("subquery is not supported on incrementally maintainable materialized view")));
 
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
@@ -1131,17 +1186,22 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					}
 				}
 
+				/* subquery restrictions */
+				if (context->sublevels_up > 0 && qry->distinctClause != NIL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("DISTINCT clause in nested query are not supported on incrementally maintainable materialized view")));
+				if (context->sublevels_up > 0 && qry->hasAggs)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate functions in nested query are not supported on incrementally maintainable materialized view")));
+
 				context->has_agg |= qry->hasAggs;
 
 				/* restrictions for rtable */
 				foreach(lc, qry->rtable)
 				{
 					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
-
-					if (rte->subquery)
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("subquery is not supported on incrementally maintainable materialized view")));
 
 					if (rte->tablesample != NULL)
 						ereport(ERROR,
@@ -1179,9 +1239,50 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("VALUES is not supported on incrementally maintainable materialized view")));
 
+					if (rte->rtekind == RTE_SUBQUERY)
+					{
+						context->has_subquery = true;
+
+						context->sublevels_up++;
+						check_ivm_restriction_walker((Node *)rte->subquery, context);
+						context->sublevels_up--;
+					}
 				}
 
 				query_tree_walker(qry, check_ivm_restriction_walker, (void *) context, QTW_IGNORE_RANGE_TABLE);
+
+				/* additional restriction checks for exists subquery */
+				if (context->exists_qual_vars != NIL && context->sublevels_up == 0)
+				{
+					ListCell *lc;
+
+					foreach (lc, context->exists_qual_vars)
+					{
+						Var	*var = (Var *) lfirst(lc);
+						ListCell *lc2;
+						bool found = false;
+
+						foreach(lc2, qry->targetList)
+						{
+							TargetEntry	*tle = lfirst(lc2);
+							Var *var2;
+
+							if (!IsA(tle->expr, Var))
+								continue;
+							var2 = (Var *) tle->expr;
+							if (var->varno == var2->varno && var->varattno == var2->varattno)
+							{
+								found = true;
+								break;
+							}
+						}
+						if (!found)
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("targetlist must contain vars that are referred to in EXISTS subquery")));
+					}
+				}
 
 				break;
 			}
@@ -1196,6 +1297,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+				if (IsA(tle->expr, SubLink))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("subquery is not supported in targetlist")));
 
 				expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
 				break;
@@ -1208,8 +1314,35 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("OUTER JOIN is not supported on incrementally maintainable materialized view")));
+			}
+			break;
+		case T_Var:
+			{
+				Var	*variable = (Var *) node;
+				/* If EXISTS subquery refers to vars of the upper query, collect these vars */
+				if (variable->varlevelsup > 0 && context->in_exists_subquery)
+					context->exists_qual_vars = lappend(context->exists_qual_vars, node);
+				break;
+			}
+		case T_SubLink:
+			{
+				/* Now, EXISTS clause is supported only */
+				SubLink	*sublink = (SubLink *) node;
+				if (sublink->subLinkType != EXISTS_SUBLINK)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("subquery in WHERE clause only supports subquery with EXISTS clause")));
+				if (context->sublevels_up > 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("nested subquery is not supported on incrementally maintainable materialized view")));
 
-				expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
+				context->in_exists_subquery = true;
+				context->sublevels_up++;
+				check_ivm_restriction_walker(sublink->subselect, context);
+				context->sublevels_up--;
+				context->in_exists_subquery = false;
 				break;
 			}
 		case T_Aggref:
@@ -1550,6 +1683,9 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 	PlannerInfo root;
 
 
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
+
 	/*
 	 * Collect primary key attributes from all tables used in query. The key attributes
 	 * sets for each table are stored in key_attnos_list in order by RTE index.
@@ -1565,8 +1701,14 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 		/* skip NEW/OLD entries */
 		if (i >= first_rtindex)
 		{
+			/* for subqueries, scan recursively */
+			if (r->rtekind == RTE_SUBQUERY)
+			{
+				key_attnos = get_primary_key_attnos_from_query(r->subquery, constraintList, true);
+				has_pkey = (key_attnos != NULL);
+			}
 			/* for tables, call get_primary_key_attnos */
-			if (r->rtekind == RTE_RELATION)
+			else if (r->rtekind == RTE_RELATION)
 			{
 				Oid constraintOid;
 				key_attnos = get_primary_key_attnos(r->relid, false, &constraintOid);
