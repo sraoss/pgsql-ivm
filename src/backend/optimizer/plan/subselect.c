@@ -88,7 +88,6 @@ static bool contain_dml(Node *node);
 static bool contain_dml_walker(Node *node, void *context);
 static bool contain_outer_selfref(Node *node);
 static bool contain_outer_selfref_walker(Node *node, Index *depth);
-static void inline_cte(PlannerInfo *root, CommonTableExpr *cte);
 static bool inline_cte_walker(Node *node, inline_cte_walker_context *context);
 static bool simplify_EXISTS_query(PlannerInfo *root, Query *query);
 static Query *convert_EXISTS_to_ANY(PlannerInfo *root, Query *subselect,
@@ -1148,7 +1147,7 @@ contain_outer_selfref_walker(Node *node, Index *depth)
 /*
  * inline_cte: convert RTE_CTE references to given CTE into RTE_SUBQUERYs
  */
-static void
+void
 inline_cte(PlannerInfo *root, CommonTableExpr *cte)
 {
 	struct inline_cte_walker_context context;

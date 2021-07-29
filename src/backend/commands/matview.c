@@ -1782,6 +1782,20 @@ rewrite_query_for_preupdate_state(Query *query, List *tables,
 	/* XXX: Is necessary? Is this right timing? */
 	AcquireRewriteLocks(query, true, false);
 
+	/* convert CTEs to subqueries */
+	foreach (lc, query->cteList)
+	{
+		PlannerInfo root;
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (cte->cterefcount == 0)
+			continue;
+
+		root.parse = query;
+		inline_cte(&root, cte);
+	}
+	query->cteList = NIL;
+
 	i = 1;
 	foreach(lc, query->rtable)
 	{
@@ -2237,7 +2251,7 @@ rewrite_exists_subquery_walker(Query *query, Node *node, int *count)
 				if (subselect->cteList)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
+							 errmsg("CTE in EXIST clause is not supported on incrementally maintainable materialized view")));
 
 				pstate = make_parsestate(NULL);
 				pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;

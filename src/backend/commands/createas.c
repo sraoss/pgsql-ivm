@@ -964,8 +964,15 @@ CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
 		case T_Query:
 			{
 				Query *query = (Query *) node;
+				ListCell *lc;
 
 				CreateIvmTriggersOnBaseTablesRecurse(qry, (Node *)query->jointree, matviewOid, relids, ex_lock);
+				foreach(lc, query->cteList)
+				{
+					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+					Assert(IsA(cte->ctequery, Query));
+					CreateIvmTriggersOnBaseTablesRecurse((Query *) cte->ctequery, cte->ctequery, matviewOid, relids, ex_lock);
+				}
 			}
 			break;
 
@@ -1132,11 +1139,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 				ListCell   *lc;
 				List       *vars;
 
-				/* if contained CTE, return error */
-				if (qry->cteList != NIL)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1173,6 +1175,12 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("FOR UPDATE/SHARE clause is not supported on incrementally maintainable materialized view")));
+
+				/* CTE restrictions */
+				if (qry->hasRecursive)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("recursive CTE is not supported on incrementally maintainable materialized view")));
 
 				/* system column restrictions */
 				vars = pull_vars_of_level((Node *) qry, 0);
@@ -1248,7 +1256,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 							ereport(ERROR,
 									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-									 errhint("subquery is not supported with outer join")));
+									 errhint("subquery or CTE is not supported with outer join")));
 
 						context->has_subquery = true;
 
@@ -1359,6 +1367,20 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 
 				break;
 			}
+		case T_CommonTableExpr:
+			{
+				CommonTableExpr *cte = (CommonTableExpr *) node;
+
+				if (isIvmName(cte->ctename))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CTE name %s is not supported on incrementally maintainable materialized view", cte->ctename)));
+
+				context->sublevels_up++;
+				check_ivm_restriction_walker(cte->ctequery, (void *) context);
+				context->sublevels_up--;
+				break;
+			}
 		case T_TargetEntry:
 			{
 				TargetEntry *tle = (TargetEntry *)node;
@@ -1388,7 +1410,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-								 errhint("subquery is not supported with outer join")));
+								 errhint("subquery or CTE is not supported with outer join")));
 					if (context->has_agg)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1814,6 +1836,21 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
+
+	/* convert CTEs to subqueries */
+	query = copyObject(query);
+	foreach (lc, query->cteList)
+	{
+		PlannerInfo root;
+		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
+
+		if (cte->cterefcount == 0)
+			continue;
+
+		root.parse = query;
+		inline_cte(&root, cte);
+	}
+	query->cteList = NIL;
 
 	/*
 	 * Collect primary key attributes from all tables used in query. The key attributes

@@ -134,6 +134,11 @@ extern void extract_query_dependencies(Node *query,
 									   List **invalItems,
 									   bool *hasRowSecurity);
 
+/* in plan/subselect.c: */
+
+extern void
+inline_cte(PlannerInfo *root, CommonTableExpr *cte);
+
 /* in prep/prepqual.c: */
 
 extern Node *negate_clause(Node *node);
