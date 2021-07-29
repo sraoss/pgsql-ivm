@@ -1670,7 +1670,7 @@ describeOneTableDetails(const char *schemaname,
 	initPQExpBuffer(&tmpbuf);
 
 	/* Get general table info */
-	if (pset.sversion >= 140000)
+	if (pset.sversion >= 150000)
 	{
 		printfPQExpBuffer(&buf,
 						  "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, "
@@ -1873,7 +1873,7 @@ describeOneTableDetails(const char *schemaname,
 			(char *) NULL : pg_strdup(PQgetvalue(res, 0, 14));
 	else
 		tableinfo.relam = NULL;
-	if (pset.sversion >= 140000)
+	if (pset.sversion >= 150000)
 		tableinfo.isivm = strcmp(PQgetvalue(res, 0, 15), "t") == 0;
 	else
 		tableinfo.isivm = false;

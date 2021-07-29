@@ -1426,7 +1426,7 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("nested subquery is not supported on incrementally maintainable materialized view")));
 
-				if (ctx->has_outerjoin)
+				if (context->has_outerjoin)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("this query is not allowed on incrementally maintainable materialized view"),

@@ -6329,7 +6329,7 @@ getTables(Archive *fout, int *numTables)
 			relhasoids = "'f'::bool";
 
 		/* The information about incremental view maintenance */
-		if (fout->remoteVersion >= 140000)
+		if (fout->remoteVersion >= 150000)
 			isivm = "c.relisivm";
 
 		/*
