@@ -325,7 +325,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	if (is_matview && into->ivm)
 	{
 		/* check if the query is supported in IMMV definition */
-		if(contain_mutable_functions((Node *) query))
+		if (contain_mutable_functions((Node *) query))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("mutable function is not supported on incrementally maintainable materialized view"),
@@ -1879,7 +1879,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 	 * list.  If an attribute remains in key_attnos_list in spite of the table is used
 	 * in FROM clause, the target is missing this key attribute, so we return NULL.
 	 */
-	i=1;
+	i = 1;
 	foreach(lc, key_attnos_list)
 	{
 		Bitmapset *bms = (Bitmapset *)lfirst(lc);
