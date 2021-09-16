@@ -221,7 +221,7 @@ mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR
 a.i &gt; 5;
          </programlisting>
         </para>
-        </listitem>
+       </listitem>
 
        <listitem>
         <para>
@@ -238,7 +238,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a
 a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
          </programlisting>
         </para>
-        </listitem>
+       </listitem>
       </itemizedlist>
 
       Unsupported queries with this option include the following:
@@ -248,12 +248,12 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
         <para>
          Aggregate functions other than built-in count, sum, avg, min and max.
         </para>
-        </listitem>
+       </listitem>
        <listitem>
         <para>
          Aggregate functions with a HAVING clause.
         </para>
-        </listitem>
+       </listitem>
        <listitem>
         <para>
          DISTINCT ON, WINDOW, VALUES, LIMIT and OFFSET clause.
@@ -262,6 +262,7 @@ a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
       </itemizedlist>
 
       Other restrictions include:
+
       <itemizedlist>
 
        <listitem>

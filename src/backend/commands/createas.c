@@ -102,7 +102,8 @@ static bool intorel_receive(TupleTableSlot *slot, DestReceiver *self);
 static void intorel_shutdown(DestReceiver *self);
 static void intorel_destroy(DestReceiver *self);
 
-static void CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock);
+static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
+									 Relids *relids, bool ex_lock);
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
@@ -521,7 +522,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 			if (tle->resjunk)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						 errmsg("GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view")));
+						 errmsg("GROUP BY expression not appearing in select list is not supported on incrementally maintainable materialized view")));
 		}
 	}
 	/* Convert DISTINCT to GROUP BY.  count(*) will be added afterward. */
@@ -594,7 +595,7 @@ makeIvmAggColumn(ParseState *pstate, Aggref *aggref, char *resname, AttrNumber *
 	const char *aggname = get_func_name(aggref->aggfnoid);
 
 	/*
-	 * For aggregate functions except to count, add count() func with the same arg parameters.
+	 * For aggregate functions except count, add count() func with the same arg parameters.
 	 * This count result is used for determining if the aggregate value should be NULL or not.
 	 * Also, add sum() func for avg because we need to calculate an average value as sum/count.
 	 *
@@ -944,19 +945,20 @@ CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create)
 		rte->rtekind != RTE_RELATION)
 		ex_lock = true;
 
-	CreateIvmTriggersOnBaseTables_recurse(qry, (Node *)qry, matviewOid, &relids, ex_lock);
+	CreateIvmTriggersOnBaseTablesRecurse(qry, (Node *)qry, matviewOid, &relids, ex_lock);
 
 	bms_free(relids);
 }
 
 static void
-CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Relids *relids, bool ex_lock)
+CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
+									 Relids *relids, bool ex_lock)
 {
-	/* This can recurse, so check for excessive recursion */
-	check_stack_depth();
-
 	if (node == NULL)
 		return;
+
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
 
 	switch (nodeTag(node))
 	{
@@ -965,12 +967,12 @@ CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Re
 				Query *query = (Query *) node;
 				ListCell *lc;
 
-				CreateIvmTriggersOnBaseTables_recurse(qry, (Node *)query->jointree, matviewOid, relids, ex_lock);
+				CreateIvmTriggersOnBaseTablesRecurse(qry, (Node *)query->jointree, matviewOid, relids, ex_lock);
 				foreach(lc, query->cteList)
 				{
 					CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
 					Assert(IsA(cte->ctequery, Query));
-					CreateIvmTriggersOnBaseTables_recurse((Query *) cte->ctequery, cte->ctequery, matviewOid, relids, ex_lock);
+					CreateIvmTriggersOnBaseTablesRecurse((Query *) cte->ctequery, cte->ctequery, matviewOid, relids, ex_lock);
 				}
 			}
 			break;
@@ -999,7 +1001,7 @@ CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Re
 					Query *subquery = rte->subquery;
 					Assert(rte->subquery != NULL);
 
-					CreateIvmTriggersOnBaseTables_recurse(subquery, (Node *)subquery, matviewOid, relids, ex_lock);
+					CreateIvmTriggersOnBaseTablesRecurse(subquery, (Node *)subquery, matviewOid, relids, ex_lock);
 				}
 			}
 			break;
@@ -1010,7 +1012,7 @@ CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Re
 				ListCell   *l;
 
 				foreach(l, f->fromlist)
-					CreateIvmTriggersOnBaseTables_recurse(qry, lfirst(l), matviewOid, relids, ex_lock);
+					CreateIvmTriggersOnBaseTablesRecurse(qry, lfirst(l), matviewOid, relids, ex_lock);
 			}
 			break;
 
@@ -1018,8 +1020,8 @@ CreateIvmTriggersOnBaseTables_recurse(Query *qry, Node *node, Oid matviewOid, Re
 			{
 				JoinExpr   *j = (JoinExpr *) node;
 
-				CreateIvmTriggersOnBaseTables_recurse(qry, j->larg, matviewOid, relids, ex_lock);
-				CreateIvmTriggersOnBaseTables_recurse(qry, j->rarg, matviewOid, relids, ex_lock);
+				CreateIvmTriggersOnBaseTablesRecurse(qry, j->larg, matviewOid, relids, ex_lock);
+				CreateIvmTriggersOnBaseTablesRecurse(qry, j->rarg, matviewOid, relids, ex_lock);
 			}
 			break;
 
@@ -1127,11 +1129,11 @@ check_ivm_restriction(Node *node)
 static bool
 check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 {
-	/* This can recurse, so check for excessive recursion */
-	check_stack_depth();
-
 	if (node == NULL)
 		return false;
+
+	/* This can recurse, so check for excessive recursion */
+	check_stack_depth();
 
 	switch (nodeTag(node))
 	{
@@ -1598,7 +1600,7 @@ check_aggregate_supports_ivm(Oid aggfnoid)
 }
 
 /*
- * CreateindexOnIMMV
+ * CreateIndexOnIMMV
  *
  * Create a unique index on incremental maintainable materialized view.
  * If the view definition query has a GROUP BY clause, the index is created
@@ -1726,11 +1728,13 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 		}
 		else
 		{
-			/* create no index, just notice that an appropriate index is necessary for efficient, IVM */
+			/* create no index, just notice that an appropriate index is necessary for efficient IVM */
 			ereport(NOTICE,
 					(errmsg("could not create an index on materialized view \"%s\" automatically",
 							RelationGetRelationName(matviewRel)),
-					errhint("Create an index on the materialized view for efficient incremental maintenance.")));
+					 errdetail("This target list does not have all the primary key columns, "
+							   "or this view does not contain GROUP BY or DISTINCT clause."),
+					 errhint("Create an index on the materialized view for efficient incremental maintenance.")));
 			return;
 		}
 	}

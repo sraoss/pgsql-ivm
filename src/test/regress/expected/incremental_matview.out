@@ -14,6 +14,7 @@ INSERT INTO mv_base_b VALUES
   (4,104);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) WITH NO DATA;
 NOTICE:  could not create an index on materialized view "mv_ivm_1" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 ERROR:  materialized view "mv_ivm_1" has not been populated
@@ -94,15 +95,18 @@ CREATE FUNCTION ivm_func() RETURNS int LANGUAGE 'sql'
        AS 'SELECT 1' IMMUTABLE;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_func AS SELECT * FROM ivm_func();
 NOTICE:  could not create an index on materialized view "mv_ivm_func" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_no_tbl AS SELECT 1;
 NOTICE:  could not create an index on materialized view "mv_ivm_no_tbl" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 ROLLBACK;
 -- result of materialized view have DISTINCT clause or the duplicate result.
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_duplicate AS SELECT j FROM mv_base_a;
 NOTICE:  could not create an index on materialized view "mv_ivm_duplicate" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_distinct AS SELECT DISTINCT j FROM mv_base_a;
 NOTICE:  created index "mv_ivm_distinct_index" on materialized view "mv_ivm_distinct"
@@ -228,6 +232,7 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j), COUNT(j), AVG(j) FROM mv_base_a;
 NOTICE:  could not create an index on materialized view "mv_ivm_group" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_ivm_group ORDER BY 1;
  sum | count |         avg         
@@ -338,6 +343,7 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_min_max AS SELECT MIN(j), MAX(j)  FROM mv_base_a;
 NOTICE:  could not create an index on materialized view "mv_ivm_min_max" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_ivm_min_max;
  min | max 
@@ -375,6 +381,7 @@ INSERT INTO base_t VALUES (1, 10), (2, 20), (3, 30);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_self(v1, v2) AS
  SELECT t1.v, t2.v FROM base_t AS t1 JOIN base_t AS t2 ON t1.i = t2.i;
 NOTICE:  could not create an index on materialized view "mv_self" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_self ORDER BY v1;
  v1 | v2 
@@ -425,6 +432,7 @@ INSERT INTO base_s VALUES (1, 100), (2, 200), (3, 300);
 CREATE INCREMENTAL MATERIALIZED VIEW mv(v1, v2) AS
  SELECT r.v, s.v FROM base_r AS r JOIN base_s AS s USING(i);
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv ORDER BY v1;
  v1 | v2  
@@ -487,6 +495,7 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
 NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT *,  __ivm_exists_count_0__ FROM mv_ivm_exists_subquery ORDER BY i, j;
  i | j  | __ivm_exists_count_0__ 
@@ -560,9 +569,11 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery2 AS SELECT a.i, a.j FROM mv_base_a a WHERE i >= 3 AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
 NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery2" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery3 AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i + 100 = b.k);
 NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery3" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery4 AS SELECT DISTINCT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) AND EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i + 100 = b.k);
 NOTICE:  created index "mv_ivm_exists_subquery4_index" on materialized view "mv_ivm_exists_subquery4"
@@ -627,6 +638,7 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_subquery AS SELECT a.i,a.j FROM mv_base_a a,( SELECT * FROM mv_base_b) b WHERE a.i = b.i;
 NOTICE:  could not create an index on materialized view "mv_ivm_subquery" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO mv_base_a VALUES(2,20);
 INSERT INTO mv_base_b VALUES(3,300);
@@ -646,6 +658,7 @@ ROLLBACK;
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm_join_subquery AS SELECT i, j, k FROM ( SELECT i, a.j, b.k FROM mv_base_b b INNER JOIN mv_base_a a USING(i)) tmp;
 NOTICE:  could not create an index on materialized view "mv_ivm_join_subquery" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 WITH
  ai AS (INSERT INTO mv_base_a VALUES (1,11),(2,22) RETURNING 0),
@@ -674,6 +687,7 @@ BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
     WITH b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM mv_base_a a, b WHERE a.i = b.i;
 NOTICE:  could not create an index on materialized view "mv_cte" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO mv_base_a VALUES(2,20);
 INSERT INTO mv_base_b VALUES(3,300);
@@ -693,6 +707,7 @@ BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
     WITH a AS (SELECT * FROM mv_base_a), b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM a, b WHERE a.i = b.i;
 NOTICE:  could not create an index on materialized view "mv_cte" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO mv_base_a VALUES(2,20);
 INSERT INTO mv_base_b VALUES(3,300);
@@ -712,6 +727,7 @@ BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
     WITH b AS ( SELECT * FROM mv_base_b) SELECT v.i,v.j FROM (WITH a AS (SELECT * FROM mv_base_a) SELECT a.i,a.j FROM a, b WHERE a.i = b.i) v;
 NOTICE:  could not create an index on materialized view "mv_cte" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO mv_base_a VALUES(2,20);
 INSERT INTO mv_base_b VALUES(3,300);
@@ -731,6 +747,7 @@ BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
     SELECT * FROM (WITH a AS (SELECT * FROM mv_base_a), b AS ( SELECT * FROM mv_base_b) SELECT a.i,a.j FROM a, b WHERE a.i = b.i) v;
 NOTICE:  could not create an index on materialized view "mv_cte" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO mv_base_a VALUES(2,20);
 INSERT INTO mv_base_b VALUES(3,300);
@@ -750,6 +767,7 @@ BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_cte AS
     WITH x AS ( SELECT i, a.j, b.k FROM mv_base_b b INNER JOIN mv_base_a a USING(i)) SELECT * FROM x;
 NOTICE:  could not create an index on materialized view "mv_cte" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 WITH
  ai AS (INSERT INTO mv_base_a VALUES (1,11),(2,22) RETURNING 0),
@@ -779,6 +797,7 @@ CREATE TABLE base_t (i int, v int);
 INSERT INTO base_t VALUES (1,10),(2, NULL);
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT * FROM base_t;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv ORDER BY i;
  i | v  
@@ -800,6 +819,7 @@ BEGIN;
 CREATE TABLE base_t (i int);
 CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT * FROM base_t;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv ORDER BY i;
  i 
@@ -895,6 +915,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -1514,6 +1535,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i LEFT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -1818,6 +1840,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i RIGHT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -2078,6 +2101,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i INNER JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -2311,6 +2335,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r LEFT JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -2613,6 +2638,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r LEFT JOIN base_s AS s ON r.i=s.i LEFT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -2884,6 +2910,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r LEFT JOIN base_s AS s ON r.i=s.i RIGHT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -3131,6 +3158,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r LEFT JOIN base_s AS s ON r.i=s.i INNER JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -3347,6 +3375,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r RIGHT JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -3658,6 +3687,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r RIGHT JOIN base_s AS s ON r.i=s.i LEFT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -3942,6 +3972,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r RIGHT JOIN base_s AS s ON r.i=s.i RIGHT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -4202,6 +4233,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r RIGHT JOIN base_s AS s ON r.i=s.i INNER JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -4435,6 +4467,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r INNER JOIN base_s AS s ON r.i=s.i FULL JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -4717,6 +4750,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r INNER JOIN base_s AS s ON r.i=s.i LEFT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -4968,6 +5002,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
    FROM base_r AS r INNER JOIN base_s AS s ON r.i=s.i RIGHT JOIN base_t AS t ON s.j=t.j;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, si, sj, t) AS
  SELECT r.i, s.i, s.j, t.j
@@ -5215,6 +5250,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
  SELECT r.i, s.i
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i WHERE s.i > 0;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, s) AS
  SELECT r.i, s.i
@@ -5418,6 +5454,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r1, r2) AS
  SELECT r.i, r2.i
    FROM base_r AS r FULL JOIN base_r as r2 ON r.i=r2.i;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r1, r2) AS
  SELECT r.i, r2.i
@@ -5548,6 +5585,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
  SELECT r.i, s.i
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, s) AS
  SELECT r.i, s.i
@@ -5626,6 +5664,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv(r, s) AS
  SELECT r.i, s.i
    FROM base_r AS r FULL JOIN base_s AS s ON r.i=s.i;
 NOTICE:  could not create an index on materialized view "mv" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 CREATE VIEW v(r, s) AS
  SELECT r.i, s.i
@@ -5716,6 +5755,7 @@ CREATE TABLE t_mytype (x mytype);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_mytype AS
  SELECT * FROM t_mytype;
 NOTICE:  could not create an index on materialized view "mv_mytype" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 INSERT INTO t_mytype VALUES ('1'::mytype);
 SELECT * FROM mv_mytype;
@@ -5851,7 +5891,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm28 AS SELECT i AS "__ivm_count__" FR
 ERROR:  column name __ivm_count__ is not supported on incrementally maintainable materialized view
 -- expressions specified in GROUP BY must appear in the target list.
 CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm29 AS SELECT COUNT(i) FROM mv_base_a GROUP BY i;
-ERROR:  GROUP BY expression not appeared in select list is not supported on incrementally maintainable materialized view
+ERROR:  GROUP BY expression not appearing in select list is not supported on incrementally maintainable materialized view
 -- experssions containing an aggregate is not supported
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm30 AS SELECT sum(i)*0.5 FROM mv_base_a;
 ERROR:  expression containing an aggregate in it is not supported on incrementally maintainable materialized view
@@ -5892,6 +5932,7 @@ GRANT ALL on num_tbl TO PUBLIC;
 SET SESSION AUTHORIZATION ivm_user;
 CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls AS SELECT * FROM rls_tbl;
 NOTICE:  could not create an index on materialized view "ivm_rls" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
  id | data |  owner   
@@ -5911,6 +5952,7 @@ SELECT id, data, owner FROM ivm_rls ORDER BY 1,2,3;
 
 CREATE INCREMENTAL MATERIALIZED VIEW  ivm_rls2 AS SELECT * FROM rls_tbl JOIN num_tbl USING(id);
 NOTICE:  could not create an index on materialized view "ivm_rls2" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
 HINT:  Create an index on the materialized view for efficient incremental maintenance.
 RESET SESSION AUTHORIZATION;
 WITH
