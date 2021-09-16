@@ -77,8 +77,9 @@ extern char *output_files[];
 #define pg_mv_file			pgrename
 #define PATH_SEPARATOR		'\\'
 #define PATH_QUOTE	'"'
-#define RM_CMD				"DEL /q"
-#define RMDIR_CMD			"RMDIR /s/q"
+/* @ prefix disables command echo in .bat files */
+#define RM_CMD				"@DEL /q"
+#define RMDIR_CMD			"@RMDIR /s/q"
 #define SCRIPT_PREFIX		""
 #define SCRIPT_EXT			"bat"
 #define EXE_EXT				".exe"
@@ -207,6 +208,7 @@ typedef struct
 	uint32		chkpnt_nxtmulti;
 	uint32		chkpnt_nxtmxoff;
 	uint32		chkpnt_oldstMulti;
+	uint32		chkpnt_oldstxid;
 	uint32		align;
 	uint32		blocksz;
 	uint32		largesz;
@@ -453,6 +455,7 @@ void		old_9_6_invalidate_hash_indexes(ClusterInfo *cluster,
 											bool check_mode);
 
 void		old_11_check_for_sql_identifier_data_type_usage(ClusterInfo *cluster);
+void		report_extension_updates(ClusterInfo *cluster);
 
 /* parallel.c */
 void		parallel_exec_prog(const char *log_file, const char *opt_log_file,

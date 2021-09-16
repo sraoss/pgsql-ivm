@@ -2941,7 +2941,7 @@ describeOneTableDetails(const char *schemaname,
 					printfPQExpBuffer(&buf, "    ");
 
 					/* statistics object name (qualified with namespace) */
-					appendPQExpBuffer(&buf, "\"%s\".\"%s\"",
+					appendPQExpBuffer(&buf, "\"%s.%s\"",
 									  PQgetvalue(result, i, 2),
 									  PQgetvalue(result, i, 3));
 
@@ -3036,7 +3036,7 @@ describeOneTableDetails(const char *schemaname,
 					printfPQExpBuffer(&buf, "    ");
 
 					/* statistics object name (qualified with namespace) */
-					appendPQExpBuffer(&buf, "\"%s\".\"%s\" (",
+					appendPQExpBuffer(&buf, "\"%s.%s\" (",
 									  PQgetvalue(result, i, 2),
 									  PQgetvalue(result, i, 3));
 
@@ -4305,12 +4305,12 @@ listPartitionedTables(const char *reltypes, const char *pattern, bool verbose)
 
 	if (showNested || pattern)
 		appendPQExpBuffer(&buf,
-						  ",\n  inh.inhparent::regclass as \"%s\"",
+						  ",\n  inh.inhparent::pg_catalog.regclass as \"%s\"",
 						  gettext_noop("Parent name"));
 
 	if (showIndexes)
 		appendPQExpBuffer(&buf,
-						  ",\n c2.oid::regclass as \"%s\"",
+						  ",\n c2.oid::pg_catalog.regclass as \"%s\"",
 						  gettext_noop("Table"));
 
 	if (verbose)
@@ -4765,7 +4765,7 @@ listExtendedStats(const char *pattern)
 		appendPQExpBuffer(&buf,
 						  "pg_catalog.format('%%s FROM %%s', \n"
 						  "  pg_get_statisticsobjdef_columns(es.oid), \n"
-						  "  es.stxrelid::regclass) AS \"%s\"",
+						  "  es.stxrelid::pg_catalog.regclass) AS \"%s\"",
 						  gettext_noop("Definition"));
 	else
 		appendPQExpBuffer(&buf,
@@ -4776,7 +4776,7 @@ listExtendedStats(const char *pattern)
 						  "   ON (es.stxrelid = a.attrelid \n"
 						  "   AND a.attnum = s.attnum \n"
 						  "   AND NOT a.attisdropped)), \n"
-						  "es.stxrelid::regclass) AS \"%s\"",
+						  "es.stxrelid::pg_catalog.regclass) AS \"%s\"",
 						  gettext_noop("Definition"));
 
 	appendPQExpBuffer(&buf,
@@ -4804,7 +4804,7 @@ listExtendedStats(const char *pattern)
 	processSQLNamePattern(pset.db, &buf, pattern,
 						  false, false,
 						  "es.stxnamespace::pg_catalog.regnamespace::text", "es.stxname",
-						  NULL, NULL);
+						  NULL, "pg_catalog.pg_statistics_obj_is_visible(es.oid)");
 
 	appendPQExpBufferStr(&buf, "ORDER BY 1, 2;");
 

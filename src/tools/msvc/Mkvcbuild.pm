@@ -35,17 +35,13 @@ my $libpq;
 my @unlink_on_exit;
 
 # Set of variables for modules in contrib/ and src/test/modules/
-my $contrib_defines = { 'refint' => 'REFINT_VERBOSE' };
-my @contrib_uselibpq =
-  ('dblink', 'oid2name', 'postgres_fdw', 'vacuumlo', 'libpq_pipeline');
-my @contrib_uselibpgport   = ('libpq_pipeline', 'oid2name', 'vacuumlo');
-my @contrib_uselibpgcommon = ('libpq_pipeline', 'oid2name', 'vacuumlo');
+my $contrib_defines = {};
+my @contrib_uselibpq = ();
+my @contrib_uselibpgport   = ();
+my @contrib_uselibpgcommon = ();
 my $contrib_extralibs     = { 'libpq_pipeline' => ['ws2_32.lib'] };
-my $contrib_extraincludes = { 'dblink'         => ['src/backend'] };
-my $contrib_extrasource   = {
-	'cube' => [ 'contrib/cube/cubescan.l', 'contrib/cube/cubeparse.y' ],
-	'seg'  => [ 'contrib/seg/segscan.l',   'contrib/seg/segparse.y' ],
-};
+my $contrib_extraincludes  = {};
+my $contrib_extrasource    = {};
 my @contrib_excludes = (
 	'bool_plperl',      'commit_ts',
 	'hstore_plperl',    'hstore_plpython',
@@ -129,7 +125,7 @@ sub mkvcbuild
 	our @pgcommonallfiles = qw(
 	  archive.c base64.c checksum_helper.c
 	  config_info.c controldata_utils.c d2s.c encnames.c exec.c
-	  f2s.c file_perm.c file_utils.c hashfn.c hex.c ip.c jsonapi.c
+	  f2s.c file_perm.c file_utils.c hashfn.c ip.c jsonapi.c
 	  keywords.c kwlookup.c link-canary.c md5_common.c
 	  pg_get_line.c pg_lzcompress.c pgfnames.c psprintf.c relpath.c rmtree.c
 	  saslprep.c scram-common.c string.c stringinfo.c unicode_norm.c username.c
@@ -937,7 +933,7 @@ sub AddTransformModule
 	# Add PL dependencies
 	$p->AddIncludeDir($pl_src);
 	$p->AddReference($pl_proj);
-	$p->AddIncludeDir($pl_proj->{includes});
+	$p->AddIncludeDir($_) for @{$pl_proj->{includes}};
 	foreach my $pl_lib (@{ $pl_proj->{libraries} })
 	{
 		$p->AddLibrary($pl_lib);
@@ -947,7 +943,7 @@ sub AddTransformModule
 	if ($type_proj)
 	{
 		$p->AddIncludeDir($type_src);
-		$p->AddIncludeDir($type_proj->{includes});
+		$p->AddIncludeDir($_) for @{$type_proj->{includes}};
 		foreach my $type_lib (@{ $type_proj->{libraries} })
 		{
 			$p->AddLibrary($type_lib);
@@ -964,6 +960,7 @@ sub AddContrib
 	my $subdir = shift;
 	my $n      = shift;
 	my $mf     = Project::read_file("$subdir/$n/Makefile");
+	my @projects = ();
 
 	if ($mf =~ /^MODULE_big\s*=\s*(.*)$/mg)
 	{
@@ -971,6 +968,7 @@ sub AddContrib
 		my $proj = $solution->AddProject($dn, 'dll', 'contrib', "$subdir/$n");
 		$proj->AddReference($postgres);
 		AdjustContribProj($proj);
+		push @projects, $proj;
 	}
 	elsif ($mf =~ /^MODULES\s*=\s*(.*)$/mg)
 	{
@@ -982,16 +980,88 @@ sub AddContrib
 			$proj->AddFile("$subdir/$n/$filename");
 			$proj->AddReference($postgres);
 			AdjustContribProj($proj);
+			push @projects, $proj;
 		}
 	}
 	elsif ($mf =~ /^PROGRAM\s*=\s*(.*)$/mg)
 	{
 		my $proj = $solution->AddProject($1, 'exe', 'contrib', "$subdir/$n");
 		AdjustContribProj($proj);
+		push @projects, $proj;
 	}
 	else
 	{
 		croak "Could not determine contrib module type for $n\n";
+	}
+
+	# Process custom compiler flags
+	if ($mf =~ /^PG_CPPFLAGS\s*=\s*(.*)$/mg || $mf =~ /^override\s*CPPFLAGS\s*[+:]?=\s*(.*)$/mg)
+	{
+		foreach my $flag (split /\s+/, $1)
+		{
+			if ($flag =~ /^-D(.*)$/)
+			{
+				foreach my $proj (@projects)
+				{
+					$proj->AddDefine($1);
+				}
+			}
+			elsif ($flag =~ /^-I(.*)$/)
+			{
+				if ($1 eq '$(libpq_srcdir)')
+				{
+					foreach my $proj (@projects)
+					{
+						$proj->AddIncludeDir('src/interfaces/libpq');
+						$proj->AddReference($libpq);
+					}
+				}
+			}
+		}
+	}
+
+	if ($mf =~ /^SHLIB_LINK_INTERNAL\s*[+:]?=\s*(.*)$/mg)
+	{
+		foreach my $lib (split /\s+/, $1)
+		{
+			if ($lib eq '$(libpq)')
+			{
+				foreach my $proj (@projects)
+				{
+					$proj->AddIncludeDir('src/interfaces/libpq');
+					$proj->AddReference($libpq);
+				}
+			}
+		}
+	}
+
+	if ($mf =~ /^PG_LIBS_INTERNAL\s*[+:]?=\s*(.*)$/mg)
+	{
+		foreach my $lib (split /\s+/, $1)
+		{
+			if ($lib eq '$(libpq_pgport)')
+			{
+				foreach my $proj (@projects)
+				{
+					$proj->AddReference($libpgport);
+					$proj->AddReference($libpgcommon);
+				}
+			}
+		}
+	}
+
+	foreach my $line (split /\n/, $mf)
+	{
+		if ($line =~ /^[A-Za-z0-9_]*\.o:\s(.*)/)
+		{
+			foreach my $file (split /\s+/, $1)
+			{
+				foreach my $proj (@projects)
+				{
+					$proj->AddDependantFiles("$subdir/$n/$file");
+				}
+			}
+		}
 	}
 
 	# Are there any output data files to build?

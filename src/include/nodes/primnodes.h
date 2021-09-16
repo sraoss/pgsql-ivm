@@ -32,7 +32,7 @@
  *	  specifies an alias for a range variable; the alias might also
  *	  specify renaming of columns within the table.
  *
- * Note: colnames is a list of Value nodes (always strings).  In Alias structs
+ * Note: colnames is a list of String nodes.  In Alias structs
  * associated with RTEs, there may be entries corresponding to dropped
  * columns; these are normally empty strings ("").  See parsenodes.h for info.
  */
@@ -76,7 +76,7 @@ typedef struct RangeVar
 /*
  * TableFunc - node for a table function, such as XMLTABLE.
  *
- * Entries in the ns_names list are either string Value nodes containing
+ * Entries in the ns_names list are either String nodes containing
  * literal namespace names, or NULL pointers to represent DEFAULT.
  */
 typedef struct TableFunc
@@ -173,12 +173,12 @@ typedef struct Expr
  * in the planner and doesn't correspond to any simple relation column may
  * have varnosyn = varattnosyn = 0.
  */
-#define    INNER_VAR		65000	/* reference to inner subplan */
-#define    OUTER_VAR		65001	/* reference to outer subplan */
-#define    INDEX_VAR		65002	/* reference to index column */
-#define    ROWID_VAR		65003	/* row identity column during planning */
+#define    INNER_VAR		(-1)	/* reference to inner subplan */
+#define    OUTER_VAR		(-2)	/* reference to outer subplan */
+#define    INDEX_VAR		(-3)	/* reference to index column */
+#define    ROWID_VAR		(-4)	/* row identity column during planning */
 
-#define IS_SPECIAL_VARNO(varno)		((varno) >= INNER_VAR)
+#define IS_SPECIAL_VARNO(varno)		((int) (varno) < 0)
 
 /* Symbols for the indexes of the special RTE entries in rules */
 #define    PRS2_OLD_VARNO			1
@@ -187,8 +187,8 @@ typedef struct Expr
 typedef struct Var
 {
 	Expr		xpr;
-	Index		varno;			/* index of this var's relation in the range
-								 * table, or INNER_VAR/OUTER_VAR/INDEX_VAR */
+	int			varno;			/* index of this var's relation in the range
+								 * table, or INNER_VAR/OUTER_VAR/etc */
 	AttrNumber	varattno;		/* attribute number of this var, or zero for
 								 * all attrs ("whole-row Var") */
 	Oid			vartype;		/* pg_type OID for the type of this var */
@@ -1228,7 +1228,7 @@ typedef struct XmlExpr
 	XmlExprOp	op;				/* xml function ID */
 	char	   *name;			/* name in xml(NAME foo ...) syntaxes */
 	List	   *named_args;		/* non-XML expressions for xml_attributes */
-	List	   *arg_names;		/* parallel list of Value strings */
+	List	   *arg_names;		/* parallel list of String values */
 	List	   *args;			/* list of expressions */
 	XmlOptionType xmloption;	/* DOCUMENT or CONTENT */
 	Oid			type;			/* target type/typmod for XMLSERIALIZE */
@@ -1352,6 +1352,7 @@ typedef struct SetToDefault
  * of the target relation being constrained; this aids placing the expression
  * correctly during planning.  We can assume however that its "levelsup" is
  * always zero, due to the syntactic constraints on where it can appear.
+ * Also, cvarno will always be a true RT index, never INNER_VAR etc.
  *
  * The referenced cursor can be represented either as a hardwired string
  * or as a reference to a run-time parameter of type REFCURSOR.  The latter

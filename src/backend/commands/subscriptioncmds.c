@@ -335,25 +335,6 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 					 errmsg("subscription with %s must also set %s",
 							"slot_name = NONE", "create_slot = false")));
 	}
-
-	/*
-	 * Do additional checking for the disallowed combination of two_phase and
-	 * streaming. While streaming and two_phase can theoretically be
-	 * supported, it needs more analysis to allow them together.
-	 */
-	if (opts->twophase &&
-		IsSet(supported_opts, SUBOPT_TWOPHASE_COMMIT) &&
-		IsSet(opts->specified_opts, SUBOPT_TWOPHASE_COMMIT))
-	{
-		if (opts->streaming &&
-			IsSet(supported_opts, SUBOPT_STREAMING) &&
-			IsSet(opts->specified_opts, SUBOPT_STREAMING))
-			ereport(ERROR,
-					(errcode(ERRCODE_SYNTAX_ERROR),
-			/*- translator: both %s are strings of the form "option = value" */
-					 errmsg("%s and %s are mutually exclusive options",
-							"two_phase = true", "streaming = true")));
-	}
 }
 
 /*
@@ -933,12 +914,6 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 				if (IsSet(opts.specified_opts, SUBOPT_STREAMING))
 				{
-					if ((sub->twophasestate != LOGICALREP_TWOPHASE_STATE_DISABLED) && opts.streaming)
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("cannot set %s for two-phase enabled subscription",
-										"streaming = true")));
-
 					values[Anum_pg_subscription_substream - 1] =
 						BoolGetDatum(opts.streaming);
 					replaces[Anum_pg_subscription_substream - 1] = true;
@@ -1031,10 +1006,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				List	   *publist;
 				bool		isadd = stmt->kind == ALTER_SUBSCRIPTION_ADD_PUBLICATION;
 
-				supported_opts = SUBOPT_REFRESH;
-				if (isadd)
-					supported_opts |= SUBOPT_COPY_DATA;
-
+				supported_opts = SUBOPT_REFRESH | SUBOPT_COPY_DATA;
 				parse_subscription_options(pstate, stmt->options,
 										   supported_opts, &opts);
 
@@ -1067,8 +1039,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 
 					PreventInTransactionBlock(isTopLevel, "ALTER SUBSCRIPTION with refresh");
 
-					/* Only refresh the added/dropped list of publications. */
-					sub->publications = stmt->publication;
+					/* Refresh the new list of publications. */
+					sub->publications = publist;
 
 					AlterSubscription_refresh(sub, opts.copy_data);
 				}

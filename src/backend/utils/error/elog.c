@@ -3250,11 +3250,16 @@ write_pipe_chunks(char *data, int len, int dest)
 
 	p.proto.nuls[0] = p.proto.nuls[1] = '\0';
 	p.proto.pid = MyProcPid;
+	p.proto.flags = 0;
+	if (dest == LOG_DESTINATION_STDERR)
+		p.proto.flags |= PIPE_PROTO_DEST_STDERR;
+	else if (dest == LOG_DESTINATION_CSVLOG)
+		p.proto.flags |= PIPE_PROTO_DEST_CSVLOG;
 
 	/* write all but the last chunk */
 	while (len > PIPE_MAX_PAYLOAD)
 	{
-		p.proto.is_last = (dest == LOG_DESTINATION_CSVLOG ? 'F' : 'f');
+		/* no need to set PIPE_PROTO_IS_LAST yet */
 		p.proto.len = PIPE_MAX_PAYLOAD;
 		memcpy(p.proto.data, data, PIPE_MAX_PAYLOAD);
 		rc = write(fd, &p, PIPE_HEADER_SIZE + PIPE_MAX_PAYLOAD);
@@ -3264,7 +3269,7 @@ write_pipe_chunks(char *data, int len, int dest)
 	}
 
 	/* write the last chunk */
-	p.proto.is_last = (dest == LOG_DESTINATION_CSVLOG ? 'T' : 't');
+	p.proto.flags |= PIPE_PROTO_IS_LAST;
 	p.proto.len = len;
 	memcpy(p.proto.data, data, len);
 	rc = write(fd, &p, PIPE_HEADER_SIZE + len);
@@ -3312,8 +3317,6 @@ send_message_to_frontend(ErrorData *edata)
 		/* New style with separate fields */
 		const char *sev;
 		char		tbuf[12];
-		int			ssval;
-		int			i;
 
 		/* 'N' (Notice) is for nonfatal conditions, 'E' is for errors */
 		pq_beginmessage(&msgbuf, (edata->elevel < ERROR) ? 'N' : 'E');
@@ -3324,17 +3327,8 @@ send_message_to_frontend(ErrorData *edata)
 		pq_sendbyte(&msgbuf, PG_DIAG_SEVERITY_NONLOCALIZED);
 		err_sendstring(&msgbuf, sev);
 
-		/* unpack MAKE_SQLSTATE code */
-		ssval = edata->sqlerrcode;
-		for (i = 0; i < 5; i++)
-		{
-			tbuf[i] = PGUNSIXBIT(ssval);
-			ssval >>= 6;
-		}
-		tbuf[i] = '\0';
-
 		pq_sendbyte(&msgbuf, PG_DIAG_SQLSTATE);
-		err_sendstring(&msgbuf, tbuf);
+		err_sendstring(&msgbuf, unpack_sql_state(edata->sqlerrcode));
 
 		/* M field is required per protocol, so always send something */
 		pq_sendbyte(&msgbuf, PG_DIAG_MESSAGE_PRIMARY);

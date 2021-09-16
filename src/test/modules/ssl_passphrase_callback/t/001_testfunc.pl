@@ -10,7 +10,7 @@ use TestLib;
 use Test::More;
 use PostgresNode;
 
-unless ($ENV{with_ssl} eq 'openssl')
+unless (($ENV{with_ssl} || "") eq 'openssl')
 {
 	plan skip_all => 'OpenSSL not supported by this build';
 }
@@ -20,7 +20,7 @@ my $rot13pass = "SbbOnE1";
 
 # see the Makefile for how the certificate and key have been generated
 
-my $node = get_new_node('main');
+my $node = PostgresNode->new('main');
 $node->init;
 $node->append_conf('postgresql.conf',
 	"ssl_passphrase.passphrase = '$rot13pass'");

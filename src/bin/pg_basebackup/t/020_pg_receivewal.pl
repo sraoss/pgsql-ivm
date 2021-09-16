@@ -14,7 +14,7 @@ program_options_handling_ok('pg_receivewal');
 # Set umask so test directories and files are created with default permissions
 umask(0077);
 
-my $primary = get_new_node('primary');
+my $primary = PostgresNode->new('primary');
 $primary->init(allows_streaming => 1);
 $primary->start;
 
@@ -72,13 +72,11 @@ $primary->command_ok(
 my @partial_wals = glob "$stream_dir/*\.partial";
 is(scalar(@partial_wals), 1, "one partial WAL segment was created");
 
-# Check ZLIB compression if available.  On Windows, some old versions
-# of zlib can cause some instabilities with this test, so disable it
-# for now.
+# Check ZLIB compression if available.
 SKIP:
 {
-	skip "postgres was not built with ZLIB support, or Windows is involved", 5
-	  if (!check_pg_config("#define HAVE_LIBZ 1") || $windows_os);
+	skip "postgres was not built with ZLIB support", 5
+	  if (!check_pg_config("#define HAVE_LIBZ 1"));
 
 	# Generate more WAL worth one completed, compressed, segment.
 	$primary->psql('postgres', 'SELECT pg_switch_wal();');
@@ -88,10 +86,13 @@ SKIP:
 	$primary->psql('postgres',
 		'INSERT INTO test_table VALUES (generate_series(100,200));');
 
+	# Note the trailing whitespace after the value of --compress, that is
+	# a valid value.
 	$primary->command_ok(
 		[
 			'pg_receivewal', '-D',     $stream_dir,  '--verbose',
-			'--endpos',      $nextlsn, '--compress', '1'
+			'--endpos',      $nextlsn, '--compress', '1 ',
+			'--no-loop'
 		],
 		"streaming some WAL using ZLIB compression");
 
@@ -109,7 +110,7 @@ SKIP:
 	# of the previous partial, now-completed WAL segment is updated, keeping
 	# its base number.
 	$partial_wals[0] =~ s/\.partial$/.gz/;
-	is($zlib_wals[0] =~ m/$partial_wals[0]/,
+	is($zlib_wals[0] eq $partial_wals[0],
 		1, "one partial WAL segment is now completed");
 	# Update the list of partial wals with the current one.
 	@partial_wals = @zlib_partial_wals;
@@ -136,7 +137,10 @@ chomp($nextlsn);
 $primary->psql('postgres',
 	'INSERT INTO test_table VALUES (generate_series(200,300));');
 $primary->command_ok(
-	[ 'pg_receivewal', '-D', $stream_dir, '--verbose', '--endpos', $nextlsn ],
+	[
+		'pg_receivewal', '-D',     $stream_dir, '--verbose',
+		'--endpos',      $nextlsn, '--no-loop'
+	],
 	"streaming some WAL");
 
 $partial_wals[0] =~ s/(\.gz)?.partial//;

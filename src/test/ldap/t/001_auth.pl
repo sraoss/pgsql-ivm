@@ -58,8 +58,8 @@ my $slapd_pidfile = "${TestLib::tmp_check}/slapd.pid";
 my $slapd_logfile = "${TestLib::log_path}/slapd.log";
 my $ldap_conf     = "${TestLib::tmp_check}/ldap.conf";
 my $ldap_server   = 'localhost';
-my $ldap_port     = get_free_port();
-my $ldaps_port    = get_free_port();
+my $ldap_port     = PostgresNode::get_free_port();
+my $ldaps_port    = PostgresNode::get_free_port();
 my $ldap_url      = "ldap://$ldap_server:$ldap_port";
 my $ldaps_url     = "ldaps://$ldap_server:$ldaps_port";
 my $ldap_basedn   = 'dc=example,dc=net';
@@ -153,7 +153,7 @@ system_or_bail 'ldappasswd', '-x', '-y', $ldap_pwfile, '-s', 'secret2',
 
 note "setting up PostgreSQL instance";
 
-my $node = get_new_node('node');
+my $node = PostgresNode->new('node');
 $node->init;
 $node->append_conf('postgresql.conf', "log_connections = on\n");
 $node->start;

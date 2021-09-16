@@ -556,6 +556,18 @@ OPTIONS (ADD password_required 'false');
      </listitem>
     </varlistentry>
     <varlistentry>
+     <term><literal>import_generated</literal> (<type>boolean</type>)</term>
+     <listitem>
+      <para>
+       This option controls whether column <literal>GENERATED</literal> expressions
+       are included in the definitions of foreign tables imported
+       from a foreign server. The default is <literal>true</literal>.
+       The <command>IMPORT</command> will fail altogether if an imported generated
+       expression uses a function or operator that does not exist locally.
+      </para>
+     </listitem>
+    </varlistentry>
+    <varlistentry>
      <term><literal>import_not_null</literal> (<type>boolean</type>)</term>
      <listitem>
       <para>
@@ -891,6 +903,31 @@ postgres=# SELECT postgres_fdw_disconnect_all();
    optimization fence, and placing the problematic function or operator
    outside the sub-<literal>SELECT</literal>.
   </para>
+ </sect2>
+
+ <sect2>
+  <title>Configuration Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <varname>postgres_fdw.application_name</varname> (<type>string</type>)
+     <indexterm>
+      <primary><varname>postgres_fdw.application_name</varname> configuration parameter</primary>
+     </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Specifies a value for <xref linkend="guc-application-name"/>
+      configuration parameter used when <filename>postgres_fdw</filename>
+      establishes a connection to a foreign server.  This overrides
+      <varname>application_name</varname> option of the server object.
+      Note that change of this parameter doesn't affect any existing
+      connections until they are re-established.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
  </sect2>
 
  <sect2>

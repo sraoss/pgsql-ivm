@@ -773,6 +773,20 @@ INSERT INTO fract_only VALUES (11, '-Inf');	-- should fail
 SELECT * FROM fract_only;
 DROP TABLE fract_only;
 
+-- Check conversion to integers
+SELECT (-9223372036854775808.5)::int8; -- should fail
+SELECT (-9223372036854775808.4)::int8; -- ok
+SELECT 9223372036854775807.4::int8; -- ok
+SELECT 9223372036854775807.5::int8; -- should fail
+SELECT (-2147483648.5)::int4; -- should fail
+SELECT (-2147483648.4)::int4; -- ok
+SELECT 2147483647.4::int4; -- ok
+SELECT 2147483647.5::int4; -- should fail
+SELECT (-32768.5)::int2; -- should fail
+SELECT (-32768.4)::int2; -- ok
+SELECT 32767.4::int2; -- ok
+SELECT 32767.5::int2; -- should fail
+
 -- Check inf/nan conversion behavior
 SELECT 'NaN'::float8::numeric;
 SELECT 'Infinity'::float8::numeric;
@@ -939,6 +953,13 @@ SELECT val,
   to_char(val::float4, '9.999EEEE') as float4
 FROM v;
 
+WITH v(exp) AS
+  (VALUES(-16379),(-16378),(-1234),(-789),(-45),(-5),(-4),(-3),(-2),(-1),(0),
+         (1),(2),(3),(4),(5),(38),(275),(2345),(45678),(131070),(131071))
+SELECT exp,
+  to_char(('1.2345e'||exp)::numeric, '9.999EEEE') as numeric
+FROM v;
+
 WITH v(val) AS
   (VALUES('0'::numeric),('-4.2'),('4.2e9'),('1.2e-5'),('inf'),('-inf'),('nan'))
 SELECT val,
@@ -1033,6 +1054,40 @@ INSERT INTO num_input_test(n1) VALUES ('+ infinity');
 SELECT * FROM num_input_test;
 
 --
+-- Test precision and scale typemods
+--
+
+CREATE TABLE num_typemod_test (
+  millions numeric(3, -6),
+  thousands numeric(3, -3),
+  units numeric(3, 0),
+  thousandths numeric(3, 3),
+  millionths numeric(3, 6)
+);
+\d num_typemod_test
+
+-- rounding of valid inputs
+INSERT INTO num_typemod_test VALUES (123456, 123, 0.123, 0.000123, 0.000000123);
+INSERT INTO num_typemod_test VALUES (654321, 654, 0.654, 0.000654, 0.000000654);
+INSERT INTO num_typemod_test VALUES (2345678, 2345, 2.345, 0.002345, 0.000002345);
+INSERT INTO num_typemod_test VALUES (7654321, 7654, 7.654, 0.007654, 0.000007654);
+INSERT INTO num_typemod_test VALUES (12345678, 12345, 12.345, 0.012345, 0.000012345);
+INSERT INTO num_typemod_test VALUES (87654321, 87654, 87.654, 0.087654, 0.000087654);
+INSERT INTO num_typemod_test VALUES (123456789, 123456, 123.456, 0.123456, 0.000123456);
+INSERT INTO num_typemod_test VALUES (987654321, 987654, 987.654, 0.987654, 0.000987654);
+INSERT INTO num_typemod_test VALUES ('NaN', 'NaN', 'NaN', 'NaN', 'NaN');
+
+SELECT scale(millions), * FROM num_typemod_test ORDER BY millions;
+
+-- invalid inputs
+INSERT INTO num_typemod_test (millions) VALUES ('inf');
+INSERT INTO num_typemod_test (millions) VALUES (999500000);
+INSERT INTO num_typemod_test (thousands) VALUES (999500);
+INSERT INTO num_typemod_test (units) VALUES (999.5);
+INSERT INTO num_typemod_test (thousandths) VALUES (0.9995);
+INSERT INTO num_typemod_test (millionths) VALUES (0.0009995);
+
+--
 -- Test some corner cases for multiplication
 --
 
@@ -1092,10 +1147,19 @@ select 3.789 ^ 35;
 select 1.2 ^ 345;
 select 0.12 ^ (-20);
 select 1.000000000123 ^ (-2147483648);
+select coalesce(nullif(0.9999999999 ^ 23300000000000, 0), 0) as rounds_to_zero;
 
 -- cases that used to error out
 select 0.12 ^ (-25);
 select 0.5678 ^ (-85);
+select coalesce(nullif(0.9999999999 ^ 70000000000000, 0), 0) as underflows;
+
+-- negative base to integer powers
+select (-1.0) ^ 2147483646;
+select (-1.0) ^ 2147483647;
+select (-1.0) ^ 2147483648;
+select (-1.0) ^ 1000000000000000;
+select (-1.0) ^ 1000000000000001;
 
 --
 -- Tests for raising to non-integer powers
@@ -1138,6 +1202,8 @@ select exp(1.0::numeric(71,70));
 select exp('nan'::numeric);
 select exp('inf'::numeric);
 select exp('-inf'::numeric);
+select coalesce(nullif(exp(-5000::numeric), 0), 0) as rounds_to_zero;
+select coalesce(nullif(exp(-10000::numeric), 0), 0) as underflows;
 
 -- cases that used to generate inaccurate results
 select exp(32.999);

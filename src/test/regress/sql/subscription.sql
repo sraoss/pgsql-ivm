@@ -171,9 +171,6 @@ ALTER SUBSCRIPTION regress_testsub DROP PUBLICATION testpub, testpub1, testpub2 
 -- fail - publication does not exist in subscription
 ALTER SUBSCRIPTION regress_testsub DROP PUBLICATION testpub3 WITH (refresh = false);
 
--- fail - do not support copy_data option
-ALTER SUBSCRIPTION regress_testsub DROP PUBLICATION testpub1 WITH (refresh = false, copy_data = true);
-
 -- ok - delete publications
 ALTER SUBSCRIPTION regress_testsub DROP PUBLICATION testpub1, testpub2 WITH (refresh = false);
 
@@ -215,20 +212,21 @@ CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUB
 --fail - alter of two_phase option not supported.
 ALTER SUBSCRIPTION regress_testsub SET (two_phase = false);
 
---fail - cannot set streaming when two_phase enabled
+-- but can alter streaming when two_phase enabled
 ALTER SUBSCRIPTION regress_testsub SET (streaming = true);
 
-ALTER SUBSCRIPTION regress_testsub SET (slot_name = NONE);
-
 \dRs+
 
+ALTER SUBSCRIPTION regress_testsub SET (slot_name = NONE);
 DROP SUBSCRIPTION regress_testsub;
 
--- fail - two_phase and streaming are mutually exclusive.
-CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (streaming = true, two_phase = true);
+-- two_phase and streaming are compatible.
+CREATE SUBSCRIPTION regress_testsub CONNECTION 'dbname=regress_doesnotexist' PUBLICATION testpub WITH (connect = false, streaming = true, two_phase = true);
 
 \dRs+
 
+ALTER SUBSCRIPTION regress_testsub SET (slot_name = NONE);
+DROP SUBSCRIPTION regress_testsub;
 
 RESET SESSION AUTHORIZATION;
 DROP ROLE regress_subscription_user;

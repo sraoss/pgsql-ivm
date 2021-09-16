@@ -2270,7 +2270,17 @@ CommitTransaction(void)
 	 */
 	smgrDoPendingDeletes(true);
 
+	/*
+	 * Send out notification signals to other backends (and do other
+	 * post-commit NOTIFY cleanup).  This must not happen until after our
+	 * transaction is fully done from the viewpoint of other backends.
+	 */
 	AtCommit_Notify();
+
+	/*
+	 * Everything after this should be purely internal-to-this-backend
+	 * cleanup.
+	 */
 	AtEOXact_GUC(true, 1);
 	AtEOXact_SPI(true);
 	AtEOXact_Enum();
@@ -5988,7 +5998,16 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 	}
 
 	/* Make sure files supposed to be dropped are dropped */
-	DropRelationFiles(parsed->xnodes, parsed->nrels, true);
+	if (parsed->nrels > 0)
+	{
+		/*
+		 * See comments about update of minimum recovery point on truncation,
+		 * in xact_redo_commit().
+		 */
+		XLogFlush(lsn);
+
+		DropRelationFiles(parsed->xnodes, parsed->nrels, true);
+	}
 }
 
 void

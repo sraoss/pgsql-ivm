@@ -583,8 +583,9 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * it against access by any other process until commit (by which time it
 	 * will be gone).
 	 */
-	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
-							   ExclusiveLock);
+	OIDNewHeap = make_new_heap(matviewOid, tableSpace,
+							   matviewRel->rd_rel->relam,
+							   relpersistence, ExclusiveLock);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 	dest = CreateTransientRelDestReceiver(OIDNewHeap);
 
@@ -829,9 +830,12 @@ transientrel_destroy(DestReceiver *self)
 /*
  * Given a qualified temporary table name, append an underscore followed by
  * the given integer, to make a new table name based on the old one.
+ * The result is a palloc'd string.
  *
- * This leaks memory through palloc(), which won't be cleaned up until the
- * current memory context is freed.
+ * As coded, this would fail to make a valid SQL name if the given name were,
+ * say, "FOO"."BAR".  Currently, the table name portion of the input will
+ * never be double-quoted because it's of the form "pg_temp_NNN", cf
+ * make_new_heap().  But we might have to work harder someday.
  */
 static char *
 make_temptable_name_n(char *tempname, int n)
@@ -919,16 +923,20 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	 * that in a way that allows showing the first duplicated row found.  Even
 	 * after we pass this test, a unique index on the materialized view may
 	 * find a duplicate key problem.
+	 *
+	 * Note: here and below, we use "tablename.*::tablerowtype" as a hack to
+	 * keep ".*" from being expanded into multiple columns in a SELECT list.
+	 * Compare ruleutils.c's get_variable().
 	 */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "SELECT _$newdata FROM %s _$newdata "
-					 "WHERE _$newdata IS NOT NULL AND EXISTS "
-					 "(SELECT 1 FROM %s _$newdata2 WHERE _$newdata2 IS NOT NULL "
-					 "AND _$newdata2 OPERATOR(pg_catalog.*=) _$newdata "
-					 "AND _$newdata2.ctid OPERATOR(pg_catalog.<>) "
-					 "_$newdata.ctid)",
-					 tempname, tempname);
+					 "SELECT newdata.*::%s FROM %s newdata "
+					 "WHERE newdata.* IS NOT NULL AND EXISTS "
+					 "(SELECT 1 FROM %s newdata2 WHERE newdata2.* IS NOT NULL "
+					 "AND newdata2.* OPERATOR(pg_catalog.*=) newdata.* "
+					 "AND newdata2.ctid OPERATOR(pg_catalog.<>) "
+					 "newdata.ctid)",
+					 tempname, tempname, tempname);
 	if (SPI_execute(querybuf.data, false, 1) != SPI_OK_SELECT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 	if (SPI_processed > 0)
@@ -955,9 +963,9 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
 					 "CREATE TEMP TABLE %s AS "
-					 "SELECT _$mv.ctid AS tid, _$newdata "
-					 "FROM %s _$mv FULL JOIN %s _$newdata ON (",
-					 diffname, matviewname, tempname);
+					 "SELECT mv.ctid AS tid, newdata.*::%s AS newdata "
+					 "FROM %s mv FULL JOIN %s newdata ON (",
+					 diffname, tempname, matviewname, tempname);
 
 	/*
 	 * Get the list of index OIDs for the table from the relcache, and look up
@@ -1049,9 +1057,9 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 				if (foundUniqueIndex)
 					appendStringInfoString(&querybuf, " AND ");
 
-				leftop = quote_qualified_identifier("_$newdata",
+				leftop = quote_qualified_identifier("newdata",
 													NameStr(attr->attname));
-				rightop = quote_qualified_identifier("_$mv",
+				rightop = quote_qualified_identifier("mv",
 													 NameStr(attr->attname));
 
 				generate_operator_clause(&querybuf,
@@ -1079,8 +1087,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	Assert(foundUniqueIndex);
 
 	appendStringInfoString(&querybuf,
-						   " AND _$newdata OPERATOR(pg_catalog.*=) _$mv) "
-						   "WHERE _$newdata IS NULL OR _$mv IS NULL "
+						   " AND newdata.* OPERATOR(pg_catalog.*=) mv.*) "
+						   "WHERE newdata.* IS NULL OR mv.* IS NULL "
 						   "ORDER BY tid");
 
 	/* Create the temporary "diff" table. */
@@ -1106,10 +1114,10 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Deletes must come before inserts; do them first. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "DELETE FROM %s _$mv WHERE ctid OPERATOR(pg_catalog.=) ANY "
-					 "(SELECT _$diff.tid FROM %s _$diff "
-					 "WHERE _$diff.tid IS NOT NULL "
-					 "AND _$diff._$newdata IS NULL)",
+					 "DELETE FROM %s mv WHERE ctid OPERATOR(pg_catalog.=) ANY "
+					 "(SELECT diff.tid FROM %s diff "
+					 "WHERE diff.tid IS NOT NULL "
+					 "AND diff.newdata IS NULL)",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
@@ -1117,8 +1125,8 @@ refresh_by_match_merge(Oid matviewOid, Oid tempOid, Oid relowner,
 	/* Inserts go last. */
 	resetStringInfo(&querybuf);
 	appendStringInfo(&querybuf,
-					 "INSERT INTO %s SELECT (_$diff._$newdata).* "
-					 "FROM %s _$diff WHERE tid IS NULL",
+					 "INSERT INTO %s SELECT (diff.newdata).* "
+					 "FROM %s diff WHERE tid IS NULL",
 					 matviewname, diffname);
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);

@@ -652,7 +652,7 @@ report_json_context(JsonLexContext *lex)
 	context_end = lex->token_terminator;
 
 	/* Advance until we are close enough to context_end */
-	while (context_end - context_start >= 50 && context_start < context_end)
+	while (context_end - context_start >= 50)
 	{
 		/* Advance to next multibyte character */
 		if (IS_HIGHBIT_SET(*context_start))
@@ -680,7 +680,9 @@ report_json_context(JsonLexContext *lex)
 	 * suffixing "..." if not ending at end of line.
 	 */
 	prefix = (context_start > line_start) ? "..." : "";
-	suffix = (lex->token_type != JSON_TOKEN_END && context_end - lex->input < lex->input_length && *context_end != '\n' && *context_end != '\r') ? "..." : "";
+	suffix = (lex->token_type != JSON_TOKEN_END &&
+			  context_end - lex->input < lex->input_length &&
+			  *context_end != '\n' && *context_end != '\r') ? "..." : "";
 
 	return errcontext("JSON data, line %d: %s%s%s",
 					  lex->line_number, prefix, ctxt, suffix);
@@ -4920,7 +4922,7 @@ setPath(JsonbIterator **it, Datum *path_elems,
 		case WJB_BEGIN_ARRAY:
 
 			/*
-			 * If instructed complain about attempts to replace whithin a raw
+			 * If instructed complain about attempts to replace within a raw
 			 * scalar value. This happens even when current level is equal to
 			 * path_len, because the last path key should also correspond to
 			 * an object or an array, not raw scalar.
@@ -4952,7 +4954,7 @@ setPath(JsonbIterator **it, Datum *path_elems,
 		case WJB_VALUE:
 
 			/*
-			 * If instructed complain about attempts to replace whithin a
+			 * If instructed complain about attempts to replace within a
 			 * scalar value. This happens even when current level is equal to
 			 * path_len, because the last path key should also correspond to
 			 * an object or an array, not an element or value.

@@ -193,22 +193,6 @@ CheckpointStatsData CheckpointStats;
  */
 TimeLineID	ThisTimeLineID = 0;
 
-/*
- * Are we doing recovery from XLOG?
- *
- * This is only ever true in the startup process; it should be read as meaning
- * "this process is replaying WAL records", rather than "the system is in
- * recovery mode".  It should be examined primarily by functions that need
- * to act differently when called from a WAL redo function (e.g., to skip WAL
- * logging).  To check whether the system is in recovery regardless of which
- * process you're running in, use RecoveryInProgress() but only after shared
- * memory startup and lock initialization.
- */
-bool		InRecovery = false;
-
-/* Are we in Hot Standby mode? Only valid in startup process, see xlog.h */
-HotStandbyState standbyState = STANDBY_DISABLED;
-
 static XLogRecPtr LastRec;
 
 /* Local copy of WalRcv->flushedUpto */
@@ -270,9 +254,6 @@ bool		InArchiveRecovery = false;
 
 static bool standby_signal_file_found = false;
 static bool recovery_signal_file_found = false;
-
-/* Was the last xlog file restored from archive, or local? */
-static bool restoredFromArchive = false;
 
 /* Buffers dedicated to consistency checks of size BLCKSZ */
 static char *replay_image_masked = NULL;
@@ -888,9 +869,6 @@ bool		reachedConsistency = false;
 
 static bool InRedo = false;
 
-/* Have we launched bgwriter during recovery? */
-static bool bgwriterLaunched = false;
-
 /* For WALInsertLockAcquire/Release functions */
 static int	MyLockNo = 0;
 static bool holdingAllLocks = false;
@@ -904,6 +882,7 @@ static void validateRecoveryParameters(void);
 static void exitArchiveRecovery(TimeLineID endTLI, XLogRecPtr endOfLog);
 static bool recoveryStopsBefore(XLogReaderState *record);
 static bool recoveryStopsAfter(XLogReaderState *record);
+static char *getRecoveryStopReason(void);
 static void ConfirmRecoveryPaused(void);
 static void recoveryPausesHere(bool endOfRecovery);
 static bool recoveryApplyDelay(XLogReaderState *record);
@@ -3737,18 +3716,16 @@ XLogFileRead(XLogSegNo segno, int emode, TimeLineID tli,
 					 xlogfname);
 			set_ps_display(activitymsg);
 
-			restoredFromArchive = RestoreArchivedFile(path, xlogfname,
-													  "RECOVERYXLOG",
-													  wal_segment_size,
-													  InRedo);
-			if (!restoredFromArchive)
+			if (!RestoreArchivedFile(path, xlogfname,
+									 "RECOVERYXLOG",
+									 wal_segment_size,
+									 InRedo))
 				return -1;
 			break;
 
 		case XLOG_FROM_PG_WAL:
 		case XLOG_FROM_STREAM:
 			XLogFilePath(path, tli, segno, wal_segment_size);
-			restoredFromArchive = false;
 			break;
 
 		default:
@@ -5484,7 +5461,7 @@ readRecoverySignalFile(void)
 	{
 		int			fd;
 
-		fd = BasicOpenFilePerm(STANDBY_SIGNAL_FILE, O_RDWR | PG_BINARY | get_sync_bit(sync_method),
+		fd = BasicOpenFilePerm(STANDBY_SIGNAL_FILE, O_RDWR | PG_BINARY,
 							   S_IRUSR | S_IWUSR);
 		if (fd >= 0)
 		{
@@ -5497,7 +5474,7 @@ readRecoverySignalFile(void)
 	{
 		int			fd;
 
-		fd = BasicOpenFilePerm(RECOVERY_SIGNAL_FILE, O_RDWR | PG_BINARY | get_sync_bit(sync_method),
+		fd = BasicOpenFilePerm(RECOVERY_SIGNAL_FILE, O_RDWR | PG_BINARY,
 							   S_IRUSR | S_IWUSR);
 		if (fd >= 0)
 		{
@@ -6065,6 +6042,42 @@ recoveryStopsAfter(XLogReaderState *record)
 }
 
 /*
+ * Create a comment for the history file to explain why and where
+ * timeline changed.
+ */
+static char *
+getRecoveryStopReason(void)
+{
+	char		reason[200];
+
+	if (recoveryTarget == RECOVERY_TARGET_XID)
+		snprintf(reason, sizeof(reason),
+				 "%s transaction %u",
+				 recoveryStopAfter ? "after" : "before",
+				 recoveryStopXid);
+	else if (recoveryTarget == RECOVERY_TARGET_TIME)
+		snprintf(reason, sizeof(reason),
+				 "%s %s\n",
+				 recoveryStopAfter ? "after" : "before",
+				 timestamptz_to_str(recoveryStopTime));
+	else if (recoveryTarget == RECOVERY_TARGET_LSN)
+		snprintf(reason, sizeof(reason),
+				 "%s LSN %X/%X\n",
+				 recoveryStopAfter ? "after" : "before",
+				 LSN_FORMAT_ARGS(recoveryStopLSN));
+	else if (recoveryTarget == RECOVERY_TARGET_NAME)
+		snprintf(reason, sizeof(reason),
+				 "at restore point \"%s\"",
+				 recoveryStopName);
+	else if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE)
+		snprintf(reason, sizeof(reason), "reached consistency");
+	else
+		snprintf(reason, sizeof(reason), "no recovery target specified");
+
+	return pstrdup(reason);
+}
+
+/*
  * Wait until shared recoveryPauseState is set to RECOVERY_NOT_PAUSED.
  *
  * endOfRecovery is true if the recovery target is reached and
@@ -6235,14 +6248,23 @@ recoveryApplyDelay(XLogReaderState *record)
 	{
 		ResetLatch(&XLogCtl->recoveryWakeupLatch);
 
-		/* might change the trigger file's location */
+		/*
+		 * This might change recovery_min_apply_delay or the trigger file's
+		 * location.
+		 */
 		HandleStartupProcInterrupts();
 
 		if (CheckForStandbyTrigger())
 			break;
 
 		/*
-		 * Wait for difference between GetCurrentTimestamp() and delayUntil
+		 * Recalculate delayUntil as recovery_min_apply_delay could have
+		 * changed while waiting in this loop.
+		 */
+		delayUntil = TimestampTzPlusMilliseconds(xtime, recovery_min_apply_delay);
+
+		/*
+		 * Wait for difference between GetCurrentTimestamp() and delayUntil.
 		 */
 		msecs = TimestampDifferenceMilliseconds(GetCurrentTimestamp(),
 												delayUntil);
@@ -7295,25 +7317,15 @@ StartupXLOG(void)
 		/* Also ensure XLogReceiptTime has a sane value */
 		XLogReceiptTime = GetCurrentTimestamp();
 
+		/* Allow ProcSendSignal() to find us, for buffer pin wakeups. */
+		PublishStartupProcessInformation();
+
 		/*
 		 * Let postmaster know we've started redo now, so that it can launch
-		 * checkpointer to perform restartpoints.  We don't bother during
-		 * crash recovery as restartpoints can only be performed during
-		 * archive recovery.  And we'd like to keep crash recovery simple, to
-		 * avoid introducing bugs that could affect you when recovering after
-		 * crash.
-		 *
-		 * After this point, we can no longer assume that we're the only
-		 * process in addition to postmaster!  Also, fsync requests are
-		 * subsequently to be handled by the checkpointer, not locally.
+		 * the archiver if necessary.
 		 */
-		if (ArchiveRecoveryRequested && IsUnderPostmaster)
-		{
-			PublishStartupProcessInformation();
-			EnableSyncRequestForwarding();
+		if (IsUnderPostmaster)
 			SendPostmasterSignal(PMSIGNAL_RECOVERY_STARTED);
-			bgwriterLaunched = true;
-		}
 
 		/*
 		 * Allow read-only connections immediately if we're consistent
@@ -7761,7 +7773,7 @@ StartupXLOG(void)
 	PrevTimeLineID = ThisTimeLineID;
 	if (ArchiveRecoveryRequested)
 	{
-		char		reason[200];
+		char	   *reason;
 		char		recoveryPath[MAXPGPATH];
 
 		Assert(InArchiveRecovery);
@@ -7770,33 +7782,7 @@ StartupXLOG(void)
 		ereport(LOG,
 				(errmsg("selected new timeline ID: %u", ThisTimeLineID)));
 
-		/*
-		 * Create a comment for the history file to explain why and where
-		 * timeline changed.
-		 */
-		if (recoveryTarget == RECOVERY_TARGET_XID)
-			snprintf(reason, sizeof(reason),
-					 "%s transaction %u",
-					 recoveryStopAfter ? "after" : "before",
-					 recoveryStopXid);
-		else if (recoveryTarget == RECOVERY_TARGET_TIME)
-			snprintf(reason, sizeof(reason),
-					 "%s %s\n",
-					 recoveryStopAfter ? "after" : "before",
-					 timestamptz_to_str(recoveryStopTime));
-		else if (recoveryTarget == RECOVERY_TARGET_LSN)
-			snprintf(reason, sizeof(reason),
-					 "%s LSN %X/%X\n",
-					 recoveryStopAfter ? "after" : "before",
-					 LSN_FORMAT_ARGS(recoveryStopLSN));
-		else if (recoveryTarget == RECOVERY_TARGET_NAME)
-			snprintf(reason, sizeof(reason),
-					 "at restore point \"%s\"",
-					 recoveryStopName);
-		else if (recoveryTarget == RECOVERY_TARGET_IMMEDIATE)
-			snprintf(reason, sizeof(reason), "reached consistency");
-		else
-			snprintf(reason, sizeof(reason), "no recovery target specified");
+		reason = getRecoveryStopReason();
 
 		/*
 		 * We are now done reading the old WAL.  Turn off archive fetching if
@@ -7913,43 +7899,29 @@ StartupXLOG(void)
 		 * after we're fully out of recovery mode and already accepting
 		 * queries.
 		 */
-		if (bgwriterLaunched)
+		if (ArchiveRecoveryRequested && IsUnderPostmaster &&
+			LocalPromoteIsTriggered)
 		{
-			if (LocalPromoteIsTriggered)
-			{
-				checkPointLoc = ControlFile->checkPoint;
+			promoted = true;
 
-				/*
-				 * Confirm the last checkpoint is available for us to recover
-				 * from if we fail.
-				 */
-				record = ReadCheckpointRecord(xlogreader, checkPointLoc, 1, false);
-				if (record != NULL)
-				{
-					promoted = true;
-
-					/*
-					 * Insert a special WAL record to mark the end of
-					 * recovery, since we aren't doing a checkpoint. That
-					 * means that the checkpointer process may likely be in
-					 * the middle of a time-smoothed restartpoint and could
-					 * continue to be for minutes after this. That sounds
-					 * strange, but the effect is roughly the same and it
-					 * would be stranger to try to come out of the
-					 * restartpoint and then checkpoint. We request a
-					 * checkpoint later anyway, just for safety.
-					 */
-					CreateEndOfRecoveryRecord();
-				}
-			}
-
-			if (!promoted)
-				RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
-								  CHECKPOINT_IMMEDIATE |
-								  CHECKPOINT_WAIT);
+			/*
+			 * Insert a special WAL record to mark the end of recovery, since
+			 * we aren't doing a checkpoint. That means that the checkpointer
+			 * process may likely be in the middle of a time-smoothed
+			 * restartpoint and could continue to be for minutes after this.
+			 * That sounds strange, but the effect is roughly the same and it
+			 * would be stranger to try to come out of the restartpoint and
+			 * then checkpoint. We request a checkpoint later anyway, just for
+			 * safety.
+			 */
+			CreateEndOfRecoveryRecord();
 		}
 		else
-			CreateCheckPoint(CHECKPOINT_END_OF_RECOVERY | CHECKPOINT_IMMEDIATE);
+		{
+			RequestCheckpoint(CHECKPOINT_END_OF_RECOVERY |
+							  CHECKPOINT_IMMEDIATE |
+							  CHECKPOINT_WAIT);
+		}
 	}
 
 	if (ArchiveRecoveryRequested)
@@ -8758,8 +8730,8 @@ LogCheckpointEnd(bool restartpoint)
 												 CheckpointStats.ckpt_sync_end_t);
 
 	/* Accumulate checkpoint timing summary data, in milliseconds. */
-	BgWriterStats.m_checkpoint_write_time += write_msecs;
-	BgWriterStats.m_checkpoint_sync_time += sync_msecs;
+	PendingCheckpointerStats.m_checkpoint_write_time += write_msecs;
+	PendingCheckpointerStats.m_checkpoint_sync_time += sync_msecs;
 
 	/*
 	 * All of the published timing statistics are accounted for.  Only
@@ -9329,7 +9301,7 @@ CreateCheckPoint(int flags)
 	if (!RecoveryInProgress())
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
 
-	/* Real work is done, but log and update stats before releasing lock. */
+	/* Real work is done; log and update stats. */
 	LogCheckpointEnd(false);
 
 	/* Reset the process title */
@@ -9702,7 +9674,7 @@ CreateRestartPoint(int flags)
 	if (EnableHotStandby)
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
 
-	/* Real work is done, but log and update before releasing lock. */
+	/* Real work is done; log and update stats. */
 	LogCheckpointEnd(true);
 
 	/* Reset the process title */
@@ -12204,7 +12176,7 @@ XLogPageRead(XLogReaderState *xlogreader, XLogRecPtr targetPagePtr, int reqLen,
 		 * Request a restartpoint if we've replayed too much xlog since the
 		 * last one.
 		 */
-		if (bgwriterLaunched)
+		if (ArchiveRecoveryRequested && IsUnderPostmaster)
 		{
 			if (XLogCheckpointNeeded(readSegNo))
 			{

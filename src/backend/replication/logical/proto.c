@@ -145,15 +145,16 @@ logicalrep_read_begin_prepare(StringInfo in, LogicalRepPreparedTxnData *begin_da
 }
 
 /*
- * Write PREPARE to the output stream.
+ * The core functionality for logicalrep_write_prepare and
+ * logicalrep_write_stream_prepare.
  */
-void
-logicalrep_write_prepare(StringInfo out, ReorderBufferTXN *txn,
-						 XLogRecPtr prepare_lsn)
+static void
+logicalrep_write_prepare_common(StringInfo out, LogicalRepMsgType type,
+								ReorderBufferTXN *txn, XLogRecPtr prepare_lsn)
 {
 	uint8		flags = 0;
 
-	pq_sendbyte(out, LOGICAL_REP_MSG_PREPARE);
+	pq_sendbyte(out, type);
 
 	/*
 	 * This should only ever happen for two-phase commit transactions, in
@@ -161,6 +162,7 @@ logicalrep_write_prepare(StringInfo out, ReorderBufferTXN *txn,
 	 */
 	Assert(txn->gid != NULL);
 	Assert(rbtxn_prepared(txn));
+	Assert(TransactionIdIsValid(txn->xid));
 
 	/* send the flags field */
 	pq_sendbyte(out, flags);
@@ -176,29 +178,53 @@ logicalrep_write_prepare(StringInfo out, ReorderBufferTXN *txn,
 }
 
 /*
- * Read transaction PREPARE from the stream.
+ * Write PREPARE to the output stream.
  */
 void
-logicalrep_read_prepare(StringInfo in, LogicalRepPreparedTxnData *prepare_data)
+logicalrep_write_prepare(StringInfo out, ReorderBufferTXN *txn,
+						 XLogRecPtr prepare_lsn)
+{
+	logicalrep_write_prepare_common(out, LOGICAL_REP_MSG_PREPARE,
+									txn, prepare_lsn);
+}
+
+/*
+ * The core functionality for logicalrep_read_prepare and
+ * logicalrep_read_stream_prepare.
+ */
+static void
+logicalrep_read_prepare_common(StringInfo in, char *msgtype,
+							   LogicalRepPreparedTxnData *prepare_data)
 {
 	/* read flags */
 	uint8		flags = pq_getmsgbyte(in);
 
 	if (flags != 0)
-		elog(ERROR, "unrecognized flags %u in prepare message", flags);
+		elog(ERROR, "unrecognized flags %u in %s message", flags, msgtype);
 
 	/* read fields */
 	prepare_data->prepare_lsn = pq_getmsgint64(in);
 	if (prepare_data->prepare_lsn == InvalidXLogRecPtr)
-		elog(ERROR, "prepare_lsn is not set in prepare message");
+		elog(ERROR, "prepare_lsn is not set in %s message", msgtype);
 	prepare_data->end_lsn = pq_getmsgint64(in);
 	if (prepare_data->end_lsn == InvalidXLogRecPtr)
-		elog(ERROR, "end_lsn is not set in prepare message");
+		elog(ERROR, "end_lsn is not set in %s message", msgtype);
 	prepare_data->prepare_time = pq_getmsgint64(in);
 	prepare_data->xid = pq_getmsgint(in, 4);
+	if (prepare_data->xid == InvalidTransactionId)
+		elog(ERROR, "invalid two-phase transaction ID in %s message", msgtype);
 
 	/* read gid (copy it into a pre-allocated buffer) */
 	strlcpy(prepare_data->gid, pq_getmsgstring(in), sizeof(prepare_data->gid));
+}
+
+/*
+ * Read transaction PREPARE from the stream.
+ */
+void
+logicalrep_read_prepare(StringInfo in, LogicalRepPreparedTxnData *prepare_data)
+{
+	logicalrep_read_prepare_common(in, "prepare", prepare_data);
 }
 
 /*
@@ -315,6 +341,27 @@ logicalrep_read_rollback_prepared(StringInfo in,
 
 	/* read gid (copy it into a pre-allocated buffer) */
 	strlcpy(rollback_data->gid, pq_getmsgstring(in), sizeof(rollback_data->gid));
+}
+
+/*
+ * Write STREAM PREPARE to the output stream.
+ */
+void
+logicalrep_write_stream_prepare(StringInfo out,
+								ReorderBufferTXN *txn,
+								XLogRecPtr prepare_lsn)
+{
+	logicalrep_write_prepare_common(out, LOGICAL_REP_MSG_STREAM_PREPARE,
+									txn, prepare_lsn);
+}
+
+/*
+ * Read STREAM PREPARE from the stream.
+ */
+void
+logicalrep_read_stream_prepare(StringInfo in, LogicalRepPreparedTxnData *prepare_data)
+{
+	logicalrep_read_prepare_common(in, "stream prepare", prepare_data);
 }
 
 /*
@@ -1027,7 +1074,7 @@ logicalrep_read_stream_start(StringInfo in, bool *first_segment)
 void
 logicalrep_write_stream_stop(StringInfo out)
 {
-	pq_sendbyte(out, LOGICAL_REP_MSG_STREAM_END);
+	pq_sendbyte(out, LOGICAL_REP_MSG_STREAM_STOP);
 }
 
 /*
@@ -1108,4 +1155,57 @@ logicalrep_read_stream_abort(StringInfo in, TransactionId *xid,
 
 	*xid = pq_getmsgint(in, 4);
 	*subxid = pq_getmsgint(in, 4);
+}
+
+/*
+ * Get string representing LogicalRepMsgType.
+ */
+char *
+logicalrep_message_type(LogicalRepMsgType action)
+{
+	switch (action)
+	{
+		case LOGICAL_REP_MSG_BEGIN:
+			return "BEGIN";
+		case LOGICAL_REP_MSG_COMMIT:
+			return "COMMIT";
+		case LOGICAL_REP_MSG_ORIGIN:
+			return "ORIGIN";
+		case LOGICAL_REP_MSG_INSERT:
+			return "INSERT";
+		case LOGICAL_REP_MSG_UPDATE:
+			return "UPDATE";
+		case LOGICAL_REP_MSG_DELETE:
+			return "DELETE";
+		case LOGICAL_REP_MSG_TRUNCATE:
+			return "TRUNCATE";
+		case LOGICAL_REP_MSG_RELATION:
+			return "RELATION";
+		case LOGICAL_REP_MSG_TYPE:
+			return "TYPE";
+		case LOGICAL_REP_MSG_MESSAGE:
+			return "MESSAGE";
+		case LOGICAL_REP_MSG_BEGIN_PREPARE:
+			return "BEGIN PREPARE";
+		case LOGICAL_REP_MSG_PREPARE:
+			return "PREPARE";
+		case LOGICAL_REP_MSG_COMMIT_PREPARED:
+			return "COMMIT PREPARED";
+		case LOGICAL_REP_MSG_ROLLBACK_PREPARED:
+			return "ROLLBACK PREPARED";
+		case LOGICAL_REP_MSG_STREAM_START:
+			return "STREAM START";
+		case LOGICAL_REP_MSG_STREAM_STOP:
+			return "STREAM STOP";
+		case LOGICAL_REP_MSG_STREAM_COMMIT:
+			return "STREAM COMMIT";
+		case LOGICAL_REP_MSG_STREAM_ABORT:
+			return "STREAM ABORT";
+		case LOGICAL_REP_MSG_STREAM_PREPARE:
+			return "STREAM PREPARE";
+	}
+
+	elog(ERROR, "invalid logical replication message type \"%c\"", action);
+
+	return NULL;				/* keep compiler quiet */
 }

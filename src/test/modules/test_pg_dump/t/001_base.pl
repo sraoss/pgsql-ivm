@@ -10,7 +10,6 @@ use TestLib;
 use Test::More;
 
 my $tempdir       = TestLib::tempdir;
-my $tempdir_short = TestLib::tempdir_short;
 
 ###############################################################
 # This structure is based off of the src/bin/pg_dump/t test
@@ -713,7 +712,7 @@ my %tests = (
 #########################################
 # Create a PG instance to test actually dumping from
 
-my $node = get_new_node('main');
+my $node = PostgresNode->new('main');
 $node->init;
 $node->start;
 

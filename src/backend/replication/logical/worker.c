@@ -39,13 +39,13 @@
  * BufFile infrastructure supports temporary files that exceed the OS file size
  * limit, (b) provides a way for automatic clean up on the error and (c) provides
  * a way to survive these files across local transactions and allow to open and
- * close at stream start and close. We decided to use SharedFileSet
+ * close at stream start and close. We decided to use FileSet
  * infrastructure as without that it deletes the files on the closure of the
  * file and if we decide to keep stream files open across the start/stop stream
  * then it will consume a lot of memory (more than 8K for each BufFile and
  * there could be multiple such BufFiles as the subscriber could receive
  * multiple start/stop streams for different transactions before getting the
- * commit). Moreover, if we don't use SharedFileSet then we also need to invent
+ * commit). Moreover, if we don't use FileSet then we also need to invent
  * a new way to pass filenames to BufFile APIs so that we are allowed to open
  * the file we desired across multiple stream-open calls for the same
  * transaction.
@@ -203,12 +203,6 @@ typedef struct FlushPosition
 
 static dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
 
-typedef struct SlotErrCallbackArg
-{
-	LogicalRepRelMapEntry *rel;
-	int			remote_attnum;
-} SlotErrCallbackArg;
-
 typedef struct ApplyExecutionData
 {
 	EState	   *estate;			/* executor state, used to track resources */
@@ -221,19 +215,26 @@ typedef struct ApplyExecutionData
 	PartitionTupleRouting *proute;	/* partition routing info */
 } ApplyExecutionData;
 
-/*
- * Stream xid hash entry. Whenever we see a new xid we create this entry in the
- * xidhash and along with it create the streaming file and store the fileset handle.
- * The subxact file is created iff there is any subxact info under this xid. This
- * entry is used on the subsequent streams for the xid to get the corresponding
- * fileset handles, so storing them in hash makes the search faster.
- */
-typedef struct StreamXidHash
+/* Struct for saving and restoring apply errcontext information */
+typedef struct ApplyErrorCallbackArg
 {
-	TransactionId xid;			/* xid is the hash key and must be first */
-	SharedFileSet *stream_fileset;	/* shared file set for stream data */
-	SharedFileSet *subxact_fileset; /* shared file set for subxact info */
-} StreamXidHash;
+	LogicalRepMsgType command;	/* 0 if invalid */
+	LogicalRepRelMapEntry *rel;
+
+	/* Remote node information */
+	int			remote_attnum;	/* -1 if invalid */
+	TransactionId remote_xid;
+	TimestampTz ts;				/* commit, rollback, or prepare timestamp */
+} ApplyErrorCallbackArg;
+
+static ApplyErrorCallbackArg apply_error_callback_arg =
+{
+	.command = 0,
+	.rel = NULL,
+	.remote_attnum = -1,
+	.remote_xid = InvalidTransactionId,
+	.ts = 0,
+};
 
 static MemoryContext ApplyMessageContext = NULL;
 MemoryContext ApplyContext = NULL;
@@ -253,12 +254,6 @@ static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
 static bool in_streamed_transaction = false;
 
 static TransactionId stream_xid = InvalidTransactionId;
-
-/*
- * Hash table for storing the streaming xid information along with shared file
- * set for streaming and subxact files.
- */
-static HTAB *xidhash = NULL;
 
 /* BufFile handle of the current streaming file */
 static BufFile *stream_fd = NULL;
@@ -309,8 +304,7 @@ static void maybe_reread_subscription(void);
 /* prototype needed because of stream_commit */
 static void apply_dispatch(StringInfo s);
 
-static void apply_handle_commit_internal(StringInfo s,
-										 LogicalRepCommitData *commit_data);
+static void apply_handle_commit_internal(LogicalRepCommitData *commit_data);
 static void apply_handle_insert_internal(ApplyExecutionData *edata,
 										 ResultRelInfo *relinfo,
 										 TupleTableSlot *remoteslot);
@@ -333,6 +327,13 @@ static void apply_handle_tuple_routing(ApplyExecutionData *edata,
 /* Compute GID for two_phase transactions */
 static void TwoPhaseTransactionGid(Oid subid, TransactionId xid, char *gid, int szgid);
 
+/* Common streaming function to apply all the spooled messages */
+static void apply_spooled_messages(TransactionId xid, XLogRecPtr lsn);
+
+/* Functions for apply error callback */
+static void apply_error_callback(void *arg);
+static inline void set_apply_error_context_xact(TransactionId xid, TimestampTz ts);
+static inline void reset_apply_error_context_info(void);
 
 /*
  * Should this worker apply changes for given relation.
@@ -580,26 +581,6 @@ slot_fill_defaults(LogicalRepRelMapEntry *rel, EState *estate,
 }
 
 /*
- * Error callback to give more context info about data conversion failures
- * while reading data from the remote server.
- */
-static void
-slot_store_error_callback(void *arg)
-{
-	SlotErrCallbackArg *errarg = (SlotErrCallbackArg *) arg;
-	LogicalRepRelMapEntry *rel;
-
-	/* Nothing to do if remote attribute number is not set */
-	if (errarg->remote_attnum < 0)
-		return;
-
-	rel = errarg->rel;
-	errcontext("processing remote data for replication target relation \"%s.%s\" column \"%s\"",
-			   rel->remoterel.nspname, rel->remoterel.relname,
-			   rel->remoterel.attnames[errarg->remote_attnum]);
-}
-
-/*
  * Store tuple data into slot.
  *
  * Incoming data can be either text or binary format.
@@ -610,18 +591,8 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 {
 	int			natts = slot->tts_tupleDescriptor->natts;
 	int			i;
-	SlotErrCallbackArg errarg;
-	ErrorContextCallback errcallback;
 
 	ExecClearTuple(slot);
-
-	/* Push callback + info on the error context stack */
-	errarg.rel = rel;
-	errarg.remote_attnum = -1;
-	errcallback.callback = slot_store_error_callback;
-	errcallback.arg = (void *) &errarg;
-	errcallback.previous = error_context_stack;
-	error_context_stack = &errcallback;
 
 	/* Call the "in" function for each non-dropped, non-null attribute */
 	Assert(natts == rel->attrmap->maplen);
@@ -636,7 +607,8 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 
 			Assert(remoteattnum < tupleData->ncols);
 
-			errarg.remote_attnum = remoteattnum;
+			/* Set attnum for error callback */
+			apply_error_callback_arg.remote_attnum = remoteattnum;
 
 			if (tupleData->colstatus[remoteattnum] == LOGICALREP_COLUMN_TEXT)
 			{
@@ -684,7 +656,8 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 				slot->tts_isnull[i] = true;
 			}
 
-			errarg.remote_attnum = -1;
+			/* Reset attnum for error callback */
+			apply_error_callback_arg.remote_attnum = -1;
 		}
 		else
 		{
@@ -697,9 +670,6 @@ slot_store_data(TupleTableSlot *slot, LogicalRepRelMapEntry *rel,
 			slot->tts_isnull[i] = true;
 		}
 	}
-
-	/* Pop the error context stack */
-	error_context_stack = errcallback.previous;
 
 	ExecStoreVirtualTuple(slot);
 }
@@ -723,8 +693,6 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 {
 	int			natts = slot->tts_tupleDescriptor->natts;
 	int			i;
-	SlotErrCallbackArg errarg;
-	ErrorContextCallback errcallback;
 
 	/* We'll fill "slot" with a virtual tuple, so we must start with ... */
 	ExecClearTuple(slot);
@@ -737,14 +705,6 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 	slot_getallattrs(srcslot);
 	memcpy(slot->tts_values, srcslot->tts_values, natts * sizeof(Datum));
 	memcpy(slot->tts_isnull, srcslot->tts_isnull, natts * sizeof(bool));
-
-	/* For error reporting, push callback + info on the error context stack */
-	errarg.rel = rel;
-	errarg.remote_attnum = -1;
-	errcallback.callback = slot_store_error_callback;
-	errcallback.arg = (void *) &errarg;
-	errcallback.previous = error_context_stack;
-	error_context_stack = &errcallback;
 
 	/* Call the "in" function for each replaced attribute */
 	Assert(natts == rel->attrmap->maplen);
@@ -762,7 +722,8 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 		{
 			StringInfo	colvalue = &tupleData->colvalues[remoteattnum];
 
-			errarg.remote_attnum = remoteattnum;
+			/* Set attnum for error callback */
+			apply_error_callback_arg.remote_attnum = remoteattnum;
 
 			if (tupleData->colstatus[remoteattnum] == LOGICALREP_COLUMN_TEXT)
 			{
@@ -806,12 +767,10 @@ slot_modify_data(TupleTableSlot *slot, TupleTableSlot *srcslot,
 				slot->tts_isnull[i] = true;
 			}
 
-			errarg.remote_attnum = -1;
+			/* Reset attnum for error callback */
+			apply_error_callback_arg.remote_attnum = -1;
 		}
 	}
-
-	/* Pop the error context stack */
-	error_context_stack = errcallback.previous;
 
 	/* And finally, declare that "slot" contains a valid virtual tuple */
 	ExecStoreVirtualTuple(slot);
@@ -826,6 +785,7 @@ apply_handle_begin(StringInfo s)
 	LogicalRepBeginData begin_data;
 
 	logicalrep_read_begin(s, &begin_data);
+	set_apply_error_context_xact(begin_data.xid, begin_data.committime);
 
 	remote_final_lsn = begin_data.final_lsn;
 
@@ -853,12 +813,13 @@ apply_handle_commit(StringInfo s)
 								 LSN_FORMAT_ARGS(commit_data.commit_lsn),
 								 LSN_FORMAT_ARGS(remote_final_lsn))));
 
-	apply_handle_commit_internal(s, &commit_data);
+	apply_handle_commit_internal(&commit_data);
 
 	/* Process any tables that are being synchronized in parallel. */
 	process_syncing_tables(commit_data.end_lsn);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+	reset_apply_error_context_info();
 }
 
 /*
@@ -876,6 +837,7 @@ apply_handle_begin_prepare(StringInfo s)
 				 errmsg_internal("tablesync worker received a BEGIN PREPARE message")));
 
 	logicalrep_read_begin_prepare(s, &begin_data);
+	set_apply_error_context_xact(begin_data.xid, begin_data.prepare_time);
 
 	remote_final_lsn = begin_data.prepare_lsn;
 
@@ -885,13 +847,46 @@ apply_handle_begin_prepare(StringInfo s)
 }
 
 /*
+ * Common function to prepare the GID.
+ */
+static void
+apply_handle_prepare_internal(LogicalRepPreparedTxnData *prepare_data)
+{
+	char		gid[GIDSIZE];
+
+	/*
+	 * Compute unique GID for two_phase transactions. We don't use GID of
+	 * prepared transaction sent by server as that can lead to deadlock when
+	 * we have multiple subscriptions from same node point to publications on
+	 * the same node. See comments atop worker.c
+	 */
+	TwoPhaseTransactionGid(MySubscription->oid, prepare_data->xid,
+						   gid, sizeof(gid));
+
+	/*
+	 * BeginTransactionBlock is necessary to balance the EndTransactionBlock
+	 * called within the PrepareTransactionBlock below.
+	 */
+	BeginTransactionBlock();
+	CommitTransactionCommand(); /* Completes the preceding Begin command. */
+
+	/*
+	 * Update origin state so we can restart streaming from correct position
+	 * in case of crash.
+	 */
+	replorigin_session_origin_lsn = prepare_data->end_lsn;
+	replorigin_session_origin_timestamp = prepare_data->prepare_time;
+
+	PrepareTransactionBlock(gid);
+}
+
+/*
  * Handle PREPARE message.
  */
 static void
 apply_handle_prepare(StringInfo s)
 {
 	LogicalRepPreparedTxnData prepare_data;
-	char		gid[GIDSIZE];
 
 	logicalrep_read_prepare(s, &prepare_data);
 
@@ -901,15 +896,6 @@ apply_handle_prepare(StringInfo s)
 				 errmsg_internal("incorrect prepare LSN %X/%X in prepare message (expected %X/%X)",
 								 LSN_FORMAT_ARGS(prepare_data.prepare_lsn),
 								 LSN_FORMAT_ARGS(remote_final_lsn))));
-
-	/*
-	 * Compute unique GID for two_phase transactions. We don't use GID of
-	 * prepared transaction sent by server as that can lead to deadlock when
-	 * we have multiple subscriptions from same node point to publications on
-	 * the same node. See comments atop worker.c
-	 */
-	TwoPhaseTransactionGid(MySubscription->oid, prepare_data.xid,
-						   gid, sizeof(gid));
 
 	/*
 	 * Unlike commit, here, we always prepare the transaction even though no
@@ -923,21 +909,8 @@ apply_handle_prepare(StringInfo s)
 	 */
 	begin_replication_step();
 
-	/*
-	 * BeginTransactionBlock is necessary to balance the EndTransactionBlock
-	 * called within the PrepareTransactionBlock below.
-	 */
-	BeginTransactionBlock();
-	CommitTransactionCommand(); /* Completes the preceding Begin command. */
+	apply_handle_prepare_internal(&prepare_data);
 
-	/*
-	 * Update origin state so we can restart streaming from correct position
-	 * in case of crash.
-	 */
-	replorigin_session_origin_lsn = prepare_data.end_lsn;
-	replorigin_session_origin_timestamp = prepare_data.prepare_time;
-
-	PrepareTransactionBlock(gid);
 	end_replication_step();
 	CommitTransactionCommand();
 	pgstat_report_stat(false);
@@ -950,6 +923,7 @@ apply_handle_prepare(StringInfo s)
 	process_syncing_tables(prepare_data.end_lsn);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+	reset_apply_error_context_info();
 }
 
 /*
@@ -962,6 +936,7 @@ apply_handle_commit_prepared(StringInfo s)
 	char		gid[GIDSIZE];
 
 	logicalrep_read_commit_prepared(s, &prepare_data);
+	set_apply_error_context_xact(prepare_data.xid, prepare_data.commit_time);
 
 	/* Compute GID for two_phase transactions. */
 	TwoPhaseTransactionGid(MySubscription->oid, prepare_data.xid,
@@ -989,6 +964,7 @@ apply_handle_commit_prepared(StringInfo s)
 	process_syncing_tables(prepare_data.end_lsn);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+	reset_apply_error_context_info();
 }
 
 /*
@@ -1001,6 +977,7 @@ apply_handle_rollback_prepared(StringInfo s)
 	char		gid[GIDSIZE];
 
 	logicalrep_read_rollback_prepared(s, &rollback_data);
+	set_apply_error_context_xact(rollback_data.xid, rollback_data.rollback_time);
 
 	/* Compute GID for two_phase transactions. */
 	TwoPhaseTransactionGid(MySubscription->oid, rollback_data.xid,
@@ -1038,6 +1015,60 @@ apply_handle_rollback_prepared(StringInfo s)
 	process_syncing_tables(rollback_data.rollback_end_lsn);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+	reset_apply_error_context_info();
+}
+
+/*
+ * Handle STREAM PREPARE.
+ *
+ * Logic is in two parts:
+ * 1. Replay all the spooled operations
+ * 2. Mark the transaction as prepared
+ */
+static void
+apply_handle_stream_prepare(StringInfo s)
+{
+	LogicalRepPreparedTxnData prepare_data;
+
+	if (in_streamed_transaction)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg_internal("STREAM PREPARE message without STREAM STOP")));
+
+	/* Tablesync should never receive prepare. */
+	if (am_tablesync_worker())
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg_internal("tablesync worker received a STREAM PREPARE message")));
+
+	logicalrep_read_stream_prepare(s, &prepare_data);
+	set_apply_error_context_xact(prepare_data.xid, prepare_data.prepare_time);
+
+	elog(DEBUG1, "received prepare for streamed transaction %u", prepare_data.xid);
+
+	/* Replay all the spooled operations. */
+	apply_spooled_messages(prepare_data.xid, prepare_data.prepare_lsn);
+
+	/* Mark the transaction as prepared. */
+	apply_handle_prepare_internal(&prepare_data);
+
+	CommitTransactionCommand();
+
+	pgstat_report_stat(false);
+
+	store_flush_position(prepare_data.end_lsn);
+
+	in_remote_transaction = false;
+
+	/* unlink the files with serialized changes and subxact info. */
+	stream_cleanup_files(MyLogicalRepWorker->subid, prepare_data.xid);
+
+	/* Process any tables that are being synchronized in parallel. */
+	process_syncing_tables(prepare_data.end_lsn);
+
+	pgstat_report_activity(STATE_IDLE, NULL);
+
+	reset_apply_error_context_info();
 }
 
 /*
@@ -1067,7 +1098,6 @@ static void
 apply_handle_stream_start(StringInfo s)
 {
 	bool		first_segment;
-	HASHCTL		hash_ctl;
 
 	if (in_streamed_transaction)
 		ereport(ERROR,
@@ -1094,18 +1124,26 @@ apply_handle_stream_start(StringInfo s)
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg_internal("invalid transaction ID in streamed replication transaction")));
 
+	set_apply_error_context_xact(stream_xid, 0);
+
 	/*
-	 * Initialize the xidhash table if we haven't yet. This will be used for
-	 * the entire duration of the apply worker so create it in permanent
-	 * context.
+	 * Initialize the worker's stream_fileset if we haven't yet. This will be
+	 * used for the entire duration of the worker so create it in a permanent
+	 * context. We create this on the very first streaming message from any
+	 * transaction and then use it for this and other streaming transactions.
+	 * Now, we could create a fileset at the start of the worker as well but
+	 * then we won't be sure that it will ever be used.
 	 */
-	if (xidhash == NULL)
+	if (MyLogicalRepWorker->stream_fileset == NULL)
 	{
-		hash_ctl.keysize = sizeof(TransactionId);
-		hash_ctl.entrysize = sizeof(StreamXidHash);
-		hash_ctl.hcxt = ApplyContext;
-		xidhash = hash_create("StreamXidHash", 1024, &hash_ctl,
-							  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+		MemoryContext oldctx;
+
+		oldctx = MemoryContextSwitchTo(ApplyContext);
+
+		MyLogicalRepWorker->stream_fileset = palloc(sizeof(FileSet));
+		FileSetInit(MyLogicalRepWorker->stream_fileset);
+
+		MemoryContextSwitchTo(oldctx);
 	}
 
 	/* open the spool file for this transaction */
@@ -1150,6 +1188,7 @@ apply_handle_stream_stop(StringInfo s)
 	MemoryContextReset(LogicalStreamingContext);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+	reset_apply_error_context_info();
 }
 
 /*
@@ -1173,7 +1212,10 @@ apply_handle_stream_abort(StringInfo s)
 	 * just delete the files with serialized info.
 	 */
 	if (xid == subxid)
+	{
+		set_apply_error_context_xact(xid, 0);
 		stream_cleanup_files(MyLogicalRepWorker->subid, xid);
+	}
 	else
 	{
 		/*
@@ -1196,7 +1238,8 @@ apply_handle_stream_abort(StringInfo s)
 		BufFile    *fd;
 		bool		found = false;
 		char		path[MAXPGPATH];
-		StreamXidHash *ent;
+
+		set_apply_error_context_xact(subxid, 0);
 
 		subidx = -1;
 		begin_replication_step();
@@ -1222,26 +1265,18 @@ apply_handle_stream_abort(StringInfo s)
 			cleanup_subxact_info();
 			end_replication_step();
 			CommitTransactionCommand();
+			reset_apply_error_context_info();
 			return;
 		}
 
-		ent = (StreamXidHash *) hash_search(xidhash,
-											(void *) &xid,
-											HASH_FIND,
-											NULL);
-		if (!ent)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg_internal("transaction %u not found in stream XID hash table",
-									 xid)));
-
 		/* open the changes file */
 		changes_filename(path, MyLogicalRepWorker->subid, xid);
-		fd = BufFileOpenShared(ent->stream_fileset, path, O_RDWR);
+		fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset, path,
+								O_RDWR, false);
 
 		/* OK, truncate the file at the right offset */
-		BufFileTruncateShared(fd, subxact_data.subxacts[subidx].fileno,
-							  subxact_data.subxacts[subidx].offset);
+		BufFileTruncateFileSet(fd, subxact_data.subxacts[subidx].fileno,
+							   subxact_data.subxacts[subidx].offset);
 		BufFileClose(fd);
 
 		/* discard the subxacts added later */
@@ -1253,32 +1288,22 @@ apply_handle_stream_abort(StringInfo s)
 		end_replication_step();
 		CommitTransactionCommand();
 	}
+
+	reset_apply_error_context_info();
 }
 
 /*
- * Handle STREAM COMMIT message.
+ * Common spoolfile processing.
  */
 static void
-apply_handle_stream_commit(StringInfo s)
+apply_spooled_messages(TransactionId xid, XLogRecPtr lsn)
 {
-	TransactionId xid;
 	StringInfoData s2;
 	int			nchanges;
 	char		path[MAXPGPATH];
 	char	   *buffer = NULL;
-	LogicalRepCommitData commit_data;
-	StreamXidHash *ent;
 	MemoryContext oldcxt;
 	BufFile    *fd;
-
-	if (in_streamed_transaction)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg_internal("STREAM COMMIT message without STREAM STOP")));
-
-	xid = logicalrep_read_stream_commit(s, &commit_data);
-
-	elog(DEBUG1, "received commit for streamed transaction %u", xid);
 
 	/* Make sure we have an open transaction */
 	begin_replication_step();
@@ -1290,28 +1315,19 @@ apply_handle_stream_commit(StringInfo s)
 	 */
 	oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 
-	/* open the spool file for the committed transaction */
+	/* Open the spool file for the committed/prepared transaction */
 	changes_filename(path, MyLogicalRepWorker->subid, xid);
 	elog(DEBUG1, "replaying changes from file \"%s\"", path);
 
-	ent = (StreamXidHash *) hash_search(xidhash,
-										(void *) &xid,
-										HASH_FIND,
-										NULL);
-	if (!ent)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg_internal("transaction %u not found in stream XID hash table",
-								 xid)));
-
-	fd = BufFileOpenShared(ent->stream_fileset, path, O_RDONLY);
+	fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset, path, O_RDONLY,
+							false);
 
 	buffer = palloc(BLCKSZ);
 	initStringInfo(&s2);
 
 	MemoryContextSwitchTo(oldcxt);
 
-	remote_final_lsn = commit_data.commit_lsn;
+	remote_final_lsn = lsn;
 
 	/*
 	 * Make sure the handle apply_dispatch methods are aware we're in a remote
@@ -1390,7 +1406,31 @@ apply_handle_stream_commit(StringInfo s)
 	elog(DEBUG1, "replayed %d (all) changes from file \"%s\"",
 		 nchanges, path);
 
-	apply_handle_commit_internal(s, &commit_data);
+	return;
+}
+
+/*
+ * Handle STREAM COMMIT message.
+ */
+static void
+apply_handle_stream_commit(StringInfo s)
+{
+	TransactionId xid;
+	LogicalRepCommitData commit_data;
+
+	if (in_streamed_transaction)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg_internal("STREAM COMMIT message without STREAM STOP")));
+
+	xid = logicalrep_read_stream_commit(s, &commit_data);
+	set_apply_error_context_xact(xid, commit_data.committime);
+
+	elog(DEBUG1, "received commit for streamed transaction %u", xid);
+
+	apply_spooled_messages(xid, commit_data.commit_lsn);
+
+	apply_handle_commit_internal(&commit_data);
 
 	/* unlink the files with serialized changes and subxact info */
 	stream_cleanup_files(MyLogicalRepWorker->subid, xid);
@@ -1399,13 +1439,15 @@ apply_handle_stream_commit(StringInfo s)
 	process_syncing_tables(commit_data.end_lsn);
 
 	pgstat_report_activity(STATE_IDLE, NULL);
+
+	reset_apply_error_context_info();
 }
 
 /*
  * Helper function for apply_handle_commit and apply_handle_stream_commit.
  */
 static void
-apply_handle_commit_internal(StringInfo s, LogicalRepCommitData *commit_data)
+apply_handle_commit_internal(LogicalRepCommitData *commit_data)
 {
 	if (IsTransactionState())
 	{
@@ -1518,6 +1560,9 @@ apply_handle_insert(StringInfo s)
 		return;
 	}
 
+	/* Set relation for error callback */
+	apply_error_callback_arg.rel = rel;
+
 	/* Initialize the executor state. */
 	edata = create_edata_for_relation(rel);
 	estate = edata->estate;
@@ -1540,6 +1585,9 @@ apply_handle_insert(StringInfo s)
 									 remoteslot);
 
 	finish_edata(edata);
+
+	/* Reset relation for error callback */
+	apply_error_callback_arg.rel = NULL;
 
 	logicalrep_rel_close(rel, NoLock);
 
@@ -1639,6 +1687,9 @@ apply_handle_update(StringInfo s)
 		return;
 	}
 
+	/* Set relation for error callback */
+	apply_error_callback_arg.rel = rel;
+
 	/* Check if we can do the update. */
 	check_relation_updatable(rel);
 
@@ -1691,6 +1742,9 @@ apply_handle_update(StringInfo s)
 									 remoteslot, &newtup);
 
 	finish_edata(edata);
+
+	/* Reset relation for error callback */
+	apply_error_callback_arg.rel = NULL;
 
 	logicalrep_rel_close(rel, NoLock);
 
@@ -1795,6 +1849,9 @@ apply_handle_delete(StringInfo s)
 		return;
 	}
 
+	/* Set relation for error callback */
+	apply_error_callback_arg.rel = rel;
+
 	/* Check if we can do the delete. */
 	check_relation_updatable(rel);
 
@@ -1819,6 +1876,9 @@ apply_handle_delete(StringInfo s)
 									 remoteslot);
 
 	finish_edata(edata);
+
+	/* Reset relation for error callback */
+	apply_error_callback_arg.rel = NULL;
 
 	logicalrep_rel_close(rel, NoLock);
 
@@ -2254,44 +2314,53 @@ static void
 apply_dispatch(StringInfo s)
 {
 	LogicalRepMsgType action = pq_getmsgbyte(s);
+	LogicalRepMsgType saved_command;
+
+	/*
+	 * Set the current command being applied. Since this function can be
+	 * called recusively when applying spooled changes, save the current
+	 * command.
+	 */
+	saved_command = apply_error_callback_arg.command;
+	apply_error_callback_arg.command = action;
 
 	switch (action)
 	{
 		case LOGICAL_REP_MSG_BEGIN:
 			apply_handle_begin(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_COMMIT:
 			apply_handle_commit(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_INSERT:
 			apply_handle_insert(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_UPDATE:
 			apply_handle_update(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_DELETE:
 			apply_handle_delete(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_TRUNCATE:
 			apply_handle_truncate(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_RELATION:
 			apply_handle_relation(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_TYPE:
 			apply_handle_type(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_ORIGIN:
 			apply_handle_origin(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_MESSAGE:
 
@@ -2300,45 +2369,52 @@ apply_dispatch(StringInfo s)
 			 * Although, it could be used by other applications that use this
 			 * output plugin.
 			 */
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_STREAM_START:
 			apply_handle_stream_start(s);
-			return;
+			break;
 
-		case LOGICAL_REP_MSG_STREAM_END:
+		case LOGICAL_REP_MSG_STREAM_STOP:
 			apply_handle_stream_stop(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_STREAM_ABORT:
 			apply_handle_stream_abort(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_STREAM_COMMIT:
 			apply_handle_stream_commit(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_BEGIN_PREPARE:
 			apply_handle_begin_prepare(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_PREPARE:
 			apply_handle_prepare(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_COMMIT_PREPARED:
 			apply_handle_commit_prepared(s);
-			return;
+			break;
 
 		case LOGICAL_REP_MSG_ROLLBACK_PREPARED:
 			apply_handle_rollback_prepared(s);
-			return;
+			break;
+
+		case LOGICAL_REP_MSG_STREAM_PREPARE:
+			apply_handle_stream_prepare(s);
+			break;
+
+		default:
+			ereport(ERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("invalid logical replication message type \"%c\"", action)));
 	}
 
-	ereport(ERROR,
-			(errcode(ERRCODE_PROTOCOL_VIOLATION),
-			 errmsg_internal("invalid logical replication message type \"%c\"",
-							 action)));
+	/* Reset the current command */
+	apply_error_callback_arg.command = saved_command;
 }
 
 /*
@@ -2439,6 +2515,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 	TimestampTz last_recv_timestamp = GetCurrentTimestamp();
 	bool		ping_sent = false;
 	TimeLineID	tli;
+	ErrorContextCallback errcallback;
 
 	/*
 	 * Init the ApplyMessageContext which we clean up after each replication
@@ -2458,6 +2535,14 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 
 	/* mark as idle, before starting to loop */
 	pgstat_report_activity(STATE_IDLE, NULL);
+
+	/*
+	 * Push apply error context callback. Fields will be filled during
+	 * applying a change.
+	 */
+	errcallback.callback = apply_error_callback;
+	errcallback.previous = error_context_stack;
+	error_context_stack = &errcallback;
 
 	/* This outer loop iterates once per wait. */
 	for (;;)
@@ -2658,6 +2743,9 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 			send_feedback(last_received, requestReply, requestReply);
 		}
 	}
+
+	/* Pop the error context stack */
+	error_context_stack = errcallback.previous;
 
 	/* All done */
 	walrcv_endstreaming(LogRepWorkerWalRcvConn, &tli);
@@ -2879,58 +2967,30 @@ subxact_info_write(Oid subid, TransactionId xid)
 {
 	char		path[MAXPGPATH];
 	Size		len;
-	StreamXidHash *ent;
 	BufFile    *fd;
 
 	Assert(TransactionIdIsValid(xid));
 
-	/* Find the xid entry in the xidhash */
-	ent = (StreamXidHash *) hash_search(xidhash,
-										(void *) &xid,
-										HASH_FIND,
-										NULL);
-	/* By this time we must have created the transaction entry */
-	Assert(ent);
+	/* construct the subxact filename */
+	subxact_filename(path, subid, xid);
 
-	/*
-	 * If there is no subtransaction then nothing to do, but if already have
-	 * subxact file then delete that.
-	 */
+	/* Delete the subxacts file, if exists. */
 	if (subxact_data.nsubxacts == 0)
 	{
-		if (ent->subxact_fileset)
-		{
-			cleanup_subxact_info();
-			SharedFileSetDeleteAll(ent->subxact_fileset);
-			pfree(ent->subxact_fileset);
-			ent->subxact_fileset = NULL;
-		}
+		cleanup_subxact_info();
+		BufFileDeleteFileSet(MyLogicalRepWorker->stream_fileset, path, true);
+
 		return;
 	}
-
-	subxact_filename(path, subid, xid);
 
 	/*
 	 * Create the subxact file if it not already created, otherwise open the
 	 * existing file.
 	 */
-	if (ent->subxact_fileset == NULL)
-	{
-		MemoryContext oldctx;
-
-		/*
-		 * We need to maintain shared fileset across multiple stream
-		 * start/stop calls.  So, need to allocate it in a persistent context.
-		 */
-		oldctx = MemoryContextSwitchTo(ApplyContext);
-		ent->subxact_fileset = palloc(sizeof(SharedFileSet));
-		SharedFileSetInit(ent->subxact_fileset, NULL);
-		MemoryContextSwitchTo(oldctx);
-
-		fd = BufFileCreateShared(ent->subxact_fileset, path);
-	}
-	else
-		fd = BufFileOpenShared(ent->subxact_fileset, path, O_RDWR);
+	fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset, path, O_RDWR,
+							true);
+	if (fd == NULL)
+		fd = BufFileCreateFileSet(MyLogicalRepWorker->stream_fileset, path);
 
 	len = sizeof(SubXactInfo) * subxact_data.nsubxacts;
 
@@ -2957,34 +3017,21 @@ subxact_info_read(Oid subid, TransactionId xid)
 	char		path[MAXPGPATH];
 	Size		len;
 	BufFile    *fd;
-	StreamXidHash *ent;
 	MemoryContext oldctx;
 
 	Assert(!subxact_data.subxacts);
 	Assert(subxact_data.nsubxacts == 0);
 	Assert(subxact_data.nsubxacts_max == 0);
 
-	/* Find the stream xid entry in the xidhash */
-	ent = (StreamXidHash *) hash_search(xidhash,
-										(void *) &xid,
-										HASH_FIND,
-										NULL);
-	if (!ent)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg_internal("transaction %u not found in stream XID hash table",
-								 xid)));
-
 	/*
-	 * If subxact_fileset is not valid that mean we don't have any subxact
-	 * info
+	 * If the subxact file doesn't exist that means we don't have any subxact
+	 * info.
 	 */
-	if (ent->subxact_fileset == NULL)
-		return;
-
 	subxact_filename(path, subid, xid);
-
-	fd = BufFileOpenShared(ent->subxact_fileset, path, O_RDONLY);
+	fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset, path, O_RDONLY,
+							true);
+	if (fd == NULL)
+		return;
 
 	/* read number of subxact items */
 	if (BufFileRead(fd, &subxact_data.nsubxacts,
@@ -3120,42 +3167,21 @@ changes_filename(char *path, Oid subid, TransactionId xid)
  *	  Cleanup files for a subscription / toplevel transaction.
  *
  * Remove files with serialized changes and subxact info for a particular
- * toplevel transaction. Each subscription has a separate set of files.
+ * toplevel transaction. Each subscription has a separate set of files
+ * for any toplevel transaction.
  */
 static void
 stream_cleanup_files(Oid subid, TransactionId xid)
 {
 	char		path[MAXPGPATH];
-	StreamXidHash *ent;
 
-	/* Find the xid entry in the xidhash */
-	ent = (StreamXidHash *) hash_search(xidhash,
-										(void *) &xid,
-										HASH_FIND,
-										NULL);
-	if (!ent)
-		ereport(ERROR,
-				(errcode(ERRCODE_PROTOCOL_VIOLATION),
-				 errmsg_internal("transaction %u not found in stream XID hash table",
-								 xid)));
-
-	/* Delete the change file and release the stream fileset memory */
+	/* Delete the changes file. */
 	changes_filename(path, subid, xid);
-	SharedFileSetDeleteAll(ent->stream_fileset);
-	pfree(ent->stream_fileset);
-	ent->stream_fileset = NULL;
+	BufFileDeleteFileSet(MyLogicalRepWorker->stream_fileset, path, false);
 
-	/* Delete the subxact file and release the memory, if it exist */
-	if (ent->subxact_fileset)
-	{
-		subxact_filename(path, subid, xid);
-		SharedFileSetDeleteAll(ent->subxact_fileset);
-		pfree(ent->subxact_fileset);
-		ent->subxact_fileset = NULL;
-	}
-
-	/* Remove the xid entry from the stream xid hash */
-	hash_search(xidhash, (void *) &xid, HASH_REMOVE, NULL);
+	/* Delete the subxact file, if it exists. */
+	subxact_filename(path, subid, xid);
+	BufFileDeleteFileSet(MyLogicalRepWorker->stream_fileset, path, true);
 }
 
 /*
@@ -3165,8 +3191,8 @@ stream_cleanup_files(Oid subid, TransactionId xid)
  *
  * Open a file for streamed changes from a toplevel transaction identified
  * by stream_xid (global variable). If it's the first chunk of streamed
- * changes for this transaction, initialize the shared fileset and create the
- * buffile, otherwise open the previously created file.
+ * changes for this transaction, create the buffile, otherwise open the
+ * previously created file.
  *
  * This can only be called at the beginning of a "streaming" block, i.e.
  * between stream_start/stream_stop messages from the upstream.
@@ -3175,20 +3201,13 @@ static void
 stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 {
 	char		path[MAXPGPATH];
-	bool		found;
 	MemoryContext oldcxt;
-	StreamXidHash *ent;
 
 	Assert(in_streamed_transaction);
 	Assert(OidIsValid(subid));
 	Assert(TransactionIdIsValid(xid));
 	Assert(stream_fd == NULL);
 
-	/* create or find the xid entry in the xidhash */
-	ent = (StreamXidHash *) hash_search(xidhash,
-										(void *) &xid,
-										HASH_ENTER,
-										&found);
 
 	changes_filename(path, subid, xid);
 	elog(DEBUG1, "opening file \"%s\" for streamed changes", path);
@@ -3200,49 +3219,20 @@ stream_open_file(Oid subid, TransactionId xid, bool first_segment)
 	oldcxt = MemoryContextSwitchTo(LogicalStreamingContext);
 
 	/*
-	 * If this is the first streamed segment, the file must not exist, so make
-	 * sure we're the ones creating it. Otherwise just open the file for
-	 * writing, in append mode.
+	 * If this is the first streamed segment, create the changes file.
+	 * Otherwise, just open the file for writing, in append mode.
 	 */
 	if (first_segment)
-	{
-		MemoryContext savectx;
-		SharedFileSet *fileset;
-
-		if (found)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg_internal("incorrect first-segment flag for streamed replication transaction")));
-
-		/*
-		 * We need to maintain shared fileset across multiple stream
-		 * start/stop calls. So, need to allocate it in a persistent context.
-		 */
-		savectx = MemoryContextSwitchTo(ApplyContext);
-		fileset = palloc(sizeof(SharedFileSet));
-
-		SharedFileSetInit(fileset, NULL);
-		MemoryContextSwitchTo(savectx);
-
-		stream_fd = BufFileCreateShared(fileset, path);
-
-		/* Remember the fileset for the next stream of the same transaction */
-		ent->xid = xid;
-		ent->stream_fileset = fileset;
-		ent->subxact_fileset = NULL;
-	}
+		stream_fd = BufFileCreateFileSet(MyLogicalRepWorker->stream_fileset,
+										 path);
 	else
 	{
-		if (!found)
-			ereport(ERROR,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg_internal("incorrect first-segment flag for streamed replication transaction")));
-
 		/*
 		 * Open the file and seek to the end of the file because we always
 		 * append the changes file.
 		 */
-		stream_fd = BufFileOpenShared(ent->stream_fileset, path, O_RDWR);
+		stream_fd = BufFileOpenFileSet(MyLogicalRepWorker->stream_fileset,
+									   path, O_RDWR, false);
 		BufFileSeek(stream_fd, 0, 0, SEEK_END);
 	}
 
@@ -3570,4 +3560,60 @@ bool
 IsLogicalWorker(void)
 {
 	return MyLogicalRepWorker != NULL;
+}
+
+/* Error callback to give more context info about the change being applied */
+static void
+apply_error_callback(void *arg)
+{
+	StringInfoData buf;
+	ApplyErrorCallbackArg *errarg = &apply_error_callback_arg;
+
+	if (apply_error_callback_arg.command == 0)
+		return;
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, _("processing remote data during \"%s\""),
+					 logicalrep_message_type(errarg->command));
+
+	/* append relation information */
+	if (errarg->rel)
+	{
+		appendStringInfo(&buf, _(" for replication target relation \"%s.%s\""),
+						 errarg->rel->remoterel.nspname,
+						 errarg->rel->remoterel.relname);
+		if (errarg->remote_attnum >= 0)
+			appendStringInfo(&buf, _(" column \"%s\""),
+							 errarg->rel->remoterel.attnames[errarg->remote_attnum]);
+	}
+
+	/* append transaction information */
+	if (TransactionIdIsNormal(errarg->remote_xid))
+	{
+		appendStringInfo(&buf, _(" in transaction %u"), errarg->remote_xid);
+		if (errarg->ts != 0)
+			appendStringInfo(&buf, _(" at %s"),
+							 timestamptz_to_str(errarg->ts));
+	}
+
+	errcontext("%s", buf.data);
+	pfree(buf.data);
+}
+
+/* Set transaction information of apply error callback */
+static inline void
+set_apply_error_context_xact(TransactionId xid, TimestampTz ts)
+{
+	apply_error_callback_arg.remote_xid = xid;
+	apply_error_callback_arg.ts = ts;
+}
+
+/* Reset all information of apply error callback */
+static inline void
+reset_apply_error_context_info(void)
+{
+	apply_error_callback_arg.command = 0;
+	apply_error_callback_arg.rel = NULL;
+	apply_error_callback_arg.remote_attnum = -1;
+	set_apply_error_context_xact(InvalidTransactionId, 0);
 }

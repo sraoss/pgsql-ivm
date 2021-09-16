@@ -504,7 +504,7 @@ ProcessClientReadInterrupt(bool blocked)
 
 		/* Process notify interrupts, if any */
 		if (notifyInterruptPending)
-			ProcessNotifyInterrupt();
+			ProcessNotifyInterrupt(true);
 	}
 	else if (ProcDiePending)
 	{
@@ -4050,10 +4050,15 @@ PostgresMain(int argc, char *argv[],
 
 		/* Initialize MaxBackends (if under postmaster, was done already) */
 		InitializeMaxBackends();
-	}
 
-	/* Early initialization */
-	BaseInit();
+		CreateSharedMemoryAndSemaphores();
+
+		/*
+		 * Remember stand-alone backend startup time, roughly at the same
+		 * point during startup that postmaster does so.
+		 */
+		PgStartTime = GetCurrentTimestamp();
+	}
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory, except in the
@@ -4067,6 +4072,9 @@ PostgresMain(int argc, char *argv[],
 #else
 	InitProcess();
 #endif
+
+	/* Early initialization */
+	BaseInit();
 
 	/* We need to allow SIGINT, etc during the initial transaction */
 	PG_SETMASK(&UnBlockSig);
@@ -4158,12 +4166,6 @@ PostgresMain(int argc, char *argv[],
 	MemoryContextSwitchTo(row_description_context);
 	initStringInfo(&row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
-
-	/*
-	 * Remember stand-alone backend startup time
-	 */
-	if (!IsUnderPostmaster)
-		PgStartTime = GetCurrentTimestamp();
 
 	/*
 	 * POSTGRES main processing loop begins here
@@ -4371,17 +4373,15 @@ PostgresMain(int argc, char *argv[],
 			}
 			else
 			{
-				/* Send out notify signals and transmit self-notifies */
-				ProcessCompletedNotifies();
-
 				/*
-				 * Also process incoming notifies, if any.  This is mostly to
-				 * ensure stable behavior in tests: if any notifies were
-				 * received during the just-finished transaction, they'll be
-				 * seen by the client before ReadyForQuery is.
+				 * Process incoming notifies (including self-notifies), if
+				 * any, and send relevant messages to the client.  Doing it
+				 * here helps ensure stable behavior in tests: if any notifies
+				 * were received during the just-finished transaction, they'll
+				 * be seen by the client before ReadyForQuery is.
 				 */
 				if (notifyInterruptPending)
-					ProcessNotifyInterrupt();
+					ProcessNotifyInterrupt(false);
 
 				pgstat_report_stat(false);
 

@@ -1894,10 +1894,9 @@ include_dir 'conf.d'
         setting <xref linkend="guc-autovacuum-work-mem"/>.
        </para>
        <para>
-        Additionally, <command>VACUUM</command> is only able to utilize up to
-        a maximum of <literal>1GB</literal> of memory, so
-        <varname>maintenance_work_mem</varname> values higher than this have
-        no effect on <command>VACUUM</command>.
+        Note that for the collection of dead tuple identifiers,
+        <command>VACUUM</command> is only able to utilize up to a maximum of
+        <literal>1GB</literal> of memory.
        </para>
       </listitem>
      </varlistentry>
@@ -1920,6 +1919,13 @@ include_dir 'conf.d'
         This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command
         line.
+       </para>
+       <para>
+        For the collection of dead tuple identifiers, autovacuum is only able
+        to utilize up to a maximum of <literal>1GB</literal> of memory, so
+        setting <varname>autovacuum_work_mem</varname> to a value higher than
+        that has no effect on the number of dead tuples that autovacuum can
+        collect while scanning a table.
        </para>
       </listitem>
      </varlistentry>
@@ -8458,7 +8464,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <term><varname>transaction_read_only</varname> (<type>boolean</type>)
       <indexterm>
        <primary>read-only transaction</primary>
-       <secondary>setting default</secondary>
       </indexterm>
       <indexterm>
        <primary><varname>transaction_read_only</varname> configuration parameter</primary>
@@ -8479,7 +8484,6 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       <term><varname>transaction_deferrable</varname> (<type>boolean</type>)
       <indexterm>
        <primary>deferrable transaction</primary>
-       <secondary>setting default</secondary>
       </indexterm>
       <indexterm>
        <primary><varname>transaction_deferrable</varname> configuration parameter</primary>
@@ -10267,6 +10271,20 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
        <para>
         Reports the version number of the server as an integer. It is determined
         by the value of <literal>PG_VERSION_NUM</literal> when building the server.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-shared-memory-size" xreflabel="shared_memory_size">
+      <term><varname>shared_memory_size</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>shared_memory_size</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Reports the size of the main shared memory area, rounded up to the
+        nearest megabyte.
        </para>
       </listitem>
      </varlistentry>

@@ -56,7 +56,6 @@ typedef struct AmcheckOptions
 	bool		dbpattern;
 	bool		alldb;
 	bool		echo;
-	bool		quiet;
 	bool		verbose;
 	bool		strict_names;
 	bool		show_progress;
@@ -112,7 +111,6 @@ static AmcheckOptions opts = {
 	.dbpattern = false,
 	.alldb = false,
 	.echo = false,
-	.quiet = false,
 	.verbose = false,
 	.strict_names = true,
 	.show_progress = false,
@@ -250,7 +248,6 @@ main(int argc, char *argv[])
 		{"exclude-index", required_argument, NULL, 'I'},
 		{"jobs", required_argument, NULL, 'j'},
 		{"progress", no_argument, NULL, 'P'},
-		{"quiet", no_argument, NULL, 'q'},
 		{"relation", required_argument, NULL, 'r'},
 		{"exclude-relation", required_argument, NULL, 'R'},
 		{"schema", required_argument, NULL, 's'},
@@ -294,10 +291,11 @@ main(int argc, char *argv[])
 	handle_help_version_opts(argc, argv, progname, help);
 
 	/* process command-line options */
-	while ((c = getopt_long(argc, argv, "ad:D:eh:Hi:I:j:p:Pqr:R:s:S:t:T:U:wWv",
+	while ((c = getopt_long(argc, argv, "ad:D:eh:Hi:I:j:p:Pr:R:s:S:t:T:U:wWv",
 							long_options, &optindex)) != -1)
 	{
 		char	   *endptr;
+		unsigned long optval;
 
 		switch (c)
 		{
@@ -336,9 +334,6 @@ main(int argc, char *argv[])
 				break;
 			case 'P':
 				opts.show_progress = true;
-				break;
-			case 'q':
-				opts.quiet = true;
 				break;
 			case 'r':
 				opts.allrel = false;
@@ -395,9 +390,11 @@ main(int argc, char *argv[])
 				break;
 			case 6:
 				if (pg_strcasecmp(optarg, "all-visible") == 0)
-					opts.skip = "all visible";
+					opts.skip = "all-visible";
 				else if (pg_strcasecmp(optarg, "all-frozen") == 0)
-					opts.skip = "all frozen";
+					opts.skip = "all-frozen";
+				else if (pg_strcasecmp(optarg, "none") == 0)
+					opts.skip = "none";
 				else
 				{
 					pg_log_error("invalid argument for option %s", "--skip");
@@ -405,30 +402,34 @@ main(int argc, char *argv[])
 				}
 				break;
 			case 7:
-				opts.startblock = strtol(optarg, &endptr, 10);
-				if (*endptr != '\0')
+				errno = 0;
+				optval = strtoul(optarg, &endptr, 10);
+				if (endptr == optarg || *endptr != '\0' || errno != 0)
 				{
 					pg_log_error("invalid start block");
 					exit(1);
 				}
-				if (opts.startblock > MaxBlockNumber || opts.startblock < 0)
+				if (optval > MaxBlockNumber)
 				{
 					pg_log_error("start block out of bounds");
 					exit(1);
 				}
+				opts.startblock = optval;
 				break;
 			case 8:
-				opts.endblock = strtol(optarg, &endptr, 10);
-				if (*endptr != '\0')
+				errno = 0;
+				optval = strtoul(optarg, &endptr, 10);
+				if (endptr == optarg || *endptr != '\0' || errno != 0)
 				{
 					pg_log_error("invalid end block");
 					exit(1);
 				}
-				if (opts.endblock > MaxBlockNumber || opts.endblock < 0)
+				if (optval > MaxBlockNumber)
 				{
 					pg_log_error("end block out of bounds");
 					exit(1);
 				}
+				opts.endblock = optval;
 				break;
 			case 9:
 				opts.rootdescend = true;
@@ -630,21 +631,18 @@ main(int argc, char *argv[])
 		{
 			failed = opts.strict_names;
 
-			if (!opts.quiet || failed)
-			{
-				if (pat->heap_only)
-					log_no_match("no heap tables to check matching \"%s\"",
-								 pat->pattern);
-				else if (pat->btree_only)
-					log_no_match("no btree indexes to check matching \"%s\"",
-								 pat->pattern);
-				else if (pat->rel_regex == NULL)
-					log_no_match("no relations to check in schemas matching \"%s\"",
-								 pat->pattern);
-				else
-					log_no_match("no relations to check matching \"%s\"",
-								 pat->pattern);
-			}
+			if (pat->heap_only)
+				log_no_match("no heap tables to check matching \"%s\"",
+							 pat->pattern);
+			else if (pat->btree_only)
+				log_no_match("no btree indexes to check matching \"%s\"",
+							 pat->pattern);
+			else if (pat->rel_regex == NULL)
+				log_no_match("no relations to check in schemas matching \"%s\"",
+							 pat->pattern);
+			else
+				log_no_match("no relations to check matching \"%s\"",
+							 pat->pattern);
 		}
 	}
 
@@ -742,8 +740,6 @@ main(int argc, char *argv[])
 
 		if (opts.verbose)
 			PQsetErrorVerbosity(free_slot->connection, PQERRORS_VERBOSE);
-		else if (opts.quiet)
-			PQsetErrorVerbosity(free_slot->connection, PQERRORS_TERSE);
 
 		/*
 		 * Execute the appropriate amcheck command for this relation using our
@@ -757,7 +753,7 @@ main(int argc, char *argv[])
 			{
 				if (opts.show_progress && progress_since_last_stderr)
 					fprintf(stderr, "\n");
-				pg_log_info("checking heap table \"%s\".\"%s\".\"%s\"",
+				pg_log_info("checking heap table \"%s.%s.%s\"",
 							rel->datinfo->datname, rel->nspname, rel->relname);
 				progress_since_last_stderr = false;
 			}
@@ -773,7 +769,7 @@ main(int argc, char *argv[])
 				if (opts.show_progress && progress_since_last_stderr)
 					fprintf(stderr, "\n");
 
-				pg_log_info("checking btree index \"%s\".\"%s\".\"%s\"",
+				pg_log_info("checking btree index \"%s.%s.%s\"",
 							rel->datinfo->datname, rel->nspname, rel->relname);
 				progress_since_last_stderr = false;
 			}
@@ -1026,29 +1022,28 @@ verify_heap_slot_handler(PGresult *res, PGconn *conn, void *context)
 				msg = PQgetvalue(res, i, 3);
 
 			if (!PQgetisnull(res, i, 2))
-				printf("heap table \"%s\".\"%s\".\"%s\", block %s, offset %s, attribute %s:\n    %s\n",
+				printf(_("heap table \"%s.%s.%s\", block %s, offset %s, attribute %s:\n"),
 					   rel->datinfo->datname, rel->nspname, rel->relname,
 					   PQgetvalue(res, i, 0),	/* blkno */
 					   PQgetvalue(res, i, 1),	/* offnum */
-					   PQgetvalue(res, i, 2),	/* attnum */
-					   msg);
+					   PQgetvalue(res, i, 2));	/* attnum */
 
 			else if (!PQgetisnull(res, i, 1))
-				printf("heap table \"%s\".\"%s\".\"%s\", block %s, offset %s:\n    %s\n",
+				printf(_("heap table \"%s.%s.%s\", block %s, offset %s:\n"),
 					   rel->datinfo->datname, rel->nspname, rel->relname,
 					   PQgetvalue(res, i, 0),	/* blkno */
-					   PQgetvalue(res, i, 1),	/* offnum */
-					   msg);
+					   PQgetvalue(res, i, 1));	/* offnum */
 
 			else if (!PQgetisnull(res, i, 0))
-				printf("heap table \"%s\".\"%s\".\"%s\", block %s:\n    %s\n",
+				printf(_("heap table \"%s.%s.%s\", block %s:\n"),
 					   rel->datinfo->datname, rel->nspname, rel->relname,
-					   PQgetvalue(res, i, 0),	/* blkno */
-					   msg);
+					   PQgetvalue(res, i, 0));	/* blkno */
 
 			else
-				printf("heap table \"%s\".\"%s\".\"%s\":\n    %s\n",
-					   rel->datinfo->datname, rel->nspname, rel->relname, msg);
+				printf(_("heap table \"%s.%s.%s\":\n"),
+					   rel->datinfo->datname, rel->nspname, rel->relname);
+
+			printf("    %s\n", msg);
 		}
 	}
 	else if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -1056,10 +1051,11 @@ verify_heap_slot_handler(PGresult *res, PGconn *conn, void *context)
 		char	   *msg = indent_lines(PQerrorMessage(conn));
 
 		all_checks_pass = false;
-		printf("heap table \"%s\".\"%s\".\"%s\":\n%s",
-			   rel->datinfo->datname, rel->nspname, rel->relname, msg);
+		printf(_("heap table \"%s.%s.%s\":\n"),
+			   rel->datinfo->datname, rel->nspname, rel->relname);
+		printf("%s", msg);
 		if (opts.verbose)
-			printf("query was: %s\n", rel->sql);
+			printf(_("query was: %s\n"), rel->sql);
 		FREE_AND_SET_NULL(msg);
 	}
 
@@ -1108,7 +1104,7 @@ verify_btree_slot_handler(PGresult *res, PGconn *conn, void *context)
 			 */
 			if (opts.show_progress && progress_since_last_stderr)
 				fprintf(stderr, "\n");
-			pg_log_warning("btree index \"%s\".\"%s\".\"%s\": btree checking function returned unexpected number of rows: %d",
+			pg_log_warning("btree index \"%s.%s.%s\": btree checking function returned unexpected number of rows: %d",
 						   rel->datinfo->datname, rel->nspname, rel->relname, ntups);
 			if (opts.verbose)
 				pg_log_info("query was: %s", rel->sql);
@@ -1122,10 +1118,11 @@ verify_btree_slot_handler(PGresult *res, PGconn *conn, void *context)
 		char	   *msg = indent_lines(PQerrorMessage(conn));
 
 		all_checks_pass = false;
-		printf("btree index \"%s\".\"%s\".\"%s\":\n%s",
-			   rel->datinfo->datname, rel->nspname, rel->relname, msg);
+		printf(_("btree index \"%s.%s.%s\":\n"),
+			   rel->datinfo->datname, rel->nspname, rel->relname);
+		printf("%s", msg);
 		if (opts.verbose)
-			printf("query was: %s\n", rel->sql);
+			printf(_("query was: %s\n"), rel->sql);
 		FREE_AND_SET_NULL(msg);
 	}
 
@@ -1171,7 +1168,7 @@ help(const char *progname)
 	printf(_("      --startblock=BLOCK          begin checking table(s) at the given block number\n"));
 	printf(_("      --endblock=BLOCK            check table(s) only up to the given block number\n"));
 	printf(_("\nB-tree index checking options:\n"));
-	printf(_("      --heapallindexed            check all heap tuples are found within indexes\n"));
+	printf(_("      --heapallindexed            check that all heap tuples are found within indexes\n"));
 	printf(_("      --parent-check              check index parent/child relationships\n"));
 	printf(_("      --rootdescend               search from root page to refind tuples\n"));
 	printf(_("\nConnection options:\n"));
@@ -1184,7 +1181,6 @@ help(const char *progname)
 	printf(_("\nOther options:\n"));
 	printf(_("  -e, --echo                      show the commands being sent to the server\n"));
 	printf(_("  -j, --jobs=NUM                  use this many concurrent connections to the server\n"));
-	printf(_("  -q, --quiet                     don't write any messages\n"));
 	printf(_("  -P, --progress                  show progress information\n"));
 	printf(_("  -v, --verbose                   write a lot of output\n"));
 	printf(_("  -V, --version                   output version information, then exit\n"));
@@ -1230,15 +1226,10 @@ progress_report(uint64 relations_total, uint64 relations_checked,
 	if (relpages_total)
 		percent_pages = (int) (relpages_checked * 100 / relpages_total);
 
-	/*
-	 * Separate step to keep platform-dependent format code out of fprintf
-	 * calls.  We only test for INT64_FORMAT availability in snprintf, not
-	 * fprintf.
-	 */
-	snprintf(checked_rel, sizeof(checked_rel), INT64_FORMAT, relations_checked);
-	snprintf(total_rel, sizeof(total_rel), INT64_FORMAT, relations_total);
-	snprintf(checked_pages, sizeof(checked_pages), INT64_FORMAT, relpages_checked);
-	snprintf(total_pages, sizeof(total_pages), INT64_FORMAT, relpages_total);
+	snprintf(checked_rel, sizeof(checked_rel), UINT64_FORMAT, relations_checked);
+	snprintf(total_rel, sizeof(total_rel), UINT64_FORMAT, relations_total);
+	snprintf(checked_pages, sizeof(checked_pages), UINT64_FORMAT, relpages_checked);
+	snprintf(total_pages, sizeof(total_pages), UINT64_FORMAT, relpages_total);
 
 #define VERBOSE_DATNAME_LENGTH 35
 	if (opts.verbose)
@@ -1250,7 +1241,7 @@ progress_report(uint64 relations_total, uint64 relations_checked,
 			 * last call)
 			 */
 			fprintf(stderr,
-					_("%*s/%s relations (%d%%) %*s/%s pages (%d%%) %*s"),
+					_("%*s/%s relations (%d%%), %*s/%s pages (%d%%) %*s"),
 					(int) strlen(total_rel),
 					checked_rel, total_rel, percent_rel,
 					(int) strlen(total_pages),
@@ -1261,7 +1252,7 @@ progress_report(uint64 relations_total, uint64 relations_checked,
 			bool		truncate = (strlen(datname) > VERBOSE_DATNAME_LENGTH);
 
 			fprintf(stderr,
-					_("%*s/%s relations (%d%%) %*s/%s pages (%d%%), (%s%-*.*s)"),
+					_("%*s/%s relations (%d%%), %*s/%s pages (%d%%) (%s%-*.*s)"),
 					(int) strlen(total_rel),
 					checked_rel, total_rel, percent_rel,
 					(int) strlen(total_pages),
@@ -1276,7 +1267,7 @@ progress_report(uint64 relations_total, uint64 relations_checked,
 	}
 	else
 		fprintf(stderr,
-				_("%*s/%s relations (%d%%) %*s/%s pages (%d%%)"),
+				_("%*s/%s relations (%d%%), %*s/%s pages (%d%%)"),
 				(int) strlen(total_rel),
 				checked_rel, total_rel, percent_rel,
 				(int) strlen(total_pages),

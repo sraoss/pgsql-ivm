@@ -1037,7 +1037,7 @@ SPI_modifytuple(Relation rel, HeapTuple tuple, int natts, int *attnum,
 		if (attnum[i] <= 0 || attnum[i] > numberOfAttributes)
 			break;
 		v[attnum[i] - 1] = Values[i];
-		n[attnum[i] - 1] = (Nulls && Nulls[i] == 'n') ? true : false;
+		n[attnum[i] - 1] = (Nulls && Nulls[i] == 'n');
 	}
 
 	if (i == natts)				/* no errors in *attnum */
@@ -1489,16 +1489,22 @@ SPI_cursor_open_internal(const char *name, SPIPlanPtr plan,
 	if (!SPI_is_cursor_plan(plan))
 	{
 		/* try to give a good error message */
+		const char *cmdtag;
+
 		if (list_length(plan->plancache_list) != 1)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_CURSOR_DEFINITION),
 					 errmsg("cannot open multi-query plan as cursor")));
 		plansource = (CachedPlanSource *) linitial(plan->plancache_list);
+		/* A SELECT that fails SPI_is_cursor_plan() must be SELECT INTO */
+		if (plansource->commandTag == CMDTAG_SELECT)
+			cmdtag = "SELECT INTO";
+		else
+			cmdtag = GetCommandTagName(plansource->commandTag);
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_CURSOR_DEFINITION),
 		/* translator: %s is name of a SQL command, eg INSERT */
-				 errmsg("cannot open %s query as cursor",
-						GetCommandTagName(plansource->commandTag))));
+				 errmsg("cannot open %s query as cursor", cmdtag)));
 	}
 
 	Assert(list_length(plan->plancache_list) == 1);

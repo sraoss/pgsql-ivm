@@ -3233,31 +3233,36 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				/*
 				 * If --latency-limit is used, and this slot is already late
 				 * so that the transaction will miss the latency limit even if
-				 * it completed immediately, skip this time slot and schedule
-				 * to continue running on the next slot that isn't late yet.
-				 * But don't iterate beyond the -t limit, if one is given.
+				 * it completed immediately, skip this time slot and loop to
+				 * reschedule.
 				 */
 				if (latency_limit)
 				{
 					pg_time_now_lazy(&now);
 
-					while (thread->throttle_trigger < now - latency_limit &&
-						   (nxacts <= 0 || st->cnt < nxacts))
+					if (thread->throttle_trigger < now - latency_limit)
 					{
 						processXactStats(thread, st, &now, true, agg);
-						/* next rendez-vous */
-						thread->throttle_trigger +=
-							getPoissonRand(&thread->ts_throttle_rs, throttle_delay);
-						st->txn_scheduled = thread->throttle_trigger;
-					}
 
-					/*
-					 * stop client if -t was exceeded in the previous skip
-					 * loop
-					 */
-					if (nxacts > 0 && st->cnt >= nxacts)
-					{
-						st->state = CSTATE_FINISHED;
+						/*
+						 * Finish client if -T or -t was exceeded.
+						 *
+						 * Stop counting skipped transactions under -T as soon
+						 * as the timer is exceeded. Because otherwise it can
+						 * take a very long time to count all of them
+						 * especially when quite a lot of them happen with
+						 * unrealistically high rate setting in -R, which
+						 * would prevent pgbench from ending immediately.
+						 * Because of this behavior, note that there is no
+						 * guarantee that all skipped transactions are counted
+						 * under -T though there is under -t. This is OK in
+						 * practice because it's very unlikely to happen with
+						 * realistic setting.
+						 */
+						if (timer_exceeded || (nxacts > 0 && st->cnt >= nxacts))
+							st->state = CSTATE_FINISHED;
+
+						/* Go back to top of loop with CSTATE_PREPARE_THROTTLE */
 						break;
 					}
 				}
@@ -3461,7 +3466,14 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 */
 			case CSTATE_WAIT_RESULT:
 				pg_log_debug("client %d receiving", st->id);
-				if (!PQconsumeInput(st->con))
+
+				/*
+				 * Only check for new network data if we processed all data
+				 * fetched prior. Otherwise we end up doing a syscall for each
+				 * individual pipelined query, which has a measurable
+				 * performance impact.
+				 */
+				if (PQisBusy(st->con) && !PQconsumeInput(st->con))
 				{
 					/* there's something wrong */
 					commandFailed(st, "SQL", "perhaps the backend died while processing");
@@ -3546,8 +3558,12 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 
 				if (is_connect)
 				{
+					pg_time_usec_t start = now;
+
+					pg_time_now_lazy(&start);
 					finishCon(st);
-					now = 0;
+					now = pg_time_now();
+					thread->conn_duration += now - start;
 				}
 
 				if ((st->cnt >= nxacts && duration <= 0) || timer_exceeded)
@@ -3571,6 +3587,19 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 */
 			case CSTATE_ABORTED:
 			case CSTATE_FINISHED:
+
+				/*
+				 * Don't measure the disconnection delays here even if in
+				 * CSTATE_FINISHED and -C/--connect option is specified.
+				 * Because in this case all the connections that this thread
+				 * established are closed at the end of transactions and the
+				 * disconnection delays should have already been measured at
+				 * that moment.
+				 *
+				 * In CSTATE_ABORTED state, the measurement is no longer
+				 * necessary because we cannot report complete results anyways
+				 * in this case.
+				 */
 				finishCon(st);
 				return;
 		}
@@ -4129,6 +4158,7 @@ initGenerateDataClientSide(PGconn *con)
 	PGresult   *res;
 	int			i;
 	int64		k;
+	char		*copy_statement;
 
 	/* used to track elapsed time and estimate of the remaining time */
 	pg_time_usec_t start;
@@ -4175,7 +4205,15 @@ initGenerateDataClientSide(PGconn *con)
 	/*
 	 * accounts is big enough to be worth using COPY and tracking runtime
 	 */
-	res = PQexec(con, "copy pgbench_accounts from stdin");
+
+	/* use COPY with FREEZE on v14 and later without partioning */
+	if (partitions == 0 && PQserverVersion(con) >= 140000)
+		copy_statement = "copy pgbench_accounts from stdin with (freeze on)";
+	else
+		copy_statement = "copy pgbench_accounts from stdin";
+
+	res = PQexec(con, copy_statement);
+
 	if (PQresultStatus(res) != PGRES_COPY_IN)
 	{
 		pg_log_fatal("unexpected copy in result: %s", PQerrorMessage(con));
@@ -6469,7 +6507,10 @@ main(int argc, char **argv)
 
 	errno = THREAD_BARRIER_INIT(&barrier, nthreads);
 	if (errno != 0)
+	{
 		pg_log_fatal("could not initialize barrier: %m");
+		exit(1);
+	}
 
 #ifdef ENABLE_THREAD_SAFETY
 	/* start all threads but thread 0 which is executed directly later */
@@ -6528,7 +6569,11 @@ main(int argc, char **argv)
 			bench_start = thread->bench_start;
 	}
 
-	/* XXX should this be connection time? */
+	/*
+	 * All connections should be already closed in threadRun(), so this
+	 * disconnect_all() will be a no-op, but clean up the connecions just to
+	 * be sure. We don't need to measure the disconnection delays here.
+	 */
 	disconnect_all(state, nclients);
 
 	/*
@@ -6593,6 +6638,7 @@ threadRun(void *arg)
 
 	thread_start = pg_time_now();
 	thread->started_time = thread_start;
+	thread->conn_duration = 0;
 	last_report = thread_start;
 	next_report = last_report + (int64) 1000000 * progress;
 
@@ -6616,14 +6662,6 @@ threadRun(void *arg)
 				goto done;
 			}
 		}
-
-		/* compute connection delay */
-		thread->conn_duration = pg_time_now() - thread->started_time;
-	}
-	else
-	{
-		/* no connection delay to record */
-		thread->conn_duration = 0;
 	}
 
 	/* GO */
@@ -6824,9 +6862,7 @@ threadRun(void *arg)
 	}
 
 done:
-	start = pg_time_now();
 	disconnect_all(state, nstate);
-	thread->conn_duration += pg_time_now() - start;
 
 	if (thread->logfile)
 	{

@@ -428,16 +428,6 @@ static const NumericDigit const_two_data[1] = {2};
 static const NumericVar const_two =
 {1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_two_data};
 
-#if DEC_DIGITS == 4 || DEC_DIGITS == 2
-static const NumericDigit const_ten_data[1] = {10};
-static const NumericVar const_ten =
-{1, 0, NUMERIC_POS, 0, NULL, (NumericDigit *) const_ten_data};
-#elif DEC_DIGITS == 1
-static const NumericDigit const_ten_data[1] = {1};
-static const NumericVar const_ten =
-{1, 1, NUMERIC_POS, 0, NULL, (NumericDigit *) const_ten_data};
-#endif
-
 #if DEC_DIGITS == 4
 static const NumericDigit const_zero_point_nine_data[1] = {9000};
 #elif DEC_DIGITS == 2
@@ -582,6 +572,7 @@ static void power_var(const NumericVar *base, const NumericVar *exp,
 					  NumericVar *result);
 static void power_var_int(const NumericVar *base, int exp, NumericVar *result,
 						  int rscale);
+static void power_ten_int(int exp, NumericVar *result);
 
 static int	cmp_abs(const NumericVar *var1, const NumericVar *var2);
 static int	cmp_abs_common(const NumericDigit *var1digits, int var1ndigits,
@@ -816,6 +807,62 @@ numeric_is_integral(Numeric num)
 }
 
 /*
+ * make_numeric_typmod() -
+ *
+ *	Pack numeric precision and scale values into a typmod.  The upper 16 bits
+ *	are used for the precision (though actually not all these bits are needed,
+ *	since the maximum allowed precision is 1000).  The lower 16 bits are for
+ *	the scale, but since the scale is constrained to the range [-1000, 1000],
+ *	we use just the lower 11 of those 16 bits, and leave the remaining 5 bits
+ *	unset, for possible future use.
+ *
+ *	For purely historical reasons VARHDRSZ is then added to the result, thus
+ *	the unused space in the upper 16 bits is not all as freely available as it
+ *	might seem.  (We can't let the result overflow to a negative int32, as
+ *	other parts of the system would interpret that as not-a-valid-typmod.)
+ */
+static inline int32
+make_numeric_typmod(int precision, int scale)
+{
+	return ((precision << 16) | (scale & 0x7ff)) + VARHDRSZ;
+}
+
+/*
+ * Because of the offset, valid numeric typmods are at least VARHDRSZ
+ */
+static inline bool
+is_valid_numeric_typmod(int32 typmod)
+{
+	return typmod >= (int32) VARHDRSZ;
+}
+
+/*
+ * numeric_typmod_precision() -
+ *
+ *	Extract the precision from a numeric typmod --- see make_numeric_typmod().
+ */
+static inline int
+numeric_typmod_precision(int32 typmod)
+{
+	return ((typmod - VARHDRSZ) >> 16) & 0xffff;
+}
+
+/*
+ * numeric_typmod_scale() -
+ *
+ *	Extract the scale from a numeric typmod --- see make_numeric_typmod().
+ *
+ *	Note that the scale may be negative, so we must do sign extension when
+ *	unpacking it.  We do this using the bit hack (x^1024)-1024, which sign
+ *	extends an 11-bit two's complement number x.
+ */
+static inline int
+numeric_typmod_scale(int32 typmod)
+{
+	return (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
+}
+
+/*
  * numeric_maximum_size() -
  *
  *	Maximum size of a numeric with given typmod, or -1 if unlimited/unknown.
@@ -826,11 +873,11 @@ numeric_maximum_size(int32 typmod)
 	int			precision;
 	int			numeric_digits;
 
-	if (typmod < (int32) (VARHDRSZ))
+	if (!is_valid_numeric_typmod(typmod))
 		return -1;
 
 	/* precision (ie, max # of digits) is in upper bits of typmod */
-	precision = ((typmod - VARHDRSZ) >> 16) & 0xffff;
+	precision = numeric_typmod_precision(typmod);
 
 	/*
 	 * This formula computes the maximum number of NumericDigits we could need
@@ -1084,20 +1131,20 @@ numeric_support(PG_FUNCTION_ARGS)
 			Node	   *source = (Node *) linitial(expr->args);
 			int32		old_typmod = exprTypmod(source);
 			int32		new_typmod = DatumGetInt32(((Const *) typmod)->constvalue);
-			int32		old_scale = (old_typmod - VARHDRSZ) & 0xffff;
-			int32		new_scale = (new_typmod - VARHDRSZ) & 0xffff;
-			int32		old_precision = (old_typmod - VARHDRSZ) >> 16 & 0xffff;
-			int32		new_precision = (new_typmod - VARHDRSZ) >> 16 & 0xffff;
+			int32		old_scale = numeric_typmod_scale(old_typmod);
+			int32		new_scale = numeric_typmod_scale(new_typmod);
+			int32		old_precision = numeric_typmod_precision(old_typmod);
+			int32		new_precision = numeric_typmod_precision(new_typmod);
 
 			/*
-			 * If new_typmod < VARHDRSZ, the destination is unconstrained;
-			 * that's always OK.  If old_typmod >= VARHDRSZ, the source is
+			 * If new_typmod is invalid, the destination is unconstrained;
+			 * that's always OK.  If old_typmod is valid, the source is
 			 * constrained, and we're OK if the scale is unchanged and the
 			 * precision is not decreasing.  See further notes in function
 			 * header comment.
 			 */
-			if (new_typmod < (int32) VARHDRSZ ||
-				(old_typmod >= (int32) VARHDRSZ &&
+			if (!is_valid_numeric_typmod(new_typmod) ||
+				(is_valid_numeric_typmod(old_typmod) &&
 				 new_scale == old_scale && new_precision >= old_precision))
 				ret = relabel_to_typmod(source, new_typmod);
 		}
@@ -1119,11 +1166,11 @@ numeric		(PG_FUNCTION_ARGS)
 	Numeric		num = PG_GETARG_NUMERIC(0);
 	int32		typmod = PG_GETARG_INT32(1);
 	Numeric		new;
-	int32		tmp_typmod;
 	int			precision;
 	int			scale;
 	int			ddigits;
 	int			maxdigits;
+	int			dscale;
 	NumericVar	var;
 
 	/*
@@ -1140,16 +1187,18 @@ numeric		(PG_FUNCTION_ARGS)
 	 * If the value isn't a valid type modifier, simply return a copy of the
 	 * input value
 	 */
-	if (typmod < (int32) (VARHDRSZ))
+	if (!is_valid_numeric_typmod(typmod))
 		PG_RETURN_NUMERIC(duplicate_numeric(num));
 
 	/*
 	 * Get the precision and scale out of the typmod value
 	 */
-	tmp_typmod = typmod - VARHDRSZ;
-	precision = (tmp_typmod >> 16) & 0xffff;
-	scale = tmp_typmod & 0xffff;
+	precision = numeric_typmod_precision(typmod);
+	scale = numeric_typmod_scale(typmod);
 	maxdigits = precision - scale;
+
+	/* The target display scale is non-negative */
+	dscale = Max(scale, 0);
 
 	/*
 	 * If the number is certainly in bounds and due to the target scale no
@@ -1160,17 +1209,17 @@ numeric		(PG_FUNCTION_ARGS)
 	 */
 	ddigits = (NUMERIC_WEIGHT(num) + 1) * DEC_DIGITS;
 	if (ddigits <= maxdigits && scale >= NUMERIC_DSCALE(num)
-		&& (NUMERIC_CAN_BE_SHORT(scale, NUMERIC_WEIGHT(num))
+		&& (NUMERIC_CAN_BE_SHORT(dscale, NUMERIC_WEIGHT(num))
 			|| !NUMERIC_IS_SHORT(num)))
 	{
 		new = duplicate_numeric(num);
 		if (NUMERIC_IS_SHORT(num))
 			new->choice.n_short.n_header =
 				(num->choice.n_short.n_header & ~NUMERIC_SHORT_DSCALE_MASK)
-				| (scale << NUMERIC_SHORT_DSCALE_SHIFT);
+				| (dscale << NUMERIC_SHORT_DSCALE_SHIFT);
 		else
 			new->choice.n_long.n_sign_dscale = NUMERIC_SIGN(new) |
-				((uint16) scale & NUMERIC_DSCALE_MASK);
+				((uint16) dscale & NUMERIC_DSCALE_MASK);
 		PG_RETURN_NUMERIC(new);
 	}
 
@@ -1206,12 +1255,12 @@ numerictypmodin(PG_FUNCTION_ARGS)
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("NUMERIC precision %d must be between 1 and %d",
 							tl[0], NUMERIC_MAX_PRECISION)));
-		if (tl[1] < 0 || tl[1] > tl[0])
+		if (tl[1] < NUMERIC_MIN_SCALE || tl[1] > NUMERIC_MAX_SCALE)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("NUMERIC scale %d must be between 0 and precision %d",
-							tl[1], tl[0])));
-		typmod = ((tl[0] << 16) | tl[1]) + VARHDRSZ;
+					 errmsg("NUMERIC scale %d must be between %d and %d",
+							tl[1], NUMERIC_MIN_SCALE, NUMERIC_MAX_SCALE)));
+		typmod = make_numeric_typmod(tl[0], tl[1]);
 	}
 	else if (n == 1)
 	{
@@ -1221,7 +1270,7 @@ numerictypmodin(PG_FUNCTION_ARGS)
 					 errmsg("NUMERIC precision %d must be between 1 and %d",
 							tl[0], NUMERIC_MAX_PRECISION)));
 		/* scale defaults to zero */
-		typmod = (tl[0] << 16) + VARHDRSZ;
+		typmod = make_numeric_typmod(tl[0], 0);
 	}
 	else
 	{
@@ -1240,10 +1289,10 @@ numerictypmodout(PG_FUNCTION_ARGS)
 	int32		typmod = PG_GETARG_INT32(0);
 	char	   *res = (char *) palloc(64);
 
-	if (typmod >= 0)
+	if (is_valid_numeric_typmod(typmod))
 		snprintf(res, 64, "(%d,%d)",
-				 ((typmod - VARHDRSZ) >> 16) & 0xffff,
-				 (typmod - VARHDRSZ) & 0xffff);
+				 numeric_typmod_precision(typmod),
+				 numeric_typmod_scale(typmod));
 	else
 		*res = '\0';
 
@@ -3935,7 +3984,9 @@ numeric_power(PG_FUNCTION_ARGS)
 	/*
 	 * The SQL spec requires that we emit a particular SQLSTATE error code for
 	 * certain error conditions.  Specifically, we don't return a
-	 * divide-by-zero error code for 0 ^ -1.
+	 * divide-by-zero error code for 0 ^ -1.  Raising a negative number to a
+	 * non-integer power must produce the same error code, but that case is
+	 * handled in power_var().
 	 */
 	sign1 = numeric_sign_internal(num1);
 	sign2 = numeric_sign_internal(num2);
@@ -3944,11 +3995,6 @@ numeric_power(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_ARGUMENT_FOR_POWER_FUNCTION),
 				 errmsg("zero raised to a negative power is undefined")));
-
-	if (sign1 < 0 && !numeric_is_integral(num2))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_ARGUMENT_FOR_POWER_FUNCTION),
-				 errmsg("a negative number raised to a non-integer power yields a complex result")));
 
 	/*
 	 * Initialize things
@@ -4243,11 +4289,13 @@ numericvar_to_int32(const NumericVar *var, int32 *result)
 	if (!numericvar_to_int64(var, &val))
 		return false;
 
+	if (unlikely(val < PG_INT32_MIN) || unlikely(val > PG_INT32_MAX))
+		return false;
+
 	/* Down-convert to int4 */
 	*result = (int32) val;
 
-	/* Test for overflow by reverse-conversion. */
-	return ((int64) *result == val);
+	return true;
 }
 
 Datum
@@ -4327,14 +4375,13 @@ numeric_int2(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
 
-	/* Down-convert to int2 */
-	result = (int16) val;
-
-	/* Test for overflow by reverse-conversion. */
-	if ((int64) result != val)
+	if (unlikely(val < PG_INT16_MIN) || unlikely(val > PG_INT16_MAX))
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("smallint out of range")));
+
+	/* Down-convert to int2 */
+	result = (int16) val;
 
 	PG_RETURN_INT16(result);
 }
@@ -7155,9 +7202,7 @@ static char *
 get_str_from_var_sci(const NumericVar *var, int rscale)
 {
 	int32		exponent;
-	NumericVar	denominator;
-	NumericVar	significand;
-	int			denom_scale;
+	NumericVar	tmp_var;
 	size_t		len;
 	char	   *str;
 	char	   *sig_out;
@@ -7194,25 +7239,16 @@ get_str_from_var_sci(const NumericVar *var, int rscale)
 	}
 
 	/*
-	 * The denominator is set to 10 raised to the power of the exponent.
-	 *
-	 * We then divide var by the denominator to get the significand, rounding
-	 * to rscale decimal digits in the process.
+	 * Divide var by 10^exponent to get the significand, rounding to rscale
+	 * decimal digits in the process.
 	 */
-	if (exponent < 0)
-		denom_scale = -exponent;
-	else
-		denom_scale = 0;
+	init_var(&tmp_var);
 
-	init_var(&denominator);
-	init_var(&significand);
+	power_ten_int(exponent, &tmp_var);
+	div_var(var, &tmp_var, &tmp_var, rscale, true);
+	sig_out = get_str_from_var(&tmp_var);
 
-	power_var_int(&const_ten, exponent, &denominator, denom_scale);
-	div_var(var, &denominator, &significand, rscale, true);
-	sig_out = get_str_from_var(&significand);
-
-	free_var(&denominator);
-	free_var(&significand);
+	free_var(&tmp_var);
 
 	/*
 	 * Allocate space for the result.
@@ -7428,17 +7464,20 @@ apply_typmod(NumericVar *var, int32 typmod)
 	int			ddigits;
 	int			i;
 
-	/* Do nothing if we have a default typmod (-1) */
-	if (typmod < (int32) (VARHDRSZ))
+	/* Do nothing if we have an invalid typmod */
+	if (!is_valid_numeric_typmod(typmod))
 		return;
 
-	typmod -= VARHDRSZ;
-	precision = (typmod >> 16) & 0xffff;
-	scale = typmod & 0xffff;
+	precision = numeric_typmod_precision(typmod);
+	scale = numeric_typmod_scale(typmod);
 	maxdigits = precision - scale;
 
 	/* Round to target scale (and set var->dscale) */
 	round_var(var, scale);
+
+	/* but don't allow var->dscale to be negative */
+	if (var->dscale < 0)
+		var->dscale = 0;
 
 	/*
 	 * Check for overflow - note we can't do this before rounding, because
@@ -7514,12 +7553,11 @@ apply_typmod_special(Numeric num, int32 typmod)
 		return;
 
 	/* Do nothing if we have a default typmod (-1) */
-	if (typmod < (int32) (VARHDRSZ))
+	if (!is_valid_numeric_typmod(typmod))
 		return;
 
-	typmod -= VARHDRSZ;
-	precision = (typmod >> 16) & 0xffff;
-	scale = typmod & 0xffff;
+	precision = numeric_typmod_precision(typmod);
+	scale = numeric_typmod_scale(typmod);
 
 	ereport(ERROR,
 			(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
@@ -9762,12 +9800,18 @@ exp_var(const NumericVar *arg, NumericVar *result, int rscale)
 	 */
 	val = numericvar_to_double_no_overflow(&x);
 
-	/* Guard against overflow */
+	/* Guard against overflow/underflow */
 	/* If you change this limit, see also power_var()'s limit */
 	if (Abs(val) >= NUMERIC_MAX_RESULT_SCALE * 3)
-		ereport(ERROR,
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("value overflows numeric format")));
+	{
+		if (val > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+					 errmsg("value overflows numeric format")));
+		zero_var(result);
+		result->dscale = rscale;
+		return;
+	}
 
 	/* decimal weight = log10(e^x) = x * log10(e) */
 	dweight = (int) (val * 0.434294481903252);
@@ -10125,10 +10169,13 @@ log_var(const NumericVar *base, const NumericVar *num, NumericVar *result)
 static void
 power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 {
+	int			res_sign;
+	NumericVar	abs_base;
 	NumericVar	ln_base;
 	NumericVar	ln_num;
 	int			ln_dweight;
 	int			rscale;
+	int			sig_digits;
 	int			local_rscale;
 	double		val;
 
@@ -10140,10 +10187,7 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 
 		if (numericvar_to_int64(exp, &expval64))
 		{
-			int			expval = (int) expval64;
-
-			/* Test for overflow by reverse-conversion. */
-			if ((int64) expval == expval64)
+			if (expval64 >= PG_INT32_MIN && expval64 <= PG_INT32_MAX)
 			{
 				/* Okay, select rscale */
 				rscale = NUMERIC_MIN_SIG_DIGITS;
@@ -10151,7 +10195,7 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 				rscale = Max(rscale, NUMERIC_MIN_DISPLAY_SCALE);
 				rscale = Min(rscale, NUMERIC_MAX_DISPLAY_SCALE);
 
-				power_var_int(base, expval, result, rscale);
+				power_var_int(base, (int) expval64, result, rscale);
 				return;
 			}
 		}
@@ -10168,8 +10212,39 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 		return;
 	}
 
+	init_var(&abs_base);
 	init_var(&ln_base);
 	init_var(&ln_num);
+
+	/*
+	 * If base is negative, insist that exp be an integer.  The result is then
+	 * positive if exp is even and negative if exp is odd.
+	 */
+	if (base->sign == NUMERIC_NEG)
+	{
+		/*
+		 * Check that exp is an integer.  This error code is defined by the
+		 * SQL standard, and matches other errors in numeric_power().
+		 */
+		if (exp->ndigits > 0 && exp->ndigits > exp->weight + 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_ARGUMENT_FOR_POWER_FUNCTION),
+					 errmsg("a negative number raised to a non-integer power yields a complex result")));
+
+		/* Test if exp is odd or even */
+		if (exp->ndigits > 0 && exp->ndigits == exp->weight + 1 &&
+			(exp->digits[exp->ndigits - 1] & 1))
+			res_sign = NUMERIC_NEG;
+		else
+			res_sign = NUMERIC_POS;
+
+		/* Then work with abs(base) below */
+		set_var_from_var(base, &abs_base);
+		abs_base.sign = NUMERIC_POS;
+		base = &abs_base;
+	}
+	else
+		res_sign = NUMERIC_POS;
 
 	/*----------
 	 * Decide on the scale for the ln() calculation.  For this we need an
@@ -10201,11 +10276,17 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 
 	val = numericvar_to_double_no_overflow(&ln_num);
 
-	/* initial overflow test with fuzz factor */
+	/* initial overflow/underflow test with fuzz factor */
 	if (Abs(val) > NUMERIC_MAX_RESULT_SCALE * 3.01)
-		ereport(ERROR,
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("value overflows numeric format")));
+	{
+		if (val > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
+					 errmsg("value overflows numeric format")));
+		zero_var(result);
+		result->dscale = NUMERIC_MAX_DISPLAY_SCALE;
+		return;
+	}
 
 	val *= 0.434294481903252;	/* approximate decimal result weight */
 
@@ -10216,8 +10297,12 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 	rscale = Max(rscale, NUMERIC_MIN_DISPLAY_SCALE);
 	rscale = Min(rscale, NUMERIC_MAX_DISPLAY_SCALE);
 
+	/* significant digits required in the result */
+	sig_digits = rscale + (int) val;
+	sig_digits = Max(sig_digits, 0);
+
 	/* set the scale for the real exp * ln(base) calculation */
-	local_rscale = rscale + (int) val - ln_dweight + 8;
+	local_rscale = sig_digits - ln_dweight + 8;
 	local_rscale = Max(local_rscale, NUMERIC_MIN_DISPLAY_SCALE);
 
 	/* and do the real calculation */
@@ -10228,8 +10313,12 @@ power_var(const NumericVar *base, const NumericVar *exp, NumericVar *result)
 
 	exp_var(&ln_num, result, rscale);
 
+	if (res_sign == NUMERIC_NEG && result->ndigits > 0)
+		result->sign = NUMERIC_NEG;
+
 	free_var(&ln_num);
 	free_var(&ln_base);
+	free_var(&abs_base);
 }
 
 /*
@@ -10406,6 +10495,34 @@ power_var_int(const NumericVar *base, int exp, NumericVar *result, int rscale)
 		div_var_fast(&const_one, result, result, rscale, true);
 	else
 		round_var(result, rscale);
+}
+
+/*
+ * power_ten_int() -
+ *
+ *	Raise ten to the power of exp, where exp is an integer.  Note that unlike
+ *	power_var_int(), this does no overflow/underflow checking or rounding.
+ */
+static void
+power_ten_int(int exp, NumericVar *result)
+{
+	/* Construct the result directly, starting from 10^0 = 1 */
+	set_var_from_var(&const_one, result);
+
+	/* Scale needed to represent the result exactly */
+	result->dscale = exp < 0 ? -exp : 0;
+
+	/* Base-NBASE weight of result and remaining exponent */
+	if (exp >= 0)
+		result->weight = exp / DEC_DIGITS;
+	else
+		result->weight = (exp + 1) / DEC_DIGITS - 1;
+
+	exp -= result->weight * DEC_DIGITS;
+
+	/* Final adjustment of the result's single NBASE digit */
+	while (exp-- > 0)
+		result->digits[0] *= 10;
 }
 
 

@@ -11,7 +11,7 @@ PostgresNode - class representing PostgreSQL server instance
 
   use PostgresNode;
 
-  my $node = PostgresNode->get_new_node('mynode');
+  my $node = PostgresNode->new('mynode');
 
   # Create a data directory with initdb
   $node->init();
@@ -19,9 +19,12 @@ PostgresNode - class representing PostgreSQL server instance
   # Start the PostgreSQL server
   $node->start();
 
-  # Change a setting and restart
+  # Add a setting and restart
   $node->append_conf('postgresql.conf', 'hot_standby = on');
   $node->restart();
+
+  # Modify or delete an existing setting
+  $node->adjust_conf('postgresql.conf', 'max_wal_senders', '10');
 
   # run a query with psql, like:
   #   echo 'SELECT 1' | psql -qAXt postgres -v ON_ERROR_STOP=1
@@ -58,15 +61,15 @@ PostgresNode - class representing PostgreSQL server instance
   my $ret = $node->backup_fs_cold('testbackup3')
 
   # Restore it to create a new independent node (not a replica)
-  my $replica = get_new_node('replica');
-  $replica->init_from_backup($node, 'testbackup');
-  $replica->start;
+  my $other_node = PostgresNode->new('mycopy');
+  $other_node->init_from_backup($node, 'testbackup');
+  $other_node->start;
 
   # Stop the server
   $node->stop('fast');
 
   # Find a free, unprivileged TCP port to bind some other service to
-  my $port = get_free_port();
+  my $port = PostgresNode::get_free_port();
 
 =head1 DESCRIPTION
 
@@ -90,7 +93,6 @@ use warnings;
 use Carp;
 use Config;
 use Cwd;
-use Exporter 'import';
 use Fcntl qw(:mode);
 use File::Basename;
 use File::Path qw(rmtree);
@@ -105,11 +107,6 @@ use Test::More;
 use TestLib ();
 use Time::HiRes qw(usleep);
 use Scalar::Util qw(blessed);
-
-our @EXPORT = qw(
-  get_new_node
-  get_free_port
-);
 
 our ($use_tcp, $test_localhost, $test_pghost, $last_host_assigned,
 	$last_port_assigned, @all_nodes, $died);
@@ -135,41 +132,6 @@ INIT
 =head1 METHODS
 
 =over
-
-=item PostgresNode::new($class, $name, $pghost, $pgport)
-
-Create a new PostgresNode instance. Does not initdb or start it.
-
-You should generally prefer to use get_new_node() instead since it takes care
-of finding port numbers, registering instances for cleanup, etc.
-
-=cut
-
-sub new
-{
-	my ($class, $name, $pghost, $pgport) = @_;
-	my $testname = basename($0);
-	$testname =~ s/\.[^.]+$//;
-	my $self = {
-		_port    => $pgport,
-		_host    => $pghost,
-		_basedir => "$TestLib::tmp_check/t_${testname}_${name}_data",
-		_name    => $name,
-		_logfile_generation => 0,
-		_logfile_base       => "$TestLib::log_path/${testname}_${name}",
-		_logfile            => "$TestLib::log_path/${testname}_${name}.log"
-	};
-
-	bless $self, $class;
-	mkdir $self->{_basedir}
-	  or
-	  BAIL_OUT("could not create data directory \"$self->{_basedir}\": $!");
-	$self->dump_info;
-
-	return $self;
-}
-
-=pod
 
 =item $node->port()
 
@@ -336,6 +298,20 @@ sub backup_dir
 	my ($self) = @_;
 	my $basedir = $self->basedir;
 	return "$basedir/backup";
+}
+
+=pod
+
+=item $node->install_path()
+
+The configured install path (if any) for the node.
+
+=cut
+
+sub install_path
+{
+	my ($self) = @_;
+	return $self->{_install_path};
 }
 
 =pod
@@ -540,6 +516,50 @@ sub append_conf
 	  or die("unable to set permissions for $conffile");
 
 	return;
+}
+
+=pod
+
+=item $node->adjust_conf(filename, setting, value, skip_equals)
+
+Modify the named config file setting with the value. If the value is undefined,
+instead delete the setting. If the setting is not present no action is taken.
+
+This will write "$setting = $value\n" in place of the existing line,
+unless skip_equals is true, in which case it will write
+"$setting $value\n". If the value needs to be quoted it is the caller's
+responsibility to do that.
+
+=cut
+
+sub adjust_conf
+{
+	my ($self, $filename, $setting, $value, $skip_equals) = @_;
+
+	my $conffile = $self->data_dir . '/' . $filename;
+
+	my $contents = TestLib::slurp_file($conffile);
+	my @lines    = split(/\n/, $contents);
+	my @result;
+	my $eq = $skip_equals ? '' : '= ';
+	foreach my $line (@lines)
+	{
+		if ($line !~ /^$setting\W/)
+		{
+			push(@result, "$line\n");
+		}
+		elsif (defined $value)
+		{
+			push(@result, "$setting $eq$value\n");
+		}
+	}
+	open my $fh, ">", $conffile
+	  or croak "could not write \"$conffile\": $!";
+	print $fh @result;
+	close $fh;
+
+	chmod($self->group_access() ? 0640 : 0600, $conffile)
+	  or die("unable to set permissions for $conffile");
 }
 
 =pod
@@ -805,7 +825,9 @@ sub start
 
 	# Note: We set the cluster_name here, not in postgresql.conf (in
 	# sub init) so that it does not get copied to standbys.
-	$ret = TestLib::system_log('pg_ctl', '-D', $self->data_dir, '-l',
+	# -w is now the default but having it here does no harm and helps
+	# compatibility with older versions.
+	$ret = TestLib::system_log('pg_ctl', '-w', '-D', $self->data_dir, '-l',
 		$self->logfile, '-o', "--cluster-name=$name", 'start');
 
 	if ($ret != 0)
@@ -919,7 +941,9 @@ sub restart
 
 	print "### Restarting node \"$name\"\n";
 
-	TestLib::system_or_bail('pg_ctl', '-D', $pgdata, '-l', $logfile,
+	# -w is now the default but having it here does no harm and helps
+	# compatibility with older versions.
+	TestLib::system_or_bail('pg_ctl', '-w', '-D', $pgdata, '-l', $logfile,
 		'restart');
 
 	$self->_update_pid(1);
@@ -1117,14 +1141,12 @@ sub _update_pid
 
 =pod
 
-=item PostgresNode->get_new_node(node_name, %params)
+=item PostgresNode->new(node_name, %params)
 
 Build a new object of class C<PostgresNode> (or of a subclass, if you have
 one), assigning a free port number.  Remembers the node, to prevent its port
 number from being reused for another node, and to ensure that it gets
 shut down when the test script exits.
-
-You should generally use this instead of C<PostgresNode::new(...)>.
 
 =over
 
@@ -1150,15 +1172,11 @@ not provided, Postgres binaries will be found in the caller's PATH.
 
 =back
 
-For backwards compatibility, it is also exported as a standalone function,
-which can only create objects of class C<PostgresNode>.
-
 =cut
 
-sub get_new_node
+sub new
 {
-	my $class = 'PostgresNode';
-	$class = shift if scalar(@_) % 2 != 1;
+	my $class = shift;
 	my ($name, %params) = @_;
 
 	# Select a port.
@@ -1193,13 +1211,29 @@ sub get_new_node
 		}
 	}
 
-	# Lock port number found by creating a new node
-	my $node = $class->new($name, $host, $port);
+	my $testname = basename($0);
+	$testname =~ s/\.[^.]+$//;
+	my $node = {
+		_port    => $port,
+		_host    => $host,
+		_basedir => "$TestLib::tmp_check/t_${testname}_${name}_data",
+		_name    => $name,
+		_logfile_generation => 0,
+		_logfile_base       => "$TestLib::log_path/${testname}_${name}",
+		_logfile            => "$TestLib::log_path/${testname}_${name}.log"
+	};
 
 	if ($params{install_path})
 	{
 		$node->{_install_path} = $params{install_path};
 	}
+
+	bless $node, $class;
+	mkdir $node->{_basedir}
+	  or
+	  BAIL_OUT("could not create data directory \"$node->{_basedir}\": $!");
+
+	$node->dump_info;
 
 	# Add node to list of nodes
 	push(@all_nodes, $node);
@@ -1271,7 +1305,7 @@ sub _set_pg_version
 # the remainder are# set. Then the PATH and (DY)LD_LIBRARY_PATH are adjusted
 # if the node's install path is set, and the copy environment is returned.
 #
-# The install path set in get_new_node needs to be a directory containing
+# The install path set in new() needs to be a directory containing
 # bin and lib subdirectories as in a standard PostgreSQL installation, so this
 # can't be used with installations where the bin and lib directories don't have
 # a common parent directory.
@@ -1356,14 +1390,17 @@ sub installed_command
 =item get_free_port()
 
 Locate an unprivileged (high) TCP port that's not currently bound to
-anything.  This is used by get_new_node, and is also exported for use
-by test cases that need to start other, non-Postgres servers.
+anything.  This is used by C<new()>, and also by some test cases that need to
+start other, non-Postgres servers.
 
 Ports assigned to existing PostgresNode objects are automatically
 excluded, even if those servers are not currently running.
 
 XXX A port available now may become unavailable by the time we start
 the desired service.
+
+Note: this is not an instance method. As it's not exported it should be
+called from outside the module as C<PostgresNode::get_free_port()>.
 
 =cut
 
@@ -2225,6 +2262,26 @@ sub command_like
 	local %ENV = $self->_get_env();
 
 	TestLib::command_like(@_);
+	return;
+}
+
+=pod
+
+=item $node->command_fails_like(...)
+
+TestLib::command_fails_like with our connection parameters. See command_ok(...)
+
+=cut
+
+sub command_fails_like
+{
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
+	my $self = shift;
+
+	local %ENV = $self->_get_env();
+
+	TestLib::command_fails_like(@_);
 	return;
 }
 

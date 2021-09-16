@@ -101,9 +101,9 @@ enum FdwModifyPrivateIndex
 	FdwModifyPrivateUpdateSql,
 	/* Integer list of target attribute numbers for INSERT/UPDATE */
 	FdwModifyPrivateTargetAttnums,
-	/* Length till the end of VALUES clause (as an integer Value node) */
+	/* Length till the end of VALUES clause (as an Integer node) */
 	FdwModifyPrivateLen,
-	/* has-returning flag (as an integer Value node) */
+	/* has-returning flag (as an Integer node) */
 	FdwModifyPrivateHasReturning,
 	/* Integer list of attribute numbers retrieved by RETURNING */
 	FdwModifyPrivateRetrievedAttrs
@@ -122,11 +122,11 @@ enum FdwDirectModifyPrivateIndex
 {
 	/* SQL statement to execute remotely (as a String node) */
 	FdwDirectModifyPrivateUpdateSql,
-	/* has-returning flag (as an integer Value node) */
+	/* has-returning flag (as an Integer node) */
 	FdwDirectModifyPrivateHasReturning,
 	/* Integer list of attribute numbers retrieved by RETURNING */
 	FdwDirectModifyPrivateRetrievedAttrs,
-	/* set-processed flag (as an integer Value node) */
+	/* set-processed flag (as an Integer node) */
 	FdwDirectModifyPrivateSetProcessed
 };
 
@@ -280,9 +280,9 @@ typedef struct PgFdwAnalyzeState
  */
 enum FdwPathPrivateIndex
 {
-	/* has-final-sort flag (as an integer Value node) */
+	/* has-final-sort flag (as an Integer node) */
 	FdwPathPrivateHasFinalSort,
-	/* has-limit flag (as an integer Value node) */
+	/* has-limit flag (as an Integer node) */
 	FdwPathPrivateHasLimit
 };
 
@@ -503,6 +503,7 @@ static void analyze_row_processor(PGresult *res, int row,
 								  PgFdwAnalyzeState *astate);
 static void produce_tuple_asynchronously(AsyncRequest *areq, bool fetch);
 static void fetch_more_data_begin(AsyncRequest *areq);
+static void complete_pending_request(AsyncRequest *areq);
 static HeapTuple make_tuple_from_result_row(PGresult *res,
 											int row,
 											Relation rel,
@@ -2854,7 +2855,7 @@ postgresExplainForeignScan(ForeignScanState *node, ExplainState *es)
 				{
 					char	   *namespace;
 
-					namespace = get_namespace_name(get_rel_namespace(rte->relid));
+					namespace = get_namespace_name_or_temp(get_rel_namespace(rte->relid));
 					appendStringInfo(relations, "%s.%s",
 									 quote_identifier(namespace),
 									 quote_identifier(relname));
@@ -4011,6 +4012,9 @@ create_foreign_modify(EState *estate,
 
 			Assert(!attr->attisdropped);
 
+			/* Ignore generated columns; they are set to DEFAULT */
+			if (attr->attgenerated)
+				continue;
 			getTypeOutputInfo(attr->atttypid, &typefnoid, &isvarlena);
 			fmgr_info(typefnoid, &fmstate->p_flinfo[fmstate->p_nums]);
 			fmstate->p_nums++;
@@ -4074,8 +4078,10 @@ execute_foreign_modify(EState *estate,
 
 		/* Build INSERT string with numSlots records in its VALUES clause. */
 		initStringInfo(&sql);
-		rebuildInsertSql(&sql, fmstate->orig_query, fmstate->values_end,
-						 fmstate->p_nums, *numSlots - 1);
+		rebuildInsertSql(&sql, fmstate->rel,
+						 fmstate->orig_query, fmstate->target_attrs,
+						 fmstate->values_end, fmstate->p_nums,
+						 *numSlots - 1);
 		pfree(fmstate->query);
 		fmstate->query = sql.data;
 		fmstate->num_slots = *numSlots;
@@ -4243,6 +4249,7 @@ convert_prep_stmt_params(PgFdwModifyState *fmstate,
 	/* get following parameters from slots */
 	if (slots != NULL && fmstate->target_attrs != NIL)
 	{
+		TupleDesc	tupdesc = RelationGetDescr(fmstate->rel);
 		int			nestlevel;
 		ListCell   *lc;
 
@@ -4254,9 +4261,13 @@ convert_prep_stmt_params(PgFdwModifyState *fmstate,
 			foreach(lc, fmstate->target_attrs)
 			{
 				int			attnum = lfirst_int(lc);
+				Form_pg_attribute attr = TupleDescAttr(tupdesc, attnum - 1);
 				Datum		value;
 				bool		isnull;
 
+				/* Ignore generated columns; they are set to DEFAULT */
+				if (attr->attgenerated)
+					continue;
 				value = slot_getattr(slots[i], attnum, &isnull);
 				if (isnull)
 					p_values[pindex] = NULL;
@@ -5187,6 +5198,7 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 	List	   *commands = NIL;
 	bool		import_collate = true;
 	bool		import_default = false;
+	bool		import_generated = true;
 	bool		import_not_null = true;
 	ForeignServer *server;
 	UserMapping *mapping;
@@ -5206,6 +5218,8 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 			import_collate = defGetBoolean(def);
 		else if (strcmp(def->defname, "import_default") == 0)
 			import_default = defGetBoolean(def);
+		else if (strcmp(def->defname, "import_generated") == 0)
+			import_generated = defGetBoolean(def);
 		else if (strcmp(def->defname, "import_not_null") == 0)
 			import_not_null = defGetBoolean(def);
 		else
@@ -5269,43 +5283,45 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 		 * include a schema name for types/functions in other schemas, which
 		 * is what we want.
 		 */
+		appendStringInfoString(&buf,
+							   "SELECT relname, "
+							   "  attname, "
+							   "  format_type(atttypid, atttypmod), "
+							   "  attnotnull, "
+							   "  pg_get_expr(adbin, adrelid), ");
+
+		/* Generated columns are supported since Postgres 12 */
+		if (PQserverVersion(conn) >= 120000)
+			appendStringInfoString(&buf,
+								   "  attgenerated, ");
+		else
+			appendStringInfoString(&buf,
+								   "  NULL, ");
+
 		if (import_collate)
 			appendStringInfoString(&buf,
-								   "SELECT relname, "
-								   "  attname, "
-								   "  format_type(atttypid, atttypmod), "
-								   "  attnotnull, "
-								   "  pg_get_expr(adbin, adrelid), "
 								   "  collname, "
-								   "  collnsp.nspname "
-								   "FROM pg_class c "
-								   "  JOIN pg_namespace n ON "
-								   "    relnamespace = n.oid "
-								   "  LEFT JOIN pg_attribute a ON "
-								   "    attrelid = c.oid AND attnum > 0 "
-								   "      AND NOT attisdropped "
-								   "  LEFT JOIN pg_attrdef ad ON "
-								   "    adrelid = c.oid AND adnum = attnum "
+								   "  collnsp.nspname ");
+		else
+			appendStringInfoString(&buf,
+								   "  NULL, NULL ");
+
+		appendStringInfoString(&buf,
+							   "FROM pg_class c "
+							   "  JOIN pg_namespace n ON "
+							   "    relnamespace = n.oid "
+							   "  LEFT JOIN pg_attribute a ON "
+							   "    attrelid = c.oid AND attnum > 0 "
+							   "      AND NOT attisdropped "
+							   "  LEFT JOIN pg_attrdef ad ON "
+							   "    adrelid = c.oid AND adnum = attnum ");
+
+		if (import_collate)
+			appendStringInfoString(&buf,
 								   "  LEFT JOIN pg_collation coll ON "
 								   "    coll.oid = attcollation "
 								   "  LEFT JOIN pg_namespace collnsp ON "
 								   "    collnsp.oid = collnamespace ");
-		else
-			appendStringInfoString(&buf,
-								   "SELECT relname, "
-								   "  attname, "
-								   "  format_type(atttypid, atttypmod), "
-								   "  attnotnull, "
-								   "  pg_get_expr(adbin, adrelid), "
-								   "  NULL, NULL "
-								   "FROM pg_class c "
-								   "  JOIN pg_namespace n ON "
-								   "    relnamespace = n.oid "
-								   "  LEFT JOIN pg_attribute a ON "
-								   "    attrelid = c.oid AND attnum > 0 "
-								   "      AND NOT attisdropped "
-								   "  LEFT JOIN pg_attrdef ad ON "
-								   "    adrelid = c.oid AND adnum = attnum ");
 
 		appendStringInfoString(&buf,
 							   "WHERE c.relkind IN ("
@@ -5373,6 +5389,7 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 				char	   *attname;
 				char	   *typename;
 				char	   *attnotnull;
+				char	   *attgenerated;
 				char	   *attdefault;
 				char	   *collname;
 				char	   *collnamespace;
@@ -5386,10 +5403,12 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 				attnotnull = PQgetvalue(res, i, 3);
 				attdefault = PQgetisnull(res, i, 4) ? (char *) NULL :
 					PQgetvalue(res, i, 4);
-				collname = PQgetisnull(res, i, 5) ? (char *) NULL :
+				attgenerated = PQgetisnull(res, i, 5) ? (char *) NULL :
 					PQgetvalue(res, i, 5);
-				collnamespace = PQgetisnull(res, i, 6) ? (char *) NULL :
+				collname = PQgetisnull(res, i, 6) ? (char *) NULL :
 					PQgetvalue(res, i, 6);
+				collnamespace = PQgetisnull(res, i, 7) ? (char *) NULL :
+					PQgetvalue(res, i, 7);
 
 				if (first_item)
 					first_item = false;
@@ -5417,8 +5436,19 @@ postgresImportForeignSchema(ImportForeignSchemaStmt *stmt, Oid serverOid)
 									 quote_identifier(collname));
 
 				/* Add DEFAULT if needed */
-				if (import_default && attdefault != NULL)
+				if (import_default && attdefault != NULL &&
+					(!attgenerated || !attgenerated[0]))
 					appendStringInfo(&buf, " DEFAULT %s", attdefault);
+
+				/* Add GENERATED if needed */
+				if (import_generated && attgenerated != NULL &&
+					attgenerated[0] == ATTRIBUTE_GENERATED_STORED)
+				{
+					Assert(attdefault != NULL);
+					appendStringInfo(&buf,
+									 " GENERATED ALWAYS AS (%s) STORED",
+									 attdefault);
+				}
 
 				/* Add NOT NULL if needed */
 				if (import_not_null && attnotnull[0] == 't')
@@ -6826,6 +6856,22 @@ postgresForeignAsyncConfigureWait(AsyncRequest *areq)
 	/* This should not be called unless callback_pending */
 	Assert(areq->callback_pending);
 
+	/*
+	 * If process_pending_request() has been invoked on the given request
+	 * before we get here, we might have some tuples already; in which case
+	 * complete the request
+	 */
+	if (fsstate->next_tuple < fsstate->num_tuples)
+	{
+		complete_pending_request(areq);
+		if (areq->request_complete)
+			return;
+		Assert(areq->callback_pending);
+	}
+
+	/* We must have run out of tuples */
+	Assert(fsstate->next_tuple >= fsstate->num_tuples);
+
 	/* The core code would have registered postmaster death event */
 	Assert(GetNumRegisteredWaitEvents(set) >= 1);
 
@@ -6838,12 +6884,15 @@ postgresForeignAsyncConfigureWait(AsyncRequest *areq)
 		 * This is the case when the in-process request was made by another
 		 * Append.  Note that it might be useless to process the request,
 		 * because the query might not need tuples from that Append anymore.
-		 * Skip the given request if there are any configured events other
-		 * than the postmaster death event; otherwise process the request,
-		 * then begin a fetch to configure the event below, because otherwise
-		 * we might end up with no configured events other than the postmaster
-		 * death event.
+		 * If there are any child subplans of the same parent that are ready
+		 * for new requests, skip the given request.  Likewise, if there are
+		 * any configured events other than the postmaster death event, skip
+		 * it.  Otherwise, process the in-process request, then begin a fetch
+		 * to configure the event below, because we might otherwise end up
+		 * with no configured events other than the postmaster death event.
 		 */
+		if (!bms_is_empty(requestor->as_needrequest))
+			return;
 		if (GetNumRegisteredWaitEvents(set) > 1)
 			return;
 		process_pending_request(pendingAreq);
@@ -6876,11 +6925,25 @@ postgresForeignAsyncNotify(AsyncRequest *areq)
 	ForeignScanState *node = (ForeignScanState *) areq->requestee;
 	PgFdwScanState *fsstate = (PgFdwScanState *) node->fdw_state;
 
-	/* The request should be currently in-process */
-	Assert(fsstate->conn_state->pendingAreq == areq);
-
 	/* The core code would have initialized the callback_pending flag */
 	Assert(!areq->callback_pending);
+
+	/*
+	 * If process_pending_request() has been invoked on the given request
+	 * before we get here, we might have some tuples already; in which case
+	 * produce the next tuple
+	 */
+	if (fsstate->next_tuple < fsstate->num_tuples)
+	{
+		produce_tuple_asynchronously(areq, true);
+		return;
+	}
+
+	/* We must have run out of tuples */
+	Assert(fsstate->next_tuple >= fsstate->num_tuples);
+
+	/* The request should be currently in-process */
+	Assert(fsstate->conn_state->pendingAreq == areq);
 
 	/* On error, report the original query, not the FETCH. */
 	if (!PQconsumeInput(fsstate->conn))
@@ -6995,23 +7058,44 @@ process_pending_request(AsyncRequest *areq)
 {
 	ForeignScanState *node = (ForeignScanState *) areq->requestee;
 	PgFdwScanState *fsstate PG_USED_FOR_ASSERTS_ONLY = (PgFdwScanState *) node->fdw_state;
-	EState	   *estate = node->ss.ps.state;
-	MemoryContext oldcontext;
+
+	/* The request would have been pending for a callback */
+	Assert(areq->callback_pending);
 
 	/* The request should be currently in-process */
 	Assert(fsstate->conn_state->pendingAreq == areq);
 
-	oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
+	fetch_more_data(node);
 
+	/*
+	 * If we didn't get any tuples, must be end of data; complete the request
+	 * now.  Otherwise, we postpone completing the request until we are called
+	 * from postgresForeignAsyncConfigureWait()/postgresForeignAsyncNotify().
+	 */
+	if (fsstate->next_tuple >= fsstate->num_tuples)
+	{
+		/* Unlike AsyncNotify, we unset callback_pending ourselves */
+		areq->callback_pending = false;
+		/* Mark the request as complete */
+		ExecAsyncRequestDone(areq, NULL);
+		/* Unlike AsyncNotify, we call ExecAsyncResponse ourselves */
+		ExecAsyncResponse(areq);
+	}
+}
+
+/*
+ * Complete a pending asynchronous request.
+ */
+static void
+complete_pending_request(AsyncRequest *areq)
+{
 	/* The request would have been pending for a callback */
 	Assert(areq->callback_pending);
 
 	/* Unlike AsyncNotify, we unset callback_pending ourselves */
 	areq->callback_pending = false;
 
-	fetch_more_data(node);
-
-	/* We need to send a new query afterwards; don't fetch */
+	/* We begin a fetch afterwards if necessary; don't fetch */
 	produce_tuple_asynchronously(areq, false);
 
 	/* Unlike AsyncNotify, we call ExecAsyncResponse ourselves */
@@ -7021,8 +7105,6 @@ process_pending_request(AsyncRequest *areq)
 	if (areq->requestee->instrument)
 		InstrUpdateTupleCount(areq->requestee->instrument,
 							  TupIsNull(areq->result) ? 0.0 : 1.0);
-
-	MemoryContextSwitchTo(oldcontext);
 }
 
 /*

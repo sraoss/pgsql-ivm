@@ -113,6 +113,7 @@ Append
 AppendPath
 AppendRelInfo
 AppendState
+ApplyErrorCallbackArg
 ApplyExecutionData
 ApplySubXactData
 Archive
@@ -708,6 +709,7 @@ File
 FileFdwExecutionState
 FileFdwPlanState
 FileNameMap
+FileSet
 FileTag
 FinalPathExtraData
 FindColsContext
@@ -2045,6 +2047,7 @@ PublicationActions
 PublicationInfo
 PublicationPartOpt
 PublicationRelInfo
+PublicationTable
 PullFilter
 PullFilterOps
 PushFilter
@@ -2423,7 +2426,6 @@ SlabBlock
 SlabChunk
 SlabContext
 SlabSlot
-SlotErrCallbackArg
 SlotNumber
 SlruCtl
 SlruCtlData
