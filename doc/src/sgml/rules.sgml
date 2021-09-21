@@ -1288,15 +1288,69 @@ Time: 16386.245 ms (00:16.386)
 <title>Supported View Definitions and Restrictions</title>
 
 <para>
-    Currently, we can create <acronym>IMMV</acronym>s using inner joins, and some
-    aggregates. However, several restrictions apply to the definition of IMMV.
+    Currently, we can create <acronym>IMMV</acronym>s using inner and outer
+    joins, some aggregates, and some subqueries. However, several restrictions
+    apply to the definition of IMMV.
 </para>
 
 <sect3>
 <title>Joins</title>
 <para>
-    Inner joins including self-join are supported. Outer joins are not supported.
+    Both of inner and outer joins including self-join are supported. However,
+     there are several restrictions if the view definition includes any outer
+     joins.
 </para>
+    <sect4>
+    <title>Restrictions on Outer Join</title>
+    <para>
+        For outer join views, there are the following restrictions:
+    <itemizedlist>
+        <listitem>
+        <para>
+            Only simple equijoin is supported. Join condition must be a single equality
+            comparison on columns of two base tables.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            All attributes used in join conditions must be contained in the target list.
+               These attributes are used as scan keys for searching tuples in the
+               <acronym>IMMV</acronym>, so indexes on them are required for efficient
+               <acronym>IVM</acronym>.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            The target list cannot contain non-strict functions that can return
+            a non-NULL result for NULL inputs. For example, <literal>CASE</literal>
+            statements cannot be used.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>WHERE</literal> clauses cannot contain non null-rejecting
+            predicates that can return true for NULL inputs.  For example,
+            <literal>IS NULL</literal> cannot be used.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Aggregates cannot be used with outer join.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Subqueries cannot be used with outer join.
+        </para>
+        </listitem>
+    </itemizedlist>
+    </para>
+    </sect4>
 </sect3>
 
 <sect3>
@@ -1354,22 +1408,109 @@ Time: 16386.245 ms (00:16.386)
 </sect3>
 
 <sect3>
+<title>Subqueries</title>
+<para>
+    Currently, subqueries using <literal>EXISTS</literal> and simple
+    subqueries in <literal>FROM</literal> clause are supported.
+</para>
+
+    <sect4>
+    <title>Restrictions on Subqueries</title>
+    <para>
+        There are the following restrictions:
+    <itemizedlist>
+        <listitem>
+        <para>
+            Only <literal>EXISTS</literal> subquery is allowed in the
+              <literal>WHERE</literal> clause. For example, <literal>IN</literal>
+              clause cannot be used.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>EXISTS</literal> subquery must be used with <literal>AND</literal>.
+              <literal>OR EXISTS (...)</literal> and <literal>NOT EXISTS (...)</literal>
+              are not allowed.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Subqueries cannot be used in the target list.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Nested <literal>EXISTS</literal> subqueries are not supported.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>EXISTS</literal> subqueries cannot be used if <acronym>IMMV</acronym>
+               uses aggregate functions.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Aggregate functions cannot be used in a subquery.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>DISTINCT</literal> cannot be contained in a subquery.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            Subqueries containing joins are only allowed in the FROM clause.
+        </para>
+        </listitem>
+
+    </itemizedlist>
+    </para>
+    </sect4>
+
+</sect3>
+
+<sect3>
+<title>CTEs</title>
+<para>
+    Currently, simple <literal>CTE</literal> in the <literal>FROM</literal> clause are supported.
+</para>
+
+    <sect4>
+    <title>Restrictions on CTEs</title>
+    <para>
+        There are the following restrictions:
+    <itemizedlist>
+        <listitem>
+        <para>
+            Aggregate functions cannot be used in a CTE.
+        </para>
+        </listitem>
+
+        <listitem>
+        <para>
+            <literal>DISTINCT</literal> cannot be contained in a CTE.
+        </para>
+        </listitem>
+
+    </itemizedlist>
+    </para>
+    </sect4>
+</sect3>
+
+<sect3>
 <title>Other General Restrictions</title>
 <para>
     There are other restrictions which generally apply to <acronym>IMMV</acronym>:
     <itemizedlist>
-        <listitem>
-          <para>
-           Sub-queries cannot be used.
-          </para>
-        </listitem>
-
-        <listitem>
-          <para>
-           CTEs cannot be used.
-          </para>
-        </listitem>
-
         <listitem>
           <para>
            Window functions cannot be used.

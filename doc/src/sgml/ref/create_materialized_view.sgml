@@ -93,27 +93,157 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
 
        <listitem>
         <para>
-         Some built-in aggregate functions (count, sum, avg, min, max) without a HAVING
-         clause.
+         Outer joins with the following restrictions:
+
+         <itemizedlist>
+          <listitem>
+           <para>
+            Outer join view's targetlist must contain all attributes used in the
+            join conditions.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i FROM mv_base_a a LEFT
+JOIN mv_base_b b ON a.i=b.i;
+ERROR:  targetlist must contain vars in the join condition for IVM with outer join
+            </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Outer join view's targetlist cannot contain non-strict functions.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv AS SELECT a.i, b.i, (k > 10 OR k = -1)
+FROM mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i;
+ERROR:  targetlist cannot contain non strict functions for IVM with outer join
+             </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Outer join supports only simple equijoin.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i>b.i;
+ERROR:  Only simple equijoin is supported for IVM with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,k,j) AS SELECT a.i, b.i, k j FROM
+mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i AND k=j;
+ERROR:  Only simple equijoin is supported for IVM with outer join
+            </programlisting>
+           </para>
+           </listitem>
+
+          <listitem>
+           <para>
+            Outer join view's WHERE clause cannot contain non null-rejecting
+            predicates.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE k IS NULL;
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE (k > 0 OR j > 0);
+ERROR:  WHERE cannot contain non null-rejecting predicates for IVM with outer join
+            </programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Aggregates are not supported with outer join.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b,v) AS SELECT a.i, b.i, sum(k) FROM
+mv_base_a a LEFT JOIN mv_base_b b ON a.i=b.i GROUP BY a.i, b.i;
+ERROR:  aggregate is not supported with IVM together with outer join
+</programlisting>
+           </para>
+          </listitem>
+
+          <listitem>
+           <para>
+            Subquery is not supported with outer join.
+            <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN (SELECT * FROM mv_base_b) b ON a.i=b.i;
+ERROR:  subquery is not supported with IVM together with outer join
+CREATE INCREMENTAL MATERIALIZED VIEW mv(a,b) AS SELECT a.i, b.i FROM mv_base_a
+a LEFT JOIN mv_base_b b ON a.i=b.i WHERE EXISTS (SELECT 1 FROM mv_base_b b2
+WHERE a.j = b.k);
+ERROR:  subquery is not supported by IVM together with outer join
+             </programlisting>
+           </para>
+          </listitem>
+         </itemizedlist>
         </para>
-        </listitem>
+
+       </listitem>
+
+       <listitem>
+        <para>
+         Subqueries. However, the following forms are not supported.
+        </para>
+
+        <para>
+         WHERE IN .. (subquery) is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm03 AS SELECT i,j FROM
+mv_base_a WHERE i IN (SELECT i FROM mv_base_b WHERE k &lt; 103 );
+         </programlisting>
+        </para>
+        <para>
+         subqueries in the target list are not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm05 AS SELECT i,j, (SELECT k
+FROM mv_base_b b WHERE a.i = b.i) FROM mv_base_a a;
+         </programlisting>
+        </para>
+        <para>
+         Nested EXISTS subqueries are not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm11 AS SELECT a.i,a.j FROM
+mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE EXISTS(SELECT
+1 FROM mv_base_b c WHERE b.i = c.i));
+         </programlisting>
+        </para>
+        <para>
+         EXISTS subquery with aggregate function is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists AS SELECT COUNT(*)
+FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i =
+b.i) OR a.i &gt; 5;
+         </programlisting>
+        </para>
+        <para>
+         EXISTS subquery with condition other than AND is not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm10 AS SELECT a.i,a.j FROM
+mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i) OR
+a.i &gt; 5;
+         </programlisting>
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         Simple CTEs that do not contain aggregates or DISTINCT.
+        </para>
+       </listitem>
+
+       <listitem>
+        <para>
+         Some aggregate functions (count, sum, avg, min, max) without a HAVING
+         clause.  However, aggregate functions in subquery are not supported:
+         <programlisting>
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm09 AS SELECT a.i,a.j FROM mv_base_a
+a, (SELECT i, COUNT(*) FROM mv_base_b GROUP BY i) b WHERE a.i = b.i;
+         </programlisting>
+        </para>
+       </listitem>
       </itemizedlist>
 
       Unsupported queries with this option include the following:
 
       <itemizedlist>
-       <listitem>
-        <para>
-         Outer joins.
-        </para>
-       </listitem>
-
-       <listitem>
-        <para>
-         Sub-queries.
-        </para>
-       </listitem>
-
        <listitem>
         <para>
          Aggregate functions other than built-in count, sum, avg, min and max.
@@ -132,6 +262,7 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
       </itemizedlist>
 
       Other restrictions include:
+
       <itemizedlist>
 
        <listitem>
