@@ -1223,10 +1223,25 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
 
+					if (rte->relkind == RELKIND_PARTITIONED_TABLE)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("partitioned table is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_RELATION && has_superclass(rte->relid))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("partitions is not supported on incrementally maintainable materialized view")));
+
 					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_FOREIGN_TABLE)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("foreign table is not supported on incrementally maintainable materialized view")));
 
 					if (rte->relkind == RELKIND_VIEW ||
 						rte->relkind == RELKIND_MATVIEW)
