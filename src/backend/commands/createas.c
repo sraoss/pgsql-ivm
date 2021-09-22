@@ -1685,13 +1685,10 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
 			index->indexParams = lappend(index->indexParams, iparam);
 		}
-
-		index->isconstraint = true;
 	}
 	else if (qry->distinctClause)
 	{
 		/* create unique constraint on all columns */
-		index->isconstraint = true;
 		foreach(lc, qry->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
