@@ -246,6 +246,7 @@ static int	pgStatXactCommit = 0;
 static int	pgStatXactRollback = 0;
 PgStat_Counter pgStatBlockReadTime = 0;
 PgStat_Counter pgStatBlockWriteTime = 0;
+static PgStat_Counter pgLastSessionReportTime = 0;
 PgStat_Counter pgStatActiveTime = 0;
 PgStat_Counter pgStatTransactionIdleTime = 0;
 SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
@@ -256,12 +257,13 @@ typedef struct TwoPhasePgStatRecord
 	PgStat_Counter tuples_inserted; /* tuples inserted in xact */
 	PgStat_Counter tuples_updated;	/* tuples updated in xact */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in xact */
-	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
-	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
-	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
+	/* tuples i/u/d prior to truncate/drop */
+	PgStat_Counter inserted_pre_truncdrop;
+	PgStat_Counter updated_pre_truncdrop;
+	PgStat_Counter deleted_pre_truncdrop;
 	Oid			t_id;			/* table's OID */
 	bool		t_shared;		/* is it a shared catalog? */
-	bool		t_truncated;	/* was the relation truncated? */
+	bool		t_truncdropped;	/* was the relation truncated/dropped? */
 } TwoPhasePgStatRecord;
 
 /*
@@ -330,11 +332,12 @@ static bool pgstat_db_requested(Oid databaseid);
 static PgStat_StatReplSlotEntry *pgstat_get_replslot_entry(NameData name, bool create_it);
 static void pgstat_reset_replslot(PgStat_StatReplSlotEntry *slotstats, TimestampTz ts);
 
-static void pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg);
+static void pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg, TimestampTz now);
 static void pgstat_send_funcstats(void);
 static void pgstat_send_slru(void);
 static HTAB *pgstat_collect_oids(Oid catalogid, AttrNumber anum_oid);
-static void pgstat_send_connstats(bool disconnect, TimestampTz last_report);
+static bool pgstat_should_report_connstat(void);
+static void pgstat_report_disconnect(Oid dboid);
 
 static PgStat_TableStatus *get_tabstat_entry(Oid rel_id, bool isshared);
 
@@ -366,7 +369,8 @@ static void pgstat_recv_funcpurge(PgStat_MsgFuncpurge *msg, int len);
 static void pgstat_recv_recoveryconflict(PgStat_MsgRecoveryConflict *msg, int len);
 static void pgstat_recv_deadlock(PgStat_MsgDeadlock *msg, int len);
 static void pgstat_recv_checksum_failure(PgStat_MsgChecksumFailure *msg, int len);
-static void pgstat_recv_connstat(PgStat_MsgConn *msg, int len);
+static void pgstat_recv_connect(PgStat_MsgConnect *msg, int len);
+static void pgstat_recv_disconnect(PgStat_MsgDisconnect *msg, int len);
 static void pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len);
 static void pgstat_recv_tempfile(PgStat_MsgTempFile *msg, int len);
 
@@ -890,11 +894,10 @@ pgstat_report_stat(bool disconnect)
 		!TimestampDifferenceExceeds(last_report, now, PGSTAT_STAT_INTERVAL))
 		return;
 
-	/* for backends, send connection statistics */
-	if (MyBackendType == B_BACKEND)
-		pgstat_send_connstats(disconnect, last_report);
-
 	last_report = now;
+
+	if (disconnect)
+		pgstat_report_disconnect(MyDatabaseId);
 
 	/*
 	 * Destroy pgStatTabHash before we start invalidating PgStat_TableEntry
@@ -947,7 +950,7 @@ pgstat_report_stat(bool disconnect)
 				   sizeof(PgStat_TableCounts));
 			if (++this_msg->m_nentries >= PGSTAT_NUM_TABENTRIES)
 			{
-				pgstat_send_tabstat(this_msg);
+				pgstat_send_tabstat(this_msg, now);
 				this_msg->m_nentries = 0;
 			}
 		}
@@ -959,13 +962,14 @@ pgstat_report_stat(bool disconnect)
 
 	/*
 	 * Send partial messages.  Make sure that any pending xact commit/abort
-	 * gets counted, even if there are no table stats to send.
+	 * and connection stats get counted, even if there are no table stats to
+	 * send.
 	 */
 	if (regular_msg.m_nentries > 0 ||
-		pgStatXactCommit > 0 || pgStatXactRollback > 0)
-		pgstat_send_tabstat(&regular_msg);
+		pgStatXactCommit > 0 || pgStatXactRollback > 0 || disconnect)
+		pgstat_send_tabstat(&regular_msg, now);
 	if (shared_msg.m_nentries > 0)
-		pgstat_send_tabstat(&shared_msg);
+		pgstat_send_tabstat(&shared_msg, now);
 
 	/* Now, send function statistics */
 	pgstat_send_funcstats();
@@ -981,7 +985,7 @@ pgstat_report_stat(bool disconnect)
  * Subroutine for pgstat_report_stat: finish and send a tabstat message
  */
 static void
-pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg)
+pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg, TimestampTz now)
 {
 	int			n;
 	int			len;
@@ -1000,10 +1004,34 @@ pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg)
 		tsmsg->m_xact_rollback = pgStatXactRollback;
 		tsmsg->m_block_read_time = pgStatBlockReadTime;
 		tsmsg->m_block_write_time = pgStatBlockWriteTime;
+
+		if (pgstat_should_report_connstat())
+		{
+			long		secs;
+			int			usecs;
+
+			/*
+			 * pgLastSessionReportTime is initialized to MyStartTimestamp by
+			 * pgstat_report_connect().
+			 */
+			TimestampDifference(pgLastSessionReportTime, now, &secs, &usecs);
+			pgLastSessionReportTime = now;
+			tsmsg->m_session_time = (PgStat_Counter) secs * 1000000 + usecs;
+			tsmsg->m_active_time = pgStatActiveTime;
+			tsmsg->m_idle_in_xact_time = pgStatTransactionIdleTime;
+		}
+		else
+		{
+			tsmsg->m_session_time = 0;
+			tsmsg->m_active_time = 0;
+			tsmsg->m_idle_in_xact_time = 0;
+		}
 		pgStatXactCommit = 0;
 		pgStatXactRollback = 0;
 		pgStatBlockReadTime = 0;
 		pgStatBlockWriteTime = 0;
+		pgStatActiveTime = 0;
+		pgStatTransactionIdleTime = 0;
 	}
 	else
 	{
@@ -1011,6 +1039,9 @@ pgstat_send_tabstat(PgStat_MsgTabstat *tsmsg)
 		tsmsg->m_xact_rollback = 0;
 		tsmsg->m_block_read_time = 0;
 		tsmsg->m_block_write_time = 0;
+		tsmsg->m_session_time = 0;
+		tsmsg->m_active_time = 0;
+		tsmsg->m_idle_in_xact_time = 0;
 	}
 
 	n = tsmsg->m_nentries;
@@ -1378,49 +1409,6 @@ pgstat_drop_relation(Oid relid)
 }
 #endif							/* NOT_USED */
 
-
-/* ----------
- * pgstat_send_connstats() -
- *
- *	Tell the collector about session statistics.
- *	The parameter "disconnect" will be true when the backend exits.
- *	"last_report" is the last time we were called (0 if never).
- * ----------
- */
-static void
-pgstat_send_connstats(bool disconnect, TimestampTz last_report)
-{
-	PgStat_MsgConn msg;
-	long		secs;
-	int			usecs;
-
-	if (pgStatSock == PGINVALID_SOCKET || !pgstat_track_counts)
-		return;
-
-	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CONNECTION);
-	msg.m_databaseid = MyDatabaseId;
-
-	/* session time since the last report */
-	TimestampDifference(((last_report == 0) ? MyStartTimestamp : last_report),
-						GetCurrentTimestamp(),
-						&secs, &usecs);
-	msg.m_session_time = secs * 1000000 + usecs;
-
-	msg.m_disconnect = disconnect ? pgStatSessionEndCause : DISCONNECT_NOT_YET;
-
-	msg.m_active_time = pgStatActiveTime;
-	pgStatActiveTime = 0;
-
-	msg.m_idle_in_xact_time = pgStatTransactionIdleTime;
-	pgStatTransactionIdleTime = 0;
-
-	/* report a new session only the first time */
-	msg.m_count = (last_report == 0) ? 1 : 0;
-
-	pgstat_send(&msg, sizeof(PgStat_MsgConn));
-}
-
-
 /* ----------
  * pgstat_reset_counters() -
  *
@@ -1757,6 +1745,63 @@ pgstat_report_tempfile(size_t filesize)
 	msg.m_databaseid = MyDatabaseId;
 	msg.m_filesize = filesize;
 	pgstat_send(&msg, sizeof(msg));
+}
+
+/* --------
+ * pgstat_report_connect() -
+ *
+ *	Tell the collector about a new connection.
+ * --------
+ */
+void
+pgstat_report_connect(Oid dboid)
+{
+	PgStat_MsgConnect msg;
+
+	if (!pgstat_should_report_connstat())
+		return;
+
+	pgLastSessionReportTime = MyStartTimestamp;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_CONNECT);
+	msg.m_databaseid = MyDatabaseId;
+	pgstat_send(&msg, sizeof(PgStat_MsgConnect));
+}
+
+/* --------
+ * pgstat_report_disconnect() -
+ *
+ *	Tell the collector about a disconnect.
+ * --------
+ */
+static void
+pgstat_report_disconnect(Oid dboid)
+{
+	PgStat_MsgDisconnect msg;
+
+	if (!pgstat_should_report_connstat())
+		return;
+
+	pgstat_setheader(&msg.m_hdr, PGSTAT_MTYPE_DISCONNECT);
+	msg.m_databaseid = MyDatabaseId;
+	msg.m_cause = pgStatSessionEndCause;
+	pgstat_send(&msg, sizeof(PgStat_MsgDisconnect));
+}
+
+/* --------
+ * pgstat_should_report_connstats() -
+ *
+ *	We report session statistics only for normal backend processes.  Parallel
+ *	workers run in parallel, so they don't contribute to session times, even
+ *	though they use CPU time. Walsender processes could be considered here,
+ *	but they have different session characteristics from normal backends (for
+ *	example, they are always "active"), so they would skew session statistics.
+ * ----------
+ */
+static bool
+pgstat_should_report_connstat(void)
+{
+	return MyBackendType == B_BACKEND;
 }
 
 /* ----------
@@ -2256,36 +2301,39 @@ pgstat_count_heap_delete(Relation rel)
 }
 
 /*
- * pgstat_truncate_save_counters
+ * pgstat_truncdrop_save_counters
  *
- * Whenever a table is truncated, we save its i/u/d counters so that they can
- * be cleared, and if the (sub)xact that executed the truncate later aborts,
- * the counters can be restored to the saved (pre-truncate) values.  Note we do
- * this on the first truncate in any particular subxact level only.
+ * Whenever a table is truncated/dropped, we save its i/u/d counters so that
+ * they can be cleared, and if the (sub)xact that executed the truncate/drop
+ * later aborts, the counters can be restored to the saved (pre-truncate/drop)
+ * values.
+ *
+ * Note that for truncate we do this on the first truncate in any particular
+ * subxact level only.
  */
 static void
-pgstat_truncate_save_counters(PgStat_TableXactStatus *trans)
+pgstat_truncdrop_save_counters(PgStat_TableXactStatus *trans, bool is_drop)
 {
-	if (!trans->truncated)
+	if (!trans->truncdropped || is_drop)
 	{
-		trans->inserted_pre_trunc = trans->tuples_inserted;
-		trans->updated_pre_trunc = trans->tuples_updated;
-		trans->deleted_pre_trunc = trans->tuples_deleted;
-		trans->truncated = true;
+		trans->inserted_pre_truncdrop = trans->tuples_inserted;
+		trans->updated_pre_truncdrop = trans->tuples_updated;
+		trans->deleted_pre_truncdrop = trans->tuples_deleted;
+		trans->truncdropped = true;
 	}
 }
 
 /*
- * pgstat_truncate_restore_counters - restore counters when a truncate aborts
+ * pgstat_truncdrop_restore_counters - restore counters when a truncate aborts
  */
 static void
-pgstat_truncate_restore_counters(PgStat_TableXactStatus *trans)
+pgstat_truncdrop_restore_counters(PgStat_TableXactStatus *trans)
 {
-	if (trans->truncated)
+	if (trans->truncdropped)
 	{
-		trans->tuples_inserted = trans->inserted_pre_trunc;
-		trans->tuples_updated = trans->updated_pre_trunc;
-		trans->tuples_deleted = trans->deleted_pre_trunc;
+		trans->tuples_inserted = trans->inserted_pre_truncdrop;
+		trans->tuples_updated = trans->updated_pre_truncdrop;
+		trans->tuples_deleted = trans->deleted_pre_truncdrop;
 	}
 }
 
@@ -2306,7 +2354,7 @@ pgstat_count_truncate(Relation rel)
 			pgstat_info->trans->nest_level != nest_level)
 			add_tabstat_xact_level(pgstat_info, nest_level);
 
-		pgstat_truncate_save_counters(pgstat_info->trans);
+		pgstat_truncdrop_save_counters(pgstat_info->trans, false);
 		pgstat_info->trans->tuples_inserted = 0;
 		pgstat_info->trans->tuples_updated = 0;
 		pgstat_info->trans->tuples_deleted = 0;
@@ -2330,18 +2378,68 @@ pgstat_update_heap_dead_tuples(Relation rel, int delta)
 		pgstat_info->t_counts.t_delta_dead_tuples -= delta;
 }
 
-
-/* ----------
- * AtEOXact_PgStat
+/*
+ * Perform relation stats specific end-of-transaction work. Helper for
+ * AtEOXact_PgStat.
  *
- *	Called from access/transam/xact.c at top-level transaction commit/abort.
- * ----------
+ * Transfer transactional insert/update counts into the base tabstat entries.
+ * We don't bother to free any of the transactional state, since it's all in
+ * TopTransactionContext and will go away anyway.
  */
-void
-AtEOXact_PgStat(bool isCommit, bool parallel)
+static void
+AtEOXact_PgStat_Relations(PgStat_SubXactStatus *xact_state, bool isCommit)
 {
-	PgStat_SubXactStatus *xact_state;
+	PgStat_TableXactStatus *trans;
 
+	for (trans = xact_state->first; trans != NULL; trans = trans->next)
+	{
+		PgStat_TableStatus *tabstat;
+
+		Assert(trans->nest_level == 1);
+		Assert(trans->upper == NULL);
+		tabstat = trans->parent;
+		Assert(tabstat->trans == trans);
+		/* restore pre-truncate/drop stats (if any) in case of aborted xact */
+		if (!isCommit)
+			pgstat_truncdrop_restore_counters(trans);
+		/* count attempted actions regardless of commit/abort */
+		tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
+		tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
+		tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
+		if (isCommit)
+		{
+			tabstat->t_counts.t_truncdropped = trans->truncdropped;
+			if (trans->truncdropped)
+			{
+				/* forget live/dead stats seen by backend thus far */
+				tabstat->t_counts.t_delta_live_tuples = 0;
+				tabstat->t_counts.t_delta_dead_tuples = 0;
+			}
+			/* insert adds a live tuple, delete removes one */
+			tabstat->t_counts.t_delta_live_tuples +=
+				trans->tuples_inserted - trans->tuples_deleted;
+			/* update and delete each create a dead tuple */
+			tabstat->t_counts.t_delta_dead_tuples +=
+				trans->tuples_updated + trans->tuples_deleted;
+			/* insert, update, delete each count as one change event */
+			tabstat->t_counts.t_changed_tuples +=
+				trans->tuples_inserted + trans->tuples_updated +
+				trans->tuples_deleted;
+		}
+		else
+		{
+			/* inserted tuples are dead, deleted tuples are unaffected */
+			tabstat->t_counts.t_delta_dead_tuples +=
+				trans->tuples_inserted + trans->tuples_updated;
+			/* an aborted xact generates no changed_tuple events */
+		}
+		tabstat->trans = NULL;
+	}
+}
+
+static void
+AtEOXact_PgStat_Database(bool isCommit, bool parallel)
+{
 	/* Don't count parallel worker transaction stats */
 	if (!parallel)
 	{
@@ -2354,68 +2452,118 @@ AtEOXact_PgStat(bool isCommit, bool parallel)
 		else
 			pgStatXactRollback++;
 	}
+}
 
-	/*
-	 * Transfer transactional insert/update counts into the base tabstat
-	 * entries.  We don't bother to free any of the transactional state, since
-	 * it's all in TopTransactionContext and will go away anyway.
-	 */
+/* ----------
+ * AtEOXact_PgStat
+ *
+ *	Called from access/transam/xact.c at top-level transaction commit/abort.
+ * ----------
+ */
+void
+AtEOXact_PgStat(bool isCommit, bool parallel)
+{
+	PgStat_SubXactStatus *xact_state;
+
+	AtEOXact_PgStat_Database(isCommit, parallel);
+
+	/* handle transactional stats information */
 	xact_state = pgStatXactStack;
 	if (xact_state != NULL)
 	{
-		PgStat_TableXactStatus *trans;
-
 		Assert(xact_state->nest_level == 1);
 		Assert(xact_state->prev == NULL);
-		for (trans = xact_state->first; trans != NULL; trans = trans->next)
-		{
-			PgStat_TableStatus *tabstat;
 
-			Assert(trans->nest_level == 1);
-			Assert(trans->upper == NULL);
-			tabstat = trans->parent;
-			Assert(tabstat->trans == trans);
-			/* restore pre-truncate stats (if any) in case of aborted xact */
-			if (!isCommit)
-				pgstat_truncate_restore_counters(trans);
-			/* count attempted actions regardless of commit/abort */
-			tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
-			tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
-			tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
-			if (isCommit)
-			{
-				tabstat->t_counts.t_truncated = trans->truncated;
-				if (trans->truncated)
-				{
-					/* forget live/dead stats seen by backend thus far */
-					tabstat->t_counts.t_delta_live_tuples = 0;
-					tabstat->t_counts.t_delta_dead_tuples = 0;
-				}
-				/* insert adds a live tuple, delete removes one */
-				tabstat->t_counts.t_delta_live_tuples +=
-					trans->tuples_inserted - trans->tuples_deleted;
-				/* update and delete each create a dead tuple */
-				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_updated + trans->tuples_deleted;
-				/* insert, update, delete each count as one change event */
-				tabstat->t_counts.t_changed_tuples +=
-					trans->tuples_inserted + trans->tuples_updated +
-					trans->tuples_deleted;
-			}
-			else
-			{
-				/* inserted tuples are dead, deleted tuples are unaffected */
-				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_inserted + trans->tuples_updated;
-				/* an aborted xact generates no changed_tuple events */
-			}
-			tabstat->trans = NULL;
-		}
+		AtEOXact_PgStat_Relations(xact_state, isCommit);
 	}
 	pgStatXactStack = NULL;
 
 	/* Make sure any stats snapshot is thrown away */
 	pgstat_clear_snapshot();
+}
+
+/*
+ * Perform relation stats specific end-of-sub-transaction work. Helper for
+ * AtEOSubXact_PgStat.
+ *
+ * Transfer transactional insert/update counts into the next higher
+ * subtransaction state.
+ */
+static void
+AtEOSubXact_PgStat_Relations(PgStat_SubXactStatus *xact_state, bool isCommit, int nestDepth)
+{
+	PgStat_TableXactStatus *trans;
+	PgStat_TableXactStatus *next_trans;
+
+	for (trans = xact_state->first; trans != NULL; trans = next_trans)
+	{
+		PgStat_TableStatus *tabstat;
+
+		next_trans = trans->next;
+		Assert(trans->nest_level == nestDepth);
+		tabstat = trans->parent;
+		Assert(tabstat->trans == trans);
+
+		if (isCommit)
+		{
+			if (trans->upper && trans->upper->nest_level == nestDepth - 1)
+			{
+				if (trans->truncdropped)
+				{
+					/* propagate the truncate/drop status one level up */
+					pgstat_truncdrop_save_counters(trans->upper, false);
+					/* replace upper xact stats with ours */
+					trans->upper->tuples_inserted = trans->tuples_inserted;
+					trans->upper->tuples_updated = trans->tuples_updated;
+					trans->upper->tuples_deleted = trans->tuples_deleted;
+				}
+				else
+				{
+					trans->upper->tuples_inserted += trans->tuples_inserted;
+					trans->upper->tuples_updated += trans->tuples_updated;
+					trans->upper->tuples_deleted += trans->tuples_deleted;
+				}
+				tabstat->trans = trans->upper;
+				pfree(trans);
+			}
+			else
+			{
+				/*
+				 * When there isn't an immediate parent state, we can just
+				 * reuse the record instead of going through a
+				 * palloc/pfree pushup (this works since it's all in
+				 * TopTransactionContext anyway).  We have to re-link it
+				 * into the parent level, though, and that might mean
+				 * pushing a new entry into the pgStatXactStack.
+				 */
+				PgStat_SubXactStatus *upper_xact_state;
+
+				upper_xact_state = get_tabstat_stack_level(nestDepth - 1);
+				trans->next = upper_xact_state->first;
+				upper_xact_state->first = trans;
+				trans->nest_level = nestDepth - 1;
+			}
+		}
+		else
+		{
+			/*
+			 * On abort, update top-level tabstat counts, then forget the
+			 * subtransaction
+			 */
+
+			/* first restore values obliterated by truncate/drop */
+			pgstat_truncdrop_restore_counters(trans);
+			/* count attempted actions regardless of commit/abort */
+			tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
+			tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
+			tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
+			/* inserted tuples are dead, deleted tuples are unaffected */
+			tabstat->t_counts.t_delta_dead_tuples +=
+				trans->tuples_inserted + trans->tuples_updated;
+			tabstat->trans = trans->upper;
+			pfree(trans);
+		}
+	}
 }
 
 /* ----------
@@ -2429,99 +2577,57 @@ AtEOSubXact_PgStat(bool isCommit, int nestDepth)
 {
 	PgStat_SubXactStatus *xact_state;
 
-	/*
-	 * Transfer transactional insert/update counts into the next higher
-	 * subtransaction state.
-	 */
+	/* merge the sub-transaction's transactional stats into the parent */
 	xact_state = pgStatXactStack;
 	if (xact_state != NULL &&
 		xact_state->nest_level >= nestDepth)
 	{
-		PgStat_TableXactStatus *trans;
-		PgStat_TableXactStatus *next_trans;
-
 		/* delink xact_state from stack immediately to simplify reuse case */
 		pgStatXactStack = xact_state->prev;
 
-		for (trans = xact_state->first; trans != NULL; trans = next_trans)
-		{
-			PgStat_TableStatus *tabstat;
+		AtEOSubXact_PgStat_Relations(xact_state, isCommit, nestDepth);
 
-			next_trans = trans->next;
-			Assert(trans->nest_level == nestDepth);
-			tabstat = trans->parent;
-			Assert(tabstat->trans == trans);
-			if (isCommit)
-			{
-				if (trans->upper && trans->upper->nest_level == nestDepth - 1)
-				{
-					if (trans->truncated)
-					{
-						/* propagate the truncate status one level up */
-						pgstat_truncate_save_counters(trans->upper);
-						/* replace upper xact stats with ours */
-						trans->upper->tuples_inserted = trans->tuples_inserted;
-						trans->upper->tuples_updated = trans->tuples_updated;
-						trans->upper->tuples_deleted = trans->tuples_deleted;
-					}
-					else
-					{
-						trans->upper->tuples_inserted += trans->tuples_inserted;
-						trans->upper->tuples_updated += trans->tuples_updated;
-						trans->upper->tuples_deleted += trans->tuples_deleted;
-					}
-					tabstat->trans = trans->upper;
-					pfree(trans);
-				}
-				else
-				{
-					/*
-					 * When there isn't an immediate parent state, we can just
-					 * reuse the record instead of going through a
-					 * palloc/pfree pushup (this works since it's all in
-					 * TopTransactionContext anyway).  We have to re-link it
-					 * into the parent level, though, and that might mean
-					 * pushing a new entry into the pgStatXactStack.
-					 */
-					PgStat_SubXactStatus *upper_xact_state;
-
-					upper_xact_state = get_tabstat_stack_level(nestDepth - 1);
-					trans->next = upper_xact_state->first;
-					upper_xact_state->first = trans;
-					trans->nest_level = nestDepth - 1;
-				}
-			}
-			else
-			{
-				/*
-				 * On abort, update top-level tabstat counts, then forget the
-				 * subtransaction
-				 */
-
-				/* first restore values obliterated by truncate */
-				pgstat_truncate_restore_counters(trans);
-				/* count attempted actions regardless of commit/abort */
-				tabstat->t_counts.t_tuples_inserted += trans->tuples_inserted;
-				tabstat->t_counts.t_tuples_updated += trans->tuples_updated;
-				tabstat->t_counts.t_tuples_deleted += trans->tuples_deleted;
-				/* inserted tuples are dead, deleted tuples are unaffected */
-				tabstat->t_counts.t_delta_dead_tuples +=
-					trans->tuples_inserted + trans->tuples_updated;
-				tabstat->trans = trans->upper;
-				pfree(trans);
-			}
-		}
 		pfree(xact_state);
 	}
 }
 
+/*
+ * Generate 2PC records for all the pending transaction-dependent relation
+ * stats.
+ */
+static void
+AtPrepare_PgStat_Relations(PgStat_SubXactStatus *xact_state)
+{
+	PgStat_TableXactStatus *trans;
+
+	for (trans = xact_state->first; trans != NULL; trans = trans->next)
+	{
+		PgStat_TableStatus *tabstat;
+		TwoPhasePgStatRecord record;
+
+		Assert(trans->nest_level == 1);
+		Assert(trans->upper == NULL);
+		tabstat = trans->parent;
+		Assert(tabstat->trans == trans);
+
+		record.tuples_inserted = trans->tuples_inserted;
+		record.tuples_updated = trans->tuples_updated;
+		record.tuples_deleted = trans->tuples_deleted;
+		record.inserted_pre_truncdrop = trans->inserted_pre_truncdrop;
+		record.updated_pre_truncdrop = trans->updated_pre_truncdrop;
+		record.deleted_pre_truncdrop = trans->deleted_pre_truncdrop;
+		record.t_id = tabstat->t_id;
+		record.t_shared = tabstat->t_shared;
+		record.t_truncdropped = trans->truncdropped;
+
+		RegisterTwoPhaseRecord(TWOPHASE_RM_PGSTAT_ID, 0,
+							   &record, sizeof(TwoPhasePgStatRecord));
+	}
+}
 
 /*
  * AtPrepare_PgStat
  *		Save the transactional stats state at 2PC transaction prepare.
- *
- * In this phase we just generate 2PC records for all the pending
- * transaction-dependent stats work.
  */
 void
 AtPrepare_PgStat(void)
@@ -2531,44 +2637,38 @@ AtPrepare_PgStat(void)
 	xact_state = pgStatXactStack;
 	if (xact_state != NULL)
 	{
-		PgStat_TableXactStatus *trans;
-
 		Assert(xact_state->nest_level == 1);
 		Assert(xact_state->prev == NULL);
-		for (trans = xact_state->first; trans != NULL; trans = trans->next)
-		{
-			PgStat_TableStatus *tabstat;
-			TwoPhasePgStatRecord record;
 
-			Assert(trans->nest_level == 1);
-			Assert(trans->upper == NULL);
-			tabstat = trans->parent;
-			Assert(tabstat->trans == trans);
+		AtPrepare_PgStat_Relations(xact_state);
+	}
+}
 
-			record.tuples_inserted = trans->tuples_inserted;
-			record.tuples_updated = trans->tuples_updated;
-			record.tuples_deleted = trans->tuples_deleted;
-			record.inserted_pre_trunc = trans->inserted_pre_trunc;
-			record.updated_pre_trunc = trans->updated_pre_trunc;
-			record.deleted_pre_trunc = trans->deleted_pre_trunc;
-			record.t_id = tabstat->t_id;
-			record.t_shared = tabstat->t_shared;
-			record.t_truncated = trans->truncated;
+/*
+ * All we need do here is unlink the transaction stats state from the
+ * nontransactional state.  The nontransactional action counts will be
+ * reported to the stats collector immediately, while the effects on
+ * live and dead tuple counts are preserved in the 2PC state file.
+ *
+ * Note: AtEOXact_PgStat_Relations is not called during PREPARE.
+ */
+static void
+PostPrepare_PgStat_Relations(PgStat_SubXactStatus *xact_state)
+{
+	PgStat_TableXactStatus *trans;
 
-			RegisterTwoPhaseRecord(TWOPHASE_RM_PGSTAT_ID, 0,
-								   &record, sizeof(TwoPhasePgStatRecord));
-		}
+	for (trans = xact_state->first; trans != NULL; trans = trans->next)
+	{
+		PgStat_TableStatus *tabstat;
+
+		tabstat = trans->parent;
+		tabstat->trans = NULL;
 	}
 }
 
 /*
  * PostPrepare_PgStat
  *		Clean up after successful PREPARE.
- *
- * All we need do here is unlink the transaction stats state from the
- * nontransactional state.  The nontransactional action counts will be
- * reported to the stats collector immediately, while the effects on live
- * and dead tuple counts are preserved in the 2PC state file.
  *
  * Note: AtEOXact_PgStat is not called during PREPARE.
  */
@@ -2584,15 +2684,10 @@ PostPrepare_PgStat(void)
 	xact_state = pgStatXactStack;
 	if (xact_state != NULL)
 	{
-		PgStat_TableXactStatus *trans;
+		Assert(xact_state->nest_level == 1);
+		Assert(xact_state->prev == NULL);
 
-		for (trans = xact_state->first; trans != NULL; trans = trans->next)
-		{
-			PgStat_TableStatus *tabstat;
-
-			tabstat = trans->parent;
-			tabstat->trans = NULL;
-		}
+		PostPrepare_PgStat_Relations(xact_state);
 	}
 	pgStatXactStack = NULL;
 
@@ -2619,8 +2714,8 @@ pgstat_twophase_postcommit(TransactionId xid, uint16 info,
 	pgstat_info->t_counts.t_tuples_inserted += rec->tuples_inserted;
 	pgstat_info->t_counts.t_tuples_updated += rec->tuples_updated;
 	pgstat_info->t_counts.t_tuples_deleted += rec->tuples_deleted;
-	pgstat_info->t_counts.t_truncated = rec->t_truncated;
-	if (rec->t_truncated)
+	pgstat_info->t_counts.t_truncdropped = rec->t_truncdropped;
+	if (rec->t_truncdropped)
 	{
 		/* forget live/dead stats seen by backend thus far */
 		pgstat_info->t_counts.t_delta_live_tuples = 0;
@@ -2652,11 +2747,11 @@ pgstat_twophase_postabort(TransactionId xid, uint16 info,
 	pgstat_info = get_tabstat_entry(rec->t_id, rec->t_shared);
 
 	/* Same math as in AtEOXact_PgStat, abort case */
-	if (rec->t_truncated)
+	if (rec->t_truncdropped)
 	{
-		rec->tuples_inserted = rec->inserted_pre_trunc;
-		rec->tuples_updated = rec->updated_pre_trunc;
-		rec->tuples_deleted = rec->deleted_pre_trunc;
+		rec->tuples_inserted = rec->inserted_pre_truncdrop;
+		rec->tuples_updated = rec->updated_pre_truncdrop;
+		rec->tuples_deleted = rec->deleted_pre_truncdrop;
 	}
 	pgstat_info->t_counts.t_tuples_inserted += rec->tuples_inserted;
 	pgstat_info->t_counts.t_tuples_updated += rec->tuples_updated;
@@ -3465,8 +3560,12 @@ PgstatCollectorMain(int argc, char *argv[])
 					pgstat_recv_replslot(&msg.msg_replslot, len);
 					break;
 
-				case PGSTAT_MTYPE_CONNECTION:
-					pgstat_recv_connstat(&msg.msg_conn, len);
+				case PGSTAT_MTYPE_CONNECT:
+					pgstat_recv_connect(&msg.msg_connect, len);
+					break;
+
+				case PGSTAT_MTYPE_DISCONNECT:
+					pgstat_recv_disconnect(&msg.msg_disconnect, len);
 					break;
 
 				default:
@@ -4904,6 +5003,10 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 	dbentry->n_block_read_time += msg->m_block_read_time;
 	dbentry->n_block_write_time += msg->m_block_write_time;
 
+	dbentry->total_session_time += msg->m_session_time;
+	dbentry->total_active_time += msg->m_active_time;
+	dbentry->total_idle_in_xact_time += msg->m_idle_in_xact_time;
+
 	/*
 	 * Process all table entries in the message.
 	 */
@@ -4956,8 +5059,11 @@ pgstat_recv_tabstat(PgStat_MsgTabstat *msg, int len)
 			tabentry->tuples_updated += tabmsg->t_counts.t_tuples_updated;
 			tabentry->tuples_deleted += tabmsg->t_counts.t_tuples_deleted;
 			tabentry->tuples_hot_updated += tabmsg->t_counts.t_tuples_hot_updated;
-			/* If table was truncated, first reset the live/dead counters */
-			if (tabmsg->t_counts.t_truncated)
+			/*
+			 * If table was truncated/dropped, first reset the live/dead
+			 * counters.
+			 */
+			if (tabmsg->t_counts.t_truncdropped)
 			{
 				tabentry->n_live_tuples = 0;
 				tabentry->n_dead_tuples = 0;
@@ -5568,23 +5674,34 @@ pgstat_recv_replslot(PgStat_MsgReplSlot *msg, int len)
 }
 
 /* ----------
- * pgstat_recv_connstat() -
+ * pgstat_recv_connect() -
  *
- *  Process connection information.
+ *	Process a CONNECT message.
  * ----------
  */
 static void
-pgstat_recv_connstat(PgStat_MsgConn *msg, int len)
+pgstat_recv_connect(PgStat_MsgConnect *msg, int len)
+{
+	PgStat_StatDBEntry *dbentry;
+
+	dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
+	dbentry->n_sessions++;
+}
+
+/* ----------
+ * pgstat_recv_disconnect() -
+ *
+ *	Process a DISCONNECT message.
+ * ----------
+ */
+static void
+pgstat_recv_disconnect(PgStat_MsgDisconnect *msg, int len)
 {
 	PgStat_StatDBEntry *dbentry;
 
 	dbentry = pgstat_get_db_entry(msg->m_databaseid, true);
 
-	dbentry->n_sessions += msg->m_count;
-	dbentry->total_session_time += msg->m_session_time;
-	dbentry->total_active_time += msg->m_active_time;
-	dbentry->total_idle_in_xact_time += msg->m_idle_in_xact_time;
-	switch (msg->m_disconnect)
+	switch (msg->m_cause)
 	{
 		case DISCONNECT_NOT_YET:
 		case DISCONNECT_NORMAL:

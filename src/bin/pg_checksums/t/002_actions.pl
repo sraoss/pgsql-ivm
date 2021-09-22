@@ -6,11 +6,12 @@
 
 use strict;
 use warnings;
+use Config;
 use PostgresNode;
 use TestLib;
 
 use Fcntl qw(:seek);
-use Test::More tests => 69;
+use Test::More tests => 66;
 
 
 # Utility routine to create and check a table with corrupted checksums
@@ -180,28 +181,24 @@ command_fails(
 
 # Test postgres -C for an offline cluster.
 # Run-time GUCs are safe to query here.  Note that a lock file is created,
-# then unlinked, leading to an extra LOG entry showing in stderr.
+# then removed, leading to an extra LOG entry showing in stderr.  This uses
+# log_min_messages=fatal to remove any noise.  This test uses a startup
+# wrapped with pg_ctl to allow the case where this runs under a privileged
+# account on Windows.
 command_checks_all(
-	[ 'postgres', '-D', $pgdata, '-C', 'data_checksums' ],
-	0,
+	[
+		'pg_ctl', 'start', '-D', $pgdata, '-s', '-o',
+		'-C data_checksums -c log_min_messages=fatal'
+	],
+	1,
 	[qr/^on$/],
-	# LOG entry when unlinking lock file.
-	[qr/database system is shut down/],
+	[qr/could not start server/],
 	'data_checksums=on is reported on an offline cluster');
 
 # Checks cannot happen with an online cluster
 $node->start;
 command_fails([ 'pg_checksums', '--check', '-D', $pgdata ],
 	"fails with online cluster");
-
-# Test postgres -C on an online cluster.
-command_fails_like(
-	[ 'postgres', '-D', $pgdata, '-C', 'data_checksums' ],
-	qr/lock file .* already exists/,
-	'data_checksums is not reported on an online cluster');
-command_ok(
-	[ 'postgres', '-D', $pgdata, '-C', 'work_mem' ],
-	'non-runtime parameter is reported on an online cluster');
 
 # Check corruption of table on default tablespace.
 check_relation_corruption($node, 'corrupt1', 'pg_default');

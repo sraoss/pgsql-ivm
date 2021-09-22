@@ -81,7 +81,8 @@ typedef enum StatMsgType
 	PGSTAT_MTYPE_DEADLOCK,
 	PGSTAT_MTYPE_CHECKSUMFAILURE,
 	PGSTAT_MTYPE_REPLSLOT,
-	PGSTAT_MTYPE_CONNECTION,
+	PGSTAT_MTYPE_CONNECT,
+	PGSTAT_MTYPE_DISCONNECT,
 } StatMsgType;
 
 /* ----------
@@ -122,7 +123,7 @@ typedef struct PgStat_TableCounts
 	PgStat_Counter t_tuples_updated;
 	PgStat_Counter t_tuples_deleted;
 	PgStat_Counter t_tuples_hot_updated;
-	bool		t_truncated;
+	bool		t_truncdropped;
 
 	PgStat_Counter t_delta_live_tuples;
 	PgStat_Counter t_delta_dead_tuples;
@@ -185,10 +186,12 @@ typedef struct PgStat_TableXactStatus
 	PgStat_Counter tuples_inserted; /* tuples inserted in (sub)xact */
 	PgStat_Counter tuples_updated;	/* tuples updated in (sub)xact */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in (sub)xact */
-	bool		truncated;		/* relation truncated in this (sub)xact */
-	PgStat_Counter inserted_pre_trunc;	/* tuples inserted prior to truncate */
-	PgStat_Counter updated_pre_trunc;	/* tuples updated prior to truncate */
-	PgStat_Counter deleted_pre_trunc;	/* tuples deleted prior to truncate */
+	bool		truncdropped;		/* relation truncated/dropped in this
+									 * (sub)xact */
+	/* tuples i/u/d prior to truncate/drop */
+	PgStat_Counter inserted_pre_truncdrop;
+	PgStat_Counter updated_pre_truncdrop;
+	PgStat_Counter deleted_pre_truncdrop;
 	int			nest_level;		/* subtransaction nest level */
 	/* links to other structs for same relation: */
 	struct PgStat_TableXactStatus *upper;	/* next higher subxact if any */
@@ -279,7 +282,7 @@ typedef struct PgStat_TableEntry
  * ----------
  */
 #define PGSTAT_NUM_TABENTRIES  \
-	((PGSTAT_MSG_PAYLOAD - sizeof(Oid) - 3 * sizeof(int) - 2 * sizeof(PgStat_Counter))	\
+	((PGSTAT_MSG_PAYLOAD - sizeof(Oid) - 3 * sizeof(int) - 5 * sizeof(PgStat_Counter)) \
 	 / sizeof(PgStat_TableEntry))
 
 typedef struct PgStat_MsgTabstat
@@ -291,6 +294,9 @@ typedef struct PgStat_MsgTabstat
 	int			m_xact_rollback;
 	PgStat_Counter m_block_read_time;	/* times in microseconds */
 	PgStat_Counter m_block_write_time;
+	PgStat_Counter m_session_time;
+	PgStat_Counter m_active_time;
+	PgStat_Counter m_idle_in_xact_time;
 	PgStat_TableEntry m_entry[PGSTAT_NUM_TABENTRIES];
 } PgStat_MsgTabstat;
 
@@ -653,20 +659,26 @@ typedef struct PgStat_MsgChecksumFailure
 } PgStat_MsgChecksumFailure;
 
 /* ----------
- * PgStat_MsgConn			Sent by the backend to update connection statistics.
+ * PgStat_MsgConnect			Sent by the backend upon connection
+ *								establishment
  * ----------
  */
-typedef struct PgStat_MsgConn
+typedef struct PgStat_MsgConnect
 {
 	PgStat_MsgHdr m_hdr;
 	Oid			m_databaseid;
-	PgStat_Counter m_count;
-	PgStat_Counter m_session_time;
-	PgStat_Counter m_active_time;
-	PgStat_Counter m_idle_in_xact_time;
-	SessionEndType m_disconnect;
-} PgStat_MsgConn;
+} PgStat_MsgConnect;
 
+/* ----------
+ * PgStat_MsgDisconnect			Sent by the backend when disconnecting
+ * ----------
+ */
+typedef struct PgStat_MsgDisconnect
+{
+	PgStat_MsgHdr m_hdr;
+	Oid			m_databaseid;
+	SessionEndType m_cause;
+} PgStat_MsgDisconnect;
 
 /* ----------
  * PgStat_Msg					Union over all possible messages.
@@ -700,7 +712,8 @@ typedef union PgStat_Msg
 	PgStat_MsgTempFile msg_tempfile;
 	PgStat_MsgChecksumFailure msg_checksumfailure;
 	PgStat_MsgReplSlot msg_replslot;
-	PgStat_MsgConn msg_conn;
+	PgStat_MsgConnect msg_connect;
+	PgStat_MsgDisconnect msg_disconnect;
 } PgStat_Msg;
 
 
@@ -1010,6 +1023,7 @@ extern void pgstat_reset_single_counter(Oid objectid, PgStat_Single_Reset_Type t
 extern void pgstat_reset_slru_counter(const char *);
 extern void pgstat_reset_replslot_counter(const char *name);
 
+extern void pgstat_report_connect(Oid dboid);
 extern void pgstat_report_autovac(Oid dboid);
 extern void pgstat_report_vacuum(Oid tableoid, bool shared,
 								 PgStat_Counter livetuples, PgStat_Counter deadtuples);
