@@ -305,17 +305,39 @@ verify_heapam(PG_FUNCTION_ARGS)
 	 */
 	if (ctx.rel->rd_rel->relkind != RELKIND_RELATION &&
 		ctx.rel->rd_rel->relkind != RELKIND_MATVIEW &&
-		ctx.rel->rd_rel->relkind != RELKIND_TOASTVALUE)
+		ctx.rel->rd_rel->relkind != RELKIND_TOASTVALUE &&
+		ctx.rel->rd_rel->relkind != RELKIND_SEQUENCE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot check relation \"%s\"",
 						RelationGetRelationName(ctx.rel)),
 				 errdetail_relkind_not_supported(ctx.rel->rd_rel->relkind)));
 
-	if (ctx.rel->rd_rel->relam != HEAP_TABLE_AM_OID)
+	/*
+	 * Sequences always use heap AM, but they don't show that in the catalogs.
+	 * Other relkinds might be using a different AM, so check.
+	 */
+	if (ctx.rel->rd_rel->relkind != RELKIND_SEQUENCE &&
+		ctx.rel->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("only heap AM is supported")));
+
+	/*
+	 * Early exit for unlogged relations during recovery.  These will have no
+	 * relation fork, so there won't be anything to check.  We behave as if
+	 * the relation is empty.
+	 */
+	if (ctx.rel->rd_rel->relpersistence == RELPERSISTENCE_UNLOGGED &&
+		RecoveryInProgress())
+	{
+		ereport(DEBUG1,
+				(errcode(ERRCODE_READ_ONLY_SQL_TRANSACTION),
+				 errmsg("cannot verify unlogged relation \"%s\" during recovery, skipping",
+						RelationGetRelationName(ctx.rel))));
+		relation_close(ctx.rel, AccessShareLock);
+		PG_RETURN_NULL();
+	}
 
 	/* Early exit if the relation is empty */
 	nblocks = RelationGetNumberOfBlocks(ctx.rel);

@@ -1164,6 +1164,7 @@ SELECT ftx.x1, ft2.c2, ftx.x8 FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
 SELECT ftx.x1, ft2.c2, ftx FROM ft1 ftx(x1,x2,x3,x4,x5,x6,x7,x8), ft2
   WHERE ftx.x1 = ft2.c1 AND ftx.x1 = 1; -- ERROR
 SELECT sum(c2), array_agg(c8) FROM ft1 GROUP BY c8; -- ERROR
+ANALYZE ft1; -- ERROR
 ALTER FOREIGN TABLE ft1 ALTER COLUMN c8 TYPE user_enum;
 
 -- ===================================================================
@@ -3408,7 +3409,7 @@ ALTER SERVER loopback OPTIONS (DROP async_capable);
 ALTER SERVER loopback2 OPTIONS (DROP async_capable);
 
 -- ===================================================================
--- test invalid server and foreign table options
+-- test invalid server, foreign table and foreign data wrapper options
 -- ===================================================================
 -- Invalid fdw_startup_cost option
 CREATE SERVER inv_scst FOREIGN DATA WRAPPER postgres_fdw
@@ -3422,3 +3423,6 @@ CREATE FOREIGN TABLE inv_fsz (c1 int )
 -- Invalid batch_size option
 CREATE FOREIGN TABLE inv_bsz (c1 int )
 	SERVER loopback OPTIONS (batch_size '100$%$#$#');
+
+-- No option is allowed to be specified at foreign data wrapper level
+ALTER FOREIGN DATA WRAPPER postgres_fdw OPTIONS (nonexistent 'fdw');

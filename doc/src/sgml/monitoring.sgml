@@ -320,15 +320,6 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
 
      <row>
-      <entry><structname>pg_stat_replication_slots</structname><indexterm><primary>pg_stat_replication_slots</primary></indexterm></entry>
-      <entry>One row per replication slot, showing statistics about
-       the replication slot's usage.
-       See <link linkend="monitoring-pg-stat-replication-slots-view">
-       <structname>pg_stat_replication_slots</structname></link> for details.
-      </entry>
-     </row>
-
-     <row>
       <entry><structname>pg_stat_wal_receiver</structname><indexterm><primary>pg_stat_wal_receiver</primary></indexterm></entry>
       <entry>Only one row, showing statistics about the WAL receiver from
        that receiver's connected server.
@@ -624,6 +615,15 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>One row per SLRU, showing statistics of operations. See
        <link linkend="monitoring-pg-stat-slru-view">
        <structname>pg_stat_slru</structname></link> for details.
+      </entry>
+     </row>
+
+     <row>
+      <entry><structname>pg_stat_replication_slots</structname><indexterm><primary>pg_stat_replication_slots</primary></indexterm></entry>
+      <entry>One row per replication slot, showing statistics about the
+       replication slot's usage. See
+       <link linkend="monitoring-pg-stat-replication-slots-view">
+       <structname>pg_stat_replication_slots</structname></link> for details.
       </entry>
      </row>
 
@@ -1548,22 +1548,6 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      <row>
       <entry><literal>WALWrite</literal></entry>
       <entry>Waiting for a write to a WAL file.</entry>
-     </row>
-     <row>
-      <entry><literal>LogicalChangesRead</literal></entry>
-      <entry>Waiting for a read from a logical changes file.</entry>
-     </row>
-     <row>
-      <entry><literal>LogicalChangesWrite</literal></entry>
-      <entry>Waiting for a write to a logical changes file.</entry>
-     </row>
-     <row>
-      <entry><literal>LogicalSubxactRead</literal></entry>
-      <entry>Waiting for a read from a logical subxact file.</entry>
-     </row>
-     <row>
-      <entry><literal>LogicalSubxactWrite</literal></entry>
-      <entry>Waiting for a write to a logical subxact file.</entry>
      </row>
     </tbody>
    </tgroup>
@@ -6147,8 +6131,9 @@ SELECT pg_stat_get_backend_pid(s.backendid) AS pid,
        <command>VACUUM</command> is currently vacuuming the indexes.  If a table has
        any indexes, this will happen at least once per vacuum, after the heap
        has been completely scanned.  It may happen multiple times per vacuum
-       if <xref linkend="guc-maintenance-work-mem"/> is insufficient to
-       store the number of dead tuples found.
+       if <xref linkend="guc-maintenance-work-mem"/> (or, in the case of autovacuum,
+       <xref linkend="guc-autovacuum-work-mem"/> if set) is insufficient to store
+       the number of dead tuples found.
      </entry>
     </row>
     <row>

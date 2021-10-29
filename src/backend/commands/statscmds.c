@@ -213,14 +213,14 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * Convert the expression list to a simple array of attnums, but also keep
 	 * a list of more complex expressions.  While at it, enforce some
 	 * constraints - we don't allow extended statistics on system attributes,
-	 * and we require the data type to have less-than operator.
+	 * and we require the data type to have a less-than operator.
 	 *
-	 * There are many ways how to "mask" a simple attribute refenrece as an
+	 * There are many ways to "mask" a simple attribute reference as an
 	 * expression, for example "(a+0)" etc. We can't possibly detect all of
-	 * them, but we handle at least the simple case with attribute in parens.
-	 * There'll always be a way around this, if the user is determined (like
-	 * the "(a+0)" example), but this makes it somewhat consistent with how
-	 * indexes treat attributes/expressions.
+	 * them, but we handle at least the simple case with the attribute in
+	 * parens. There'll always be a way around this, if the user is determined
+	 * (like the "(a+0)" example), but this makes it somewhat consistent with
+	 * how indexes treat attributes/expressions.
 	 */
 	foreach(cell, stmt->exprs)
 	{
@@ -560,11 +560,11 @@ CreateStatistics(CreateStatsStmt *stmt)
 	}
 
 	/*
-	 * If there are no dependencies on a column, give the statistics an auto
-	 * dependency on the whole table.  In most cases, this will be redundant,
-	 * but it might not be if the statistics expressions contain no Vars
-	 * (which might seem strange but possible). This is consistent with what
-	 * we do for indexes in index_create.
+	 * If there are no dependencies on a column, give the statistics object an
+	 * auto dependency on the whole table.  In most cases, this will be
+	 * redundant, but it might not be if the statistics expressions contain no
+	 * Vars (which might seem strange but possible). This is consistent with
+	 * what we do for indexes in index_create.
 	 *
 	 * XXX We intentionally don't consider the expressions before adding this
 	 * dependency, because recordDependencyOnSingleRelExpr may not create any
@@ -649,9 +649,9 @@ AlterStatistics(AlterStatsStmt *stmt)
 	stxoid = get_statistics_object_oid(stmt->defnames, stmt->missing_ok);
 
 	/*
-	 * If we got here and the OID is not valid, it means the statistics does
-	 * not exist, but the command specified IF EXISTS. So report this as a
-	 * simple NOTICE and we're done.
+	 * If we got here and the OID is not valid, it means the statistics object
+	 * does not exist, but the command specified IF EXISTS. So report this as
+	 * a simple NOTICE and we're done.
 	 */
 	if (!OidIsValid(stxoid))
 	{
@@ -768,7 +768,7 @@ RemoveStatisticsById(Oid statsOid)
 }
 
 /*
- * Select a nonconflicting name for a new statistics.
+ * Select a nonconflicting name for a new statistics object.
  *
  * name1, name2, and label are used the same way as for makeObjectName(),
  * except that the label can't be NULL; digits will be appended to the label
@@ -815,9 +815,9 @@ ChooseExtendedStatisticName(const char *name1, const char *name2,
 }
 
 /*
- * Generate "name2" for a new statistics given the list of column names for it
- * This will be passed to ChooseExtendedStatisticName along with the parent
- * table name and a suitable label.
+ * Generate "name2" for a new statistics object given the list of column
+ * names for it.  This will be passed to ChooseExtendedStatisticName along
+ * with the parent table name and a suitable label.
  *
  * We know that less than NAMEDATALEN characters will actually be used,
  * so we can truncate the result once we've generated that many.
@@ -869,8 +869,8 @@ ChooseExtendedStatisticNameAddition(List *exprs)
 }
 
 /*
- * StatisticsGetRelation: given a statistics's relation OID, get the OID of
- * the relation it is an statistics on.  Uses the system cache.
+ * StatisticsGetRelation: given a statistics object's OID, get the OID of
+ * the relation it is defined on.  Uses the system cache.
  */
 Oid
 StatisticsGetRelation(Oid statId, bool missing_ok)

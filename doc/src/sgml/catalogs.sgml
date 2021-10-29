@@ -241,6 +241,11 @@
      </row>
 
      <row>
+      <entry><link linkend="catalog-pg-publication-namespace"><structname>pg_publication_namespace</structname></link></entry>
+      <entry>schema to publication mapping</entry>
+     </row>
+
+     <row>
       <entry><link linkend="catalog-pg-publication-rel"><structname>pg_publication_rel</structname></link></entry>
       <entry>relation to publication mapping</entry>
      </row>
@@ -2828,7 +2833,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>conforencoding</structfield> <type>int4</type>
       </para>
       <para>
-       Source encoding ID
+       Source encoding ID (<link linkend="pg-encoding-to-char"><function>pg_encoding_to_char()</function></link>
+       can translate this number to the encoding name)
       </para></entry>
      </row>
 
@@ -2837,7 +2843,8 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>contoencoding</structfield> <type>int4</type>
       </para>
       <para>
-       Destination encoding ID
+       Destination encoding ID (<link linkend="pg-encoding-to-char"><function>pg_encoding_to_char()</function></link>
+       can translate this number to the encoding name)
       </para></entry>
      </row>
 
@@ -2936,7 +2943,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       </para>
       <para>
        Character encoding for this database
-       (<function>pg_encoding_to_char()</function> can translate
+       (<link linkend="pg-encoding-to-char"><function>pg_encoding_to_char()</function></link> can translate
        this number to the encoding name)
       </para></entry>
      </row>
@@ -6189,6 +6196,67 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        If true, operations on a leaf partition are replicated using the
        identity and schema of its topmost partitioned ancestor mentioned in the
        publication instead of its own.
+      </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+ </sect1>
+
+ <sect1 id="catalog-pg-publication-namespace">
+  <title><structname>pg_publication_namespace</structname></title>
+
+  <indexterm zone="catalog-pg-publication-namespace">
+   <primary>pg_publication_namespace</primary>
+  </indexterm>
+
+  <para>
+   The catalog <structname>pg_publication_namespace</structname> contains the
+   mapping between schemas and publications in the database.  This is a
+   many-to-many mapping.
+  </para>
+
+  <table>
+   <title><structname>pg_publication_namespace</structname> Columns</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       Column Type
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>oid</structfield> <type>oid</type>
+      </para>
+      <para>
+       Row identifier
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>pnpubid</structfield> <type>oid</type>
+       (references <link linkend="catalog-pg-publication"><structname>pg_publication</structname></link>.<structfield>oid</structfield>)
+      </para>
+      <para>
+       Reference to publication
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>pnnspid</structfield> <type>oid</type>
+       (references <link linkend="catalog-pg-namespace"><structname>pg_namespace</structname></link>.<structfield>oid</structfield>)
+      </para>
+      <para>
+       Reference to schema
       </para></entry>
      </row>
     </tbody>
@@ -11298,9 +11366,9 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    information about the mapping between publications and the tables they
    contain.  Unlike the underlying catalog
    <link linkend="catalog-pg-publication-rel"><structname>pg_publication_rel</structname></link>,
-   this view expands
-   publications defined as <literal>FOR ALL TABLES</literal>, so for such
-   publications there will be a row for each eligible table.
+   this view expands publications defined as <literal>FOR ALL TABLES</literal>
+   and <literal>FOR ALL TABLES IN SCHEMA</literal>, so for such publications
+   there will be a row for each eligible table.
   </para>
 
   <table>
@@ -13138,7 +13206,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    <structname>pg_stats_ext_exprs</structname> is also designed to present
    the information in a more readable format than the underlying catalogs
    &mdash; at the cost that its schema must be extended whenever the structure
-   of statistics in <link linkend="catalog-pg-statistic"><structname>pg_statistic</structname></link> changes.
+   of statistics in <structname>pg_statistic_ext</structname> changes.
   </para>
 
   <table>

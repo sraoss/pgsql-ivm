@@ -3443,13 +3443,13 @@ estimate_num_groups(PlannerInfo *root, List *groupExprs, double input_rows,
 		 * expression, treat it as a single variable even if it's really more
 		 * complicated.
 		 *
-		 * XXX This has the consequence that if there's a statistics on the
-		 * expression, we don't split it into individual Vars. This affects
-		 * our selection of statistics in estimate_multivariate_ndistinct,
-		 * because it's probably better to use more accurate estimate for each
-		 * expression and treat them as independent, than to combine estimates
-		 * for the extracted variables when we don't know how that relates to
-		 * the expressions.
+		 * XXX This has the consequence that if there's a statistics object on
+		 * the expression, we don't split it into individual Vars. This
+		 * affects our selection of statistics in
+		 * estimate_multivariate_ndistinct, because it's probably better to
+		 * use more accurate estimate for each expression and treat them as
+		 * independent, than to combine estimates for the extracted variables
+		 * when we don't know how that relates to the expressions.
 		 */
 		examine_variable(root, groupexpr, 0, &vardata);
 		if (HeapTupleIsValid(vardata.statsTuple) || vardata.isunique)
@@ -3918,7 +3918,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 	if (!rel->statlist)
 		return false;
 
-	/* look for the ndistinct statistics matching the most vars */
+	/* look for the ndistinct statistics object matching the most vars */
 	nmatches_vars = 0;			/* we require at least two matches */
 	nmatches_exprs = 0;
 	foreach(lc, rel->statlist)
@@ -3964,7 +3964,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				continue;
 			}
 
-			/* expression - see if it's in the statistics */
+			/* expression - see if it's in the statistics object */
 			foreach(lc3, info->exprs)
 			{
 				Node	   *expr = (Node *) lfirst(lc3);
@@ -4053,7 +4053,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 				if (!AttrNumberIsForUserDefinedAttr(attnum))
 					continue;
 
-				/* Is the variable covered by the statistics? */
+				/* Is the variable covered by the statistics object? */
 				if (!bms_is_member(attnum, matched_info->keys))
 					continue;
 
@@ -4075,7 +4075,7 @@ estimate_multivariate_ndistinct(PlannerInfo *root, RelOptInfo *rel,
 			if (found)
 				continue;
 
-			/* expression - see if it's in the statistics */
+			/* expression - see if it's in the statistics object */
 			idx = 0;
 			foreach(lc3, matched_info->exprs)
 			{
@@ -5252,7 +5252,7 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 				{
 					HeapTuple	t = statext_expressions_load(info->statOid, pos);
 
-					/* Get index's table for permission check */
+					/* Get statistics object's table for permission check */
 					RangeTblEntry *rte;
 					Oid			userid;
 
@@ -5276,8 +5276,8 @@ examine_variable(PlannerInfo *root, Node *node, int varRelid,
 					/*
 					 * For simplicity, we insist on the whole table being
 					 * selectable, rather than trying to identify which
-					 * column(s) the statistics depends on.  Also require all
-					 * rows to be selectable --- there must be no
+					 * column(s) the statistics object depends on.  Also
+					 * require all rows to be selectable --- there must be no
 					 * securityQuals from security barrier views or RLS
 					 * policies.
 					 */
@@ -5841,15 +5841,35 @@ get_variable_range(PlannerInfo *root, VariableStatData *vardata,
 	/*
 	 * If we have most-common-values info, look for extreme MCVs.  This is
 	 * needed even if we also have a histogram, since the histogram excludes
-	 * the MCVs.
+	 * the MCVs.  However, if we *only* have MCVs and no histogram, we should
+	 * be pretty wary of deciding that that is a full representation of the
+	 * data.  Proceed only if the MCVs represent the whole table (to within
+	 * roundoff error).
 	 */
 	if (get_attstatsslot(&sslot, vardata->statsTuple,
 						 STATISTIC_KIND_MCV, InvalidOid,
-						 ATTSTATSSLOT_VALUES))
+						 have_data ? ATTSTATSSLOT_VALUES :
+						 (ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS)))
 	{
-		get_stats_slot_range(&sslot, opfuncoid, &opproc,
-							 collation, typLen, typByVal,
-							 &tmin, &tmax, &have_data);
+		bool		use_mcvs = have_data;
+
+		if (!have_data)
+		{
+			double		sumcommon = 0.0;
+			double		nullfrac;
+			int			i;
+
+			for (i = 0; i < sslot.nnumbers; i++)
+				sumcommon += sslot.numbers[i];
+			nullfrac = ((Form_pg_statistic) GETSTRUCT(vardata->statsTuple))->stanullfrac;
+			if (sumcommon + nullfrac > 0.99999)
+				use_mcvs = true;
+		}
+
+		if (use_mcvs)
+			get_stats_slot_range(&sslot, opfuncoid, &opproc,
+								 collation, typLen, typByVal,
+								 &tmin, &tmax, &have_data);
 		free_attstatsslot(&sslot);
 	}
 

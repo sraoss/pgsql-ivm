@@ -679,9 +679,24 @@ FreeSnapshot(Snapshot snapshot)
 void
 PushActiveSnapshot(Snapshot snap)
 {
+	PushActiveSnapshotWithLevel(snap, GetCurrentTransactionNestLevel());
+}
+
+/*
+ * PushActiveSnapshotWithLevel
+ *		Set the given snapshot as the current active snapshot
+ *
+ * Same as PushActiveSnapshot except that caller can specify the
+ * transaction nesting level that "owns" the snapshot.  This level
+ * must not be deeper than the current top of the snapshot stack.
+ */
+void
+PushActiveSnapshotWithLevel(Snapshot snap, int snap_level)
+{
 	ActiveSnapshotElt *newactive;
 
 	Assert(snap != InvalidSnapshot);
+	Assert(ActiveSnapshot == NULL || snap_level >= ActiveSnapshot->as_level);
 
 	newactive = MemoryContextAlloc(TopTransactionContext, sizeof(ActiveSnapshotElt));
 
@@ -695,7 +710,7 @@ PushActiveSnapshot(Snapshot snap)
 		newactive->as_snap = snap;
 
 	newactive->as_next = ActiveSnapshot;
-	newactive->as_level = GetCurrentTransactionNestLevel();
+	newactive->as_level = snap_level;
 
 	newactive->as_snap->active_count++;
 
@@ -904,9 +919,9 @@ xmin_cmp(const pairingheap_node *a, const pairingheap_node *b, void *arg)
 /*
  * SnapshotResetXmin
  *
- * If there are no more snapshots, we can reset our PGPROC->xmin to InvalidXid.
- * Note we can do this without locking because we assume that storing an Xid
- * is atomic.
+ * If there are no more snapshots, we can reset our PGPROC->xmin to
+ * InvalidTransactionId. Note we can do this without locking because we assume
+ * that storing an Xid is atomic.
  *
  * Even if there are some remaining snapshots, we may be able to advance our
  * PGPROC->xmin to some degree.  This typically happens when a portal is

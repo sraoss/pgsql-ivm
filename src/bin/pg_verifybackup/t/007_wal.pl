@@ -8,12 +8,12 @@ use warnings;
 use Cwd;
 use Config;
 use File::Path qw(rmtree);
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More tests => 9;
 
 # Start up the server and take a backup.
-my $primary = PostgresNode->new('primary');
+my $primary = PostgreSQL::Test::Cluster->new('primary');
 $primary->init(allows_streaming => 1);
 $primary->start;
 my $backup_path = $primary->backup_dir . '/test_wal';
@@ -64,7 +64,7 @@ command_fails_like(
 # a timeline > 1.  Rather than plugging in a new standby, do a
 # self-promotion of this node.
 $primary->stop;
-$primary->append_conf('standby.signal');
+$primary->append_conf('standby.signal', '');
 $primary->start;
 $primary->promote;
 $primary->safe_psql('postgres', 'SELECT pg_switch_wal()');

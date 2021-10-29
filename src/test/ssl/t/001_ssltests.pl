@@ -3,8 +3,9 @@
 
 use strict;
 use warnings;
-use PostgresNode;
-use TestLib;
+use Config qw ( %Config );
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 
 use File::Copy;
@@ -64,7 +65,7 @@ push @keys, 'client_wrongperms';
 #### Set up the server.
 
 note "setting up data directory";
-my $node = PostgresNode->new('primary');
+my $node = PostgreSQL::Test::Cluster->new('primary');
 $node->init;
 
 # PGHOST is enforced here to set up the node, subsequent connections
@@ -485,6 +486,32 @@ TODO:
 }
 
 # pg_stat_ssl
+
+my $serialno = `openssl x509 -serial -noout -in ssl/client.crt`;
+if ($? == 0)
+{
+	# OpenSSL prints serial numbers in hexadecimal and converting the serial
+	# from hex requires a 64-bit capable Perl as the serialnumber is based on
+	# the current timestamp. On 32-bit fall back to checking for it being an
+	# integer like how we do when grabbing the serial fails.
+	if ($Config{ivsize} == 8)
+	{
+		$serialno =~ s/^serial=//;
+		$serialno = hex($serialno);
+	}
+	else
+	{
+		$serialno = '\d+';
+	}
+}
+else
+{
+	# OpenSSL isn't functioning on the user's PATH. This probably isn't worth
+	# skipping the test over, so just fall back to a generic integer match.
+	warn 'couldn\'t run `openssl x509` to get client cert serialno';
+	$serialno = '\d+';
+}
+
 command_like(
 	[
 		'psql',
@@ -500,7 +527,7 @@ command_like(
 		"SELECT * FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
 	],
 	qr{^pid,ssl,version,cipher,bits,client_dn,client_serial,issuer_dn\r?\n
-				^\d+,t,TLSv[\d.]+,[\w-]+,\d+,/CN=ssltestuser,1,\Q/CN=Test CA for PostgreSQL SSL regression test client certs\E\r?$}mx,
+				^\d+,t,TLSv[\d.]+,[\w-]+,\d+,/CN=ssltestuser,$serialno,\Q/CN=Test CA for PostgreSQL SSL regression test client certs\E\r?$}mx,
 	'pg_stat_ssl with client certificate');
 
 # client key with wrong permissions

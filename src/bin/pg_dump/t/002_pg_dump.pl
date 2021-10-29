@@ -5,11 +5,11 @@ use strict;
 use warnings;
 
 use Config;
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 
-my $tempdir       = TestLib::tempdir;
+my $tempdir       = PostgreSQL::Test::Utils::tempdir;
 
 ###############################################################
 # Definition of the pg_dump runs to make.
@@ -25,7 +25,7 @@ my $tempdir       = TestLib::tempdir;
 # the full command and arguments to run.  Note that this is run
 # using $node->command_ok(), so the port does not need to be
 # specified and is pulled from $PGPORT, which is set by the
-# PostgresNode system.
+# PostgreSQL::Test::Cluster system.
 #
 # restore_cmd is the pg_restore command to run, if any.  Note
 # that this should generally be used when the pg_dump goes to
@@ -442,6 +442,25 @@ my %tests = (
 			no_privs                 => 1,
 		},
 	},
+
+	'ALTER DEFAULT PRIVILEGES FOR ROLE regress_dump_test_role GRANT EXECUTE ON FUNCTIONS'
+	  => {
+		create_order => 15,
+		create_sql   => 'ALTER DEFAULT PRIVILEGES
+					   FOR ROLE regress_dump_test_role IN SCHEMA dump_test
+					   GRANT EXECUTE ON FUNCTIONS TO regress_dump_test_role;',
+		regexp => qr/^
+			\QALTER DEFAULT PRIVILEGES \E
+			\QFOR ROLE regress_dump_test_role IN SCHEMA dump_test \E
+			\QGRANT ALL ON FUNCTIONS  TO regress_dump_test_role;\E
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
+		unlike => {
+			exclude_dump_test_schema => 1,
+			no_privs                 => 1,
+		},
+	  },
 
 	'ALTER DEFAULT PRIVILEGES FOR ROLE regress_dump_test_role REVOKE' => {
 		create_order => 55,
@@ -2317,6 +2336,15 @@ my %tests = (
 		like => { %full_runs, section_post_data => 1, },
 	},
 
+	'CREATE PUBLICATION pub3' => {
+		create_order => 50,
+		create_sql   => 'CREATE PUBLICATION pub3;',
+		regexp => qr/^
+			\QCREATE PUBLICATION pub3 WITH (publish = 'insert, update, delete, truncate');\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
+	},
+
 	'CREATE SUBSCRIPTION sub1' => {
 		create_order => 50,
 		create_sql   => 'CREATE SUBSCRIPTION sub1
@@ -2351,6 +2379,27 @@ my %tests = (
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA dump_test' => {
+		create_order => 51,
+		create_sql =>
+		  'ALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA dump_test;',
+		regexp => qr/^
+			\QALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA dump_test;\E
+			/xm,
+		like   => { %full_runs, section_post_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA public' => {
+		create_order => 52,
+		create_sql =>
+		  'ALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA public;',
+		regexp => qr/^
+			\QALTER PUBLICATION pub3 ADD ALL TABLES IN SCHEMA public;\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
 	},
 
 	'CREATE SCHEMA public' => {
@@ -3573,7 +3622,7 @@ my %tests = (
 #########################################
 # Create a PG instance to test actually dumping from
 
-my $node = PostgresNode->new('main');
+my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->start;
 

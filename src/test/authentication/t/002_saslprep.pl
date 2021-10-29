@@ -7,8 +7,8 @@
 
 use strict;
 use warnings;
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 if (!$use_unix_sockets)
 {
@@ -36,6 +36,8 @@ sub reset_pg_hba
 # Test access for a single role, useful to wrap all tests into one.
 sub test_login
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my $node          = shift;
 	my $role          = shift;
 	my $password      = shift;
@@ -62,7 +64,7 @@ sub test_login
 
 # Initialize primary node. Force UTF-8 encoding, so that we can use non-ASCII
 # characters in the passwords below.
-my $node = PostgresNode->new('primary');
+my $node = PostgreSQL::Test::Cluster->new('primary');
 $node->init(extra => [ '--locale=C', '--encoding=UTF8' ]);
 $node->start;
 

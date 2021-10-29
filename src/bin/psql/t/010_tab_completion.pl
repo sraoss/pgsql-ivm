@@ -4,8 +4,8 @@
 use strict;
 use warnings;
 
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More;
 use IPC::Run qw(pump finish timer);
 use Data::Dumper;
@@ -34,7 +34,7 @@ if ($@)
 }
 
 # start a new server
-my $node = PostgresNode->new('main');
+my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->start;
 
@@ -48,7 +48,7 @@ $node->safe_psql('postgres',
 # their ~/.psql_history, so be sure to redirect history into a temp file.
 # We might as well put it in the test log directory, so that buildfarm runs
 # capture the result for possible debugging purposes.
-my $historyfile = "${TestLib::log_path}/010_psql_history.txt";
+my $historyfile = "${PostgreSQL::Test::Utils::log_path}/010_psql_history.txt";
 $ENV{PSQL_HISTORY} = $historyfile;
 
 # Another pitfall for developers is that they might have a ~/.inputrc
@@ -127,6 +127,8 @@ sub check_completion
 # (won't work if we are inside a string literal!)
 sub clear_query
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	check_completion("\\r\n", qr/postgres=# /, "\\r works");
 	return;
 }
@@ -136,6 +138,8 @@ sub clear_query
 # than clear_query because we lose evidence in the history file)
 sub clear_line
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	check_completion("\025\n", qr/postgres=# /, "control-U works");
 	return;
 }

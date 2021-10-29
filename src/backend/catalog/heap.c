@@ -764,6 +764,9 @@ InsertPgAttributeTuples(Relation pg_attribute_rel,
 
 		ExecClearTuple(slot[slotCount]);
 
+		memset(slot[slotCount]->tts_isnull, false,
+			   slot[slotCount]->tts_tupleDescriptor->natts * sizeof(bool));
+
 		if (new_rel_oid != InvalidOid)
 			slot[slotCount]->tts_values[Anum_pg_attribute_attrelid - 1] = ObjectIdGetDatum(new_rel_oid);
 		else
@@ -3548,7 +3551,7 @@ restart:
 		/*
 		 * If this constraint has a parent constraint which we have not seen
 		 * yet, keep track of it for the second loop, below.  Tracking parent
-		 * constraints allows us to climb up to the top-level level constraint
+		 * constraints allows us to climb up to the top-level constraint
 		 * and look for all possible relations referencing the partitioned
 		 * table.
 		 */

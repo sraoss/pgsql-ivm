@@ -6,12 +6,12 @@
 use strict;
 use warnings;
 use File::Path qw(rmtree);
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More tests => 2;
 
 # Test set-up
-my $node = PostgresNode->new('test');
+my $node = PostgreSQL::Test::Cluster->new('test');
 $node->init(allows_streaming => 'logical');
 $node->append_conf('postgresql.conf', 'synchronous_commit = on');
 $node->start;
@@ -19,6 +19,8 @@ $node->start;
 # Check that replication slot stats are expected.
 sub test_slot_stats
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my ($node, $expected, $msg) = @_;
 
 	my $result = $node->safe_psql(

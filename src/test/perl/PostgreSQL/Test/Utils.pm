@@ -5,11 +5,11 @@
 
 =head1 NAME
 
-TestLib - helper module for writing PostgreSQL's C<prove> tests.
+PostgreSQL::Test::Utils - helper module for writing PostgreSQL's C<prove> tests.
 
 =head1 SYNOPSIS
 
-  use TestLib;
+  use PostgreSQL::Test::Utils;
 
   # Test basic output of a command
   program_help_ok('initdb');
@@ -19,19 +19,19 @@ TestLib - helper module for writing PostgreSQL's C<prove> tests.
   # Test option combinations
   command_fails(['initdb', '--invalid-option'],
               'command fails with invalid option');
-  my $tempdir = TestLib::tempdir;
+  my $tempdir = PostgreSQL::Test::Utils::tempdir;
   command_ok('initdb', '-D', $tempdir);
 
   # Miscellanea
-  print "on Windows" if $TestLib::windows_os;
-  my $path = TestLib::perl2host($backup_dir);
+  print "on Windows" if $PostgreSQL::Test::Utils::windows_os;
+  my $path = PostgreSQL::Test::Utils::perl2host($backup_dir);
   ok(check_mode_recursive($stream_dir, 0700, 0600),
     "check stream dir permissions");
-  TestLib::system_log('pg_ctl', 'kill', 'QUIT', $slow_pid);
+  PostgreSQL::Test::Utils::system_log('pg_ctl', 'kill', 'QUIT', $slow_pid);
 
 =head1 DESCRIPTION
 
-C<TestLib> contains a set of routines dedicated to environment setup for
+C<PostgreSQL::Test::Utils> contains a set of routines dedicated to environment setup for
 a PostgreSQL regression test run and includes some low-level routines
 aimed at controlling command execution, logging and test functions.
 
@@ -40,7 +40,7 @@ aimed at controlling command execution, logging and test functions.
 # This module should never depend on any other PostgreSQL regression test
 # modules.
 
-package TestLib;
+package PostgreSQL::Test::Utils;
 
 use strict;
 use warnings;
@@ -56,7 +56,7 @@ use File::Spec;
 use File::stat qw(stat);
 use File::Temp ();
 use IPC::Run;
-use SimpleTee;
+use PostgreSQL::Test::SimpleTee;
 
 # specify a recent enough version of Test::More to support the
 # done_testing() function
@@ -149,7 +149,7 @@ BEGIN
 	{
 		require Win32API::File;
 		Win32API::File->import(
-			qw(createFile OsFHandleOpen CloseHandle setFilePointer));
+			qw(createFile OsFHandleOpen CloseHandle));
 	}
 
 	# Specifies whether to use Unix sockets for test setups.  On
@@ -212,9 +212,9 @@ INIT
 	# in the log.
 	my $builder = Test::More->builder;
 	my $fh      = $builder->output;
-	tie *$fh, "SimpleTee", $orig_stdout, $testlog;
+	tie *$fh, "PostgreSQL::Test::SimpleTee", $orig_stdout, $testlog;
 	$fh = $builder->failure_output;
-	tie *$fh, "SimpleTee", $orig_stderr, $testlog;
+	tie *$fh, "PostgreSQL::Test::SimpleTee", $orig_stderr, $testlog;
 
 	# Enable auto-flushing for all the file handles. Stderr and stdout are
 	# redirected to the same file, and buffering causes the lines to appear
@@ -492,33 +492,33 @@ sub slurp_file
 	my ($filename, $offset) = @_;
 	local $/;
 	my $contents;
+	my $fh;
+
+	# On windows open file using win32 APIs, to allow us to set the
+	# FILE_SHARE_DELETE flag ("d" below), otherwise other accesses to the file
+	# may fail.
 	if ($Config{osname} ne 'MSWin32')
 	{
-		open(my $in, '<', $filename)
+		open($fh, '<', $filename)
 		  or croak "could not read \"$filename\": $!";
-		if (defined($offset))
-		{
-			seek($in, $offset, SEEK_SET)
-			  or croak "could not seek \"$filename\": $!";
-		}
-		$contents = <$in>;
-		close $in;
 	}
 	else
 	{
 		my $fHandle = createFile($filename, "r", "rwd")
 		  or croak "could not open \"$filename\": $^E";
-		OsFHandleOpen(my $fh = IO::Handle->new(), $fHandle, 'r')
+		OsFHandleOpen($fh = IO::Handle->new(), $fHandle, 'r')
 		  or croak "could not read \"$filename\": $^E\n";
-		if (defined($offset))
-		{
-			setFilePointer($fh, $offset, qw(FILE_BEGIN))
-			  or croak "could not seek \"$filename\": $^E\n";
-		}
-		$contents = <$fh>;
-		CloseHandle($fHandle)
-		  or croak "could not close \"$filename\": $^E\n";
 	}
+
+	if (defined($offset))
+	{
+		seek($fh, $offset, SEEK_SET)
+		  or croak "could not seek \"$filename\": $!";
+	}
+
+	$contents = <$fh>;
+	close $fh;
+
 	$contents =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 	return $contents;
 }

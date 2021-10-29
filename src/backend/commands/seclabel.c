@@ -79,6 +79,7 @@ SecLabelSupportsObjectType(ObjectType objtype)
 		case OBJECT_OPERATOR:
 		case OBJECT_OPFAMILY:
 		case OBJECT_POLICY:
+		case OBJECT_PUBLICATION_NAMESPACE:
 		case OBJECT_PUBLICATION_REL:
 		case OBJECT_RULE:
 		case OBJECT_STATISTIC_EXT:
@@ -244,8 +245,8 @@ GetSharedSecurityLabel(const ObjectAddress *object, const char *provider)
 
 	pg_shseclabel = table_open(SharedSecLabelRelationId, AccessShareLock);
 
-	scan = systable_beginscan(pg_shseclabel, SharedSecLabelObjectIndexId, true,
-							  NULL, 3, keys);
+	scan = systable_beginscan(pg_shseclabel, SharedSecLabelObjectIndexId,
+							  criticalSharedRelcachesBuilt, NULL, 3, keys);
 
 	tuple = systable_getnext(scan);
 	if (HeapTupleIsValid(tuple))

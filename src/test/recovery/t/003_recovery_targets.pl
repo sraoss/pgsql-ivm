@@ -4,8 +4,8 @@
 # Test for recovery targets: name, timestamp, XID
 use strict;
 use warnings;
-use PostgresNode;
-use TestLib;
+use PostgreSQL::Test::Cluster;
+use PostgreSQL::Test::Utils;
 use Test::More tests => 9;
 use Time::HiRes qw(usleep);
 
@@ -14,6 +14,8 @@ use Time::HiRes qw(usleep);
 # count to reach $num_rows, yet not later than the recovery target.
 sub test_recovery_standby
 {
+	local $Test::Builder::Level = $Test::Builder::Level + 1;
+
 	my $test_name       = shift;
 	my $node_name       = shift;
 	my $node_primary    = shift;
@@ -21,7 +23,7 @@ sub test_recovery_standby
 	my $num_rows        = shift;
 	my $until_lsn       = shift;
 
-	my $node_standby = PostgresNode->new($node_name);
+	my $node_standby = PostgreSQL::Test::Cluster->new($node_name);
 	$node_standby->init_from_backup($node_primary, 'my_backup',
 		has_restoring => 1);
 
@@ -50,7 +52,7 @@ sub test_recovery_standby
 }
 
 # Initialize primary node
-my $node_primary = PostgresNode->new('primary');
+my $node_primary = PostgreSQL::Test::Cluster->new('primary');
 $node_primary->init(has_archiving => 1, allows_streaming => 1);
 
 # Bump the transaction ID epoch.  This is useful to stress the portability
@@ -136,7 +138,7 @@ test_recovery_standby('LSN', 'standby_5', $node_primary, \@recovery_params,
 test_recovery_standby('multiple overriding settings',
 	'standby_6', $node_primary, \@recovery_params, "3000", $lsn3);
 
-my $node_standby = PostgresNode->new('standby_7');
+my $node_standby = PostgreSQL::Test::Cluster->new('standby_7');
 $node_standby->init_from_backup($node_primary, 'my_backup',
 	has_restoring => 1);
 $node_standby->append_conf(
@@ -156,7 +158,7 @@ ok($logfile =~ qr/multiple recovery targets specified/,
 
 # Check behavior when recovery ends before target is reached
 
-$node_standby = PostgresNode->new('standby_8');
+$node_standby = PostgreSQL::Test::Cluster->new('standby_8');
 $node_standby->init_from_backup(
 	$node_primary, 'my_backup',
 	has_restoring => 1,

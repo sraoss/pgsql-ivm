@@ -450,7 +450,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	if (concurrent && stmt->skipData)
 		ereport(ERROR,
 				(errcode(ERRCODE_SYNTAX_ERROR),
-				 errmsg("CONCURRENTLY and WITH NO DATA options cannot be used together")));
+				 errmsg("%s and %s options cannot be used together",
+						"CONCURRENTLY", "WITH NO DATA")));
 
 
 	dataQuery = get_matview_query(matviewRel);

@@ -232,6 +232,7 @@ static void XLogSendLogical(void);
 static void WalSndDone(WalSndSendDataCallback send_data);
 static XLogRecPtr GetStandbyFlushRecPtr(void);
 static void IdentifySystem(void);
+static void ReadReplicationSlot(ReadReplicationSlotCmd *cmd);
 static void CreateReplicationSlot(CreateReplicationSlotCmd *cmd);
 static void DropReplicationSlot(DropReplicationSlotCmd *cmd);
 static void StartReplication(StartReplicationCmd *cmd);
@@ -454,6 +455,104 @@ IdentifySystem(void)
 	/* send it to dest */
 	do_tup_output(tstate, values, nulls);
 
+	end_tup_output(tstate);
+}
+
+/* Handle READ_REPLICATION_SLOT command */
+static void
+ReadReplicationSlot(ReadReplicationSlotCmd *cmd)
+{
+#define READ_REPLICATION_SLOT_COLS 3
+	ReplicationSlot *slot;
+	DestReceiver *dest;
+	TupOutputState *tstate;
+	TupleDesc	tupdesc;
+	Datum		values[READ_REPLICATION_SLOT_COLS];
+	bool		nulls[READ_REPLICATION_SLOT_COLS];
+
+	tupdesc = CreateTemplateTupleDesc(READ_REPLICATION_SLOT_COLS);
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 1, "slot_type",
+							  TEXTOID, -1, 0);
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 2, "restart_lsn",
+							  TEXTOID, -1, 0);
+	/* TimeLineID is unsigned, so int4 is not wide enough. */
+	TupleDescInitBuiltinEntry(tupdesc, (AttrNumber) 3, "restart_tli",
+							  INT8OID, -1, 0);
+
+	MemSet(values, 0, READ_REPLICATION_SLOT_COLS * sizeof(Datum));
+	MemSet(nulls, true, READ_REPLICATION_SLOT_COLS * sizeof(bool));
+
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	slot = SearchNamedReplicationSlot(cmd->slotname, false);
+	if (slot == NULL || !slot->in_use)
+	{
+		LWLockRelease(ReplicationSlotControlLock);
+	}
+	else
+	{
+		ReplicationSlot slot_contents;
+		int			i = 0;
+
+		/* Copy slot contents while holding spinlock */
+		SpinLockAcquire(&slot->mutex);
+		slot_contents = *slot;
+		SpinLockRelease(&slot->mutex);
+		LWLockRelease(ReplicationSlotControlLock);
+
+		if (OidIsValid(slot_contents.data.database))
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cannot use \"%s\" with logical replication slot \"%s\"",
+						   "READ_REPLICATION_SLOT",
+						   NameStr(slot_contents.data.name)));
+
+		/* slot type */
+		values[i] = CStringGetTextDatum("physical");
+		nulls[i] = false;
+		i++;
+
+		/* start LSN */
+		if (!XLogRecPtrIsInvalid(slot_contents.data.restart_lsn))
+		{
+			char		xloc[64];
+
+			snprintf(xloc, sizeof(xloc), "%X/%X",
+					 LSN_FORMAT_ARGS(slot_contents.data.restart_lsn));
+			values[i] = CStringGetTextDatum(xloc);
+			nulls[i] = false;
+		}
+		i++;
+
+		/* timeline this WAL was produced on */
+		if (!XLogRecPtrIsInvalid(slot_contents.data.restart_lsn))
+		{
+			TimeLineID	slots_position_timeline;
+			TimeLineID	current_timeline;
+			List	   *timeline_history = NIL;
+
+			/*
+			 * While in recovery, use as timeline the currently-replaying one
+			 * to get the LSN position's history.
+			 */
+			if (RecoveryInProgress())
+				(void) GetXLogReplayRecPtr(&current_timeline);
+			else
+				current_timeline = ThisTimeLineID;
+
+			timeline_history = readTimeLineHistory(current_timeline);
+			slots_position_timeline = tliOfPointInHistory(slot_contents.data.restart_lsn,
+														  timeline_history);
+			values[i] = Int64GetDatum((int64) slots_position_timeline);
+			nulls[i] = false;
+		}
+		i++;
+
+		Assert(i == READ_REPLICATION_SLOT_COLS);
+	}
+
+	dest = CreateDestReceiver(DestRemoteSimple);
+	tstate = begin_tup_output_tupdesc(dest, tupdesc, &TTSOpsVirtual);
+	do_tup_output(tstate, values, nulls);
 	end_tup_output(tstate);
 }
 
@@ -872,26 +971,30 @@ parseCreateReplSlotOptions(CreateReplicationSlotCmd *cmd,
 	{
 		DefElem    *defel = (DefElem *) lfirst(lc);
 
-		if (strcmp(defel->defname, "export_snapshot") == 0)
+		if (strcmp(defel->defname, "snapshot") == 0)
 		{
+			char	   *action;
+
 			if (snapshot_action_given || cmd->kind != REPLICATION_KIND_LOGICAL)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("conflicting or redundant options")));
 
+			action = defGetString(defel);
 			snapshot_action_given = true;
-			*snapshot_action = defGetBoolean(defel) ? CRS_EXPORT_SNAPSHOT :
-				CRS_NOEXPORT_SNAPSHOT;
-		}
-		else if (strcmp(defel->defname, "use_snapshot") == 0)
-		{
-			if (snapshot_action_given || cmd->kind != REPLICATION_KIND_LOGICAL)
-				ereport(ERROR,
-						(errcode(ERRCODE_SYNTAX_ERROR),
-						 errmsg("conflicting or redundant options")));
 
-			snapshot_action_given = true;
-			*snapshot_action = CRS_USE_SNAPSHOT;
+			if (strcmp(action, "export") == 0)
+				*snapshot_action = CRS_EXPORT_SNAPSHOT;
+			else if (strcmp(action, "nothing") == 0)
+				*snapshot_action = CRS_NOEXPORT_SNAPSHOT;
+			else if (strcmp(action, "use") == 0)
+				*snapshot_action = CRS_USE_SNAPSHOT;
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("unrecognized value for CREATE_REPLICATION_SLOT option \"%s\": \"%s\"",
+								defel->defname, action)));
+
 		}
 		else if (strcmp(defel->defname, "reserve_wal") == 0)
 		{
@@ -901,7 +1004,7 @@ parseCreateReplSlotOptions(CreateReplicationSlotCmd *cmd,
 						 errmsg("conflicting or redundant options")));
 
 			reserve_wal_given = true;
-			*reserve_wal = true;
+			*reserve_wal = defGetBoolean(defel);
 		}
 		else if (strcmp(defel->defname, "two_phase") == 0)
 		{
@@ -910,7 +1013,7 @@ parseCreateReplSlotOptions(CreateReplicationSlotCmd *cmd,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("conflicting or redundant options")));
 			two_phase_given = true;
-			*two_phase = true;
+			*two_phase = defGetBoolean(defel);
 		}
 		else
 			elog(ERROR, "unrecognized option: %s", defel->defname);
@@ -938,10 +1041,6 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 	Assert(!MyReplicationSlot);
 
 	parseCreateReplSlotOptions(cmd, &reserve_wal, &snapshot_action, &two_phase);
-
-	/* setup state for WalSndSegmentOpen */
-	sendTimeLineIsHistoric = false;
-	sendTimeLine = ThisTimeLineID;
 
 	if (cmd->kind == REPLICATION_KIND_PHYSICAL)
 	{
@@ -980,7 +1079,7 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must not be called inside a transaction",
-								"CREATE_REPLICATION_SLOT ... EXPORT_SNAPSHOT")));
+								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'export')")));
 
 			need_full_snapshot = true;
 		}
@@ -990,25 +1089,25 @@ CreateReplicationSlot(CreateReplicationSlotCmd *cmd)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must be called inside a transaction",
-								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
+								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
 			if (XactIsoLevel != XACT_REPEATABLE_READ)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must be called in REPEATABLE READ isolation mode transaction",
-								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
+								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
 			if (FirstSnapshotSet)
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must be called before any query",
-								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
+								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
 			if (IsSubTransaction())
 				ereport(ERROR,
 				/*- translator: %s is a CREATE_REPLICATION_SLOT statement */
 						(errmsg("%s must not be called in a subtransaction",
-								"CREATE_REPLICATION_SLOT ... USE_SNAPSHOT")));
+								"CREATE_REPLICATION_SLOT ... (SNAPSHOT 'use')")));
 
 			need_full_snapshot = true;
 		}
@@ -1615,6 +1714,13 @@ exec_replication_command(const char *cmd_string)
 			cmdtag = "IDENTIFY_SYSTEM";
 			set_ps_display(cmdtag);
 			IdentifySystem();
+			EndReplicationCommand(cmdtag);
+			break;
+
+		case T_ReadReplicationSlotCmd:
+			cmdtag = "READ_REPLICATION_SLOT";
+			set_ps_display(cmdtag);
+			ReadReplicationSlot((ReadReplicationSlotCmd *) cmd_node);
 			EndReplicationCommand(cmdtag);
 			break;
 

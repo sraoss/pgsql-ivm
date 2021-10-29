@@ -2693,21 +2693,9 @@ _bt_allequalimage(Relation rel, bool debugmessage)
 {
 	bool		allequalimage = true;
 
-	/* INCLUDE indexes don't support deduplication */
+	/* INCLUDE indexes can never support deduplication */
 	if (IndexRelationGetNumberOfAttributes(rel) !=
 		IndexRelationGetNumberOfKeyAttributes(rel))
-		return false;
-
-	/*
-	 * There is no special reason why deduplication cannot work with system
-	 * relations (i.e. with system catalog indexes and TOAST indexes).  We
-	 * deem deduplication unsafe for these indexes all the same, since the
-	 * alternative is to force users to always use deduplication, without
-	 * being able to opt out.  (ALTER INDEX is not supported with system
-	 * indexes, so users would have no way to set the deduplicate_items
-	 * storage parameter to 'off'.)
-	 */
-	if (IsSystemRelation(rel))
 		return false;
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(rel); i++)
@@ -2733,10 +2721,6 @@ _bt_allequalimage(Relation rel, bool debugmessage)
 		}
 	}
 
-	/*
-	 * Don't elog() until here to avoid reporting on a system relation index
-	 * or an INCLUDE index
-	 */
 	if (debugmessage)
 	{
 		if (allequalimage)
