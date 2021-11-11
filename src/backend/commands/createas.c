@@ -1393,6 +1393,11 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+				if (IsA(tle->expr, SubLink))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+							 errhint("subquery is not supported in targetlist")));
 
 				expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
 				break;
