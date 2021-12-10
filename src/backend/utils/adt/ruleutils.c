@@ -2287,6 +2287,16 @@ pg_get_constraintdef_worker(Oid constraintId, bool fullCommand,
 				if (string)
 					appendStringInfo(&buf, " ON DELETE %s", string);
 
+				/* Add columns specified to SET NULL or SET DEFAULT if provided. */
+				val = SysCacheGetAttr(CONSTROID, tup,
+									  Anum_pg_constraint_confdelsetcols, &isnull);
+				if (!isnull)
+				{
+					appendStringInfo(&buf, " (");
+					decompile_column_index_array(val, conForm->conrelid, &buf);
+					appendStringInfo(&buf, ")");
+				}
+
 				break;
 			}
 		case CONSTRAINT_PRIMARY:
@@ -6566,7 +6576,7 @@ get_insert_query_def(Query *query, deparse_context *context)
 	if (select_rte)
 	{
 		/* Add the SELECT */
-		get_query_def(select_rte->subquery, buf, NIL, NULL,
+		get_query_def(select_rte->subquery, buf, context->namespaces, NULL,
 					  context->prettyFlags, context->wrapColumn,
 					  context->indentLevel);
 	}
@@ -7919,10 +7929,12 @@ get_parameter(Param *param, deparse_context *context)
 	 * If it's an external parameter, see if the outermost namespace provides
 	 * function argument names.
 	 */
-	if (param->paramkind == PARAM_EXTERN)
+	if (param->paramkind == PARAM_EXTERN && context->namespaces != NIL)
 	{
-		dpns = lfirst(list_tail(context->namespaces));
-		if (dpns->argnames)
+		dpns = llast(context->namespaces);
+		if (dpns->argnames &&
+			param->paramid > 0 &&
+			param->paramid <= dpns->numargs)
 		{
 			char	   *argname = dpns->argnames[param->paramid - 1];
 

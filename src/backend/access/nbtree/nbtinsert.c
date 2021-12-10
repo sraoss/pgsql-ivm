@@ -19,6 +19,7 @@
 #include "access/nbtxlog.h"
 #include "access/transam.h"
 #include "access/xloginsert.h"
+#include "common/pg_prng.h"
 #include "lib/qunique.h"
 #include "miscadmin.h"
 #include "storage/lmgr.h"
@@ -807,9 +808,6 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
  *		If insertstate contains cached binary search bounds, we will take
  *		advantage of them.  This avoids repeating comparisons that we made in
  *		_bt_check_unique() already.
- *
- *		If there is not enough room on the page for the new tuple, we try to
- *		make room by removing any LP_DEAD tuples.
  */
 static OffsetNumber
 _bt_findinsertloc(Relation rel,
@@ -968,7 +966,7 @@ _bt_findinsertloc(Relation rel,
 
 			if (P_RIGHTMOST(opaque) ||
 				_bt_compare(rel, itup_key, page, P_HIKEY) != 0 ||
-				random() <= (MAX_RANDOM_VALUE / 100))
+				pg_prng_uint32(&pg_global_prng_state) <= (PG_UINT32_MAX / 100))
 				break;
 
 			_bt_stepright(rel, insertstate, stack);
@@ -1164,9 +1162,28 @@ _bt_insertonpg(Relation rel,
 		 * its post-split version is treated as an extra step in either the
 		 * insert or page split critical section.
 		 */
-		Assert(isleaf && !ItemIdIsDead(itemid));
-		Assert(itup_key->heapkeyspace && itup_key->allequalimage);
+		Assert(isleaf && itup_key->heapkeyspace && itup_key->allequalimage);
 		oposting = (IndexTuple) PageGetItem(page, itemid);
+
+		/*
+		 * postingoff value comes from earlier call to _bt_binsrch_posting().
+		 * Its binary search might think that a plain tuple must be a posting
+		 * list tuple that needs to be split.  This can happen with corruption
+		 * involving an existing plain tuple that is a duplicate of the new
+		 * item, up to and including its table TID.  Check for that here in
+		 * passing.
+		 *
+		 * Also verify that our caller has made sure that the existing posting
+		 * list tuple does not have its LP_DEAD bit set.
+		 */
+		if (!BTreeTupleIsPosting(oposting) || ItemIdIsDead(itemid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("table tid from new index tuple (%u,%u) overlaps with invalid duplicate tuple at offset %u of block %u in index \"%s\"",
+									 ItemPointerGetBlockNumber(&itup->t_tid),
+									 ItemPointerGetOffsetNumber(&itup->t_tid),
+									 newitemoff, BufferGetBlockNumber(buf),
+									 RelationGetRelationName(rel))));
 
 		/* use a mutable copy of itup as our itup from here on */
 		origitup = itup;
@@ -2794,6 +2811,8 @@ _bt_simpledel_pass(Relation rel, Buffer buffer, Relation heapRel,
 								&ndeadblocks);
 
 	/* Initialize tableam state that describes index deletion operation */
+	delstate.irel = rel;
+	delstate.iblknum = BufferGetBlockNumber(buffer);
 	delstate.bottomup = false;
 	delstate.bottomupfreespace = 0;
 	delstate.ndeltids = 0;
