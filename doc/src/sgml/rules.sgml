@@ -1520,7 +1520,7 @@ Time: 16386.245 ms (00:16.386)
         <listitem>
           <para>
             <acronym>IMMV</acronym>s must be based on simple base tables.  It's not
-               supported to create them on top of views or materialized views.
+               supported to create them on top of views, materialized views, foreign tables, inhe.
           </para>
         </listitem>
 
