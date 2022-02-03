@@ -2279,6 +2279,7 @@ typedef struct Constraint
 	char		generated_when; /* ALWAYS or BY DEFAULT */
 
 	/* Fields used for unique constraints (UNIQUE and PRIMARY KEY): */
+	bool		nulls_not_distinct;	/* null treatment for UNIQUE constraints */
 	List	   *keys;			/* String nodes naming referenced key
 								 * column(s) */
 	List	   *including;		/* String nodes naming referenced nonkey
@@ -2907,6 +2908,7 @@ typedef struct IndexStmt
 	SubTransactionId oldFirstRelfilenodeSubid;	/* rd_firstRelfilenodeSubid of
 												 * oldNode */
 	bool		unique;			/* is index unique? */
+	bool		nulls_not_distinct;	/* null treatment for UNIQUE constraints */
 	bool		primary;		/* is index a primary key? */
 	bool		isconstraint;	/* is it for a pkey/unique constraint? */
 	bool		deferrable;		/* is the constraint DEFERRABLE? */
