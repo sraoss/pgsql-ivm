@@ -14,7 +14,7 @@
  *
  *	Initial author: Simon Riggs		simon@2ndquadrant.com
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -25,19 +25,14 @@
  */
 #include "postgres.h"
 
-#include <fcntl.h>
-#include <signal.h>
 #include <time.h>
 #include <sys/stat.h>
-#include <sys/time.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "lib/binaryheap.h"
 #include "libpq/pqsignal.h"
-#include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/pgarch.h"
@@ -50,6 +45,7 @@
 #include "storage/shmem.h"
 #include "storage/spin.h"
 #include "utils/guc.h"
+#include "utils/memutils.h"
 #include "utils/ps_status.h"
 
 
@@ -111,11 +107,20 @@ static PgArchData *PgArch = NULL;
  * completes, the file names are stored in ascending order of priority in
  * arch_files.  pgarch_readyXlog() returns files from arch_files until it
  * is empty, at which point another directory scan must be performed.
+ *
+ * We only need this data in the archiver process, so make it a palloc'd
+ * struct rather than a bunch of static arrays.
  */
-static binaryheap *arch_heap = NULL;
-static char arch_filenames[NUM_FILES_PER_DIRECTORY_SCAN][MAX_XFN_CHARS];
-static char *arch_files[NUM_FILES_PER_DIRECTORY_SCAN];
-static int arch_files_size = 0;
+struct arch_files_state
+{
+	binaryheap *arch_heap;
+	int			arch_files_size;	/* number of live entries in arch_files[] */
+	char	   *arch_files[NUM_FILES_PER_DIRECTORY_SCAN];
+	/* buffers underlying heap, and later arch_files[], entries: */
+	char		arch_filenames[NUM_FILES_PER_DIRECTORY_SCAN][MAX_XFN_CHARS + 1];
+};
+
+static struct arch_files_state *arch_files = NULL;
 
 /*
  * Flags set by interrupt handlers for later service in the main loop.
@@ -231,9 +236,13 @@ PgArchiverMain(void)
 	 */
 	PgArch->pgprocno = MyProc->pgprocno;
 
+	/* Create workspace for pgarch_readyXlog() */
+	arch_files = palloc(sizeof(struct arch_files_state));
+	arch_files->arch_files_size = 0;
+
 	/* Initialize our max-heap for prioritizing files to archive. */
-	arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
-									ready_file_comparator, NULL);
+	arch_files->arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
+												ready_file_comparator, NULL);
 
 	pgarch_MainLoop();
 
@@ -363,7 +372,7 @@ pgarch_ArchiverCopyLoop(void)
 	char		xlog[MAX_XFN_CHARS + 1];
 
 	/* force directory scan in the first call to pgarch_readyXlog() */
-	arch_files_size = 0;
+	arch_files->arch_files_size = 0;
 
 	/*
 	 * loop through all xlogs with archive_status of .ready and archive
@@ -490,132 +499,24 @@ pgarch_ArchiverCopyLoop(void)
 static bool
 pgarch_archiveXlog(char *xlog)
 {
-	char		xlogarchcmd[MAXPGPATH];
 	char		pathname[MAXPGPATH];
 	char		activitymsg[MAXFNAMELEN + 16];
-	char	   *dp;
-	char	   *endp;
-	const char *sp;
-	int			rc;
+	bool		ret;
 
 	snprintf(pathname, MAXPGPATH, XLOGDIR "/%s", xlog);
-
-	/*
-	 * construct the command to be executed
-	 */
-	dp = xlogarchcmd;
-	endp = xlogarchcmd + MAXPGPATH - 1;
-	*endp = '\0';
-
-	for (sp = XLogArchiveCommand; *sp; sp++)
-	{
-		if (*sp == '%')
-		{
-			switch (sp[1])
-			{
-				case 'p':
-					/* %p: relative path of source file */
-					sp++;
-					strlcpy(dp, pathname, endp - dp);
-					make_native_path(dp);
-					dp += strlen(dp);
-					break;
-				case 'f':
-					/* %f: filename of source file */
-					sp++;
-					strlcpy(dp, xlog, endp - dp);
-					dp += strlen(dp);
-					break;
-				case '%':
-					/* convert %% to a single % */
-					sp++;
-					if (dp < endp)
-						*dp++ = *sp;
-					break;
-				default:
-					/* otherwise treat the % as not special */
-					if (dp < endp)
-						*dp++ = *sp;
-					break;
-			}
-		}
-		else
-		{
-			if (dp < endp)
-				*dp++ = *sp;
-		}
-	}
-	*dp = '\0';
-
-	ereport(DEBUG3,
-			(errmsg_internal("executing archive command \"%s\"",
-							 xlogarchcmd)));
 
 	/* Report archive activity in PS display */
 	snprintf(activitymsg, sizeof(activitymsg), "archiving %s", xlog);
 	set_ps_display(activitymsg);
 
-	pgstat_report_wait_start(WAIT_EVENT_ARCHIVE_COMMAND);
-	rc = system(xlogarchcmd);
-	pgstat_report_wait_end();
-
-	if (rc != 0)
-	{
-		/*
-		 * If either the shell itself, or a called command, died on a signal,
-		 * abort the archiver.  We do this because system() ignores SIGINT and
-		 * SIGQUIT while waiting; so a signal is very likely something that
-		 * should have interrupted us too.  Also die if the shell got a hard
-		 * "command not found" type of error.  If we overreact it's no big
-		 * deal, the postmaster will just start the archiver again.
-		 */
-		int			lev = wait_result_is_any_signal(rc, true) ? FATAL : LOG;
-
-		if (WIFEXITED(rc))
-		{
-			ereport(lev,
-					(errmsg("archive command failed with exit code %d",
-							WEXITSTATUS(rc)),
-					 errdetail("The failed archive command was: %s",
-							   xlogarchcmd)));
-		}
-		else if (WIFSIGNALED(rc))
-		{
-#if defined(WIN32)
-			ereport(lev,
-					(errmsg("archive command was terminated by exception 0x%X",
-							WTERMSIG(rc)),
-					 errhint("See C include file \"ntstatus.h\" for a description of the hexadecimal value."),
-					 errdetail("The failed archive command was: %s",
-							   xlogarchcmd)));
-#else
-			ereport(lev,
-					(errmsg("archive command was terminated by signal %d: %s",
-							WTERMSIG(rc), pg_strsignal(WTERMSIG(rc))),
-					 errdetail("The failed archive command was: %s",
-							   xlogarchcmd)));
-#endif
-		}
-		else
-		{
-			ereport(lev,
-					(errmsg("archive command exited with unrecognized status %d",
-							rc),
-					 errdetail("The failed archive command was: %s",
-							   xlogarchcmd)));
-		}
-
+	ret = shell_archive_file(xlog, pathname);
+	if (ret)
+		snprintf(activitymsg, sizeof(activitymsg), "last was %s", xlog);
+	else
 		snprintf(activitymsg, sizeof(activitymsg), "failed on %s", xlog);
-		set_ps_display(activitymsg);
-
-		return false;
-	}
-	elog(DEBUG1, "archived write-ahead log file \"%s\"", xlog);
-
-	snprintf(activitymsg, sizeof(activitymsg), "last was %s", xlog);
 	set_ps_display(activitymsg);
 
-	return true;
+	return ret;
 }
 
 /*
@@ -658,7 +559,7 @@ pgarch_readyXlog(char *xlog)
 	SpinLockRelease(&PgArch->arch_lck);
 
 	if (force_dir_scan)
-		arch_files_size = 0;
+		arch_files->arch_files_size = 0;
 
 	/*
 	 * If we still have stored file names from the previous directory scan,
@@ -666,14 +567,14 @@ pgarch_readyXlog(char *xlog)
 	 * is still present, as the archive_command for a previous file may
 	 * have already marked it done.
 	 */
-	while (arch_files_size > 0)
+	while (arch_files->arch_files_size > 0)
 	{
 		struct stat	st;
 		char		status_file[MAXPGPATH];
 		char	   *arch_file;
 
-		arch_files_size--;
-		arch_file = arch_files[arch_files_size];
+		arch_files->arch_files_size--;
+		arch_file = arch_files->arch_files[arch_files->arch_files_size];
 		StatusFilePath(status_file, arch_file, ".ready");
 
 		if (stat(status_file, &st) == 0)
@@ -686,6 +587,9 @@ pgarch_readyXlog(char *xlog)
 					(errcode_for_file_access(),
 					 errmsg("could not stat file \"%s\": %m", status_file)));
 	}
+
+	/* arch_heap is probably empty, but let's make sure */
+	binaryheap_reset(arch_files->arch_heap);
 
 	/*
 	 * Open the archive status directory and read through the list of files
@@ -720,53 +624,53 @@ pgarch_readyXlog(char *xlog)
 		/*
 		 * Store the file in our max-heap if it has a high enough priority.
 		 */
-		if (arch_heap->bh_size < NUM_FILES_PER_DIRECTORY_SCAN)
+		if (arch_files->arch_heap->bh_size < NUM_FILES_PER_DIRECTORY_SCAN)
 		{
 			/* If the heap isn't full yet, quickly add it. */
-			arch_file = arch_filenames[arch_heap->bh_size];
+			arch_file = arch_files->arch_filenames[arch_files->arch_heap->bh_size];
 			strcpy(arch_file, basename);
-			binaryheap_add_unordered(arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add_unordered(arch_files->arch_heap, CStringGetDatum(arch_file));
 
 			/* If we just filled the heap, make it a valid one. */
-			if (arch_heap->bh_size == NUM_FILES_PER_DIRECTORY_SCAN)
-				binaryheap_build(arch_heap);
+			if (arch_files->arch_heap->bh_size == NUM_FILES_PER_DIRECTORY_SCAN)
+				binaryheap_build(arch_files->arch_heap);
 		}
-		else if (ready_file_comparator(binaryheap_first(arch_heap),
+		else if (ready_file_comparator(binaryheap_first(arch_files->arch_heap),
 									   CStringGetDatum(basename), NULL) > 0)
 		{
 			/*
 			 * Remove the lowest priority file and add the current one to
 			 * the heap.
 			 */
-			arch_file = DatumGetCString(binaryheap_remove_first(arch_heap));
+			arch_file = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
 			strcpy(arch_file, basename);
-			binaryheap_add(arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add(arch_files->arch_heap, CStringGetDatum(arch_file));
 		}
 	}
 	FreeDir(rldir);
 
 	/* If no files were found, simply return. */
-	if (arch_heap->bh_size == 0)
+	if (arch_files->arch_heap->bh_size == 0)
 		return false;
 
 	/*
 	 * If we didn't fill the heap, we didn't make it a valid one.  Do that
 	 * now.
 	 */
-	if (arch_heap->bh_size < NUM_FILES_PER_DIRECTORY_SCAN)
-		binaryheap_build(arch_heap);
+	if (arch_files->arch_heap->bh_size < NUM_FILES_PER_DIRECTORY_SCAN)
+		binaryheap_build(arch_files->arch_heap);
 
 	/*
 	 * Fill arch_files array with the files to archive in ascending order
 	 * of priority.
 	 */
-	arch_files_size = arch_heap->bh_size;
-	for (int i = 0; i < arch_files_size; i++)
-		arch_files[i] = DatumGetCString(binaryheap_remove_first(arch_heap));
+	arch_files->arch_files_size = arch_files->arch_heap->bh_size;
+	for (int i = 0; i < arch_files->arch_files_size; i++)
+		arch_files->arch_files[i] = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
 
 	/* Return the highest priority file. */
-	arch_files_size--;
-	strcpy(xlog, arch_files[arch_files_size]);
+	arch_files->arch_files_size--;
+	strcpy(xlog, arch_files->arch_files[arch_files->arch_files_size]);
 
 	return true;
 }
@@ -845,8 +749,9 @@ pgarch_die(int code, Datum arg)
  * Interrupt handler for WAL archiver process.
  *
  * This is called in the loops pgarch_MainLoop and pgarch_ArchiverCopyLoop.
- * It checks for barrier events and config update, but not shutdown request
- * because how to handle shutdown request is different between those loops.
+ * It checks for barrier events, config update and request for logging of
+ * memory contexts, but not shutdown request because how to handle
+ * shutdown request is different between those loops.
  */
 static void
 HandlePgArchInterrupts(void)
@@ -859,4 +764,8 @@ HandlePgArchInterrupts(void)
 		ConfigReloadPending = false;
 		ProcessConfigFile(PGC_SIGHUP);
 	}
+
+	/* Perform logging of memory contexts of this process */
+	if (LogMemoryContextPending)
+		ProcessLogMemoryContextInterrupt();
 }

@@ -12,7 +12,7 @@
  * make further decisions about how to process the data; for example,
  * it might choose to modify the archive contents.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/bbstreamer.h
@@ -205,6 +205,7 @@ extern bbstreamer *bbstreamer_extractor_new(const char *basepath,
 											const char *(*link_map) (const char *),
 											void (*report_output_file) (const char *));
 
+extern bbstreamer *bbstreamer_gzip_decompressor_new(bbstreamer *next);
 extern bbstreamer *bbstreamer_tar_parser_new(bbstreamer *next);
 extern bbstreamer *bbstreamer_tar_terminator_new(bbstreamer *next);
 extern bbstreamer *bbstreamer_tar_archiver_new(bbstreamer *next);

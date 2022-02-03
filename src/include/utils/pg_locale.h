@@ -4,7 +4,7 @@
  *
  * src/include/utils/pg_locale.h
  *
- * Copyright (c) 2002-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2022, PostgreSQL Global Development Group
  *
  *-----------------------------------------------------------------------
  */
@@ -34,6 +34,8 @@
 #endif
 #endif
 
+/* use for libc locale names */
+#define LOCALE_NAME_BUFLEN 128
 
 /* GUC settings */
 extern char *locale_messages;

@@ -5,7 +5,10 @@
 # this limits the number of connections needed to run the tests.
 # ----------
 
-# run tablespace by itself, and first, because it forces a checkpoint;
+# required setup steps
+test: test_setup
+
+# run tablespace by itself, and early, because it forces a checkpoint;
 # we'd prefer not to have checkpoints later in the tests because that
 # interferes with crash-recovery testing.
 test: tablespace
@@ -86,7 +89,7 @@ test: brin_bloom brin_multi
 # ----------
 # Another group of parallel tests
 # ----------
-test: create_table_like alter_generic alter_operator misc async dbsize misc_functions sysviews tsrf tid tidscan tidrangescan collate.icu.utf8 incremental_sort incremental_matview
+test: create_table_like alter_generic alter_operator misc async dbsize misc_functions sysviews tsrf tid tidscan tidrangescan collate.icu.utf8 incremental_sort create_role incremental_matview
 
 # rules cannot run concurrently with any test that creates
 # a view or rule in the public schema

@@ -1,5 +1,5 @@
 
-# Copyright (c) 2021, PostgreSQL Global Development Group
+# Copyright (c) 2021-2022, PostgreSQL Global Development Group
 
 # Test CREATE INDEX CONCURRENTLY with concurrent prepared-xact modifications
 use strict;
@@ -10,6 +10,8 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 
 use Test::More tests => 5;
+
+local $TODO = 'filesystem bug' if PostgreSQL::Test::Utils::has_wal_read_bug;
 
 my ($node, $result);
 

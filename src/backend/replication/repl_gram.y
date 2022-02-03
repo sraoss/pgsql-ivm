@@ -3,7 +3,7 @@
  *
  * repl_gram.y				- Parser for the replication commands
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -24,8 +24,6 @@
 
 /* Result of the parsing is returned here */
 Node *replication_parse_result;
-
-static SQLCmd *make_sqlcmd(void);
 
 
 /*
@@ -59,7 +57,6 @@ static SQLCmd *make_sqlcmd(void);
 %token <str> SCONST IDENT
 %token <uintval> UCONST
 %token <recptr> RECPTR
-%token T_WORD
 
 /* Keyword tokens. */
 %token K_BASE_BACKUP
@@ -95,7 +92,7 @@ static SQLCmd *make_sqlcmd(void);
 %type <node>	command
 %type <node>	base_backup start_replication start_logical_replication
 				create_replication_slot drop_replication_slot identify_system
-				read_replication_slot timeline_history show sql_cmd
+				read_replication_slot timeline_history show
 %type <list>	base_backup_legacy_opt_list generic_option_list
 %type <defelt>	base_backup_legacy_opt generic_option
 %type <uintval>	opt_timeline
@@ -129,7 +126,6 @@ command:
 			| read_replication_slot
 			| timeline_history
 			| show
-			| sql_cmd
 			;
 
 /*
@@ -212,7 +208,7 @@ base_backup_legacy_opt:
 			| K_PROGRESS
 				{
 				  $$ = makeDefElem("progress",
-								   (Node *)makeInteger(true), -1);
+								   (Node *)makeBoolean(true), -1);
 				}
 			| K_FAST
 				{
@@ -222,12 +218,12 @@ base_backup_legacy_opt:
 			| K_WAL
 				{
 				  $$ = makeDefElem("wal",
-								   (Node *)makeInteger(true), -1);
+								   (Node *)makeBoolean(true), -1);
 				}
 			| K_NOWAIT
 				{
 				  $$ = makeDefElem("wait",
-								   (Node *)makeInteger(false), -1);
+								   (Node *)makeBoolean(false), -1);
 				}
 			| K_MAX_RATE UCONST
 				{
@@ -237,12 +233,12 @@ base_backup_legacy_opt:
 			| K_TABLESPACE_MAP
 				{
 				  $$ = makeDefElem("tablespace_map",
-								   (Node *)makeInteger(true), -1);
+								   (Node *)makeBoolean(true), -1);
 				}
 			| K_NOVERIFY_CHECKSUMS
 				{
 				  $$ = makeDefElem("verify_checksums",
-								   (Node *)makeInteger(false), -1);
+								   (Node *)makeBoolean(false), -1);
 				}
 			| K_MANIFEST SCONST
 				{
@@ -313,12 +309,12 @@ create_slot_legacy_opt:
 			| K_RESERVE_WAL
 				{
 				  $$ = makeDefElem("reserve_wal",
-								   (Node *)makeInteger(true), -1);
+								   (Node *)makeBoolean(true), -1);
 				}
 			| K_TWO_PHASE
 				{
 				  $$ = makeDefElem("two_phase",
-								   (Node *)makeInteger(true), -1);
+								   (Node *)makeBoolean(true), -1);
 				}
 			;
 
@@ -450,10 +446,6 @@ plugin_opt_arg:
 			| /* EMPTY */					{ $$ = NULL; }
 		;
 
-sql_cmd:
-			IDENT							{ $$ = (Node *) make_sqlcmd(); }
-		;
-
 generic_option_list:
 			generic_option_list ',' generic_option
 				{ $$ = lappend($1, $3); }
@@ -513,21 +505,5 @@ ident_or_keyword:
 		;
 
 %%
-
-static SQLCmd *
-make_sqlcmd(void)
-{
-	SQLCmd *cmd = makeNode(SQLCmd);
-	int tok;
-
-	/* Just move lexer to the end of command. */
-	for (;;)
-	{
-		tok = yylex();
-		if (tok == ';' || tok == 0)
-			break;
-	}
-	return cmd;
-}
 
 #include "repl_scanner.c"

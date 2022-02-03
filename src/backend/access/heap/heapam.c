@@ -3,7 +3,7 @@
  * heapam.c
  *	  heap access method code
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -4751,7 +4751,16 @@ failed:
 	{
 		Assert(result == TM_SelfModified || result == TM_Updated ||
 			   result == TM_Deleted || result == TM_WouldBlock);
-		Assert(!(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
+
+		/*
+		 * When locking a tuple under LockWaitSkip semantics and we fail with
+		 * TM_WouldBlock above, it's possible for concurrent transactions to
+		 * release the lock and set HEAP_XMAX_INVALID in the meantime.  So
+		 * this assert is slightly different from the equivalent one in
+		 * heap_delete and heap_update.
+		 */
+		Assert((result == TM_WouldBlock) ||
+			   !(tuple->t_data->t_infomask & HEAP_XMAX_INVALID));
 		Assert(result != TM_Updated ||
 			   !ItemPointerEquals(&tuple->t_self, &tuple->t_data->t_ctid));
 		tmfd->ctid = tuple->t_data->t_ctid;
@@ -8345,7 +8354,7 @@ log_heap_new_cid(Relation relation, HeapTuple tup)
 
 /*
  * Build a heap tuple representing the configured REPLICA IDENTITY to represent
- * the old tuple in a UPDATE or DELETE.
+ * the old tuple in an UPDATE or DELETE.
  *
  * Returns NULL if there's no need to log an identity or if there's no suitable
  * key defined.

@@ -4,7 +4,7 @@
  *	  definition of the "relation" system catalog (pg_class)
  *
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_class.h
@@ -185,7 +185,7 @@ DECLARE_INDEX(pg_class_tblspc_relfilenode_index, 3455, ClassTblspcRelfilenodeInd
 /*
  * an explicitly chosen candidate key's columns are used as replica identity.
  * Note this will still be set if the index has been dropped; in that case it
- * has the same meaning as 'd'.
+ * has the same meaning as 'n'.
  */
 #define		  REPLICA_IDENTITY_INDEX	'i'
 

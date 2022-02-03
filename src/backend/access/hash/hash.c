@@ -3,7 +3,7 @@
  * hash.c
  *	  Implementation of Margo Seltzer's Hashing package for postgres.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,7 @@
 #include "access/hash_xlog.h"
 #include "access/relscan.h"
 #include "access/tableam.h"
+#include "access/xloginsert.h"
 #include "catalog/index.h"
 #include "commands/progress.h"
 #include "commands/vacuum.h"

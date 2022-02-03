@@ -6,7 +6,7 @@
  * There is hardly anything left of Paul Brown's original implementation...
  *
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -906,7 +906,7 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 						RelationGetRelationName(OldHeap))));
 
 	/*
-	 * Hand of the actual copying to AM specific function, the generic code
+	 * Hand off the actual copying to AM specific function, the generic code
 	 * cannot know how to deal with visibility across AMs. Note that this
 	 * routine is allowed to set FreezeXid / MultiXactCutoff to different
 	 * values (e.g. because the AM doesn't use freezing).

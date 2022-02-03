@@ -3,7 +3,7 @@
  * connection.c
  *		  Connection management functions for postgres_fdw
  *
- * Portions Copyright (c) 2012-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2012-2022, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/postgres_fdw/connection.c
@@ -348,6 +348,7 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 	{
 		const char **keywords;
 		const char **values;
+		char	   *appname = NULL;
 		int			n;
 
 		/*
@@ -381,6 +382,39 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 			keywords[n] = "application_name";
 			values[n] = pgfdw_application_name;
 			n++;
+		}
+
+		/*
+		 * Search the parameter arrays to find application_name setting, and
+		 * replace escape sequences in it with status information if found.
+		 * The arrays are searched backwards because the last value is used if
+		 * application_name is repeatedly set.
+		 */
+		for (int i = n - 1; i >= 0; i--)
+		{
+			if (strcmp(keywords[i], "application_name") == 0 &&
+				*(values[i]) != '\0')
+			{
+				/*
+				 * Use this application_name setting if it's not empty string
+				 * even after any escape sequences in it are replaced.
+				 */
+				appname = process_pgfdw_appname(values[i]);
+				if (appname[0] != '\0')
+				{
+					values[i] = appname;
+					break;
+				}
+
+				/*
+				 * This empty application_name is not used, so we set
+				 * values[i] to NULL and keep searching the array to find the
+				 * next one.
+				 */
+				values[i] = NULL;
+				pfree(appname);
+				appname = NULL;
+			}
 		}
 
 		/* Use "postgres_fdw" as fallback_application_name */
@@ -452,6 +486,8 @@ connect_pg_server(ForeignServer *server, UserMapping *user)
 		/* Prepare new session for use */
 		configure_remote_session(conn);
 
+		if (appname != NULL)
+			pfree(appname);
 		pfree(keywords);
 		pfree(values);
 	}
@@ -1405,9 +1441,16 @@ pgfdw_abort_cleanup(ConnCacheEntry *entry, const char *sql, bool toplevel)
 
 		entry->have_prep_stmt = false;
 		entry->have_error = false;
-		/* Also reset per-connection state */
-		memset(&entry->state, 0, sizeof(entry->state));
 	}
+
+	/*
+	 * If pendingAreq of the per-connection state is not NULL, it means that
+	 * an asynchronous fetch begun by fetch_more_data_begin() was not done
+	 * successfully and thus the per-connection state was not reset in
+	 * fetch_more_data(); in that case reset the per-connection state here.
+	 */
+	if (entry->state.pendingAreq)
+		memset(&entry->state, 0, sizeof(entry->state));
 
 	/* Disarm changing_xact_state if it all worked */
 	entry->changing_xact_state = false;

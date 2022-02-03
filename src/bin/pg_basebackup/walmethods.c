@@ -5,7 +5,7 @@
  * NOTE! The caller must ensure that only one method is instantiated in
  *		 any given program, and that it's only instantiated once!
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/walmethods.c
@@ -445,7 +445,17 @@ dir_close(Walfile f, WalCloseMethod method)
 			snprintf(tmppath2, sizeof(tmppath2), "%s/%s",
 					 dir_data->basedir, filename2);
 			pg_free(filename2);
-			r = durable_rename(tmppath, tmppath2);
+			if (dir_data->sync)
+				r = durable_rename(tmppath, tmppath2);
+			else
+			{
+				if (rename(tmppath, tmppath2) != 0)
+				{
+					pg_log_error("could not rename file \"%s\" to \"%s\": %m",
+								 tmppath, tmppath2);
+					r = -1;
+				}
+			}
 		}
 		else if (method == CLOSE_UNLINK)
 		{
@@ -749,7 +759,7 @@ tar_write(Walfile f, const void *buf, size_t count)
 	tar_clear_error();
 
 	/* Tarfile will always be positioned at the end */
-	if (!tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_NONE)
 	{
 		errno = 0;
 		r = write(tar_data->fd, buf, count);
@@ -763,21 +773,20 @@ tar_write(Walfile f, const void *buf, size_t count)
 		return r;
 	}
 #ifdef HAVE_LIBZ
-	else
+	else if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		if (!tar_write_compressed_data(unconstify(void *, buf), count, false))
 			return -1;
 		((TarMethodFile *) f)->currpos += count;
 		return count;
 	}
-#else
+#endif
 	else
 	{
-		/* Can't happen - compression enabled with no libz */
+		/* Can't happen - compression enabled with no method set */
 		tar_data->lasterrno = ENOSYS;
 		return -1;
 	}
-#endif
 }
 
 static bool
@@ -833,7 +842,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 		}
 
 #ifdef HAVE_LIBZ
-		if (tar_data->compression_level)
+		if (tar_data->compression_method == COMPRESSION_GZIP)
 		{
 			tar_data->zp = (z_streamp) pg_malloc(sizeof(z_stream));
 			tar_data->zp->zalloc = Z_NULL;
@@ -884,7 +893,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	pg_free(tmppath);
 
 #ifdef HAVE_LIBZ
-	if (tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		/* Flush existing data */
 		if (!tar_write_compressed_data(NULL, 0, true))
@@ -909,7 +918,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	}
 	tar_data->currentfile->currpos = 0;
 
-	if (!tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_NONE)
 	{
 		errno = 0;
 		if (write(tar_data->fd, tar_data->currentfile->header,
@@ -923,7 +932,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 		}
 	}
 #ifdef HAVE_LIBZ
-	else
+	else if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		/* Write header through the zlib APIs but with no compression */
 		if (!tar_write_compressed_data(tar_data->currentfile->header,
@@ -938,6 +947,11 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 		}
 	}
 #endif
+	else
+	{
+		/* not reachable */
+		Assert(false);
+	}
 
 	tar_data->currentfile->pathname = pg_strdup(pathname);
 
@@ -948,7 +962,7 @@ tar_open_for_write(const char *pathname, const char *temp_suffix, size_t pad_to_
 	if (pad_to_size)
 	{
 		tar_data->currentfile->pad_to_size = pad_to_size;
-		if (!tar_data->compression_level)
+		if (tar_data->compression_method == COMPRESSION_NONE)
 		{
 			/* Uncompressed, so pad now */
 			if (!tar_write_padding_data(tar_data->currentfile, pad_to_size))
@@ -1009,7 +1023,7 @@ tar_sync(Walfile f)
 	 * Always sync the whole tarfile, because that's all we can do. This makes
 	 * no sense on compressed files, so just ignore those.
 	 */
-	if (tar_data->compression_level)
+	if (tar_data->compression_method != COMPRESSION_NONE)
 		return 0;
 
 	r = fsync(tar_data->fd);
@@ -1030,7 +1044,7 @@ tar_close(Walfile f, WalCloseMethod method)
 
 	if (method == CLOSE_UNLINK)
 	{
-		if (tar_data->compression_level)
+		if (tar_data->compression_method != COMPRESSION_NONE)
 		{
 			tar_set_error("unlink not supported with compression");
 			return -1;
@@ -1061,7 +1075,7 @@ tar_close(Walfile f, WalCloseMethod method)
 	 */
 	if (tf->pad_to_size)
 	{
-		if (tar_data->compression_level)
+		if (tar_data->compression_method == COMPRESSION_GZIP)
 		{
 			/*
 			 * A compressed tarfile is padded on close since we cannot know
@@ -1102,7 +1116,7 @@ tar_close(Walfile f, WalCloseMethod method)
 
 
 #ifdef HAVE_LIBZ
-	if (tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		/* Flush the current buffer */
 		if (!tar_write_compressed_data(NULL, 0, true))
@@ -1131,7 +1145,7 @@ tar_close(Walfile f, WalCloseMethod method)
 		tar_data->lasterrno = errno;
 		return -1;
 	}
-	if (!tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_NONE)
 	{
 		errno = 0;
 		if (write(tar_data->fd, tf->header, TAR_BLOCK_SIZE) != TAR_BLOCK_SIZE)
@@ -1142,7 +1156,7 @@ tar_close(Walfile f, WalCloseMethod method)
 		}
 	}
 #ifdef HAVE_LIBZ
-	else
+	else if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		/* Turn off compression */
 		if (deflateParams(tar_data->zp, 0, 0) != Z_OK)
@@ -1164,6 +1178,11 @@ tar_close(Walfile f, WalCloseMethod method)
 		}
 	}
 #endif
+	else
+	{
+		/* not reachable */
+		Assert(false);
+	}
 
 	/* Move file pointer back down to end, so we can write the next file */
 	if (lseek(tar_data->fd, 0, SEEK_END) < 0)
@@ -1212,7 +1231,7 @@ tar_finish(void)
 
 	/* A tarfile always ends with two empty blocks */
 	MemSet(zerobuf, 0, sizeof(zerobuf));
-	if (!tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_NONE)
 	{
 		errno = 0;
 		if (write(tar_data->fd, zerobuf, sizeof(zerobuf)) != sizeof(zerobuf))
@@ -1223,7 +1242,7 @@ tar_finish(void)
 		}
 	}
 #ifdef HAVE_LIBZ
-	else
+	else if (tar_data->compression_method == COMPRESSION_GZIP)
 	{
 		if (!tar_write_compressed_data(zerobuf, sizeof(zerobuf), false))
 			return false;
@@ -1268,6 +1287,11 @@ tar_finish(void)
 		}
 	}
 #endif
+	else
+	{
+		/* not reachable */
+		Assert(false);
+	}
 
 	/* sync the empty blocks as well, since they're after the last file */
 	if (tar_data->sync)
@@ -1312,7 +1336,8 @@ CreateWalTarMethod(const char *tarbase,
 				   int compression_level, bool sync)
 {
 	WalWriteMethod *method;
-	const char *suffix = (compression_level != 0) ? ".tar.gz" : ".tar";
+	const char *suffix = (compression_method == COMPRESSION_GZIP) ?
+	".tar.gz" : ".tar";
 
 	method = pg_malloc0(sizeof(WalWriteMethod));
 	method->open_for_write = tar_open_for_write;
@@ -1335,7 +1360,7 @@ CreateWalTarMethod(const char *tarbase,
 	tar_data->compression_level = compression_level;
 	tar_data->sync = sync;
 #ifdef HAVE_LIBZ
-	if (compression_level)
+	if (compression_method == COMPRESSION_GZIP)
 		tar_data->zlibOut = (char *) pg_malloc(ZLIB_OUT_SIZE + 1);
 #endif
 
@@ -1347,7 +1372,7 @@ FreeWalTarMethod(void)
 {
 	pg_free(tar_data->tarfilename);
 #ifdef HAVE_LIBZ
-	if (tar_data->compression_level)
+	if (tar_data->compression_method == COMPRESSION_GZIP)
 		pg_free(tar_data->zlibOut);
 #endif
 	pg_free(tar_data);

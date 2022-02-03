@@ -3,7 +3,7 @@
  * indexcmds.c
  *	  POSTGRES define and remove index code.
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -2259,7 +2259,7 @@ makeObjectName(const char *name1, const char *name2, const char *label)
 	Assert(availchars > 0);		/* else caller chose a bad label */
 
 	/*
-	 * If we must truncate,  preferentially truncate the longer name. This
+	 * If we must truncate, preferentially truncate the longer name. This
 	 * logic could be expressed without a loop, but it's simple and obvious as
 	 * a loop.
 	 */

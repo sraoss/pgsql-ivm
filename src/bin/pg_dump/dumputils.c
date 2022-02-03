@@ -5,7 +5,7 @@
  * Basically this is stuff that is useful in both pg_dump and pg_dumpall.
  *
  *
- * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_dump/dumputils.c
@@ -39,8 +39,7 @@ static void AddAcl(PQExpBuffer aclbuf, const char *keyword,
  *		TABLE, SEQUENCE, FUNCTION, PROCEDURE, LANGUAGE, SCHEMA, DATABASE, TABLESPACE,
  *		FOREIGN DATA WRAPPER, SERVER, or LARGE OBJECT)
  *	acls: the ACL string fetched from the database
- *	baseacls: the initial ACL string for this object; can be
- *		NULL or empty string to indicate "not available from server"
+ *	baseacls: the initial ACL string for this object
  *	owner: username of object owner (will be passed through fmtId); can be
  *		NULL or empty string to indicate "no owner known"
  *	prefix: string to prefix to each generated command; typically empty
@@ -104,17 +103,14 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 		return false;
 	}
 
-	/* Parse the baseacls, if provided */
-	if (baseacls && *baseacls != '\0')
+	/* Parse the baseacls too */
+	if (!parsePGArray(baseacls, &baseitems, &nbaseitems))
 	{
-		if (!parsePGArray(baseacls, &baseitems, &nbaseitems))
-		{
-			if (aclitems)
-				free(aclitems);
-			if (baseitems)
-				free(baseitems);
-			return false;
-		}
+		if (aclitems)
+			free(aclitems);
+		if (baseitems)
+			free(baseitems);
+		return false;
 	}
 
 	/*
@@ -126,10 +122,6 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 	 * strings are the work of aclitemout(), it should be OK in practice.
 	 * Besides, a false mismatch will just cause the output to be a little
 	 * more verbose than it really needed to be.
-	 *
-	 * (If we weren't given a base ACL, this stanza winds up with all the
-	 * ACL's items in grantitems and nothing in revokeitems.  It's not worth
-	 * special-casing that.)
 	 */
 	grantitems = (char **) pg_malloc(naclitems * sizeof(char *));
 	for (i = 0; i < naclitems; i++)
@@ -177,64 +169,30 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 	secondsql = createPQExpBuffer();
 
 	/*
-	 * If we weren't given baseacls information, we just revoke everything and
-	 * then grant what's listed in the ACL.  This avoids having to embed
-	 * detailed knowledge about what the defaults are/were, and it's not very
-	 * expensive since servers lacking acldefault() are now rare.
-	 *
-	 * Otherwise, we need only revoke what's listed in revokeitems.
+	 * Build REVOKE statements for ACLs listed in revokeitems[].
 	 */
-	if (baseacls == NULL || *baseacls == '\0')
+	for (i = 0; i < nrevokeitems; i++)
 	{
-		/* We assume the old defaults only involved the owner and PUBLIC */
-		appendPQExpBuffer(firstsql, "%sREVOKE ALL", prefix);
-		if (subname)
-			appendPQExpBuffer(firstsql, "(%s)", subname);
-		appendPQExpBuffer(firstsql, " ON %s ", type);
-		if (nspname && *nspname)
-			appendPQExpBuffer(firstsql, "%s.", fmtId(nspname));
-		appendPQExpBuffer(firstsql, "%s FROM PUBLIC;\n", name);
-		if (owner)
+		if (!parseAclItem(revokeitems[i],
+						  type, name, subname, remoteVersion,
+						  grantee, grantor, privs, NULL))
 		{
-			appendPQExpBuffer(firstsql, "%sREVOKE ALL", prefix);
-			if (subname)
-				appendPQExpBuffer(firstsql, "(%s)", subname);
-			appendPQExpBuffer(firstsql, " ON %s ", type);
+			ok = false;
+			break;
+		}
+
+		if (privs->len > 0)
+		{
+			appendPQExpBuffer(firstsql, "%sREVOKE %s ON %s ",
+							  prefix, privs->data, type);
 			if (nspname && *nspname)
 				appendPQExpBuffer(firstsql, "%s.", fmtId(nspname));
-			appendPQExpBuffer(firstsql, "%s FROM %s;\n", name, fmtId(owner));
-		}
-	}
-	else
-	{
-		/* Scan individual REVOKE ACL items */
-		for (i = 0; i < nrevokeitems; i++)
-		{
-			if (!parseAclItem(revokeitems[i],
-							  type, name, subname, remoteVersion,
-							  grantee, grantor, privs, NULL))
-			{
-				ok = false;
-				break;
-			}
-
-			if (privs->len > 0)
-			{
-				appendPQExpBuffer(firstsql, "%sREVOKE %s ON %s ",
-								  prefix, privs->data, type);
-				if (nspname && *nspname)
-					appendPQExpBuffer(firstsql, "%s.", fmtId(nspname));
-				appendPQExpBuffer(firstsql, "%s FROM ", name);
-				if (grantee->len == 0)
-					appendPQExpBufferStr(firstsql, "PUBLIC;\n");
-				else if (strncmp(grantee->data, "group ",
-								 strlen("group ")) == 0)
-					appendPQExpBuffer(firstsql, "GROUP %s;\n",
-									  fmtId(grantee->data + strlen("group ")));
-				else
-					appendPQExpBuffer(firstsql, "%s;\n",
-									  fmtId(grantee->data));
-			}
+			appendPQExpBuffer(firstsql, "%s FROM ", name);
+			if (grantee->len == 0)
+				appendPQExpBufferStr(firstsql, "PUBLIC;\n");
+			else
+				appendPQExpBuffer(firstsql, "%s;\n",
+								  fmtId(grantee->data));
 		}
 	}
 
@@ -247,14 +205,9 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 	 * public privileges are added in new versions: the REVOKE ALL will revoke
 	 * them, leading to behavior different from what the old version had,
 	 * which is generally not what's wanted.  So add back default privs if the
-	 * source database is too old to have had that particular priv.
+	 * source database is too old to have had that particular priv.  (As of
+	 * right now, no such cases exist in supported versions.)
 	 */
-	if (remoteVersion < 80200 && strcmp(type, "DATABASE") == 0)
-	{
-		/* database CONNECT priv didn't exist before 8.2 */
-		appendPQExpBuffer(firstsql, "%sGRANT CONNECT ON %s %s TO PUBLIC;\n",
-						  prefix, type, name);
-	}
 
 	/*
 	 * Scan individual ACL items to be granted.
@@ -306,10 +259,6 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 					appendPQExpBuffer(thissql, "%s TO ", name);
 					if (grantee->len == 0)
 						appendPQExpBufferStr(thissql, "PUBLIC;\n");
-					else if (strncmp(grantee->data, "group ",
-									 strlen("group ")) == 0)
-						appendPQExpBuffer(thissql, "GROUP %s;\n",
-										  fmtId(grantee->data + strlen("group ")));
 					else
 						appendPQExpBuffer(thissql, "%s;\n", fmtId(grantee->data));
 				}
@@ -322,10 +271,6 @@ buildACLCommands(const char *name, const char *subname, const char *nspname,
 					appendPQExpBuffer(thissql, "%s TO ", name);
 					if (grantee->len == 0)
 						appendPQExpBufferStr(thissql, "PUBLIC");
-					else if (strncmp(grantee->data, "group ",
-									 strlen("group ")) == 0)
-						appendPQExpBuffer(thissql, "GROUP %s",
-										  fmtId(grantee->data + strlen("group ")));
 					else
 						appendPQExpBufferStr(thissql, fmtId(grantee->data));
 					appendPQExpBufferStr(thissql, " WITH GRANT OPTION;\n");
@@ -420,16 +365,12 @@ buildDefaultACLCommands(const char *type, const char *nspname,
 /*
  * This will parse an aclitem string, having the general form
  *		username=privilegecodes/grantor
- * or
- *		group groupname=privilegecodes/grantor
- * (the "group" case occurs only with servers before 8.1).
  *
  * Returns true on success, false on parse error.  On success, the components
  * of the string are returned in the PQExpBuffer parameters.
  *
- * The returned grantee string will be the dequoted username or groupname
- * (preceded with "group " in the latter case).  Note that a grant to PUBLIC
- * is represented by an empty grantee string.  The returned grantor is the
+ * The returned grantee string will be the dequoted username, or an empty
+ * string in the case of a grant to PUBLIC.  The returned grantor is the
  * dequoted grantor name.  Privilege characters are translated to GRANT/REVOKE
  * comma-separated privileges lists.  If "privswgo" is non-NULL, the result is
  * separate lists for privileges with grant option ("privswgo") and without
@@ -522,8 +463,7 @@ do { \
 			{
 				CONVERT_PRIV('d', "DELETE");
 				CONVERT_PRIV('t', "TRIGGER");
-				if (remoteVersion >= 80400)
-					CONVERT_PRIV('D', "TRUNCATE");
+				CONVERT_PRIV('D', "TRUNCATE");
 			}
 		}
 

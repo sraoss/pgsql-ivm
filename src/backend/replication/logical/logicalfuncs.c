@@ -6,10 +6,10 @@
  *	   logical replication slots via SQL.
  *
  *
- * Copyright (c) 2012-2021, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2022, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *	  src/backend/replication/logicalfuncs.c
+ *	  src/backend/replication/logical/logicalfuncs.c
  *-------------------------------------------------------------------------
  */
 
