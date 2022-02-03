@@ -406,6 +406,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	Oid			matviewOid;
 	Relation	matviewRel;
 	Query	   *dataQuery;
+	Query	   *viewQuery;
 	Oid			tableSpace;
 	Oid			relowner;
 	Oid			OIDNewHeap;
@@ -454,11 +455,13 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 						"CONCURRENTLY", "WITH NO DATA")));
 
 
-	dataQuery = get_matview_query(matviewRel);
+	viewQuery = get_matview_query(matviewRel);
 
 	/* For IMMV, we need to rewrite matview query */
 	if (!stmt->skipData && RelationIsIVM(matviewRel))
-		dataQuery = rewriteQueryForIMMV(dataQuery,NIL);
+		dataQuery = rewriteQueryForIMMV(viewQuery,NIL);
+	else
+		dataQuery = viewQuery;
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more
@@ -634,7 +637,10 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	}
 
 	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
+	{
+		CreateIndexOnIMMV(viewQuery, matviewRel);
 		CreateIvmTriggersOnBaseTables(dataQuery, matviewOid, false);
+	}
 
 	table_close(matviewRel, NoLock);
 

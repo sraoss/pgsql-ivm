@@ -107,7 +107,6 @@ static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid mat
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
-static void CreateIndexOnIMMV(Query *query, Relation matviewRel);
 static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
@@ -426,12 +425,12 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			 */
 			SetMatViewIVMState(matviewRel, true);
 
-			/* Create an index on incremental maintainable materialized view, if possible */
-			CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel);
-
-			/* Create triggers on incremental maintainable materialized view */
 			if (!into->skipData)
 			{
+				/* Create an index on incremental maintainable materialized view, if possible */
+				CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel);
+
+				/* Create triggers on incremental maintainable materialized view */
 				Assert(query_immv != NULL);
 				CreateIvmTriggersOnBaseTables(query_immv, matviewOid, true);
 			}
@@ -1625,7 +1624,7 @@ check_aggregate_supports_ivm(Oid aggfnoid)
  * all primary key attritubes of its base tables in the target list, the index
  * is created on these attritubes. In other cases, no index is created.
  */
-static void
+void
 CreateIndexOnIMMV(Query *query, Relation matviewRel)
 {
 	Query *qry = (Query *) copyObject(query);
@@ -1634,6 +1633,8 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 	ObjectAddress address;
 	List *constraintList = NIL;
 	char		idxname[NAMEDATALEN];
+	List	   *indexoidlist = RelationGetIndexList(matviewRel);
+	ListCell   *indexoidscan;
 
 	snprintf(idxname, sizeof(idxname), "%s_index", RelationGetRelationName(matviewRel));
 
@@ -1751,6 +1752,28 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 					 errhint("Create an index on the materialized view for efficient incremental maintenance.")));
 			return;
 		}
+	}
+
+
+	/* If we have a compatible index, we don't need to create another. */
+	foreach(indexoidscan, indexoidlist)
+	{
+		Oid			indexoid = lfirst_oid(indexoidscan);
+		Relation	indexRel;
+		bool		hasCompatibleIndex = false;
+
+		indexRel = index_open(indexoid, AccessShareLock);
+
+		if (CheckIndexCompatible(indexRel->rd_id,
+								index->accessMethod,
+								index->indexParams,
+								index->excludeOpNames))
+			hasCompatibleIndex = true;
+
+		index_close(indexRel, AccessShareLock);
+
+		if (hasCompatibleIndex)
+			return;
 	}
 
 	address = DefineIndex(RelationGetRelid(matviewRel),

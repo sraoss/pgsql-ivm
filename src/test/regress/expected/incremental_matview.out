@@ -13,13 +13,13 @@ INSERT INTO mv_base_b VALUES
   (3,103),
   (4,104);
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) WITH NO DATA;
-NOTICE:  could not create an index on materialized view "mv_ivm_1" automatically
-DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
-HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 ERROR:  materialized view "mv_ivm_1" has not been populated
 HINT:  Use the REFRESH MATERIALIZED VIEW command.
 REFRESH MATERIALIZED VIEW mv_ivm_1;
+NOTICE:  could not create an index on materialized view "mv_ivm_1" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
+HINT:  Create an index on the materialized view for efficient incremental maintenance.
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
  i | j  |  k  
 ---+----+-----
