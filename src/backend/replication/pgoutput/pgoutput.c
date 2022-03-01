@@ -1842,25 +1842,9 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 
 					if (ancestor != InvalidOid)
 					{
-<<<<<<< HEAD
-						Oid			ancestor = lfirst_oid(lc2);
-						List	   *apubids = GetRelationPublications(ancestor);
-						List	   *aschemaPubids = GetSchemaPublications(get_rel_namespace(ancestor));
-
-						if (list_member_oid(apubids, pub->oid) ||
-							list_member_oid(aschemaPubids, pub->oid))
-						{
-							ancestor_published = true;
-							if (pub->pubviaroot)
-								publish_as_relid = ancestor;
-						}
-						list_free(apubids);
-						list_free(aschemaPubids);
-=======
 						ancestor_published = true;
 						if (pub->pubviaroot)
 							publish_as_relid = ancestor;
->>>>>>> master
 					}
 				}
 
@@ -1905,10 +1889,7 @@ get_rel_sync_entry(PGOutputData *data, Relation relation)
 
 		list_free(pubids);
 		list_free(schemaPubids);
-<<<<<<< HEAD
-=======
 		list_free(rel_publications);
->>>>>>> master
 
 		entry->replicate_valid = true;
 	}
