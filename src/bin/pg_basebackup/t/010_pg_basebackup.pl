@@ -261,13 +261,11 @@ $node->start;
 # for the tablespace directories, which hopefully won't run afoul of
 # the 99 character length limit.
 my $sys_tempdir = PostgreSQL::Test::Utils::tempdir_short;
-my $real_sys_tempdir = PostgreSQL::Test::Utils::perl2host($sys_tempdir) . "/tempdir";
-my $shorter_tempdir =  $sys_tempdir . "/tempdir";
-dir_symlink "$tempdir", $shorter_tempdir;
+my $real_sys_tempdir = "$sys_tempdir/tempdir";
+dir_symlink "$tempdir", $real_sys_tempdir;
 
 mkdir "$tempdir/tblspc1";
 my $realTsDir    = "$real_sys_tempdir/tblspc1";
-my $real_tempdir = PostgreSQL::Test::Utils::perl2host($tempdir);
 $node->safe_psql('postgres',
 	"CREATE TABLESPACE tblspc1 LOCATION '$realTsDir';");
 $node->safe_psql('postgres',
@@ -346,7 +344,7 @@ my $tblSpc1Id = basename(
 foreach my $filename (@tempRelationFiles)
 {
 	append_to_file(
-		"$shorter_tempdir/tblspc1/$tblSpc1Id/$postgresOid/$filename",
+		"$real_sys_tempdir/tblspc1/$tblSpc1Id/$postgresOid/$filename",
 		'TEMP_RELATION');
 }
 
@@ -358,7 +356,7 @@ $node->command_ok(
 	[
 		@pg_basebackup_defs, '-D',
 		"$tempdir/backup1",  '-Fp',
-		"-T$realTsDir=$real_tempdir/tbackup/tblspc1",
+		"-T$realTsDir=$tempdir/tbackup/tblspc1",
 	],
 	'plain format with tablespaces succeeds with tablespace mapping');
 ok(-d "$tempdir/tbackup/tblspc1", 'tablespace was relocated');
@@ -406,7 +404,7 @@ foreach my $filename (@tempRelationFiles)
 
 	# Also remove temp relation files or tablespace drop will fail.
 	my $filepath =
-	  "$shorter_tempdir/tblspc1/$tblSpc1Id/$postgresOid/$filename";
+	  "$real_sys_tempdir/tblspc1/$tblSpc1Id/$postgresOid/$filename";
 
 	unlink($filepath)
 	  or BAIL_OUT("unable to unlink $filepath");
@@ -428,7 +426,7 @@ $node->command_ok(
 	[
 		@pg_basebackup_defs, '-D',
 		"$tempdir/backup3",  '-Fp',
-		"-T$realTsDir=$real_tempdir/tbackup/tbl\\=spc2",
+		"-T$realTsDir=$tempdir/tbackup/tbl\\=spc2",
 	],
 	'mapping tablespace with = sign in path');
 ok(-d "$tempdir/tbackup/tbl=spc2", 'tablespace with = sign was relocated');
@@ -517,7 +515,7 @@ $node->command_ok(
 	[ @pg_basebackup_defs, '--target', 'blackhole', '-X', 'none' ],
 	'backup target blackhole');
 $node->command_ok(
-	[ @pg_basebackup_defs, '--target', "server:$real_tempdir/backuponserver", '-X', 'none' ],
+	[ @pg_basebackup_defs, '--target', "server:$tempdir/backuponserver", '-X', 'none' ],
 	'backup target server');
 ok(-f "$tempdir/backuponserver/base.tar", 'backup tar was created');
 rmtree("$tempdir/backuponserver");
@@ -526,7 +524,7 @@ $node->command_ok(
 	[qw(createuser --replication --role=pg_write_server_files backupuser)],
 	'create backup user');
 $node->command_ok(
-	[ @pg_basebackup_defs, '-U', 'backupuser', '--target', "server:$real_tempdir/backuponserver", '-X', 'none' ],
+	[ @pg_basebackup_defs, '-U', 'backupuser', '--target', "server:$tempdir/backuponserver", '-X', 'none' ],
 	'backup target server');
 ok(-f "$tempdir/backuponserver/base.tar", 'backup tar was created as non-superuser');
 rmtree("$tempdir/backuponserver");
@@ -767,9 +765,8 @@ SKIP:
 	# Check the integrity of the files generated.
 	my $gzip = $ENV{GZIP_PROGRAM};
 	skip "program gzip is not found in your system", 1
-	  if ( !defined $gzip
-		|| $gzip eq ''
-		|| system_log($gzip, '--version') != 0);
+	  if (!defined $gzip
+		|| $gzip eq '');
 
 	my $gzip_is_valid =
 	  system_log($gzip, '--test', @zlib_files, @zlib_files2, @zlib_files3);
@@ -778,5 +775,39 @@ SKIP:
 	rmtree("$tempdir/backup_gzip2");
 	rmtree("$tempdir/backup_gzip3");
 }
+
+# Test background stream process terminating before the basebackup has
+# finished, the main process should exit gracefully with an error message on
+# stderr. To reduce the risk of timing related issues we invoke the base
+# backup with rate throttling enabled.
+$node->safe_psql('postgres',
+	q{CREATE TABLE t AS SELECT a FROM generate_series(1,10000) AS a;});
+
+my $sigchld_bb_timeout = IPC::Run::timer(60);
+my ($sigchld_bb_stdin, $sigchld_bb_stdout, $sigchld_bb_stderr) = ('', '', '');
+my $sigchld_bb = IPC::Run::start(
+	[
+		@pg_basebackup_defs, '--wal-method=stream', '-D', "$tempdir/sigchld",
+		'--max-rate=32', '-d', $node->connstr('postgres')
+	],
+	'<',
+	\$sigchld_bb_stdin,
+	'>',
+	\$sigchld_bb_stdout,
+	'2>',
+	\$sigchld_bb_stderr,
+	$sigchld_bb_timeout);
+
+is($node->poll_query_until('postgres',
+	"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE " .
+	"application_name = '010_pg_basebackup.pl' AND wait_event = 'WalSenderMain' " .
+	"AND backend_type = 'walsender' AND query ~ 'START_REPLICATION'"),
+	"1",
+	"Walsender killed");
+
+ok(pump_until($sigchld_bb, $sigchld_bb_timeout, \$sigchld_bb_stderr,
+  qr/background process terminated unexpectedly/),
+  'background process exit message');
+$sigchld_bb->finish();
 
 done_testing();

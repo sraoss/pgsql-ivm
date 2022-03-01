@@ -148,8 +148,7 @@ brin_page_items(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
-		rsinfo->expectedDesc == NULL)
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("materialize mode required, but it is not allowed in this context")));
@@ -325,9 +324,7 @@ brin_page_items(PG_FUNCTION_ARGS)
 			break;
 	}
 
-	/* clean up and return the tuplestore */
 	brin_free_desc(bdesc);
-	tuplestore_donestoring(tupstore);
 	index_close(indexRel, AccessShareLock);
 
 	return (Datum) 0;

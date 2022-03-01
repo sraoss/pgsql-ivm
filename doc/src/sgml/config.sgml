@@ -1012,9 +1012,9 @@ include_dir 'conf.d'
         the kernel reports that the connection is closed.
        </para>
        <para>
-        This option is currently available only on systems that support the
-        non-standard <symbol>POLLRDHUP</symbol> extension to the
-        <symbol>poll</symbol> system call, including Linux.
+        This option relies on kernel events exposed by Linux, macOS, illumos
+        and the BSD family of operating systems, and is not currently available
+        on other systems.
        </para>
        <para>
         If the value is specified without units, it is taken as milliseconds.
@@ -1849,9 +1849,8 @@ include_dir 'conf.d'
         operations can use.  The final limit is determined by
         multiplying <varname>work_mem</varname> by
         <varname>hash_mem_multiplier</varname>.  The default value is
-        1.0, which makes hash-based operations subject to the same
-        simple <varname>work_mem</varname> maximum as sort-based
-        operations.
+        2.0, which makes hash-based operations use twice the usual
+        <varname>work_mem</varname> base amount.
        </para>
        <para>
         Consider increasing <varname>hash_mem_multiplier</varname> in
@@ -1859,7 +1858,7 @@ include_dir 'conf.d'
         occurrence, especially when simply increasing
         <varname>work_mem</varname> results in memory pressure (memory
         pressure typically takes the form of intermittent out of
-        memory errors).  A setting of 1.5 or 2.0 may be effective with
+        memory errors).  The default setting of 2.0 is often effective with
         mixed workloads.  Higher settings in the range of 2.0 - 8.0 or
         more may be effective in environments where
         <varname>work_mem</varname> has already been increased to 40MB
@@ -7935,9 +7934,12 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
         method is not acceptable.  In this case, in-core computation
         must be always disabled.
         Valid values are <literal>off</literal> (always disabled),
-        <literal>on</literal> (always enabled) and <literal>auto</literal>,
+        <literal>on</literal> (always enabled), <literal>auto</literal>,
         which lets modules such as <xref linkend="pgstatstatements"/>
-        automatically enable it.
+        automatically enable it, and <literal>regress</literal> which
+        has the same effect as <literal>auto</literal>, except that the
+        query identifier is hidden in the <literal>EXPLAIN</literal> output
+        to facilitate automated regression testing.
         The default is <literal>auto</literal>.
        </para>
        <note>

@@ -4839,7 +4839,8 @@ text_to_table(PG_FUNCTION_ARGS)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("set-valued function called in context that cannot accept a set")));
-	if (!(rsi->allowedModes & SFRM_Materialize))
+	if (!(rsi->allowedModes & SFRM_Materialize) ||
+		rsi->expectedDesc == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("materialize mode required, but it is not allowed in this context")));
@@ -4854,8 +4855,6 @@ text_to_table(PG_FUNCTION_ARGS)
 	MemoryContextSwitchTo(old_cxt);
 
 	(void) split_text(fcinfo, &tstate);
-
-	tuplestore_donestoring(tstate.tupstore);
 
 	rsi->returnMode = SFRM_Materialize;
 	rsi->setResult = tstate.tupstore;

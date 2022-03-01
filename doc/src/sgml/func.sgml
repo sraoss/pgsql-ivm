@@ -19973,7 +19973,7 @@ SELECT NULLIF(value, '(none)') ...
         values.  Available for any numeric, string, date/time, or enum type,
         as well as <type>inet</type>, <type>interval</type>,
         <type>money</type>, <type>oid</type>, <type>pg_lsn</type>,
-        <type>tid</type>,
+        <type>tid</type>, <type>xid8</type>,
         and arrays of any of these types.
        </para></entry>
        <entry>Yes</entry>
@@ -19992,7 +19992,7 @@ SELECT NULLIF(value, '(none)') ...
         values.  Available for any numeric, string, date/time, or enum type,
         as well as <type>inet</type>, <type>interval</type>,
         <type>money</type>, <type>oid</type>, <type>pg_lsn</type>,
-        <type>tid</type>,
+        <type>tid</type>, <type>xid8</type>,
         and arrays of any of these types.
        </para></entry>
        <entry>Yes</entry>
@@ -27058,6 +27058,24 @@ postgres=# SELECT * FROM pg_walfile_name_offset(pg_stop_backup());
         <structname>pg_collation</structname>.<structfield>collversion</structfield>,
         then objects depending on the collation might need to be rebuilt.  See
         also <xref linkend="sql-altercollation"/>.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
+         <primary>pg_database_collation_actual_version</primary>
+        </indexterm>
+        <function>pg_database_collation_actual_version</function> ( <type>oid</type> )
+        <returnvalue>text</returnvalue>
+       </para>
+       <para>
+        Returns the actual version of the database's collation as it is currently
+        installed in the operating system.  If this is different from the
+        value in
+        <structname>pg_database</structname>.<structfield>datcollversion</structfield>,
+        then objects depending on the collation might need to be rebuilt.  See
+        also <xref linkend="sql-alterdatabase"/>.
        </para></entry>
       </row>
 

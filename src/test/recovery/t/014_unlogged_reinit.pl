@@ -10,7 +10,7 @@ use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 12;
+use Test::More;
 
 my $node = PostgreSQL::Test::Cluster->new('main');
 
@@ -33,9 +33,7 @@ ok(-f "$pgdata/$baseUnloggedPath",        'main fork in base exists');
 
 my $tablespaceDir = PostgreSQL::Test::Utils::tempdir;
 
-my $realTSDir = PostgreSQL::Test::Utils::perl2host($tablespaceDir);
-
-$node->safe_psql('postgres', "CREATE TABLESPACE ts1 LOCATION '$realTSDir'");
+$node->safe_psql('postgres', "CREATE TABLESPACE ts1 LOCATION '$tablespaceDir'");
 $node->safe_psql('postgres',
 	'CREATE UNLOGGED TABLE ts1_unlogged (id int) TABLESPACE ts1');
 
@@ -82,3 +80,5 @@ ok( !-f "$pgdata/${ts1UnloggedPath}_vm",
 	'vm fork in tablespace removed at startup');
 ok( !-f "$pgdata/${ts1UnloggedPath}_fsm",
 	'fsm fork in tablespace removed at startup');
+
+done_testing();

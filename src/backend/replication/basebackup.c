@@ -56,7 +56,6 @@
 typedef enum
 {
 	BACKUP_TARGET_BLACKHOLE,
-	BACKUP_TARGET_COMPAT,
 	BACKUP_TARGET_CLIENT,
 	BACKUP_TARGET_SERVER
 } backup_target_type;
@@ -64,7 +63,8 @@ typedef enum
 typedef enum
 {
 	BACKUP_COMPRESSION_NONE,
-	BACKUP_COMPRESSION_GZIP
+	BACKUP_COMPRESSION_GZIP,
+	BACKUP_COMPRESSION_LZ4
 } basebackup_compression_type;
 
 typedef struct
@@ -719,7 +719,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	bool		o_compression_level = false;
 
 	MemSet(opt, 0, sizeof(*opt));
-	opt->target = BACKUP_TARGET_COMPAT;
+	opt->target = BACKUP_TARGET_CLIENT;
 	opt->manifest = MANIFEST_OPTION_NO;
 	opt->manifest_checksum_type = CHECKSUM_TYPE_CRC32C;
 	opt->compression = BACKUP_COMPRESSION_NONE;
@@ -904,6 +904,8 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 				opt->compression = BACKUP_COMPRESSION_NONE;
 			else if (strcmp(optval, "gzip") == 0)
 				opt->compression = BACKUP_COMPRESSION_GZIP;
+			else if (strcmp(optval, "lz4") == 0)
+				opt->compression = BACKUP_COMPRESSION_LZ4;
 			else
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
@@ -992,16 +994,11 @@ SendBaseBackup(BaseBackupCmd *cmd)
 	 * protocol. If the target is specifically 'client' then set up to stream
 	 * the backup to the client; otherwise, it's being sent someplace else and
 	 * should not be sent to the client.
-	 *
-	 * If the TARGET option was not specified, we must fall back to the older
-	 * and less capable copy-tablespace protocol.
 	 */
 	if (opt.target == BACKUP_TARGET_CLIENT)
 		sink = bbsink_copystream_new(true);
-	else if (opt.target != BACKUP_TARGET_COMPAT)
-		sink = bbsink_copystream_new(false);
 	else
-		sink = bbsink_copytblspc_new();
+		sink = bbsink_copystream_new(false);
 
 	/*
 	 * If a non-default backup target is in use, arrange to send the data
@@ -1012,7 +1009,6 @@ SendBaseBackup(BaseBackupCmd *cmd)
 		case BACKUP_TARGET_BLACKHOLE:
 			/* Nothing to do, just discard data. */
 			break;
-		case BACKUP_TARGET_COMPAT:
 		case BACKUP_TARGET_CLIENT:
 			/* Nothing to do, handling above is sufficient. */
 			break;
@@ -1028,6 +1024,8 @@ SendBaseBackup(BaseBackupCmd *cmd)
 	/* Set up server-side compression, if client requested it */
 	if (opt.compression == BACKUP_COMPRESSION_GZIP)
 		sink = bbsink_gzip_new(sink, opt.compression_level);
+	else if (opt.compression == BACKUP_COMPRESSION_LZ4)
+		sink = bbsink_lz4_new(sink, opt.compression_level);
 
 	/* Set up progress reporting. */
 	sink = bbsink_progress_new(sink, opt.progress);

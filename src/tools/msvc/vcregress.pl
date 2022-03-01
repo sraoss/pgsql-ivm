@@ -36,6 +36,7 @@ do './src/tools/msvc/config.pl' if (-f 'src/tools/msvc/config.pl');
 $ENV{GZIP_PROGRAM} ||= 'gzip';
 $ENV{LZ4} ||= 'lz4';
 $ENV{TAR} ||= 'tar';
+$ENV{ZSTD} ||= 'zstd';
 
 # buildenv.pl is for specifying the build environment settings
 # it should contain lines like:
@@ -535,8 +536,6 @@ sub modulescheck
 sub recoverycheck
 {
 	InstallTemp();
-
-	$ENV{REGRESS_OUTPUTDIR} = "$topdir/src/test/recovery/tmp_check";
 
 	my $dir    = "$topdir/src/test/recovery";
 	my $status = tap_check($dir);

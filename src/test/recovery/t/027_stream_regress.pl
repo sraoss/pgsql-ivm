@@ -8,13 +8,9 @@ use File::Basename;
 
 if (PostgreSQL::Test::Utils::has_wal_read_bug)
 {
-	# We'd prefer to use "local $TODO", but the bug causes this test file to
-	# die(), not merely to fail.
+	# We'd prefer to use Test::More->builder->todo_start, but the bug causes
+	# this test file to die(), not merely to fail.
 	plan skip_all => 'filesystem bug';
-}
-else
-{
-	plan tests => 4;
 }
 
 # Initialize primary node
@@ -52,8 +48,8 @@ $node_standby_1->append_conf('postgresql.conf',
 	'max_standby_streaming_delay = 600s');
 $node_standby_1->start;
 
-my $dlpath = PostgreSQL::Test::Utils::perl2host(dirname($ENV{REGRESS_SHLIB}));
-my $outputdir = PostgreSQL::Test::Utils::perl2host($ENV{REGRESS_OUTPUTDIR});
+my $dlpath = dirname($ENV{REGRESS_SHLIB});
+my $outputdir = $PostgreSQL::Test::Utils::tmp_check;
 
 # Run the regression tests against the primary.
 my $extra_opts = $ENV{EXTRA_REGRESS_OPTS} || "";
@@ -91,3 +87,5 @@ command_ok(
 
 $node_standby_1->stop;
 $node_primary->stop;
+
+done_testing();

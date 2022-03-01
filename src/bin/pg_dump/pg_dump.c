@@ -2761,6 +2761,7 @@ dumpDatabase(Archive *fout)
 				i_acldefault,
 				i_datistemplate,
 				i_datconnlimit,
+				i_datcollversion,
 				i_tablespace;
 	CatalogId	dbCatId;
 	DumpId		dbDumpId;
@@ -2792,6 +2793,10 @@ dumpDatabase(Archive *fout)
 		appendPQExpBuffer(dbQry, "datminmxid, ");
 	else
 		appendPQExpBuffer(dbQry, "0 AS datminmxid, ");
+	if (fout->remoteVersion >= 150000)
+		appendPQExpBuffer(dbQry, "datcollversion, ");
+	else
+		appendPQExpBuffer(dbQry, "NULL AS datcollversion, ");
 	appendPQExpBuffer(dbQry,
 					  "(SELECT spcname FROM pg_tablespace t WHERE t.oid = dattablespace) AS tablespace, "
 					  "shobj_description(oid, 'pg_database') AS description "
@@ -2813,6 +2818,7 @@ dumpDatabase(Archive *fout)
 	i_acldefault = PQfnumber(res, "acldefault");
 	i_datistemplate = PQfnumber(res, "datistemplate");
 	i_datconnlimit = PQfnumber(res, "datconnlimit");
+	i_datcollversion = PQfnumber(res, "datcollversion");
 	i_tablespace = PQfnumber(res, "tablespace");
 
 	dbCatId.tableoid = atooid(PQgetvalue(res, 0, i_tableoid));
@@ -2869,6 +2875,21 @@ dumpDatabase(Archive *fout)
 		{
 			appendPQExpBufferStr(creaQry, " LC_CTYPE = ");
 			appendStringLiteralAH(creaQry, ctype, fout);
+		}
+	}
+
+	/*
+	 * For binary upgrade, carry over the collation version.  For normal
+	 * dump/restore, omit the version, so that it is computed upon restore.
+	 */
+	if (dopt->binary_upgrade)
+	{
+		if (!PQgetisnull(res, 0, i_datcollversion))
+		{
+			appendPQExpBufferStr(creaQry, " COLLATION_VERSION = ");
+			appendStringLiteralAH(creaQry,
+								  PQgetvalue(res, 0, i_datcollversion),
+								  fout);
 		}
 	}
 
@@ -4053,6 +4074,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	int			i_oid;
 	int			i_prpubid;
 	int			i_prrelid;
+	int			i_prrelqual;
 	int			i,
 				j,
 				ntups;
@@ -4063,9 +4085,16 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	query = createPQExpBuffer();
 
 	/* Collect all publication membership info. */
-	appendPQExpBufferStr(query,
-						 "SELECT tableoid, oid, prpubid, prrelid "
-						 "FROM pg_catalog.pg_publication_rel");
+	if (fout->remoteVersion >= 150000)
+		appendPQExpBufferStr(query,
+							 "SELECT tableoid, oid, prpubid, prrelid, "
+							 "pg_catalog.pg_get_expr(prqual, prrelid) AS prrelqual "
+							 "FROM pg_catalog.pg_publication_rel");
+	else
+		appendPQExpBufferStr(query,
+							 "SELECT tableoid, oid, prpubid, prrelid, "
+							 "NULL AS prrelqual "
+							 "FROM pg_catalog.pg_publication_rel");
 	res = ExecuteSqlQuery(fout, query->data, PGRES_TUPLES_OK);
 
 	ntups = PQntuples(res);
@@ -4074,6 +4103,7 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 	i_oid = PQfnumber(res, "oid");
 	i_prpubid = PQfnumber(res, "prpubid");
 	i_prrelid = PQfnumber(res, "prrelid");
+	i_prrelqual = PQfnumber(res, "prrelqual");
 
 	/* this allocation may be more than we need */
 	pubrinfo = pg_malloc(ntups * sizeof(PublicationRelInfo));
@@ -4114,6 +4144,10 @@ getPublicationTables(Archive *fout, TableInfo tblinfo[], int numTables)
 		pubrinfo[j].dobj.name = tbinfo->dobj.name;
 		pubrinfo[j].publication = pubinfo;
 		pubrinfo[j].pubtable = tbinfo;
+		if (PQgetisnull(res, i, i_prrelqual))
+			pubrinfo[j].pubrelqual = NULL;
+		else
+			pubrinfo[j].pubrelqual = pg_strdup(PQgetvalue(res, i, i_prrelqual));
 
 		/* Decide whether we want to dump it */
 		selectDumpablePublicationObject(&(pubrinfo[j].dobj), fout);
@@ -4191,8 +4225,17 @@ dumpPublicationTable(Archive *fout, const PublicationRelInfo *pubrinfo)
 
 	appendPQExpBuffer(query, "ALTER PUBLICATION %s ADD TABLE ONLY",
 					  fmtId(pubinfo->dobj.name));
-	appendPQExpBuffer(query, " %s;\n",
+	appendPQExpBuffer(query, " %s",
 					  fmtQualifiedDumpable(tbinfo));
+	if (pubrinfo->pubrelqual)
+	{
+		/*
+		 * It's necessary to add parentheses around the expression because
+		 * pg_get_expr won't supply the parentheses for things like WHERE TRUE.
+		 */
+		appendPQExpBuffer(query, " WHERE (%s)", pubrinfo->pubrelqual);
+	}
+	appendPQExpBufferStr(query, ";\n");
 
 	/*
 	 * There is no point in creating a drop query as the drop is done by table
@@ -6533,8 +6576,6 @@ getIndexes(Archive *fout, TableInfo tblinfo[], int numTables)
 		appendPQExpBuffer(tbloids, "%u", tbinfo->dobj.catId.oid);
 	}
 	appendPQExpBufferChar(tbloids, '}');
-
-	resetPQExpBuffer(query);
 
 	appendPQExpBuffer(query,
 					  "SELECT t.tableoid, t.oid, i.indrelid, "

@@ -32,6 +32,7 @@
 #include "catalog/catalog.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_authid.h"
+#include "catalog/pg_collation.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_db_role_setting.h"
 #include "catalog/pg_tablespace.h"
@@ -42,6 +43,7 @@
 #include "pgstat.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
+#include "replication/slot.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
@@ -418,6 +420,38 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 						   " which is not recognized by setlocale().", ctype),
 				 errhint("Recreate the database with another locale or install the missing locale.")));
 
+	/*
+	 * Check collation version.  See similar code in
+	 * pg_newlocale_from_collation().  Note that here we warn instead of error
+	 * in any case, so that we don't prevent connecting.
+	 */
+	datum = SysCacheGetAttr(DATABASEOID, tup, Anum_pg_database_datcollversion,
+							&isnull);
+	if (!isnull)
+	{
+		char	   *actual_versionstr;
+		char	   *collversionstr;
+
+		collversionstr = TextDatumGetCString(datum);
+
+		actual_versionstr = get_collation_actual_version(COLLPROVIDER_LIBC, collate);
+		if (!actual_versionstr)
+			ereport(WARNING,
+					(errmsg("database \"%s\" has no actual collation version, but a version was recorded",
+							name)));
+		else if (strcmp(actual_versionstr, collversionstr) != 0)
+			ereport(WARNING,
+					(errmsg("database \"%s\" has a collation version mismatch",
+							name),
+					 errdetail("The database was created using collation version %s, "
+							   "but the operating system provides version %s.",
+							   collversionstr, actual_versionstr),
+					 errhint("Rebuild all objects in this database that use the default collation and run "
+							 "ALTER DATABASE %s REFRESH COLLATION VERSION, "
+							 "or build PostgreSQL with the right library version.",
+							 quote_identifier(name))));
+	}
+
 	/* Make the locale settings visible as GUC variables, too */
 	SetConfigOption("lc_collate", collate, PGC_INTERNAL, PGC_S_OVERRIDE);
 	SetConfigOption("lc_ctype", ctype, PGC_INTERNAL, PGC_S_OVERRIDE);
@@ -592,6 +626,12 @@ BaseInit(void)
 	 * ever try to insert XLOG.
 	 */
 	InitXLogInsert();
+
+	/*
+	 * Initialize replication slots after pgstat. The exit hook might need to
+	 * drop ephemeral slots, which in turn triggers stats reporting.
+	 */
+	ReplicationSlotInitialize();
 }
 
 
@@ -669,7 +709,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * If this is either a bootstrap process nor a standalone backend, start
+	 * If this is either a bootstrap process or a standalone backend, start
 	 * up the XLOG machinery, and register to have it closed down at exit.
 	 * In other cases, the startup process is responsible for starting up
 	 * the XLOG machinery, and the checkpointer for closing it down.
@@ -1222,6 +1262,23 @@ ShutdownPostgres(int code, Datum arg)
 	 * them explicitly.
 	 */
 	LockReleaseAll(USER_LOCKMETHOD, true);
+
+	/*
+	 * temp debugging aid to analyze 019_replslot_limit failures
+	 *
+	 * If an error were thrown outside of a transaction nothing up to now
+	 * would have released lwlocks. We probably will add an
+	 * LWLockReleaseAll(). But for now make it easier to understand such cases
+	 * by warning if any lwlocks are held.
+	 */
+#ifdef USE_ASSERT_CHECKING
+	{
+		int held_lwlocks = LWLockHeldCount();
+		if (held_lwlocks)
+			elog(WARNING, "holding %d lwlocks at the end of ShutdownPostgres()",
+				 held_lwlocks);
+	}
+#endif
 }
 
 

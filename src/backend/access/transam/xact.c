@@ -29,6 +29,7 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
@@ -2984,24 +2985,20 @@ StartTransactionCommand(void)
  * GUC system resets the characteristics at transaction end, so for example
  * just skipping the reset in StartTransaction() won't work.)
  */
-static int	save_XactIsoLevel;
-static bool save_XactReadOnly;
-static bool save_XactDeferrable;
-
 void
-SaveTransactionCharacteristics(void)
+SaveTransactionCharacteristics(SavedTransactionCharacteristics *s)
 {
-	save_XactIsoLevel = XactIsoLevel;
-	save_XactReadOnly = XactReadOnly;
-	save_XactDeferrable = XactDeferrable;
+	s->save_XactIsoLevel = XactIsoLevel;
+	s->save_XactReadOnly = XactReadOnly;
+	s->save_XactDeferrable = XactDeferrable;
 }
 
 void
-RestoreTransactionCharacteristics(void)
+RestoreTransactionCharacteristics(const SavedTransactionCharacteristics *s)
 {
-	XactIsoLevel = save_XactIsoLevel;
-	XactReadOnly = save_XactReadOnly;
-	XactDeferrable = save_XactDeferrable;
+	XactIsoLevel = s->save_XactIsoLevel;
+	XactReadOnly = s->save_XactReadOnly;
+	XactDeferrable = s->save_XactDeferrable;
 }
 
 
@@ -3012,9 +3009,9 @@ void
 CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
+	SavedTransactionCharacteristics savetc;
 
-	if (s->chain)
-		SaveTransactionCharacteristics();
+	SaveTransactionCharacteristics(&savetc);
 
 	switch (s->blockState)
 	{
@@ -3072,7 +3069,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics();
+				RestoreTransactionCharacteristics(&savetc);
 			}
 			break;
 
@@ -3098,7 +3095,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics();
+				RestoreTransactionCharacteristics(&savetc);
 			}
 			break;
 
@@ -3116,7 +3113,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics();
+				RestoreTransactionCharacteristics(&savetc);
 			}
 			break;
 
@@ -3183,7 +3180,7 @@ CommitTransactionCommand(void)
 					StartTransaction();
 					s->blockState = TBLOCK_INPROGRESS;
 					s->chain = false;
-					RestoreTransactionCharacteristics();
+					RestoreTransactionCharacteristics(&savetc);
 				}
 			}
 			else if (s->blockState == TBLOCK_PREPARE)

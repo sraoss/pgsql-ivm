@@ -19,6 +19,7 @@
 
 #include "access/xact.h"
 #include "access/xlog_internal.h"
+#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "catalog/pg_type.h"
 #include "fmgr.h"
@@ -39,7 +40,7 @@
 #include "utils/regproc.h"
 #include "utils/resowner.h"
 
-/* private date for writing out data */
+/* Private data for writing out data */
 typedef struct DecodingOutputState
 {
 	Tuplestorestate *tupstore;
@@ -294,8 +295,6 @@ pg_logical_slot_get_changes_guts(FunctionCallInfo fcinfo, bool confirm, bool bin
 				break;
 			CHECK_FOR_INTERRUPTS();
 		}
-
-		tuplestore_donestoring(tupstore);
 
 		/*
 		 * Logical decoding could have clobbered CurrentResourceOwner during

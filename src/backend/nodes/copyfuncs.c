@@ -4062,6 +4062,16 @@ _copyAlterDatabaseStmt(const AlterDatabaseStmt *from)
 	return newnode;
 }
 
+static AlterDatabaseRefreshCollStmt *
+_copyAlterDatabaseRefreshCollStmt(const AlterDatabaseRefreshCollStmt *from)
+{
+	AlterDatabaseRefreshCollStmt *newnode = makeNode(AlterDatabaseRefreshCollStmt);
+
+	COPY_STRING_FIELD(dbname);
+
+	return newnode;
+}
+
 static AlterDatabaseSetStmt *
 _copyAlterDatabaseSetStmt(const AlterDatabaseSetStmt *from)
 {
@@ -4841,6 +4851,7 @@ _copyPublicationTable(const PublicationTable *from)
 	PublicationTable *newnode = makeNode(PublicationTable);
 
 	COPY_NODE_FIELD(relation);
+	COPY_NODE_FIELD(whereClause);
 
 	return newnode;
 }
@@ -5588,6 +5599,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_AlterDatabaseStmt:
 			retval = _copyAlterDatabaseStmt(from);
+			break;
+		case T_AlterDatabaseRefreshCollStmt:
+			retval = _copyAlterDatabaseRefreshCollStmt(from);
 			break;
 		case T_AlterDatabaseSetStmt:
 			retval = _copyAlterDatabaseSetStmt(from);

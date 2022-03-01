@@ -1694,7 +1694,7 @@ static void
 emitHostIdentityInfo(PGconn *conn, const char *host_addr)
 {
 #ifdef HAVE_UNIX_SOCKETS
-	if (IS_AF_UNIX(conn->raddr.addr.ss_family))
+	if (conn->raddr.addr.ss_family == AF_UNIX)
 	{
 		char		service[NI_MAXHOST];
 
@@ -1758,7 +1758,7 @@ connectFailureMessage(PGconn *conn, int errorno)
 					  SOCK_STRERROR(errorno, sebuf, sizeof(sebuf)));
 
 #ifdef HAVE_UNIX_SOCKETS
-	if (IS_AF_UNIX(conn->raddr.addr.ss_family))
+	if (conn->raddr.addr.ss_family == AF_UNIX)
 		appendPQExpBufferStr(&conn->errorMessage,
 							 libpq_gettext("\tIs the server running locally and accepting connections on that socket?\n"));
 	else
@@ -2590,7 +2590,7 @@ keep_going:						/* We will come back to here until there is
 					 * TCP sockets, nonblock mode, close-on-exec.  Try the
 					 * next address if any of this fails.
 					 */
-					if (!IS_AF_UNIX(addr_cur->ai_family))
+					if (addr_cur->ai_family != AF_UNIX)
 					{
 						if (!connectNoDelay(conn))
 						{
@@ -2619,7 +2619,7 @@ keep_going:						/* We will come back to here until there is
 					}
 #endif							/* F_SETFD */
 
-					if (!IS_AF_UNIX(addr_cur->ai_family))
+					if (addr_cur->ai_family != AF_UNIX)
 					{
 #ifndef WIN32
 						int			on = 1;
@@ -2821,7 +2821,7 @@ keep_going:						/* We will come back to here until there is
 				 * Unix-domain socket.
 				 */
 				if (conn->requirepeer && conn->requirepeer[0] &&
-					IS_AF_UNIX(conn->raddr.addr.ss_family))
+					conn->raddr.addr.ss_family == AF_UNIX)
 				{
 #ifndef WIN32
 					char	   *remote_username;
@@ -2867,7 +2867,7 @@ keep_going:						/* We will come back to here until there is
 #endif							/* WIN32 */
 				}
 
-				if (IS_AF_UNIX(conn->raddr.addr.ss_family))
+				if (conn->raddr.addr.ss_family == AF_UNIX)
 				{
 					/* Don't request SSL or GSSAPI over Unix sockets */
 #ifdef USE_SSL
@@ -3685,7 +3685,7 @@ keep_going:						/* We will come back to here until there is
 				 * (and it seems some clients expect it to be empty after a
 				 * successful connection).
 				 */
-				resetPQExpBuffer(&conn->errorMessage);
+				pqClearConnErrorState(conn);
 
 				/* We are open for business! */
 				conn->status = CONNECTION_OK;
@@ -4231,7 +4231,7 @@ closePGconn(PGconn *conn)
 
 	/*
 	 * Close the connection, reset all transient state, flush I/O buffers.
-	 * Note that this includes clearing conn->errorMessage; we're no longer
+	 * Note that this includes clearing conn's error state; we're no longer
 	 * interested in any failures associated with the old connection, and we
 	 * want a clean slate for any new connection attempt.
 	 */
@@ -4241,7 +4241,7 @@ closePGconn(PGconn *conn)
 	conn->xactStatus = PQTRANS_IDLE;
 	conn->pipelineStatus = PQ_PIPELINE_OFF;
 	pqClearAsyncResult(conn);	/* deallocate result */
-	resetPQExpBuffer(&conn->errorMessage);
+	pqClearConnErrorState(conn);
 	release_conn_addrinfo(conn);
 
 	/* Reset all state obtained from server, too */
@@ -4276,8 +4276,7 @@ PQreset(PGconn *conn)
 		if (connectDBStart(conn) && connectDBComplete(conn))
 		{
 			/*
-			 * Notify event procs of successful reset.  We treat an event proc
-			 * failure as disabling the connection ... good idea?
+			 * Notify event procs of successful reset.
 			 */
 			int			i;
 
@@ -4286,15 +4285,8 @@ PQreset(PGconn *conn)
 				PGEventConnReset evt;
 
 				evt.conn = conn;
-				if (!conn->events[i].proc(PGEVT_CONNRESET, &evt,
-										  conn->events[i].passThrough))
-				{
-					conn->status = CONNECTION_BAD;
-					appendPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext("PGEventProc \"%s\" failed during PGEVT_CONNRESET event\n"),
-									  conn->events[i].name);
-					break;
-				}
+				(void) conn->events[i].proc(PGEVT_CONNRESET, &evt,
+											conn->events[i].passThrough);
 			}
 		}
 	}
@@ -4336,8 +4328,7 @@ PQresetPoll(PGconn *conn)
 		if (status == PGRES_POLLING_OK)
 		{
 			/*
-			 * Notify event procs of successful reset.  We treat an event proc
-			 * failure as disabling the connection ... good idea?
+			 * Notify event procs of successful reset.
 			 */
 			int			i;
 
@@ -4346,15 +4337,8 @@ PQresetPoll(PGconn *conn)
 				PGEventConnReset evt;
 
 				evt.conn = conn;
-				if (!conn->events[i].proc(PGEVT_CONNRESET, &evt,
-										  conn->events[i].passThrough))
-				{
-					conn->status = CONNECTION_BAD;
-					appendPQExpBuffer(&conn->errorMessage,
-									  libpq_gettext("PGEventProc \"%s\" failed during PGEVT_CONNRESET event\n"),
-									  conn->events[i].name);
-					return PGRES_POLLING_FAILED;
-				}
+				(void) conn->events[i].proc(PGEVT_CONNRESET, &evt,
+											conn->events[i].passThrough);
 			}
 		}
 
@@ -4528,7 +4512,7 @@ PQcancel(PGcancel *cancel, char *errbuf, int errbufsize)
 	 * This ensures that this function does not block indefinitely when
 	 * reasonable keepalive and timeout settings have been provided.
 	 */
-	if (!IS_AF_UNIX(cancel->raddr.addr.ss_family) &&
+	if (cancel->raddr.addr.ss_family != AF_UNIX &&
 		cancel->keepalives != 0)
 	{
 #ifndef WIN32
@@ -4703,6 +4687,7 @@ PQrequestCancel(PGconn *conn)
 				"PQrequestCancel() -- connection is not open\n",
 				conn->errorMessage.maxlen);
 		conn->errorMessage.len = strlen(conn->errorMessage.data);
+		conn->errorReported = 0;
 
 		return false;
 	}
@@ -4722,7 +4707,10 @@ PQrequestCancel(PGconn *conn)
 	}
 
 	if (!r)
+	{
 		conn->errorMessage.len = strlen(conn->errorMessage.data);
+		conn->errorReported = 0;
+	}
 
 	return r;
 }
@@ -5252,7 +5240,7 @@ ldapServiceLookup(const char *purl, PQconninfoOption *options,
  * Returns 0 on success, nonzero on failure.  On failure, if errorMessage
  * isn't null, also store an error message there.  (Note: the only reason
  * this function and related ones don't dump core on errorMessage == NULL
- * is the undocumented fact that printfPQExpBuffer does nothing when passed
+ * is the undocumented fact that appendPQExpBuffer does nothing when passed
  * a null PQExpBuffer pointer.)
  */
 static int

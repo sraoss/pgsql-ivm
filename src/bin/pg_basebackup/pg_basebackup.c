@@ -164,7 +164,7 @@ static bool found_tablespace_dirs = false;
 static uint64 totalsize_kb;
 static uint64 totaldone;
 static int	tablespacecount;
-static const char *progress_filename;
+static char *progress_filename = NULL;
 
 /* Pipe to communicate with background wal receiver process */
 #ifndef WIN32
@@ -174,6 +174,8 @@ static int	bgpipe[2] = {-1, -1};
 /* Handle to child process */
 static pid_t bgchild = -1;
 static bool in_log_streamer = false;
+/* Flag to indicate if child process exited unexpectedly */
+static volatile sig_atomic_t bgchild_exited = false;
 
 /* End position for xlog streaming, empty string if unknown yet */
 static XLogRecPtr xlogendptr;
@@ -278,6 +280,18 @@ disconnect_atexit(void)
 
 #ifndef WIN32
 /*
+ * If the bgchild exits prematurely and raises a SIGCHLD signal, we can abort
+ * processing rather than wait until the backup has finished and error out at
+ * that time. On Windows, we use a background thread which can communicate
+ * without the need for a signal handler.
+ */
+static void
+sigchld_handler(SIGNAL_ARGS)
+{
+	bgchild_exited = true;
+}
+
+/*
  * On windows, our background thread dies along with the process. But on
  * Unix, if we have started a subprocess, we want to kill it off so it
  * doesn't remain running trying to stream data.
@@ -285,7 +299,7 @@ disconnect_atexit(void)
 static void
 kill_bgchild_atexit(void)
 {
-	if (bgchild > 0)
+	if (bgchild > 0 && !bgchild_exited)
 		kill(bgchild, SIGTERM);
 }
 #endif
@@ -391,7 +405,7 @@ usage(void)
 	printf(_("  -X, --wal-method=none|fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
-	printf(_("  -Z, --compress={[{client,server}-]gzip,none}[:LEVEL] or [LEVEL]\n"
+	printf(_("  -Z, --compress={[{client,server}-]gzip,lz4,none}[:LEVEL] or [LEVEL]\n"
 			 "                         compress tar output with given compression method or level\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
@@ -560,24 +574,40 @@ LogStreamerMain(logstreamer_param *param)
 											  COMPRESSION_NONE,
 											  compresslevel,
 											  stream.do_sync);
-	else
+	else if (compressmethod == COMPRESSION_GZIP)
 		stream.walmethod = CreateWalTarMethod(param->xlog,
 											  compressmethod,
 											  compresslevel,
 											  stream.do_sync);
+	else
+		stream.walmethod = CreateWalTarMethod(param->xlog,
+											  COMPRESSION_NONE,
+											  compresslevel,
+											  stream.do_sync);
 
 	if (!ReceiveXlogStream(param->bgconn, &stream))
-
+	{
 		/*
 		 * Any errors will already have been reported in the function process,
 		 * but we need to tell the parent that we didn't shutdown in a nice
 		 * way.
 		 */
+#ifdef WIN32
+		/*
+		 * In order to signal the main thread of an ungraceful exit we
+		 * set the same flag that we use on Unix to signal SIGCHLD.
+		 */
+		bgchild_exited = true;
+#endif
 		return 1;
+	}
 
 	if (!stream.walmethod->finish())
 	{
 		pg_log_error("could not finish writing WAL files: %m");
+#ifdef WIN32
+		bgchild_exited = true;
+#endif
 		return 1;
 	}
 
@@ -695,8 +725,16 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier)
 	bgchild = fork();
 	if (bgchild == 0)
 	{
+		int			ret;
+
 		/* in child process */
-		exit(LogStreamerMain(param));
+		ret = LogStreamerMain(param);
+
+		/* temp debugging aid to analyze 019_replslot_limit failures */
+		if (verbose)
+			pg_log_info("log streamer with pid %d exiting", getpid());
+
+		exit(ret);
 	}
 	else if (bgchild < 0)
 	{
@@ -770,11 +808,22 @@ verify_dir_is_empty_or_create(char *dirname, bool *created, bool *found)
 
 /*
  * Callback to update our notion of the current filename.
+ *
+ * No other code should modify progress_filename!
  */
 static void
 progress_update_filename(const char *filename)
 {
-	progress_filename = filename;
+	/* We needn't maintain this variable if not doing verbose reports. */
+	if (showprogress && verbose)
+	{
+		if (progress_filename)
+			free(progress_filename);
+		if (filename)
+			progress_filename = pg_strdup(filename);
+		else
+			progress_filename = NULL;
+	}
 }
 
 /*
@@ -1003,6 +1052,21 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 		*methodres = COMPRESSION_GZIP;
 		*locationres = COMPRESS_LOCATION_SERVER;
 	}
+	else if (pg_strcasecmp(firstpart, "lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
+	else if (pg_strcasecmp(firstpart, "client-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_CLIENT;
+	}
+	else if (pg_strcasecmp(firstpart, "server-lz4") == 0)
+	{
+		*methodres = COMPRESSION_LZ4;
+		*locationres = COMPRESS_LOCATION_SERVER;
+	}
 	else if (pg_strcasecmp(firstpart, "none") == 0)
 	{
 		*methodres = COMPRESSION_NONE;
@@ -1095,6 +1159,12 @@ ReceiveCopyData(PGconn *conn, WriteDataCallback callback,
 			exit(1);
 		}
 
+		if (bgchild_exited)
+		{
+			pg_log_error("background process terminated unexpectedly");
+			exit(1);
+		}
+
 		(*callback) (r, copybuf, callback_data);
 
 		PQfreemem(copybuf);
@@ -1120,7 +1190,8 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	bbstreamer *manifest_inject_streamer = NULL;
 	bool		inject_manifest;
 	bool		is_tar,
-				is_tar_gz;
+				is_tar_gz,
+				is_tar_lz4;
 	bool		must_parse_archive;
 	int			archive_name_len = strlen(archive_name);
 
@@ -1139,6 +1210,10 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	is_tar_gz = (archive_name_len > 8 &&
 				 strcmp(archive_name + archive_name_len - 3, ".gz") == 0);
 
+	/* Is this a LZ4 archive? */
+	is_tar_lz4 = (archive_name_len > 8 &&
+				  strcmp(archive_name + archive_name_len - 4, ".lz4") == 0);
+
 	/*
 	 * We have to parse the archive if (1) we're suppose to extract it, or if
 	 * (2) we need to inject backup_manifest or recovery configuration into it.
@@ -1148,7 +1223,7 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		(spclocation == NULL && writerecoveryconf));
 
 	/* At present, we only know how to parse tar archives. */
-	if (must_parse_archive && !is_tar && !is_tar_gz)
+	if (must_parse_archive && !is_tar && !is_tar_gz && !is_tar_lz4)
 	{
 		pg_log_error("unable to parse archive: %s", archive_name);
 		pg_log_info("only tar archives can be parsed");
@@ -1212,6 +1287,14 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 												  archive_file,
 												  compresslevel);
 		}
+		else if (compressmethod == COMPRESSION_LZ4)
+		{
+			strlcat(archive_filename, ".lz4", sizeof(archive_filename));
+			streamer = bbstreamer_plain_writer_new(archive_filename,
+												   archive_file);
+			streamer = bbstreamer_lz4_compressor_new(streamer,
+													 compresslevel);
+		}
 		else
 		{
 			Assert(false);		/* not reachable */
@@ -1225,7 +1308,7 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		 */
 		if (must_parse_archive)
 			streamer = bbstreamer_tar_archiver_new(streamer);
-		progress_filename = archive_filename;
+		progress_update_filename(archive_filename);
 	}
 
 	/*
@@ -1264,9 +1347,13 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	 * If the user has requested a server compressed archive along with archive
 	 * extraction at client then we need to decompress it.
 	 */
-	if (format == 'p' && compressmethod == COMPRESSION_GZIP &&
-			compressloc == COMPRESS_LOCATION_SERVER)
-		streamer = bbstreamer_gzip_decompressor_new(streamer);
+	if (format == 'p' && compressloc == COMPRESS_LOCATION_SERVER)
+	{
+		if (compressmethod == COMPRESSION_GZIP)
+			streamer = bbstreamer_gzip_decompressor_new(streamer);
+		else if (compressmethod == COMPRESSION_LZ4)
+			streamer = bbstreamer_lz4_decompressor_new(streamer);
+	}
 
 	/* Return the results. */
 	*manifest_inject_streamer_p = manifest_inject_streamer;
@@ -1625,7 +1712,7 @@ ReceiveTarFile(PGconn *conn, char *archive_name, char *spclocation,
 										  expect_unterminated_tarfile);
 	state.tablespacenum = tablespacenum;
 	ReceiveCopyData(conn, ReceiveTarCopyChunk, &state);
-	progress_filename = NULL;
+	progress_update_filename(NULL);
 
 	/*
 	 * The decision as to whether we need to inject the backup manifest into
@@ -1930,6 +2017,9 @@ BaseBackup(void)
 			case COMPRESSION_GZIP:
 				compressmethodstr = "gzip";
 				break;
+			case COMPRESSION_LZ4:
+				compressmethodstr = "lz4";
+				break;
 			default:
 				Assert(false);
 				break;
@@ -2121,7 +2211,7 @@ BaseBackup(void)
 
 	if (showprogress)
 	{
-		progress_filename = NULL;
+		progress_update_filename(NULL);
 		progress_report(PQntuples(res), true, true);
 	}
 
@@ -2772,8 +2862,12 @@ main(int argc, char **argv)
 			}
 			break;
 		case COMPRESSION_LZ4:
-			/* option not supported */
-			Assert(false);
+			if (compresslevel > 12)
+			{
+				pg_log_error("compression level %d of method %s higher than maximum of 12",
+							 compresslevel, "lz4");
+				exit(1);
+			}
 			break;
 	}
 
@@ -2818,6 +2912,18 @@ main(int argc, char **argv)
 		exit(1);
 	}
 	atexit(disconnect_atexit);
+
+#ifndef WIN32
+	/*
+	 * Trap SIGCHLD to be able to handle the WAL stream process exiting. There
+	 * is no SIGCHLD on Windows, there we rely on the background thread setting
+	 * the signal variable on unexpected but graceful exit. If the WAL stream
+	 * thread crashes on Windows it will bring down the entire process as it's
+	 * a thread, so there is nothing to catch should that happen. A crash on
+	 * UNIX will be caught by the signal handler.
+	 */
+	pqsignal(SIGCHLD, sigchld_handler);
+#endif
 
 	/*
 	 * Set umask so that directories/files are created with the same

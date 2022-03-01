@@ -629,11 +629,16 @@ plpgsql_exec_function(PLpgSQL_function *func, FunctionCallInfo fcinfo,
 		ReturnSetInfo *rsi = estate.rsi;
 
 		/* Check caller can handle a set result */
-		if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-			(rsi->allowedModes & SFRM_Materialize) == 0)
+		if (!rsi || !IsA(rsi, ReturnSetInfo))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("set-valued function called in context that cannot accept a set")));
+
+		if (!(rsi->allowedModes & SFRM_Materialize))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("materialize mode required, but it is not allowed in this context")));
+
 		rsi->returnMode = SFRM_Materialize;
 
 		/* If we produced any tuples, send back the result */
@@ -3645,12 +3650,16 @@ exec_init_tuple_store(PLpgSQL_execstate *estate)
 	/*
 	 * Check caller can handle a set result in the way we want
 	 */
-	if (!rsi || !IsA(rsi, ReturnSetInfo) ||
-		(rsi->allowedModes & SFRM_Materialize) == 0 ||
-		rsi->expectedDesc == NULL)
+	if (!rsi || !IsA(rsi, ReturnSetInfo))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("set-valued function called in context that cannot accept a set")));
+
+	if (!(rsi->allowedModes & SFRM_Materialize) ||
+		rsi->expectedDesc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
 
 	/*
 	 * Switch to the right memory context and resource owner for storing the
@@ -4907,10 +4916,7 @@ exec_stmt_commit(PLpgSQL_execstate *estate, PLpgSQL_stmt_commit *stmt)
 	if (stmt->chain)
 		SPI_commit_and_chain();
 	else
-	{
 		SPI_commit();
-		SPI_start_transaction();
-	}
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
@@ -4934,10 +4940,7 @@ exec_stmt_rollback(PLpgSQL_execstate *estate, PLpgSQL_stmt_rollback *stmt)
 	if (stmt->chain)
 		SPI_rollback_and_chain();
 	else
-	{
 		SPI_rollback();
-		SPI_start_transaction();
-	}
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old

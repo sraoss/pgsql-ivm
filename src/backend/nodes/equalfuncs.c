@@ -1737,6 +1737,14 @@ _equalAlterDatabaseStmt(const AlterDatabaseStmt *a, const AlterDatabaseStmt *b)
 }
 
 static bool
+_equalAlterDatabaseRefreshCollStmt(const AlterDatabaseRefreshCollStmt *a, const AlterDatabaseRefreshCollStmt *b)
+{
+	COMPARE_STRING_FIELD(dbname);
+
+	return true;
+}
+
+static bool
 _equalAlterDatabaseSetStmt(const AlterDatabaseSetStmt *a, const AlterDatabaseSetStmt *b)
 {
 	COMPARE_STRING_FIELD(dbname);
@@ -2314,6 +2322,7 @@ static bool
 _equalPublicationTable(const PublicationTable *a, const PublicationTable *b)
 {
 	COMPARE_NODE_FIELD(relation);
+	COMPARE_NODE_FIELD(whereClause);
 
 	return true;
 }
@@ -3585,6 +3594,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_AlterDatabaseStmt:
 			retval = _equalAlterDatabaseStmt(a, b);
+			break;
+		case T_AlterDatabaseRefreshCollStmt:
+			retval = _equalAlterDatabaseRefreshCollStmt(a, b);
 			break;
 		case T_AlterDatabaseSetStmt:
 			retval = _equalAlterDatabaseSetStmt(a, b);

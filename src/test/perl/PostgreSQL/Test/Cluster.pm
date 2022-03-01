@@ -904,9 +904,7 @@ sub kill9
 	local %ENV = $self->_get_env();
 
 	print "### Killing node \"$name\" using signal 9\n";
-	# kill(9, ...) fails under msys Perl 5.8.8, so fall back on pg_ctl.
-	kill(9, $self->{_pid})
-	  or PostgreSQL::Test::Utils::system_or_bail('pg_ctl', 'kill', 'KILL', $self->{_pid});
+	kill(9, $self->{_pid});
 	$self->{_pid} = undef;
 	return;
 }
@@ -1076,7 +1074,7 @@ primary_conninfo='$root_connstr'
 sub enable_restoring
 {
 	my ($self, $root_node, $standby) = @_;
-	my $path = PostgreSQL::Test::Utils::perl2host($root_node->archive_dir);
+	my $path = $root_node->archive_dir;
 	my $name = $self->name;
 
 	print "### Enabling WAL restore for node \"$name\"\n";
@@ -1144,7 +1142,7 @@ sub set_standby_mode
 sub enable_archiving
 {
 	my ($self) = @_;
-	my $path   = PostgreSQL::Test::Utils::perl2host($self->archive_dir);
+	my $path   = $self->archive_dir;
 	my $name   = $self->name;
 
 	print "### Enabling WAL archiving for node \"$name\"\n";
@@ -1845,19 +1843,13 @@ sub psql
 		}
 	};
 
-	# Note: on Windows, IPC::Run seems to convert \r\n to \n in program output
-	# if we're using native Perl, but not if we're using MSys Perl.  So do it
-	# by hand in the latter case, here and elsewhere.
-
 	if (defined $$stdout)
 	{
-		$$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stdout;
 	}
 
 	if (defined $$stderr)
 	{
-		$$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp $$stderr;
 	}
 
@@ -2214,8 +2206,11 @@ sub connect_ok
 
 	if (defined($params{expected_stdout}))
 	{
-		like($stdout, $params{expected_stdout}, "$test_name: matches");
+		like($stdout, $params{expected_stdout}, "$test_name: stdout matches");
 	}
+
+	is($stderr, "", "$test_name: no stderr");
+
 	if (@log_like or @log_unlike)
 	{
 		my $log_contents = PostgreSQL::Test::Utils::slurp_file($self->logfile, $log_location);
@@ -2334,9 +2329,7 @@ sub poll_query_until
 		my $result = IPC::Run::run $cmd, '<', \$query,
 		  '>', \$stdout, '2>', \$stderr;
 
-		$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stdout);
-		$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 		chomp($stderr);
 
 		if ($stdout eq $expected && $stderr eq '')
@@ -2845,9 +2838,6 @@ sub pg_recvlogical_upto
 			  unless wantarray;
 		}
 	};
-
-	$stdout =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
-	$stderr =~ s/\r\n/\n/g if $Config{osname} eq 'msys';
 
 	if (wantarray)
 	{

@@ -437,7 +437,7 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
-	EmitWarningsOnPlaceholders("pg_stat_statements");
+	MarkGUCPrefixReserved("pg_stat_statements");
 
 	/*
 	 * Request additional shared resources.  (These are no-ops if we're not in
@@ -1508,7 +1508,7 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 	pgssEntry  *entry;
 
 	/* Superusers or members of pg_read_all_stats members are allowed */
-	is_allowed_role = is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS);
+	is_allowed_role = is_member_of_role(userid, ROLE_PG_READ_ALL_STATS);
 
 	/* hash table must exist already */
 	if (!pgss || !pgss_hash)
@@ -1803,13 +1803,11 @@ pg_stat_statements_internal(FunctionCallInfo fcinfo,
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
 
-	/* clean up and return the tuplestore */
 	LWLockRelease(pgss->lock);
 
 	if (qbuffer)
 		free(qbuffer);
 
-	tuplestore_donestoring(tupstore);
 }
 
 /* Number of output arguments (columns) for pg_stat_statements_info */

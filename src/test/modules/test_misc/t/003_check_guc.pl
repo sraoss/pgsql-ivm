@@ -1,18 +1,18 @@
 # Tests to cross-check the consistency of GUC parameters with
-# postgresql.conf.sample..
+# postgresql.conf.sample.
 
 use strict;
 use warnings;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
-use Test::More tests => 3;
+use Test::More;
 
 my $node = PostgreSQL::Test::Cluster->new('main');
 $node->init;
 $node->start;
 
 # Grab the names of all the parameters that can be listed in the
-# configuration sample file.  config_file is an exception.  It is not
+# configuration sample file.  config_file is an exception, it is not
 # in postgresql.conf.sample but is part of the lists from guc.c.
 my $all_params = $node->safe_psql(
 	'postgres',
@@ -33,10 +33,10 @@ my $not_in_sample = $node->safe_psql(
      ORDER BY 1");
 my @not_in_sample_array = split("\n", lc($not_in_sample));
 
-# Find the location of postgresql.conf.sample, based on the information
-# provided by pg_config.
-my $sample_file =
-  $node->config_data('--sharedir') . '/postgresql.conf.sample';
+# TAP tests are executed in the directory of the test, in the source tree,
+# even for VPATH builds, so rely on that to find postgresql.conf.sample.
+my $rootdir     = "../../../..";
+my $sample_file = "$rootdir/src/backend/utils/misc/postgresql.conf.sample";
 
 # List of all the GUCs found in the sample file.
 my @gucs_in_file;
@@ -106,3 +106,5 @@ foreach my $param (@sample_intersect)
 		"found GUC $param in postgresql.conf.sample, marked as NOT_IN_SAMPLE\n"
 	);
 }
+
+done_testing();

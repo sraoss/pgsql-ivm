@@ -2933,10 +2933,7 @@ maybe_reread_subscription(void)
 		proc_exit(0);
 	}
 
-	/*
-	 * Exit if the subscription was disabled. This normally should not happen
-	 * as the worker gets killed during ALTER SUBSCRIPTION ... DISABLE.
-	 */
+	/* Exit if the subscription was disabled. */
 	if (!newsub->enabled)
 	{
 		ereport(LOG,
@@ -3380,7 +3377,6 @@ void
 ApplyWorkerMain(Datum main_arg)
 {
 	int			worker_slot = DatumGetInt32(main_arg);
-	MemoryContext cctx = CurrentMemoryContext;
 	MemoryContext oldctx;
 	char		originname[NAMEDATALEN];
 	XLogRecPtr	origin_startpos;
@@ -3488,20 +3484,15 @@ ApplyWorkerMain(Datum main_arg)
 		}
 		PG_CATCH();
 		{
-			MemoryContext ecxt = MemoryContextSwitchTo(cctx);
-			ErrorData  *errdata = CopyErrorData();
-
 			/*
-			 * Report the table sync error. There is no corresponding message
-			 * type for table synchronization.
+			 * Abort the current transaction so that we send the stats message
+			 * in an idle state.
 			 */
-			pgstat_report_subworker_error(MyLogicalRepWorker->subid,
-										  MyLogicalRepWorker->relid,
-										  MyLogicalRepWorker->relid,
-										  0,	/* message type */
-										  InvalidTransactionId,
-										  errdata->message);
-			MemoryContextSwitchTo(ecxt);
+			AbortOutOfAnyTransaction();
+
+			/* Report the worker failed during table synchronization */
+			pgstat_report_subscription_error(MySubscription->oid, false);
+
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
@@ -3628,22 +3619,14 @@ ApplyWorkerMain(Datum main_arg)
 	}
 	PG_CATCH();
 	{
-		/* report the apply error */
-		if (apply_error_callback_arg.command != 0)
-		{
-			MemoryContext ecxt = MemoryContextSwitchTo(cctx);
-			ErrorData  *errdata = CopyErrorData();
+		/*
+		 * Abort the current transaction so that we send the stats message in
+		 * an idle state.
+		 */
+		AbortOutOfAnyTransaction();
 
-			pgstat_report_subworker_error(MyLogicalRepWorker->subid,
-										  MyLogicalRepWorker->relid,
-										  apply_error_callback_arg.rel != NULL
-										  ? apply_error_callback_arg.rel->localreloid
-										  : InvalidOid,
-										  apply_error_callback_arg.command,
-										  apply_error_callback_arg.remote_xid,
-										  errdata->message);
-			MemoryContextSwitchTo(ecxt);
-		}
+		/* Report the worker failed while applying changes */
+		pgstat_report_subscription_error(MySubscription->oid, !am_tablesync_worker());
 
 		PG_RE_THROW();
 	}

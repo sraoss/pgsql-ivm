@@ -11,7 +11,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 
 use Fcntl qw(:seek);
-use Test::More tests => 66;
+use Test::More;
 
 
 # Utility routine to create and check a table with corrupted checksums
@@ -207,7 +207,6 @@ check_relation_corruption($node, 'corrupt1', 'pg_default');
 my $basedir        = $node->basedir;
 my $tablespace_dir = "$basedir/ts_corrupt_dir";
 mkdir($tablespace_dir);
-$tablespace_dir = PostgreSQL::Test::Utils::perl2host($tablespace_dir);
 $node->safe_psql('postgres',
 	"CREATE TABLESPACE ts_corrupt LOCATION '$tablespace_dir';");
 check_relation_corruption($node, 'corrupt2', 'ts_corrupt');
@@ -257,3 +256,5 @@ fail_corrupt($node, "99990_vm");
 fail_corrupt($node, "99990_init.123");
 fail_corrupt($node, "99990_fsm.123");
 fail_corrupt($node, "99990_vm.123");
+
+done_testing();

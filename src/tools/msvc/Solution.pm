@@ -311,6 +311,7 @@ sub GenerateFiles
 		HAVE_LIBXML2                                => undef,
 		HAVE_LIBXSLT                                => undef,
 		HAVE_LIBZ                   => $self->{options}->{zlib} ? 1 : undef,
+		HAVE_LIBZSTD                => undef,
 		HAVE_LINK                   => undef,
 		HAVE_LOCALE_T               => 1,
 		HAVE_LONG_INT_64            => undef,
@@ -404,6 +405,7 @@ sub GenerateFiles
 		HAVE_SYS_SELECT_H                        => undef,
 		HAVE_SYS_SEM_H                           => undef,
 		HAVE_SYS_SHM_H                           => undef,
+		HAVE_SYS_SIGNALFD_H                      => undef,
 		HAVE_SYS_SOCKIO_H                        => undef,
 		HAVE_SYS_STAT_H                          => 1,
 		HAVE_SYS_TAS_H                           => undef,
@@ -438,6 +440,7 @@ sub GenerateFiles
 		HAVE__BUILTIN_CLZ                        => undef,
 		HAVE__BUILTIN_CONSTANT_P                 => undef,
 		HAVE__BUILTIN_CTZ                        => undef,
+		HAVE__BUILTIN_FRAME_ADDRESS              => undef,
 		HAVE__BUILTIN_OP_OVERFLOW                => undef,
 		HAVE__BUILTIN_POPCOUNT                   => undef,
 		HAVE__BUILTIN_TYPES_COMPATIBLE_P         => undef,
@@ -505,6 +508,7 @@ sub GenerateFiles
 		USE_UNNAMED_POSIX_SEMAPHORES        => undef,
 		USE_WIN32_SEMAPHORES                => 1,
 		USE_WIN32_SHARED_MEMORY             => 1,
+		USE_ZSTD                            => undef,
 		WCSTOMBS_L_IN_XLOCALE               => undef,
 		WORDS_BIGENDIAN                     => undef,
 		XLOG_BLCKSZ       => 1024 * $self->{options}->{wal_blocksize},
@@ -537,6 +541,11 @@ sub GenerateFiles
 		$define{HAVE_LIBLZ4} = 1;
 		$define{HAVE_LZ4_H}  = 1;
 		$define{USE_LZ4}     = 1;
+	}
+	if ($self->{options}->{zstd})
+	{
+		$define{HAVE_LIBZSTD} = 1;
+		$define{USE_ZSTD}     = 1;
 	}
 	if ($self->{options}->{openssl})
 	{
@@ -1080,6 +1089,11 @@ sub AddProject
 		$proj->AddIncludeDir($self->{options}->{lz4} . '\include');
 		$proj->AddLibrary($self->{options}->{lz4} . '\lib\liblz4.lib');
 	}
+	if ($self->{options}->{zstd})
+	{
+		$proj->AddIncludeDir($self->{options}->{zstd} . '\include');
+		$proj->AddLibrary($self->{options}->{zstd} . '\lib\libzstd.lib');
+	}
 	if ($self->{options}->{uuid})
 	{
 		$proj->AddIncludeDir($self->{options}->{uuid} . '\include');
@@ -1192,6 +1206,7 @@ sub GetFakeConfigure
 	$cfg .= ' --with-libxml'        if ($self->{options}->{xml});
 	$cfg .= ' --with-libxslt'       if ($self->{options}->{xslt});
 	$cfg .= ' --with-lz4'           if ($self->{options}->{lz4});
+	$cfg .= ' --with-zstd'          if ($self->{options}->{zstd});
 	$cfg .= ' --with-gssapi'        if ($self->{options}->{gss});
 	$cfg .= ' --with-icu'           if ($self->{options}->{icu});
 	$cfg .= ' --with-tcl'           if ($self->{options}->{tcl});
