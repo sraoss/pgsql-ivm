@@ -1640,6 +1640,13 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 
 	index = makeNode(IndexStmt);
 
+	/*
+	 * We consider null values not distinct to make sure that views with DISTINCT
+	 * or GROUP BY don't contain multiple NULL rows when NULL is inserted to
+	 * a base table concurrently.
+	 */
+	index->nulls_not_distinct = true;
+
 	index->unique = true;
 	index->primary = false;
 	index->isconstraint = false;
