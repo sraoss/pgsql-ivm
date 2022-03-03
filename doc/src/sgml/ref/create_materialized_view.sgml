@@ -72,13 +72,13 @@ CREATE [ INCREMENTAL ] MATERIALIZED VIEW [ IF NOT EXISTS ] <replaceable>table_na
       view as "Incrementally Maintainable Materialized View" (IMMV).
      </para>
      <para>
-      When <acronym>IMMV</acronym> is defined, a unique index is created on the view
-      automatically if possible.  If the view definition query has a GROUP BY clause,
-      a unique index is created on the columns of GROUP BY expressions.  Also, if the
-      view has DISTINCT clause, a unique index is created on all columns in the target
-      list.  Otherwise, if the view contains all primary key attritubes of its base
-      tables in the target list, a unique index is created on these attritubes.  In
-      other cases, no index is created.
+      When <acronym>IMMV</acronym> is defined without using <command>WITH NO DATA</command>,
+      a unique index is created on the view automatically if possible.  If the view
+      definition query has a GROUP BY clause, a unique index is created on the columns
+      of GROUP BY expressions.  Also, if the view has DISTINCT clause, a unique index
+      is created on all columns in the target list.  Otherwise, if the view contains all
+      primary key attritubes of its base tables in the target list, a unique index is
+      created on these attritubes.  In other cases, no index is created.
      </para>
      <para>
       There are restrictions of query definitions allowed to use this

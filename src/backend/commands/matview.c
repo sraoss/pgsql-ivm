@@ -638,7 +638,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
 	{
-		CreateIndexOnIMMV(viewQuery, matviewRel);
+		CreateIndexOnIMMV(viewQuery, matviewRel, false);
 		CreateIvmTriggersOnBaseTables(dataQuery, matviewOid, false);
 	}
 

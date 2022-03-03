@@ -107,7 +107,7 @@ static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid mat
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
-static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList);
+static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList, bool is_create);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
@@ -428,7 +428,7 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 			if (!into->skipData)
 			{
 				/* Create an index on incremental maintainable materialized view, if possible */
-				CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel);
+				CreateIndexOnIMMV((Query *) into->viewQuery, matviewRel, true);
 
 				/* Create triggers on incremental maintainable materialized view */
 				Assert(query_immv != NULL);
@@ -1625,7 +1625,7 @@ check_aggregate_supports_ivm(Oid aggfnoid)
  * is created on these attritubes. In other cases, no index is created.
  */
 void
-CreateIndexOnIMMV(Query *query, Relation matviewRel)
+CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 {
 	Query *qry = (Query *) copyObject(query);
 	ListCell *lc;
@@ -1715,7 +1715,7 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 		Bitmapset *key_attnos;
 
 		/* create index on the base tables' primary key columns */
-		key_attnos = get_primary_key_attnos_from_query(qry, &constraintList);
+		key_attnos = get_primary_key_attnos_from_query(qry, &constraintList, is_create);
 		if (key_attnos)
 		{
 			foreach(lc, qry->targetList)
@@ -1822,7 +1822,7 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
  * constraintList is set to a list of the OIDs of the pkey constraints.
  */
 static Bitmapset *
-get_primary_key_attnos_from_query(Query *query, List **constraintList)
+get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_create)
 {
 	List *key_attnos_list = NIL;
 	ListCell *lc;
@@ -1859,20 +1859,25 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 		RangeTblEntry *r = (RangeTblEntry*) lfirst(lc);
 		Bitmapset *key_attnos;
 		bool	has_pkey = true;
+		Index	first_rtindex = is_create ? 1 : PRS2_NEW_VARNO + 1;
 
-		/* for subqueries, scan recursively */
-		if (r->rtekind == RTE_SUBQUERY)
+		/* skip NEW/OLD entries */
+		if (i >= first_rtindex)
 		{
-			key_attnos = get_primary_key_attnos_from_query(r->subquery, constraintList);
-			has_pkey = (key_attnos != NULL);
-		}
-		/* for tables, call get_primary_key_attnos */
-		else if (r->rtekind == RTE_RELATION)
-		{
-			Oid constraintOid;
-			key_attnos = get_primary_key_attnos(r->relid, false, &constraintOid);
-			*constraintList = lappend_oid(*constraintList, constraintOid);
-			has_pkey = (key_attnos != NULL);
+			/* for subqueries, scan recursively */
+			if (r->rtekind == RTE_SUBQUERY)
+			{
+				key_attnos = get_primary_key_attnos_from_query(r->subquery, constraintList, true);
+				has_pkey = (key_attnos != NULL);
+			}
+			/* for tables, call get_primary_key_attnos */
+			else if (r->rtekind == RTE_RELATION)
+			{
+				Oid constraintOid;
+				key_attnos = get_primary_key_attnos(r->relid, false, &constraintOid);
+				*constraintList = lappend_oid(*constraintList, constraintOid);
+				has_pkey = (key_attnos != NULL);
+			}
 		}
 		/* for other RTEs, store NULL into key_attnos_list */
 		else
@@ -1886,6 +1891,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList)
 			return NULL;
 
 		key_attnos_list = lappend(key_attnos_list, key_attnos);
+		i++;
 	}
 
 	/* Collect key attributes appearing in the target list */
