@@ -107,7 +107,7 @@ static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid mat
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
-static Bitmapset *get_primary_key_attnos_from_query(Query *qry, List **constraintList, bool is_create);
+static Bitmapset *get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_create);
 static bool is_equijoin_condition(OpExpr *op);
 static bool check_aggregate_supports_ivm(Oid aggfnoid);
 
@@ -1627,7 +1627,6 @@ check_aggregate_supports_ivm(Oid aggfnoid)
 void
 CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 {
-	Query *qry = (Query *) copyObject(query);
 	ListCell *lc;
 	IndexStmt  *index;
 	ObjectAddress address;
@@ -1673,14 +1672,13 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 	index->concurrent = false;
 	index->if_not_exists = false;
 
-
-	if (qry->groupClause)
+	if (query->groupClause)
 	{
 		/* create unique constraint on GROUP BY expression columns */
-		foreach(lc, qry->groupClause)
+		foreach(lc, query->groupClause)
 		{
 			SortGroupClause *scl = (SortGroupClause *) lfirst(lc);
-			TargetEntry *tle = get_sortgroupclause_tle(scl, qry->targetList);
+			TargetEntry *tle = get_sortgroupclause_tle(scl, query->targetList);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
 			IndexElem  *iparam;
 
@@ -1696,10 +1694,10 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 			index->indexParams = lappend(index->indexParams, iparam);
 		}
 	}
-	else if (qry->distinctClause)
+	else if (query->distinctClause)
 	{
 		/* create unique constraint on all columns */
-		foreach(lc, qry->targetList)
+		foreach(lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
@@ -1722,10 +1720,10 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 		Bitmapset *key_attnos;
 
 		/* create index on the base tables' primary key columns */
-		key_attnos = get_primary_key_attnos_from_query(qry, &constraintList, is_create);
+		key_attnos = get_primary_key_attnos_from_query(query, &constraintList, is_create);
 		if (key_attnos)
 		{
-			foreach(lc, qry->targetList)
+			foreach(lc, query->targetList)
 			{
 				TargetEntry *tle = (TargetEntry *) lfirst(lc);
 				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
@@ -1746,7 +1744,6 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 					index->indexParams = lappend(index->indexParams, iparam);
 				}
 			}
-
 		}
 		else
 		{
@@ -1760,7 +1757,6 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 			return;
 		}
 	}
-
 
 	/* If we have a compatible index, we don't need to create another. */
 	foreach(indexoidscan, indexoidlist)
@@ -1793,7 +1789,6 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 	ereport(NOTICE,
 			(errmsg("created index \"%s\" on materialized view \"%s\"",
 					idxname, RelationGetRelationName(matviewRel))));
-
 
 	/*
 	 * Make dependencies so that the index is dropped if any base tables's
@@ -1843,6 +1838,7 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 	check_stack_depth();
 
 	/* convert CTEs to subqueries */
+	query = copyObject(query);
 	foreach (lc, query->cteList)
 	{
 		PlannerInfo root;
