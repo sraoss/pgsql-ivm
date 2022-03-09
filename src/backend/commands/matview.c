@@ -27,6 +27,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_depend.h"
+#include "catalog/pg_trigger.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
@@ -536,10 +537,10 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		relpersistence = matviewRel->rd_rel->relpersistence;
 	}
 
-	/* delete immv triggers */
+	/* delete IMMV triggers. */
 	if (RelationIsIVM(matviewRel) && stmt->skipData )
 	{
-		/* use deleted trigger */
+		Relation	tgRel;
 		Relation	depRel;
 		ScanKeyData key;
 		SysScanDesc scan;
@@ -548,17 +549,14 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 		immv_triggers = new_object_addresses();
 
-		/*
-		 * We save some cycles by opening pg_depend just once and passing the
-		 * Relation pointer down to all the recursive deletion steps.
-		 */
+		tgRel = table_open(TriggerRelationId, RowExclusiveLock);
 		depRel = table_open(DependRelationId, RowExclusiveLock);
 
+		/* search triggers that depends on IMMV. */
 		ScanKeyInit(&key,
 					Anum_pg_depend_refobjid,
 					BTEqualStrategyNumber, F_OIDEQ,
 					ObjectIdGetDatum(matviewOid));
-
 		scan = systable_beginscan(depRel, DependReferenceIndexId, true,
 								  NULL, 1, &key);
 		while ((tup = systable_getnext(scan)) != NULL)
@@ -566,12 +564,36 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 			ObjectAddress obj;
 			Form_pg_depend foundDep = (Form_pg_depend) GETSTRUCT(tup);
 
-			if (foundDep->deptype == DEPENDENCY_IMMV)
+			if (foundDep->classid == TriggerRelationId)
 			{
-				obj.classId = foundDep->classid;
-				obj.objectId = foundDep->objid;
-				obj.objectSubId = foundDep->refobjsubid;
-				add_exact_object_address(&obj, immv_triggers);
+				HeapTuple	tgtup;
+				ScanKeyData tgkey[1];
+				SysScanDesc tgscan;
+				Form_pg_trigger tgform;
+
+				/* Find the trigger name. */
+				ScanKeyInit(&tgkey[0],
+							Anum_pg_trigger_oid,
+							BTEqualStrategyNumber, F_OIDEQ,
+							ObjectIdGetDatum(foundDep->objid));
+
+				tgscan = systable_beginscan(tgRel, TriggerOidIndexId, true,
+											NULL, 1, tgkey);
+				tgtup = systable_getnext(tgscan);
+				if (!HeapTupleIsValid(tgtup))
+					elog(ERROR, "could not find tuple for immv trigger %u", foundDep->objid);
+
+				tgform = (Form_pg_trigger) GETSTRUCT(tgtup);
+
+				/* If trigger is created by IMMV, delete it. */
+				if (strncmp(NameStr(tgform->tgname), "IVM_trigger_", 12) == 0)
+				{
+					obj.classId = foundDep->classid;
+					obj.objectId = foundDep->objid;
+					obj.objectSubId = foundDep->refobjsubid;
+					add_exact_object_address(&obj, immv_triggers);
+				}
+				systable_endscan(tgscan);
 			}
 		}
 		systable_endscan(scan);
@@ -579,6 +601,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		performMultipleDeletions(immv_triggers, DROP_RESTRICT, PERFORM_DELETION_INTERNAL);
 
 		table_close(depRel, RowExclusiveLock);
+		table_close(tgRel, RowExclusiveLock);
 		free_object_addresses(immv_triggers);
 	}
 

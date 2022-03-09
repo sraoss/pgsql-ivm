@@ -17,6 +17,30 @@ CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_1 AS SELECT i,j,k FROM mv_base_a a I
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 REFRESH MATERIALIZED VIEW mv_ivm_1;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
+
+-- REFRESH WITH NO DATA
+BEGIN;
+CREATE FUNCTION dummy_ivm_trigger_func() RETURNS TRIGGER AS $$
+  BEGIN
+    RETURN NULL;
+  END
+$$ language plpgsql;
+
+CREATE CONSTRAINT TRIGGER dummy_ivm_trigger AFTER INSERT
+ON mv_base_a FROM mv_ivm_1 FOR EACH ROW
+EXECUTE PROCEDURE dummy_ivm_trigger_func();
+
+SELECT COUNT(*)
+FROM pg_depend pd INNER JOIN pg_trigger pt ON pd.objid = pt.oid
+WHERE pd.classid = 'pg_trigger'::regclass AND pd.refobjid = 'mv_ivm_1'::regclass;
+
+REFRESH MATERIALIZED VIEW mv_ivm_1 WITH NO DATA;
+
+SELECT COUNT(*)
+FROM pg_depend pd INNER JOIN pg_trigger pt ON pd.objid = pt.oid
+WHERE pd.classid = 'pg_trigger'::regclass AND pd.refobjid = 'mv_ivm_1'::regclass;
+ROLLBACK;
+
 -- immediate maintenance
 BEGIN;
 INSERT INTO mv_base_b VALUES(5,105);
