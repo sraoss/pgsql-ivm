@@ -1881,8 +1881,10 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 				*constraintList = lappend_oid(*constraintList, constraintOid);
 				has_pkey = (key_attnos != NULL);
 			}
+			/* for other RTEs, store NULL into key_attnos_list */
+			else
+				key_attnos = NULL;
 		}
-		/* for other RTEs, store NULL into key_attnos_list */
 		else
 			key_attnos = NULL;
 
