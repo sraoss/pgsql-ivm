@@ -405,8 +405,9 @@ usage(void)
 	printf(_("  -X, --wal-method=none|fetch|stream\n"
 			 "                         include required WAL files with specified method\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
-	printf(_("  -Z, --compress={[{client,server}-]gzip,lz4,none}[:LEVEL] or [LEVEL]\n"
+	printf(_("  -Z, --compress=[{client|server}-]{gzip|lz4|zstd}[:LEVEL]\n"
 			 "                         compress tar output with given compression method or level\n"));
+	printf(_("  -Z, --compress=none    do not compress tar output\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
 			 "                         set fast or spread checkpointing\n"));
@@ -1067,6 +1068,21 @@ parse_compress_options(char *src, WalCompressionMethod *methodres,
 		*methodres = COMPRESSION_LZ4;
 		*locationres = COMPRESS_LOCATION_SERVER;
 	}
+	else if (pg_strcasecmp(firstpart, "zstd") == 0)
+	{
+		*methodres = COMPRESSION_ZSTD;
+		*locationres = COMPRESS_LOCATION_UNSPECIFIED;
+	}
+	else if (pg_strcasecmp(firstpart, "client-zstd") == 0)
+	{
+		*methodres = COMPRESSION_ZSTD;
+		*locationres = COMPRESS_LOCATION_CLIENT;
+	}
+	else if (pg_strcasecmp(firstpart, "server-zstd") == 0)
+	{
+		*methodres = COMPRESSION_ZSTD;
+		*locationres = COMPRESS_LOCATION_SERVER;
+	}
 	else if (pg_strcasecmp(firstpart, "none") == 0)
 	{
 		*methodres = COMPRESSION_NONE;
@@ -1191,7 +1207,9 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	bool		inject_manifest;
 	bool		is_tar,
 				is_tar_gz,
-				is_tar_lz4;
+				is_tar_lz4,
+				is_tar_zstd,
+				is_compressed_tar;
 	bool		must_parse_archive;
 	int			archive_name_len = strlen(archive_name);
 
@@ -1206,13 +1224,35 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 	is_tar = (archive_name_len > 4 &&
 			  strcmp(archive_name + archive_name_len - 4, ".tar") == 0);
 
-	/* Is this a gzip archive? */
-	is_tar_gz = (archive_name_len > 8 &&
-				 strcmp(archive_name + archive_name_len - 3, ".gz") == 0);
+	/* Is this a .tar.gz archive? */
+	is_tar_gz = (archive_name_len > 7 &&
+				 strcmp(archive_name + archive_name_len - 7, ".tar.gz") == 0);
 
-	/* Is this a LZ4 archive? */
+	/* Is this a .tar.lz4 archive? */
 	is_tar_lz4 = (archive_name_len > 8 &&
-				  strcmp(archive_name + archive_name_len - 4, ".lz4") == 0);
+				  strcmp(archive_name + archive_name_len - 8, ".tar.lz4") == 0);
+
+	/* Is this a .tar.zst archive? */
+	is_tar_zstd = (archive_name_len > 8 &&
+				   strcmp(archive_name + archive_name_len - 8, ".tar.zst") == 0);
+
+	/* Is this any kind of compressed tar? */
+	is_compressed_tar = is_tar_gz || is_tar_lz4 || is_tar_zstd;
+
+	/*
+	 * Injecting the manifest into a compressed tar file would be possible if
+	 * we decompressed it, parsed the tarfile, generated a new tarfile, and
+	 * recompressed it, but compressing and decompressing multiple times just
+	 * to inject the manifest seems inefficient enough that it's probably not
+	 * what the user wants. So, instead, reject the request and tell the user
+	 * to specify something more reasonable.
+	 */
+	if (inject_manifest && is_compressed_tar)
+	{
+		pg_log_error("cannot inject manifest into a compressed tarfile");
+		pg_log_info("use client-side compression, send the output to a directory rather than standard output, or use --no-manifest");
+		exit(1);
+	}
 
 	/*
 	 * We have to parse the archive if (1) we're suppose to extract it, or if
@@ -1223,7 +1263,7 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 		(spclocation == NULL && writerecoveryconf));
 
 	/* At present, we only know how to parse tar archives. */
-	if (must_parse_archive && !is_tar && !is_tar_gz && !is_tar_lz4)
+	if (must_parse_archive && !is_tar && !is_compressed_tar)
 	{
 		pg_log_error("unable to parse archive: %s", archive_name);
 		pg_log_info("only tar archives can be parsed");
@@ -1295,6 +1335,14 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 			streamer = bbstreamer_lz4_compressor_new(streamer,
 													 compresslevel);
 		}
+		else if (compressmethod == COMPRESSION_ZSTD)
+		{
+			strlcat(archive_filename, ".zst", sizeof(archive_filename));
+			streamer = bbstreamer_plain_writer_new(archive_filename,
+												   archive_file);
+			streamer = bbstreamer_zstd_compressor_new(streamer,
+													  compresslevel);
+		}
 		else
 		{
 			Assert(false);		/* not reachable */
@@ -1353,6 +1401,8 @@ CreateBackupStreamer(char *archive_name, char *spclocation,
 			streamer = bbstreamer_gzip_decompressor_new(streamer);
 		else if (compressmethod == COMPRESSION_LZ4)
 			streamer = bbstreamer_lz4_decompressor_new(streamer);
+		else if (compressmethod == COMPRESSION_ZSTD)
+			streamer = bbstreamer_zstd_decompressor_new(streamer);
 	}
 
 	/* Return the results. */
@@ -2019,6 +2069,9 @@ BaseBackup(void)
 				break;
 			case COMPRESSION_LZ4:
 				compressmethodstr = "lz4";
+				break;
+			case COMPRESSION_ZSTD:
+				compressmethodstr = "zstd";
 				break;
 			default:
 				Assert(false);
@@ -2866,6 +2919,14 @@ main(int argc, char **argv)
 			{
 				pg_log_error("compression level %d of method %s higher than maximum of 12",
 							 compresslevel, "lz4");
+				exit(1);
+			}
+			break;
+		case COMPRESSION_ZSTD:
+			if (compresslevel > 22)
+			{
+				pg_log_error("compression level %d of method %s higher than maximum of 22",
+							 compresslevel, "zstd");
 				exit(1);
 			}
 			break;
