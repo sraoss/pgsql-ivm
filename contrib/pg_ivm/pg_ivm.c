@@ -14,6 +14,7 @@
 #include "access/heapam.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
+#include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_trigger_d.h"
 #include "commands/createas.h"
@@ -22,6 +23,7 @@
 #include "executor/executor.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/parsenodes.h"
 #include "nodes/pathnodes.h"
 #include "nodes/print.h"
@@ -35,11 +37,14 @@
 #include "parser/parse_node.h"
 #include "parser/parse_relation.h"
 #include "rewrite/rewriteHandler.h"
+#include "rewrite/rewriteManip.h"
 #include "storage/lmgr.h"
 //#include "tcop/dest.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
+#include "utils/regproc.h"
+#include "utils/rel.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
 
@@ -106,11 +111,17 @@ static HTAB *mv_trigger_info = NULL;
 #define NEW_DELTA_ENRNAME "new_delta"
 #define OLD_DELTA_ENRNAME "old_delta"
 
+typedef struct
+{
+	bool	has_agg;
+} check_ivm_restriction_context;
 
 static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
 									 Relids *relids, bool ex_lock);
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
 static void check_ivm_restriction(Node *node);
+static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
+static bool isIvmName(const char *s);
 
 static Oid get_immv_catalog(void);
 
@@ -251,7 +262,7 @@ create_immv(PG_FUNCTION_ARGS)
 					 errhint("functions must be marked IMMUTABLE")));
 
 		// TODO:
-		//check_ivm_restriction((Node *) query);
+		check_ivm_restriction((Node *) query);
 
 		/* For IMMV, we need to rewrite matview query */
 		query = rewriteQueryForIMMV(query, into->colNames);
@@ -624,12 +635,222 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 
 	// XXX: which deptype is correct??
 	//recordDependencyOn(&address, &refaddr, DEPENDENCY_IMMV);
-	recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+	recordDependencyOn(&address, &refaddr, DEPENDENCY_INTERNAL);
 
 	/* Make changes-so-far visible */
 	CommandCounterIncrement();
 }
 
+
+/*
+ * check_ivm_restriction --- look for specify nodes in the query tree
+ */
+static void
+check_ivm_restriction(Node *node)
+{
+        check_ivm_restriction_context context = {false};
+
+        check_ivm_restriction_walker(node, &context);
+}
+
+static bool
+check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
+{
+        if (node == NULL)
+                return false;
+
+        /* This can recurse, so check for excessive recursion */
+        check_stack_depth();
+
+        switch (nodeTag(node))
+        {
+		case T_Query:
+			{
+				Query *qry = (Query *)node;
+				ListCell   *lc;
+				List       *vars;
+
+				/* if contained CTE, return error */
+				if (qry->cteList != NIL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("CTE is not supported on incrementally maintainable materialized view")));
+				if (qry->havingQual != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg(" HAVING clause is not supported on incrementally maintainable materialized view")));
+				if (qry->sortClause != NIL)	/* There is a possibility that we don't need to return an error */
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("ORDER BY clause is not supported on incrementally maintainable materialized view")));
+				if (qry->limitOffset != NULL || qry->limitCount != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("LIMIT/OFFSET clause is not supported on incrementally maintainable materialized view")));
+				if (qry->hasDistinctOn)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("DISTINCT ON is not supported on incrementally maintainable materialized view")));
+				if (qry->hasWindowFuncs)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("window functions are not supported on incrementally maintainable materialized view")));
+				if (qry->groupingSets != NIL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("GROUPING SETS, ROLLUP, or CUBE clauses is not supported on incrementally maintainable materialized view")));
+				if (qry->setOperations != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("UNION/INTERSECT/EXCEPT statements are not supported on incrementally maintainable materialized view")));
+				if (list_length(qry->targetList) == 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("empty target list is not supported on incrementally maintainable materialized view")));
+				if (qry->rowMarks != NIL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("FOR UPDATE/SHARE clause is not supported on incrementally maintainable materialized view")));
+				if (qry->hasSubLinks)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("subquery is not supported on incrementally maintainable materialized view")));
+
+				/* system column restrictions */
+				vars = pull_vars_of_level((Node *) qry, 0);
+				foreach(lc, vars)
+				{
+					if (IsA(lfirst(lc), Var))
+					{
+						Var *var = (Var *) lfirst(lc);
+						/* if system column, return error */
+						if (var->varattno < 0)
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("system column is not supported on incrementally maintainable materialized view")));
+					}
+				}
+
+				context->has_agg |= qry->hasAggs;
+
+				/* restrictions for rtable */
+				foreach(lc, qry->rtable)
+				{
+					RangeTblEntry *rte = (RangeTblEntry *) lfirst(lc);
+
+					if (rte->tablesample != NULL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("TABLESAMPLE clause is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_PARTITIONED_TABLE)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("partitioned table is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_RELATION && has_superclass(rte->relid))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("partitions is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_RELATION && find_inheritance_children(rte->relid, NoLock) != NIL)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("inheritance parent is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_FOREIGN_TABLE)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("foreign table is not supported on incrementally maintainable materialized view")));
+
+					if (rte->relkind == RELKIND_VIEW ||
+						rte->relkind == RELKIND_MATVIEW)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("VIEW or MATERIALIZED VIEW is not supported on incrementally maintainable materialized view")));
+
+					if (rte->rtekind == RTE_VALUES)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("VALUES is not supported on incrementally maintainable materialized view")));
+					if (rte->rtekind == RTE_SUBQUERY)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("subquery is not supported on incrementally maintainable materialized view")));
+
+				}
+
+				query_tree_walker(qry, check_ivm_restriction_walker, (void *) context, QTW_IGNORE_RANGE_TABLE);
+
+				break;
+			}
+		case T_TargetEntry:
+			{
+				TargetEntry *tle = (TargetEntry *)node;
+				if (isIvmName(tle->resname))
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("column name %s is not supported on incrementally maintainable materialized view", tle->resname)));
+				if (context->has_agg && !IsA(tle->expr, Aggref) && contain_aggs_of_level((Node *) tle->expr, 0))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("expression containing an aggregate in it is not supported on incrementally maintainable materialized view")));
+
+				expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
+				break;
+			}
+		case T_SubLink:
+			{
+				
+				break;
+			}
+		case T_Aggref:
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						 errmsg("aggregate function is not supported on incrementally maintainable materialized view")));
+
+				/* Check if this supports IVM */
+				Aggref *aggref = (Aggref *) node;
+				const char *aggname = format_procedure(aggref->aggfnoid);
+
+/*
+				if (aggref->aggfilter != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with FILTER clause is not supported on incrementally maintainable materialized view")));
+
+				if (aggref->aggdistinct != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with DISTINCT arguments is not supported on incrementally maintainable materialized view")));
+
+				if (aggref->aggorder != NULL)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function with ORDER clause is not supported on incrementally maintainable materialized view")));
+
+				if (!check_aggregate_supports_ivm(aggref->aggfnoid))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("aggregate function %s is not supported on incrementally maintainable materialized view", aggname)));
+*/
+				break;
+			}
+		default:
+			expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
+			break;
+	}
+	return false;
+}
+
+bool
+isIvmName(const char *s)
+{
+	if (s)
+		return (strncmp(s, "__ivm_", 6) == 0);
+	return false;
+}
 
 /*
  * IVM_immediate_before
