@@ -11,6 +11,7 @@
 #include "postgres.h"
 #include "fmgr.h"
 
+#include "access/genam.h"
 #include "access/heapam.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
@@ -18,14 +19,18 @@
 #include "catalog/pg_namespace_d.h"
 #include "catalog/pg_trigger_d.h"
 #include "commands/createas.h"
+#include "commands/tablecmds.h"
 #include "commands/trigger.h"
 #include "executor/execdesc.h"
 #include "executor/executor.h"
+#include "executor/spi.h"
+#include "executor/tstoreReceiver.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/parsenodes.h"
 #include "nodes/pathnodes.h"
+#include "nodes/primnodes.h"
 #include "nodes/print.h"
 #include "nodes/primnodes.h"
 #include "optimizer/optimizer.h"
@@ -38,15 +43,18 @@
 #include "parser/parse_relation.h"
 #include "rewrite/rewriteHandler.h"
 #include "rewrite/rewriteManip.h"
+#include "rewrite/rowsecurity.h"
 #include "storage/lmgr.h"
 //#include "tcop/dest.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/regproc.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
+#include "utils/typcache.h"
 
 #define Natts_pg_ivm_immv 2
 
@@ -123,13 +131,15 @@ static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
 static bool isIvmName(const char *s);
 
-static Oid get_immv_catalog(void);
+static Oid PgIvmImmvRelationId(void);
+static Oid PgIvmImmvPrimaryKeyIndexId(void);
 
 void CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create);
 void CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create);
 Query *rewriteQueryForIMMV(Query *query, List *colNames);
+void AtAbort_IVM(void);
 
-static Query *get_matview_query(Relation matviewRel);
+static Query *get_immv_query(Relation matviewRel);
 
 static Query *rewrite_query_for_preupdate_state(Query *query, List *tables,
 								  TransactionId xid, CommandId cid,
@@ -169,6 +179,10 @@ static void clean_up_IVM_hash_entry(MV_TriggerHashEntry *entry);
 
 static List *get_securityQuals(Oid relId, int rt_index, Query *query);
  
+static uint64 refresh_immv_datafill(DestReceiver *dest, Query *query,
+						 QueryEnvironment *queryEnv,
+						 TupleDesc *resultTupleDesc,
+						 const char *queryString);
 
 void		_PG_init(void);
 
@@ -352,7 +366,7 @@ create_immv(PG_FUNCTION_ARGS)
 		values[Anum_pg_ivm_immv_immvrelid -1 ] = ObjectIdGetDatum(address.objectId);
 		values[Anum_pg_ivm_immv_viewdef -1 ] = CStringGetTextDatum(querytree);
 
-		pgIvmImmv = table_open(get_immv_catalog(), RowExclusiveLock);
+		pgIvmImmv = table_open(PgIvmImmvRelationId(), RowExclusiveLock);
 
     	tupleDescriptor = RelationGetDescr(pgIvmImmv);
     	heapTuple = heap_form_tuple(tupleDescriptor, values, isNulls);
@@ -443,7 +457,7 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 }
 
 static Oid
-get_immv_catalog(void)
+PgIvmImmvRelationId(void)
 {
 	static Oid oid = InvalidOid;
 
@@ -452,6 +466,18 @@ get_immv_catalog(void)
 
 	return oid;
 }
+
+static Oid
+PgIvmImmvPrimaryKeyIndexId(void)
+{
+	static Oid oid = InvalidOid;
+
+	if (!OidIsValid(oid))
+		oid = get_relname_relid("pg_ivm_immv_pkey", PG_CATALOG_NAMESPACE);
+
+	return oid;
+}
+
 
 /*
  * CreateIvmTriggersOnBaseTables -- create IVM triggers on all base tables
@@ -811,10 +837,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 						 errmsg("aggregate function is not supported on incrementally maintainable materialized view")));
 
 				/* Check if this supports IVM */
+/*
 				Aggref *aggref = (Aggref *) node;
 				const char *aggname = format_procedure(aggref->aggfnoid);
 
-/*
 				if (aggref->aggfilter != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -844,12 +870,115 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 	return false;
 }
 
-bool
-isIvmName(const char *s)
+/*
+ * refresh_immv_datafill
+ *
+ * Execute the given query, sending result rows to "dest" (which will
+ * insert them into the target matview).
+ *
+ * Returns number of rows inserted.
+ */
+static uint64
+refresh_immv_datafill(DestReceiver *dest, Query *query,
+						 QueryEnvironment *queryEnv,
+						 TupleDesc *resultTupleDesc,
+						 const char *queryString)
 {
-	if (s)
-		return (strncmp(s, "__ivm_", 6) == 0);
-	return false;
+	List	   *rewritten;
+	PlannedStmt *plan;
+	QueryDesc  *queryDesc;
+	Query	   *copied_query;
+	uint64		processed;
+
+	/* Lock and rewrite, using a copy to preserve the original query. */
+	copied_query = copyObject(query);
+	AcquireRewriteLocks(copied_query, true, false);
+	rewritten = QueryRewrite(copied_query);
+
+	/* SELECT should never rewrite to more or less than one SELECT query */
+	if (list_length(rewritten) != 1)
+		elog(ERROR, "unexpected rewrite result for REFRESH MATERIALIZED VIEW");
+	query = (Query *) linitial(rewritten);
+
+	/* Check for user-requested abort. */
+	CHECK_FOR_INTERRUPTS();
+
+	/* Plan the query which will generate data for the refresh. */
+	plan = pg_plan_query(query, queryString, CURSOR_OPT_PARALLEL_OK, NULL);
+
+	/*
+	 * Use a snapshot with an updated command ID to ensure this query sees
+	 * results of any previously executed queries.  (This could only matter if
+	 * the planner executed an allegedly-stable function that changed the
+	 * database contents, but let's do it anyway to be safe.)
+	 */
+	PushCopiedSnapshot(GetActiveSnapshot());
+	UpdateActiveSnapshotCommandId();
+
+	/* Create a QueryDesc, redirecting output to our tuple receiver */
+	queryDesc = CreateQueryDesc(plan, queryString,
+								GetActiveSnapshot(), InvalidSnapshot,
+								dest, NULL, queryEnv ? queryEnv: NULL, 0);
+
+	/* call ExecutorStart to prepare the plan for execution */
+	ExecutorStart(queryDesc, 0);
+
+	/* run the plan */
+	ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
+
+	processed = queryDesc->estate->es_processed;
+
+	if (resultTupleDesc)
+		*resultTupleDesc = CreateTupleDescCopy(queryDesc->tupDesc);
+
+	/* and clean up */
+	ExecutorFinish(queryDesc);
+	ExecutorEnd(queryDesc);
+
+	FreeQueryDesc(queryDesc);
+
+	PopActiveSnapshot();
+
+	return processed;
+}
+
+static Query *
+get_immv_query(Relation matviewRel)
+{
+	Relation pgIvmImmv = table_open(PgIvmImmvRelationId(), AccessShareLock);
+	TupleDesc tupdesc = RelationGetDescr(pgIvmImmv);
+	SysScanDesc scan;
+	ScanKeyData key;
+	HeapTuple tup;
+	bool isnull;
+	Datum datum;
+	Query *query;
+
+	ScanKeyInit(&key,
+			    Anum_pg_ivm_immv_immvrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(matviewRel)));
+	scan = systable_beginscan(pgIvmImmv, PgIvmImmvPrimaryKeyIndexId(),
+								  true, NULL, 1, &key);
+
+	tup = systable_getnext(scan);
+
+	if (!HeapTupleIsValid(tup))
+	{
+		systable_endscan(scan);
+		table_close(pgIvmImmv, NoLock);
+		return NULL;
+	}
+
+	datum = heap_getattr(tup, Anum_pg_ivm_immv_viewdef, tupdesc, &isnull);
+	Assert(!isnull);
+	query = (Query *) stringToNode(TextDatumGetCString(datum));
+
+	systable_endscan(scan);
+	table_close(pgIvmImmv, NoLock);
+
+	return query;
+
 }
 
 /*
@@ -941,7 +1070,287 @@ PG_FUNCTION_INFO_V1(IVM_immediate_maintenance);
 Datum
 IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 {
-	elog(INFO, "do something after modification");
+	TriggerData *trigdata = (TriggerData *) fcinfo->context;
+	Relation	rel;
+	Oid			relid;
+	Oid			matviewOid;
+	Query	   *query;
+	Query	   *rewritten = NULL;
+	char	   *matviewOid_text = trigdata->tg_trigger->tgargs[0];
+	Relation	matviewRel;
+
+	Oid			relowner;
+	Tuplestorestate *old_tuplestore = NULL;
+	Tuplestorestate *new_tuplestore = NULL;
+	DestReceiver *dest_new = NULL, *dest_old = NULL;
+	Oid			save_userid;
+	int			save_sec_context;
+	int			save_nestlevel;
+
+	MV_TriggerHashEntry *entry;
+	MV_TriggerTable		*table;
+	bool	found;
+
+	ParseState		 *pstate;
+	QueryEnvironment *queryEnv = create_queryEnv();
+	MemoryContext	oldcxt;
+	ListCell   *lc;
+	int			i;
+
+
+	/* Create a ParseState for rewriting the view definition query */
+	pstate = make_parsestate(NULL);
+	pstate->p_queryEnv = queryEnv;
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	rel = trigdata->tg_relation;
+	relid = rel->rd_id;
+
+	matviewOid = DatumGetObjectId(DirectFunctionCall1(oidin, CStringGetDatum(matviewOid_text)));
+
+	/*
+	 * On the first call initialize the hashtable
+	 */
+	if (!mv_trigger_info)
+		mv_InitHashTables();
+
+	/* get the entry for this materialized view */
+	entry = (MV_TriggerHashEntry *) hash_search(mv_trigger_info,
+											  (void *) &matviewOid,
+											  HASH_FIND, &found);
+	Assert (found && entry != NULL);
+	entry->after_trig_count++;
+
+	/* search the entry for the modified table and create new entry if not found */
+	found = false;
+	foreach(lc, entry->tables)
+	{
+		table = (MV_TriggerTable *) lfirst(lc);
+		if (table->table_id == relid)
+		{
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+	{
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+
+		table = (MV_TriggerTable *) palloc0(sizeof(MV_TriggerTable));
+		table->table_id = relid;
+		table->old_tuplestores = NIL;
+		table->new_tuplestores = NIL;
+		table->old_rtes = NIL;
+		table->new_rtes = NIL;
+		table->rte_indexes = NIL;
+		entry->tables = lappend(entry->tables, table);
+
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	/* Save the transition tables and make a request to not free immediately */
+	if (trigdata->tg_oldtable)
+	{
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+		table->old_tuplestores = lappend(table->old_tuplestores, trigdata->tg_oldtable);
+		entry->has_old = true;
+		MemoryContextSwitchTo(oldcxt);
+	}
+	if (trigdata->tg_newtable)
+	{
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+		table->new_tuplestores = lappend(table->new_tuplestores, trigdata->tg_newtable);
+		entry->has_new = true;
+		MemoryContextSwitchTo(oldcxt);
+	}
+	if (entry->has_new || entry->has_old)
+	{
+		CmdType cmd;
+
+		if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
+			cmd = CMD_INSERT;
+		else if (TRIGGER_FIRED_BY_DELETE(trigdata->tg_event))
+			cmd = CMD_DELETE;
+		else if (TRIGGER_FIRED_BY_UPDATE(trigdata->tg_event))
+			cmd = CMD_UPDATE;
+		else
+			elog(ERROR,"unsupported trigger type");
+
+		/* Prolong lifespan of transition tables to the end of the last AFTER trigger */
+		//SetTransitionTablePreserved(relid, cmd);
+	}
+
+
+	/* If this is not the last AFTER trigger call, immediately exit. */
+	Assert (entry->before_trig_count >= entry->after_trig_count);
+	if (entry->before_trig_count != entry->after_trig_count)
+		return PointerGetDatum(NULL);
+
+	/*
+	 * If this is the last AFTER trigger call, continue and update the view.
+	 */
+
+	/*
+	 * Advance command counter to make the updated base table row locally
+	 * visible.
+	 */
+	CommandCounterIncrement();
+
+	matviewRel = table_open(matviewOid, NoLock);
+
+	/* get view query*/
+	query = get_immv_query(matviewRel);
+
+	/* Make sure it is a materialized view. */
+	//Assert(matviewRel->rd_rel->relkind == RELKIND_MATVIEW);
+
+	/*
+	 * Get and push the latast snapshot to see any changes which is committed
+	 * during waiting in other transactions at READ COMMITTED level.
+	 */
+	PushActiveSnapshot(GetTransactionSnapshot());
+
+	/*
+	 * Check for active uses of the relation in the current transaction, such
+	 * as open scans.
+	 *
+	 * NB: We count on this to protect us against problems with refreshing the
+	 * data using TABLE_INSERT_FROZEN.
+	 */
+	CheckTableNotInUse(matviewRel, "refresh a materialized view incrementally");
+
+	/*
+	 * Switch to the owner's userid, so that any functions are run as that
+	 * user.  Also arrange to make GUC variable changes local to this command.
+	 * We will switch modes when we are about to execute user code.
+	 */
+	relowner = matviewRel->rd_rel->relowner;
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+	save_nestlevel = NewGUCNestLevel();
+
+	/*
+	 * rewrite query for calculating deltas
+	 */
+
+	rewritten = copyObject(query);
+
+	/* Replace resnames in a target list with materialized view's attnames */
+	i = 0;
+	foreach (lc, rewritten->targetList)
+	{
+		TargetEntry *tle = (TargetEntry *) lfirst(lc);
+		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
+		char *resname = NameStr(attr->attname);
+
+		tle->resname = pstrdup(resname);
+		i++;
+	}
+
+	/* Set all tables in the query to pre-update state */
+	rewritten = rewrite_query_for_preupdate_state(rewritten, entry->tables,
+												  entry->xid, entry->cid,
+												  pstate);
+	/* Rewrite for DISTINCT clause */
+	rewritten = rewrite_query_for_distinct(rewritten, pstate);
+
+	/* Create tuplestores to store view deltas */
+	if (entry->has_old)
+	{
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+
+		old_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		dest_old = CreateDestReceiver(DestTuplestore);
+		SetTuplestoreDestReceiverParams(dest_old,
+									old_tuplestore,
+									TopTransactionContext,
+									false,
+									NULL,
+									NULL);
+
+		MemoryContextSwitchTo(oldcxt);
+	}
+	if (entry->has_new)
+	{
+		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
+
+		new_tuplestore = tuplestore_begin_heap(false, false, work_mem);
+		dest_new = CreateDestReceiver(DestTuplestore);
+		SetTuplestoreDestReceiverParams(dest_new,
+									new_tuplestore,
+									TopTransactionContext,
+									false,
+									NULL,
+									NULL);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	/* for all modified tables */
+	foreach(lc, entry->tables)
+	{
+		ListCell *lc2;
+
+		table = (MV_TriggerTable *) lfirst(lc);
+
+		/* loop for self-join */
+		foreach(lc2, table->rte_indexes)
+		{
+			int	rte_index = lfirst_int(lc2);
+			TupleDesc		tupdesc_old;
+			TupleDesc		tupdesc_new;
+			bool	use_count = false;
+			char   *count_colname = NULL;
+
+			count_colname = pstrdup("__ivm_count__");
+
+			if (query->distinctClause)
+				use_count = true;
+
+			/* calculate delta tables */
+			calc_delta(table, rte_index, rewritten, dest_old, dest_new,
+					   &tupdesc_old, &tupdesc_new, queryEnv);
+
+			/* Set the table in the query to post-update state */
+			rewritten = rewrite_query_for_postupdate_state(rewritten, table, rte_index);
+
+			/* apply the delta tables to the materialized view */
+			apply_delta(matviewOid, old_tuplestore, new_tuplestore,
+						tupdesc_old, tupdesc_new, query, use_count,
+						count_colname);
+
+			/* clear view delta tuplestores */
+			if (old_tuplestore)
+				tuplestore_clear(old_tuplestore);
+			if (new_tuplestore)
+				tuplestore_clear(new_tuplestore);
+		}
+	}
+
+	/* Clean up hash entry and delete tuplestores */
+	clean_up_IVM_hash_entry(entry);
+	if (old_tuplestore)
+	{
+		dest_old->rDestroy(dest_old);
+		tuplestore_end(old_tuplestore);
+	}
+	if (new_tuplestore)
+	{
+		dest_new->rDestroy(dest_new);
+		tuplestore_end(new_tuplestore);
+	}
+
+	/* Pop the original snapshot. */
+	PopActiveSnapshot();
+
+	table_close(matviewRel, NoLock);
+
+	/* Roll back any GUC changes */
+	AtEOXact_GUC(false, save_nestlevel);
+
+	/* Restore userid and security context */
+	SetUserIdAndSecContext(save_userid, save_sec_context);
+
 	return PointerGetDatum(NULL);
 }
 
@@ -1297,7 +1706,7 @@ calc_delta(MV_TriggerTable *table, int rte_index, Query *query,
 	{
 		/* Replace the modified table with the old delta table and calculate the old view delta. */
 		lfirst(lc) = union_ENRs(rte, table->table_id, table->old_rtes, "old", queryEnv);
-		refresh_matview_datafill(dest_old, query, queryEnv, tupdesc_old, "");
+		refresh_immv_datafill(dest_old, query, queryEnv, tupdesc_old, "");
 	}
 
 	/* Generate new delta */
@@ -1305,7 +1714,7 @@ calc_delta(MV_TriggerTable *table, int rte_index, Query *query,
 	{
 		/* Replace the modified table with the new delta table and calculate the new view delta*/
 		lfirst(lc) = union_ENRs(rte, table->table_id, table->new_rtes, "new", queryEnv);
-		refresh_matview_datafill(dest_new, query, queryEnv, tupdesc_new, "");
+		refresh_immv_datafill(dest_new, query, queryEnv, tupdesc_new, "");
 	}
 }
 
@@ -1346,7 +1755,6 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	int			i;
 	List	   *keys = NIL;
 
-
 	/*
 	 * get names of the materialized view and delta tables
 	 */
@@ -1378,14 +1786,13 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	{
 		TargetEntry *tle = (TargetEntry *) lfirst(lc);
 		Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, i);
-		char *resname = NameStr(attr->attname);
 
 		i++;
 
 		if (tle->resjunk)
 			continue;
 
-		keys = lappend(keys, resname);
+		keys = lappend(keys, attr);
 	}
 
 	/* Start maintaining the materialized view. */
@@ -1661,6 +2068,8 @@ get_matching_condition_string(List *keys)
 		char   *diff_resname = quote_qualified_identifier("diff", resname);
 		Oid		typid = attr->atttypid;
 
+			elog(INFO, "??? %s", resname);
+
 		/* Considering NULL values, we can not use simple = operator. */
 		appendStringInfo(&match_cond, "(");
 		generate_equal(&match_cond, typid, mv_resname, diff_resname);
@@ -1815,7 +2224,24 @@ get_securityQuals(Oid relId, int rt_index, Query *query)
 	return securityQuals;
 }
 
+static void
+IvmXactCallback(XactEvent event, void *arg)
+{
+	if (event == XACT_EVENT_ABORT)
+		AtAbort_IVM();
+}
+
+static void
+IvmSubXactCallback(SubXactEvent event, SubTransactionId mySubid,
+				   SubTransactionId parentSubid, void *arg)
+{
+	if (event == SUBXACT_EVENT_ABORT_SUB)
+		AtAbort_IVM();
+}
+
 void
 _PG_init(void)
 {
+	RegisterXactCallback(IvmXactCallback, NULL);
+	RegisterSubXactCallback(IvmSubXactCallback, NULL);
 }

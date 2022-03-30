@@ -4,12 +4,14 @@ CREATE SCHEMA __pg_ivm__;
 
 CREATE TABLE __pg_ivm__.pg_ivm_immv(
   immvrelid regclass NOT NULL,
-  viewdef text NOT NULL
+  viewdef text NOT NULL,
+
+  CONSTRAINT pg_ivm_immv_pkey PRIMARY KEY (immvrelid)
 );
 
 ALTER TABLE __pg_ivm__.pg_ivm_immv SET SCHEMA pg_catalog;
 
-CREATE UNIQUE INDEX ON pg_catalog.pg_ivm_immv USING btree (immvrelid);
+--CREATE UNIQUE INDEX ON pg_catalog.pg_ivm_immv USING btree (immvrelid);
 
 SELECT pg_catalog.pg_extension_config_dump('pg_catalog.pg_ivm_immv', '');
 
