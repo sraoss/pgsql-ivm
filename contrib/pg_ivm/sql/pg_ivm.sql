@@ -283,5 +283,11 @@ DROP TABLE num_tbl CASCADE;
 DROP USER ivm_user;
 DROP USER ivm_admin;
 
+-- prevent IMMV chanages
+INSERT INTO mv_ivm_1 VALUES(1,1,1);
+UPDATE  mv_ivm_1 SET k = 1 WHERE i = 1;
+DELETE FROM mv_ivm_1;
+TRUNCATE mv_ivm_1;
+
 DROP TABLE mv_base_b CASCADE;
 DROP TABLE mv_base_a CASCADE;

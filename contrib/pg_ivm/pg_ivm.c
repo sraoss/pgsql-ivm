@@ -79,6 +79,8 @@ typedef struct
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_intorel;
 
+static int	immv_maintenance_depth = 0;
+
 #define MV_INIT_QUERYHASHSIZE	16
 
 /*
@@ -135,6 +137,7 @@ typedef struct
 static void CreateIvmTriggersOnBaseTablesRecurse(Query *qry, Node *node, Oid matviewOid,
 									 Relids *relids, bool ex_lock);
 static void CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock);
+static void CreateChangePreventTrigger(Oid matviewOid);
 static void check_ivm_restriction(Node *node);
 static bool check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context);
 static Bitmapset *get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_create);
@@ -194,6 +197,10 @@ static uint64 refresh_immv_datafill(DestReceiver *dest, Query *query,
 						 TupleDesc *resultTupleDesc,
 						 const char *queryString);
 
+bool ImmvIncrementalMaintenanceIsEnabled(void);
+static void OpenImmvIncrementalMaintenance(void);
+static void CloseImmvIncrementalMaintenance(void);
+
 void		_PG_init(void);
 
 PG_FUNCTION_INFO_V1(create_immv);
@@ -223,6 +230,7 @@ create_immv(PG_FUNCTION_ARGS)
 	List	   *rewritten;
 	PlannedStmt *plan;
 	QueryDesc  *queryDesc;
+	uint64 processed;
 
 	sql = text_to_cstring(t_sql);
 	relname = text_to_cstring(t_relname);
@@ -326,9 +334,8 @@ create_immv(PG_FUNCTION_ARGS)
 		/* run the plan to completion */
 		ExecutorRun(queryDesc, ForwardScanDirection, 0L, true);
 
-		/* save the rowcount if we're given a qc to fill */
-		//if (qc)
-			//SetQueryCompletion(qc, CMDTAG_SELECT, queryDesc->estate->es_processed);
+		/* save the rowcount */
+		processed = queryDesc->estate->es_processed;;
 
 		/* get object address that intorel_startup saved for us */
 		address = ((DR_intorel *) dest)->reladdr;
@@ -390,14 +397,14 @@ create_immv(PG_FUNCTION_ARGS)
 
 				/* Create triggers on incremental maintainable materialized view */
 				CreateIvmTriggersOnBaseTables(viewQuery, matviewOid, true);
+
+				CreateChangePreventTrigger(matviewOid);
 			}
 			table_close(matviewRel, NoLock);
 		}
 	}
 
-	//return address;
-
-	PG_RETURN_VOID();
+	PG_RETURN_INT64(processed);
 }
 
 /*
@@ -645,6 +652,51 @@ CreateIvmTrigger(Oid relOid, Oid viewOid, int16 type, int16 timing, bool ex_lock
 						 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
 
 	recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+
+	/* Make changes-so-far visible */
+	CommandCounterIncrement();
+}
+
+static void
+CreateChangePreventTrigger(Oid matviewOid)
+{
+	ObjectAddress	refaddr;
+	ObjectAddress	address;
+	CreateTrigStmt *ivm_trigger;
+
+	int16 types[4] = {TRIGGER_TYPE_INSERT, TRIGGER_TYPE_DELETE,
+					  TRIGGER_TYPE_UPDATE, TRIGGER_TYPE_TRUNCATE};
+	int i;
+
+	refaddr.classId = RelationRelationId;
+	refaddr.objectId = matviewOid;
+	refaddr.objectSubId = 0;
+
+
+	ivm_trigger = makeNode(CreateTrigStmt);
+	ivm_trigger->relation = NULL;
+	ivm_trigger->row = false;
+
+	ivm_trigger->timing = TRIGGER_TYPE_BEFORE;
+	ivm_trigger->trigname = "IVM_prevent_immv_change";
+	ivm_trigger->funcname = SystemFuncName("IVM_prevent_immv_change");
+	ivm_trigger->columns = NIL;
+	ivm_trigger->transitionRels = NIL;
+	ivm_trigger->whenClause = NULL;
+	ivm_trigger->isconstraint = false;
+	ivm_trigger->deferrable = false;
+	ivm_trigger->initdeferred = false;
+	ivm_trigger->constrrel = NULL;
+	ivm_trigger->args = NIL;
+
+	for (i = 0; i < 4; i++)
+	{
+		ivm_trigger->events = types[i];
+		address = CreateTrigger(ivm_trigger, NULL, matviewOid, InvalidOid, InvalidOid,
+							 InvalidOid, InvalidOid, InvalidOid, NULL, true, false);
+
+		recordDependencyOn(&address, &refaddr, DEPENDENCY_AUTO);
+	}
 
 	/* Make changes-so-far visible */
 	CommandCounterIncrement();
@@ -2073,7 +2125,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	}
 
 	/* Start maintaining the materialized view. */
-	//OpenMatViewIncrementalMaintenance();
+	OpenImmvIncrementalMaintenance();
 
 	/* Open SPI context. */
 	if (SPI_connect() != SPI_OK_CONNECT)
@@ -2132,7 +2184,7 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	}
 
 	/* We're done maintaining the materialized view. */
-	//CloseMatViewIncrementalMaintenance();
+	CloseImmvIncrementalMaintenance();
 
 	table_close(matviewRel, NoLock);
 
@@ -2523,6 +2575,42 @@ IvmSubXactCallback(SubXactEvent event, SubTransactionId mySubid,
 {
 	if (event == SUBXACT_EVENT_ABORT_SUB)
 		AtAbort_IVM();
+}
+
+PG_FUNCTION_INFO_V1(IVM_prevent_immv_change);
+
+bool
+ImmvIncrementalMaintenanceIsEnabled(void)
+{
+	return immv_maintenance_depth > 0;
+}
+
+static void
+OpenImmvIncrementalMaintenance(void)
+{
+	immv_maintenance_depth++;
+}
+
+static void
+CloseImmvIncrementalMaintenance(void)
+{
+	immv_maintenance_depth--;
+	Assert(immv_maintenance_depth >= 0);
+}
+
+Datum
+IVM_prevent_immv_change(PG_FUNCTION_ARGS)
+{
+	TriggerData *trigdata = (TriggerData *) fcinfo->context;
+	Relation	rel = trigdata->tg_relation;
+
+	if (!ImmvIncrementalMaintenanceIsEnabled())
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot change materialized view \"%s\"",
+						RelationGetRelationName(rel))));
+
+	return PointerGetDatum(NULL);
 }
 
 void

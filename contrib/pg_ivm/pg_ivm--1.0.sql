@@ -18,7 +18,7 @@ SELECT pg_catalog.pg_extension_config_dump('pg_catalog.pg_ivm_immv', '');
 -- functions
 
 CREATE FUNCTION create_immv(text, text)
-RETURNS void 
+RETURNS bigint 
 AS 'MODULE_PATHNAME', 'create_immv'
 LANGUAGE C;
 
@@ -32,4 +32,9 @@ LANGUAGE C;
 CREATE FUNCTION "IVM_immediate_maintenance"()
 RETURNS trigger 
 AS 'MODULE_PATHNAME', 'IVM_immediate_maintenance'
+LANGUAGE C;
+
+CREATE FUNCTION "IVM_prevent_immv_change"()
+RETURNS trigger 
+AS 'MODULE_PATHNAME', 'IVM_prevent_immv_change'
 LANGUAGE C;
