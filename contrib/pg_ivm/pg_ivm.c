@@ -364,6 +364,9 @@ create_immv(PG_FUNCTION_ARGS)
 
     	CatalogTupleInsert(pgIvmImmv, heapTuple);
 
+		recordDependencyOnExpr(&address, (Node *) viewQuery, NIL,
+							   DEPENDENCY_NORMAL);
+
 		table_close(pgIvmImmv, NoLock);
 
 		CommandCounterIncrement();
@@ -805,11 +808,18 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 				expression_tree_walker(node, check_ivm_restriction_walker, (void *) context);
 				break;
 			}
-		case T_SubLink:
+		case T_JoinExpr:
 			{
-				
-				break;
+				JoinExpr *joinexpr = (JoinExpr *)node;
+
+				if (joinexpr->jointype > JOIN_INNER)
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("OUTER JOIN is not supported on incrementally maintainable materialized view")));
+
+				expression_tree_walker(node, check_ivm_restriction_walker, NULL);
 			}
+			break;
 		case T_Aggref:
 			{
 				ereport(ERROR,
@@ -962,11 +972,11 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 		{
 			/* create no index, just notice that an appropriate index is necessary for efficient IVM */
 			ereport(NOTICE,
-					(errmsg("could not create an index on materialized view \"%s\" automatically",
+					(errmsg("could not create an index on immv \"%s\" automatically",
 							RelationGetRelationName(matviewRel)),
 					 errdetail("This target list does not have all the primary key columns, "
 							   "or this view does not contain DISTINCT clause."),
-					 errhint("Create an index on the materialized view for efficient incremental maintenance.")));
+					 errhint("Create an index on the immv for efficient incremental maintenance.")));
 			return;
 		}
 	}
@@ -1000,7 +1010,7 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 						  false, true, false, false, true);
 
 	ereport(NOTICE,
-			(errmsg("created index \"%s\" on materialized view \"%s\"",
+			(errmsg("created index \"%s\" on immv \"%s\"",
 					idxname, RelationGetRelationName(matviewRel))));
 
 	/*
@@ -1420,6 +1430,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 
+		tuplestore_rescan(trigdata->tg_oldtable);
 		old = tuplestore_begin_heap(false, false, work_mem);
 		while (tuplestore_gettupleslot(trigdata->tg_oldtable, true, false, slot))
 			tuplestore_puttupleslot(old, slot);
@@ -1438,6 +1449,7 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 
 		oldcxt = MemoryContextSwitchTo(TopTransactionContext);
 
+		tuplestore_rescan(trigdata->tg_newtable);
 		new = tuplestore_begin_heap(false, false, work_mem);
 		while (tuplestore_gettupleslot(trigdata->tg_newtable, true, false, slot))
 			tuplestore_puttupleslot(new, slot);
