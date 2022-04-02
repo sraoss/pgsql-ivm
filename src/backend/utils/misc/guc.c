@@ -43,6 +43,7 @@
 #include "access/xlog_internal.h"
 #include "access/xlogrecovery.h"
 #include "catalog/namespace.h"
+#include "catalog/objectaccess.h"
 #include "catalog/pg_authid.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
@@ -1178,6 +1179,16 @@ static struct config_bool ConfigureNamesBool[] =
 			GUC_EXPLAIN
 		},
 		&enable_async_append,
+		true,
+		NULL, NULL, NULL
+	},
+	{
+		{"enable_group_by_reordering", PGC_USERSET, QUERY_TUNING_METHOD,
+			gettext_noop("enable reordering of GROUP BY key"),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&enable_group_by_reordering,
 		true,
 		NULL, NULL, NULL
 	},
@@ -3736,6 +3747,18 @@ static struct config_real ConfigureNamesReal[] =
 		},
 		&cursor_tuple_fraction,
 		DEFAULT_CURSOR_TUPLE_FRACTION, 0.0, 1.0,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"recursive_worktable_factor", PGC_USERSET, QUERY_TUNING_OTHER,
+			gettext_noop("Sets the planner's estimate of the average size "
+						 "of a recursive query's working table."),
+			NULL,
+			GUC_EXPLAIN
+		},
+		&recursive_worktable_factor,
+		DEFAULT_RECURSIVE_WORKTABLE_FACTOR, 0.001, 1000000.0,
 		NULL, NULL, NULL
 	},
 
@@ -8215,10 +8238,10 @@ GetConfigOption(const char *name, bool missing_ok, bool restrict_privileged)
 		return NULL;
 	if (restrict_privileged &&
 		(record->flags & GUC_SUPERUSER_ONLY) &&
-		!is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
+		!has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of pg_read_all_settings to examine \"%s\"",
+				 errmsg("must be superuser or have privileges of pg_read_all_settings to examine \"%s\"",
 						name)));
 
 	switch (record->vartype)
@@ -8262,10 +8285,10 @@ GetConfigOptionResetString(const char *name)
 	record = find_option(name, false, false, ERROR);
 	Assert(record != NULL);
 	if ((record->flags & GUC_SUPERUSER_ONLY) &&
-		!is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
+		!has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of pg_read_all_settings to examine \"%s\"",
+				 errmsg("must be superuser or have privileges of pg_read_all_settings to examine \"%s\"",
 						name)));
 
 	switch (record->vartype)
@@ -8737,6 +8760,18 @@ AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt)
 	}
 
 	/*
+	 * Invoke the post-alter hook for altering this GUC variable.
+	 *
+	 * We do this here rather than at the end, because ALTER SYSTEM is not
+	 * transactional.  If the hook aborts our transaction, it will be cleaner
+	 * to do so before we touch any files.
+	 */
+	InvokeObjectPostAlterHookArgStr(InvalidOid, name,
+									ACL_ALTER_SYSTEM,
+									altersysstmt->setstmt->kind,
+									false);
+
+	/*
 	 * To ensure crash safety, first write the new file data to a temp file,
 	 * then atomically rename it into place.
 	 *
@@ -8907,6 +8942,10 @@ ExecSetVariableStmt(VariableSetStmt *stmt, bool isTopLevel)
 			ResetAllOptions();
 			break;
 	}
+
+	/* Invoke the post-alter hook for setting this GUC variable. */
+	InvokeObjectPostAlterHookArgStr(InvalidOid, stmt->name,
+									ACL_SET_VALUE, stmt->kind, false);
 }
 
 /*
@@ -9537,7 +9576,7 @@ ShowAllGUCConfig(DestReceiver *dest)
 
 		if ((conf->flags & GUC_NO_SHOW_ALL) ||
 			((conf->flags & GUC_SUPERUSER_ONLY) &&
-			 !is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
+			 !has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
 			continue;
 
 		/* assign to the values array */
@@ -9604,7 +9643,7 @@ get_explain_guc_options(int *num)
 		/* return only options visible to the current user */
 		if ((conf->flags & GUC_NO_SHOW_ALL) ||
 			((conf->flags & GUC_SUPERUSER_ONLY) &&
-			 !is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
+			 !has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
 			continue;
 
 		/* return only options that are different from their boot values */
@@ -9686,10 +9725,10 @@ GetConfigOptionByName(const char *name, const char **varname, bool missing_ok)
 	}
 
 	if ((record->flags & GUC_SUPERUSER_ONLY) &&
-		!is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
+		!has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser or a member of pg_read_all_settings to examine \"%s\"",
+				 errmsg("must be superuser or have privileges of pg_read_all_settings to examine \"%s\"",
 						name)));
 
 	if (varname)
@@ -9756,7 +9795,7 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 	{
 		if ((conf->flags & GUC_NO_SHOW_ALL) ||
 			((conf->flags & GUC_SUPERUSER_ONLY) &&
-			 !is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
+			 !has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS)))
 			*noshow = true;
 		else
 			*noshow = false;
@@ -9780,7 +9819,7 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 	values[4] = _(conf->short_desc);
 
 	/* extra_desc */
-	values[5] = _(conf->long_desc);
+	values[5] = conf->long_desc != NULL ? _(conf->long_desc) : NULL;
 
 	/* context */
 	values[6] = GucContext_Names[conf->context];
@@ -9951,7 +9990,7 @@ GetConfigOptionByNum(int varnum, const char **values, bool *noshow)
 	 * insufficiently-privileged users.
 	 */
 	if (conf->source == PGC_S_FILE &&
-		is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
+		has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
 	{
 		values[14] = conf->sourcefile;
 		snprintf(buffer, sizeof(buffer), "%d", conf->sourceline);

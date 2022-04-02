@@ -402,6 +402,24 @@ do { \
 	matches = rl_completion_matches(text, complete_from_schema_query); \
 } while (0)
 
+/*
+ * Timezone completion is mostly like enum label completion, but we work
+ * a little harder since this is a more common use-case.
+ */
+#define COMPLETE_WITH_TIMEZONE_NAME() \
+do { \
+	static const char *const list[] = { "DEFAULT", NULL }; \
+	if (text[0] == '\'') \
+		completion_charp = Query_for_list_of_timezone_names_quoted_in; \
+	else if (start == 0 || rl_line_buffer[start - 1] != '\'') \
+		completion_charp = Query_for_list_of_timezone_names_quoted_out; \
+	else \
+		completion_charp = Query_for_list_of_timezone_names_unquoted; \
+	completion_charpp = list;							  \
+	completion_verbatim = true; \
+	matches = rl_completion_matches(text, complete_from_query); \
+} while (0)
+
 #define COMPLETE_WITH_FUNCTION_ARG(function) \
 do { \
 	set_completion_reference(function); \
@@ -802,6 +820,17 @@ static const SchemaQuery Query_for_list_of_updatables = {
 	.result = "c.relname",
 };
 
+/* Relations supporting MERGE */
+static const SchemaQuery Query_for_list_of_mergetargets = {
+	.catname = "pg_catalog.pg_class c",
+	.selcondition =
+	"c.relkind IN (" CppAsString2(RELKIND_RELATION) ", "
+	CppAsString2(RELKIND_PARTITIONED_TABLE) ") ",
+	.viscondition =	"pg_catalog.pg_table_is_visible(c.oid)",
+	.namespace = "c.relnamespace",
+	.result = "c.relname",
+};
+
 /* Relations supporting SELECT */
 static const SchemaQuery Query_for_list_of_selectables = {
 	.catname = "pg_catalog.pg_class c",
@@ -1104,6 +1133,21 @@ static const SchemaQuery Query_for_trigger_of_table = {
 " SELECT name "\
 "   FROM pg_catalog.pg_cursors "\
 "  WHERE name LIKE '%s'"
+
+#define Query_for_list_of_timezone_names_unquoted \
+" SELECT name "\
+"   FROM pg_catalog.pg_timezone_names() "\
+"  WHERE pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
+
+#define Query_for_list_of_timezone_names_quoted_out \
+"SELECT pg_catalog.quote_literal(name) AS name "\
+"  FROM pg_catalog.pg_timezone_names() "\
+" WHERE pg_catalog.lower(name) LIKE pg_catalog.lower('%s')"
+
+#define Query_for_list_of_timezone_names_quoted_in \
+"SELECT pg_catalog.quote_literal(name) AS name "\
+"  FROM pg_catalog.pg_timezone_names() "\
+" WHERE pg_catalog.quote_literal(pg_catalog.lower(name)) LIKE pg_catalog.lower('%s')"
 
 /*
  * These object types were introduced later than our support cutoff of
@@ -1632,7 +1676,7 @@ psql_completion(const char *text, int start, int end)
 		"COMMENT", "COMMIT", "COPY", "CREATE", "DEALLOCATE", "DECLARE",
 		"DELETE FROM", "DISCARD", "DO", "DROP", "END", "EXECUTE", "EXPLAIN",
 		"FETCH", "GRANT", "IMPORT FOREIGN SCHEMA", "INSERT INTO", "LISTEN", "LOAD", "LOCK",
-		"MOVE", "NOTIFY", "PREPARE",
+		"MERGE", "MOVE", "NOTIFY", "PREPARE",
 		"REASSIGN", "REFRESH MATERIALIZED VIEW", "REINDEX", "RELEASE",
 		"RESET", "REVOKE", "ROLLBACK",
 		"SAVEPOINT", "SECURITY LABEL", "SELECT", "SET", "SHOW", "START",
@@ -1783,11 +1827,15 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("ADD", "DROP", "OWNER TO", "RENAME TO", "SET");
 	/* ALTER PUBLICATION <name> ADD */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD"))
-		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
+		COMPLETE_WITH("ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") ||
 			 (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "TABLE") &&
 			  ends_with(prev_wd, ',')))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
+	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "SEQUENCE") ||
+			 (HeadMatches("ALTER", "PUBLICATION", MatchAny, "ADD|SET", "SEQUENCE") &&
+			  ends_with(prev_wd, ',')))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences);
 	/*
 	 * "ALTER PUBLICATION <name> SET TABLE <name> WHERE (" - complete with
 	 * table attributes
@@ -1806,11 +1854,11 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH(",");
 	/* ALTER PUBLICATION <name> DROP */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "DROP"))
-		COMPLETE_WITH("ALL TABLES IN SCHEMA", "TABLE");
+		COMPLETE_WITH("ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
 	/* ALTER PUBLICATION <name> SET */
 	else if (Matches("ALTER", "PUBLICATION", MatchAny, "SET"))
-		COMPLETE_WITH("(", "ALL TABLES IN SCHEMA", "TABLE");
-	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|DROP|SET", "ALL", "TABLES", "IN", "SCHEMA"))
+		COMPLETE_WITH("(", "ALL TABLES IN SCHEMA", "ALL SEQUENCES IN SCHEMA", "TABLE", "SEQUENCE");
+	else if (Matches("ALTER", "PUBLICATION", MatchAny, "ADD|DROP|SET", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_schemas
 								 " AND nspname NOT LIKE E'pg\\\\_%%'",
 								 "CURRENT_SCHEMA");
@@ -1820,7 +1868,7 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SUBSCRIPTION <name> */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny))
 		COMPLETE_WITH("CONNECTION", "ENABLE", "DISABLE", "OWNER TO",
-					  "RENAME TO", "REFRESH PUBLICATION", "SET",
+					  "RENAME TO", "REFRESH PUBLICATION", "SET", "SKIP (",
 					  "ADD PUBLICATION", "DROP PUBLICATION");
 	/* ALTER SUBSCRIPTION <name> REFRESH PUBLICATION */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) &&
@@ -1836,6 +1884,9 @@ psql_completion(const char *text, int start, int end)
 	/* ALTER SUBSCRIPTION <name> SET ( */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SET", "("))
 		COMPLETE_WITH("binary", "slot_name", "streaming", "synchronous_commit", "disable_on_error");
+	/* ALTER SUBSCRIPTION <name> SKIP ( */
+	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SKIP", "("))
+		COMPLETE_WITH("lsn");
 	/* ALTER SUBSCRIPTION <name> SET PUBLICATION */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SET", "PUBLICATION"))
 	{
@@ -2125,7 +2176,11 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("TO");
 	/* ALTER MATERIALIZED VIEW xxx SET */
 	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny, "SET"))
-		COMPLETE_WITH("(", "SCHEMA", "TABLESPACE", "WITHOUT CLUSTER");
+		COMPLETE_WITH("(", "ACCESS METHOD", "SCHEMA", "TABLESPACE", "WITHOUT CLUSTER");
+	/* ALTER MATERIALIZED VIEW xxx SET ACCESS METHOD */
+	else if (Matches("ALTER", "MATERIALIZED", "VIEW", MatchAny, "SET", "ACCESS", "METHOD"))
+		COMPLETE_WITH_QUERY(Query_for_list_of_table_access_methods);
+
 	/* ALTER POLICY <name> */
 	else if (Matches("ALTER", "POLICY"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_policies);
@@ -2737,12 +2792,15 @@ psql_completion(const char *text, int start, int end)
 	/* CREATE DATABASE */
 	else if (Matches("CREATE", "DATABASE", MatchAny))
 		COMPLETE_WITH("OWNER", "TEMPLATE", "ENCODING", "TABLESPACE",
-					  "IS_TEMPLATE",
+					  "IS_TEMPLATE", "STRATEGY",
 					  "ALLOW_CONNECTIONS", "CONNECTION LIMIT",
-					  "LC_COLLATE", "LC_CTYPE", "LOCALE", "OID");
+					  "LC_COLLATE", "LC_CTYPE", "LOCALE", "OID",
+					  "LOCALE_PROVIDER", "ICU_LOCALE");
 
 	else if (Matches("CREATE", "DATABASE", MatchAny, "TEMPLATE"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_template_databases);
+	else if (Matches("CREATE", "DATABASE", MatchAny, "STRATEGY"))
+		COMPLETE_WITH("WAL_LOG", "FILE_COPY");
 
 	/* CREATE DOMAIN */
 	else if (Matches("CREATE", "DOMAIN", MatchAny))
@@ -2927,21 +2985,27 @@ psql_completion(const char *text, int start, int end)
 
 /* CREATE PUBLICATION */
 	else if (Matches("CREATE", "PUBLICATION", MatchAny))
-		COMPLETE_WITH("FOR TABLE", "FOR ALL TABLES", "FOR ALL TABLES IN SCHEMA", "WITH (");
+		COMPLETE_WITH("FOR TABLE", "FOR ALL TABLES", "FOR ALL TABLES IN SCHEMA",
+					  "FOR SEQUENCE", "FOR ALL SEQUENCES", "FOR ALL SEQUENCES IN SCHEMA",
+					  "WITH (");
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR"))
-		COMPLETE_WITH("TABLE", "ALL TABLES", "ALL TABLES IN SCHEMA");
+		COMPLETE_WITH("TABLE", "ALL TABLES", "ALL TABLES IN SCHEMA",
+					  "SEQUENCE", "ALL SEQUENCES", "ALL SEQUENCES IN SCHEMA");
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL"))
-		COMPLETE_WITH("TABLES", "TABLES IN SCHEMA");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES"))
+		COMPLETE_WITH("TABLES", "TABLES IN SCHEMA", "SEQUENCES", "SEQUENCES IN SCHEMA");
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES"))
 		COMPLETE_WITH("IN SCHEMA", "WITH (");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE", MatchAny) && !ends_with(prev_wd, ','))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE|SEQUENCE", MatchAny) && !ends_with(prev_wd, ','))
 		COMPLETE_WITH("WHERE (", "WITH (");
 	/* Complete "CREATE PUBLICATION <name> FOR TABLE" with "<table>, ..." */
 	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "TABLE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
+	/* Complete "CREATE PUBLICATION <name> FOR SEQUENCE" with "<sequence>, ..." */
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "SEQUENCE"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences);
 
 	/*
-	 * "CREATE PUBLICATION <name> FOR TABLE <name> WHERE (" - complete with
+	 * "CREATE PUBLICATION <name> FOR TABLE|SEQUENCE <name> WHERE (" - complete with
 	 * table attributes
 	 */
 	else if (HeadMatches("CREATE", "PUBLICATION", MatchAny) && TailMatches("WHERE"))
@@ -2952,14 +3016,14 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH(" WITH (");
 
 	/*
-	 * Complete "CREATE PUBLICATION <name> FOR ALL TABLES IN SCHEMA <schema>,
+	 * Complete "CREATE PUBLICATION <name> FOR ALL TABLES|SEQUENCES IN SCHEMA <schema>,
 	 * ..."
 	 */
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES", "IN", "SCHEMA"))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA"))
 		COMPLETE_WITH_QUERY_PLUS(Query_for_list_of_schemas
 								 " AND nspname NOT LIKE E'pg\\\\_%%'",
 								 "CURRENT_SCHEMA");
-	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES", "IN", "SCHEMA", MatchAny) && (!ends_with(prev_wd, ',')))
+	else if (Matches("CREATE", "PUBLICATION", MatchAny, "FOR", "ALL", "TABLES|SEQUENCES", "IN", "SCHEMA", MatchAny) && (!ends_with(prev_wd, ',')))
 		COMPLETE_WITH("WITH (");
 	/* Complete "CREATE PUBLICATION <name> [...] WITH" */
 	else if (HeadMatches("CREATE", "PUBLICATION") && TailMatches("WITH", "("))
@@ -3580,7 +3644,7 @@ psql_completion(const char *text, int start, int end)
  */
 	else if (Matches("EXPLAIN"))
 		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
-					  "EXECUTE", "ANALYZE", "VERBOSE");
+					  "MERGE", "EXECUTE", "ANALYZE", "VERBOSE");
 	else if (HeadMatches("EXPLAIN", "(*") &&
 			 !HeadMatches("EXPLAIN", "(*)"))
 	{
@@ -3599,12 +3663,12 @@ psql_completion(const char *text, int start, int end)
 	}
 	else if (Matches("EXPLAIN", "ANALYZE"))
 		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
-					  "EXECUTE", "VERBOSE");
+					  "MERGE", "EXECUTE", "VERBOSE");
 	else if (Matches("EXPLAIN", "(*)") ||
 			 Matches("EXPLAIN", "VERBOSE") ||
 			 Matches("EXPLAIN", "ANALYZE", "VERBOSE"))
 		COMPLETE_WITH("SELECT", "INSERT INTO", "DELETE FROM", "UPDATE", "DECLARE",
-					  "EXECUTE");
+					  "MERGE", "EXECUTE");
 
 /* FETCH && MOVE */
 
@@ -3866,6 +3930,9 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("OPTIONS (");
 
 /* INSERT --- can be inside EXPLAIN, RULE, etc */
+	/* Complete NOT MATCHED THEN INSERT */
+	else if (TailMatches("NOT", "MATCHED", "THEN", "INSERT"))
+		COMPLETE_WITH("VALUES", "(");
 	/* Complete INSERT with "INTO" */
 	else if (TailMatches("INSERT"))
 		COMPLETE_WITH("INTO");
@@ -3941,6 +4008,53 @@ psql_completion(const char *text, int start, int end)
 	else if (HeadMatches("LOCK") && TailMatches("IN", "SHARE"))
 		COMPLETE_WITH("MODE", "ROW EXCLUSIVE MODE",
 					  "UPDATE EXCLUSIVE MODE");
+/* MERGE --- can be inside EXPLAIN */
+	else if (TailMatches("MERGE"))
+		COMPLETE_WITH("INTO");
+	else if (TailMatches("MERGE", "INTO"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_mergetargets);
+	else if (TailMatches("MERGE", "INTO", MatchAny))
+		COMPLETE_WITH("USING", "AS");
+	else if (TailMatches("MERGE", "INTO", MatchAny, "USING"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
+	/* with [AS] alias */
+	else if (TailMatches("MERGE", "INTO", MatchAny, "AS", MatchAny))
+		COMPLETE_WITH("USING");
+	else if (TailMatches("MERGE", "INTO", MatchAny, MatchAny))
+		COMPLETE_WITH("USING");
+	else if (TailMatches("MERGE", "INTO", MatchAny, "AS", MatchAny, "USING"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
+	else if (TailMatches("MERGE", "INTO", MatchAny, MatchAny, "USING"))
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
+	/* ON */
+	else if (TailMatches("MERGE", "INTO", MatchAny, "USING", MatchAny))
+		COMPLETE_WITH("ON");
+	else if (TailMatches("INTO", MatchAny, "AS", MatchAny, "USING", MatchAny, "AS", MatchAny))
+		COMPLETE_WITH("ON");
+	else if (TailMatches("INTO", MatchAny, MatchAny, "USING", MatchAny, MatchAny))
+		COMPLETE_WITH("ON");
+	/* ON condition */
+	else if (TailMatches("INTO", MatchAny, "USING", MatchAny, "ON"))
+		COMPLETE_WITH_ATTR(prev4_wd);
+	else if (TailMatches("INTO", MatchAny, "AS", MatchAny, "USING", MatchAny, "AS", MatchAny, "ON"))
+		COMPLETE_WITH_ATTR(prev8_wd);
+	else if (TailMatches("INTO", MatchAny, MatchAny, "USING", MatchAny, MatchAny, "ON"))
+		COMPLETE_WITH_ATTR(prev6_wd);
+	/* WHEN [NOT] MATCHED */
+	else if (TailMatches("USING", MatchAny, "ON", MatchAny))
+		COMPLETE_WITH("WHEN MATCHED", "WHEN NOT MATCHED");
+	else if (TailMatches("USING", MatchAny, "AS", MatchAny, "ON", MatchAny))
+		COMPLETE_WITH("WHEN MATCHED", "WHEN NOT MATCHED");
+	else if (TailMatches("USING", MatchAny, MatchAny, "ON", MatchAny))
+		COMPLETE_WITH("WHEN MATCHED", "WHEN NOT MATCHED");
+	else if (TailMatches("WHEN", "MATCHED"))
+		COMPLETE_WITH("THEN", "AND");
+	else if (TailMatches("WHEN", "NOT", "MATCHED"))
+		COMPLETE_WITH("THEN", "AND");
+	else if (TailMatches("WHEN", "MATCHED", "THEN"))
+		COMPLETE_WITH("UPDATE", "DELETE");
+	else if (TailMatches("WHEN", "NOT", "MATCHED", "THEN"))
+		COMPLETE_WITH("INSERT", "DO NOTHING");
 
 	/* Complete LOCK [TABLE] [ONLY] <table> [IN lockmode MODE] with "NOWAIT" */
 	else if (HeadMatches("LOCK") && TailMatches("MODE"))
@@ -4175,6 +4289,8 @@ psql_completion(const char *text, int start, int end)
 									 " AND nspname NOT LIKE E'pg\\\\_temp%%'",
 									 "DEFAULT");
 		}
+		else if (TailMatches("TimeZone", "TO|="))
+			COMPLETE_WITH_TIMEZONE_NAME();
 		else
 		{
 			/* generic, type based, GUC support */

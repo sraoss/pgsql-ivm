@@ -7,7 +7,6 @@
 
 use strict;
 use warnings;
-use Config;
 use File::Path qw(rmtree);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
@@ -41,7 +40,7 @@ my @test_configuration = (
 		'backup_archive' => 'base.tar.lz4',
 		'decompress_program' => $ENV{'LZ4'},
 		'decompress_flags' => [ '-d', '-m'],
-		'enabled' => check_pg_config("#define HAVE_LIBLZ4 1")
+		'enabled' => check_pg_config("#define USE_LZ4 1")
 	},
 	{
 		'compression_method' => 'zstd',
@@ -49,7 +48,7 @@ my @test_configuration = (
 		'backup_archive' => 'base.tar.zst',
 		'decompress_program' => $ENV{'ZSTD'},
 		'decompress_flags' => [ '-d' ],
-		'enabled' => check_pg_config("#define HAVE_LIBZSTD 1")
+		'enabled' => check_pg_config("#define USE_ZSTD 1")
 	}
 );
 
@@ -95,7 +94,7 @@ for my $tc (@test_configuration)
 
 		SKIP: {
 			my $tar = $ENV{TAR};
-			# don't check for a working tar here, to accomodate various odd
+			# don't check for a working tar here, to accommodate various odd
 			# cases such as AIX. If tar doesn't work the init_from_backup below
 			# will fail.
 			skip "no tar program available", 1

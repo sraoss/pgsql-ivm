@@ -1201,7 +1201,6 @@ reportDependentObjects(const ObjectAddresses *targetObjects,
 	else if (numReportedClient > 1)
 	{
 		ereport(msglevel,
-		/* translator: %d always has a value larger than 1 */
 				(errmsg_plural("drop cascades to %d other object",
 							   "drop cascades to %d other objects",
 							   numReportedClient + numNotReportedClient,

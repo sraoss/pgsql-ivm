@@ -61,6 +61,7 @@ typedef enum LogicalRepMsgType
 	LOGICAL_REP_MSG_RELATION = 'R',
 	LOGICAL_REP_MSG_TYPE = 'Y',
 	LOGICAL_REP_MSG_MESSAGE = 'M',
+	LOGICAL_REP_MSG_SEQUENCE = 'Q',
 	LOGICAL_REP_MSG_BEGIN_PREPARE = 'b',
 	LOGICAL_REP_MSG_PREPARE = 'P',
 	LOGICAL_REP_MSG_COMMIT_PREPARED = 'K',
@@ -117,6 +118,18 @@ typedef struct LogicalRepTyp
 	char	   *nspname;		/* schema name of remote type */
 	char	   *typname;		/* name of the remote type */
 } LogicalRepTyp;
+
+/* Sequence info */
+typedef struct LogicalRepSequence
+{
+	Oid			remoteid;		/* unique id of the remote sequence */
+	char	   *nspname;		/* schema name of remote sequence */
+	char	   *seqname;		/* name of the remote sequence */
+	bool		transactional;
+	int64		last_value;
+	int64		log_cnt;
+	bool		is_called;
+} LogicalRepSequence;
 
 /* Transaction info */
 typedef struct LogicalRepBeginData
@@ -209,12 +222,12 @@ extern char *logicalrep_read_origin(StringInfo in, XLogRecPtr *origin_lsn);
 extern void logicalrep_write_insert(StringInfo out, TransactionId xid,
 									Relation rel,
 									TupleTableSlot *newslot,
-									bool binary);
+									bool binary, Bitmapset *columns);
 extern LogicalRepRelId logicalrep_read_insert(StringInfo in, LogicalRepTupleData *newtup);
 extern void logicalrep_write_update(StringInfo out, TransactionId xid,
 									Relation rel,
 									TupleTableSlot *oldslot,
-									TupleTableSlot *newslot, bool binary);
+									TupleTableSlot *newslot, bool binary, Bitmapset *columns);
 extern LogicalRepRelId logicalrep_read_update(StringInfo in,
 											  bool *has_oldtuple, LogicalRepTupleData *oldtup,
 											  LogicalRepTupleData *newtup);
@@ -230,8 +243,14 @@ extern List *logicalrep_read_truncate(StringInfo in,
 									  bool *cascade, bool *restart_seqs);
 extern void logicalrep_write_message(StringInfo out, TransactionId xid, XLogRecPtr lsn,
 									 bool transactional, const char *prefix, Size sz, const char *message);
+extern void logicalrep_write_sequence(StringInfo out, Relation rel,
+									  TransactionId xid, XLogRecPtr lsn,
+									  bool transactional,
+									  int64 last_value, int64 log_cnt,
+									  bool is_called);
+extern void logicalrep_read_sequence(StringInfo in, LogicalRepSequence *seqdata);
 extern void logicalrep_write_rel(StringInfo out, TransactionId xid,
-								 Relation rel);
+								 Relation rel, Bitmapset *columns);
 extern LogicalRepRelation *logicalrep_read_rel(StringInfo in);
 extern void logicalrep_write_typ(StringInfo out, TransactionId xid,
 								 Oid typoid);

@@ -374,6 +374,16 @@ CREATE VIEW pg_publication_tables AS
          pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)
     WHERE C.oid = GPT.relid;
 
+CREATE VIEW pg_publication_sequences AS
+    SELECT
+        P.pubname AS pubname,
+        N.nspname AS schemaname,
+        C.relname AS sequencename
+    FROM pg_publication P,
+         LATERAL pg_get_publication_sequences(P.pubname) GPS,
+         pg_class C JOIN pg_namespace N ON (N.oid = C.relnamespace)
+    WHERE C.oid = GPS.relid;
+
 CREATE VIEW pg_locks AS
     SELECT * FROM pg_lock_status() AS L;
 
@@ -607,6 +617,12 @@ CREATE VIEW pg_hba_file_rules AS
 REVOKE ALL ON pg_hba_file_rules FROM PUBLIC;
 REVOKE EXECUTE ON FUNCTION pg_hba_file_rules() FROM PUBLIC;
 
+CREATE VIEW pg_ident_file_mappings AS
+   SELECT * FROM pg_ident_file_mappings() AS A;
+
+REVOKE ALL ON pg_ident_file_mappings FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION pg_ident_file_mappings() FROM PUBLIC;
+
 CREATE VIEW pg_timezone_abbrevs AS
     SELECT * FROM pg_timezone_abbrevs();
 
@@ -717,22 +733,31 @@ CREATE VIEW pg_statio_all_tables AS
             pg_stat_get_blocks_fetched(C.oid) -
                     pg_stat_get_blocks_hit(C.oid) AS heap_blks_read,
             pg_stat_get_blocks_hit(C.oid) AS heap_blks_hit,
-            sum(pg_stat_get_blocks_fetched(I.indexrelid) -
-                    pg_stat_get_blocks_hit(I.indexrelid))::bigint AS idx_blks_read,
-            sum(pg_stat_get_blocks_hit(I.indexrelid))::bigint AS idx_blks_hit,
+            I.idx_blks_read AS idx_blks_read,
+            I.idx_blks_hit AS idx_blks_hit,
             pg_stat_get_blocks_fetched(T.oid) -
                     pg_stat_get_blocks_hit(T.oid) AS toast_blks_read,
             pg_stat_get_blocks_hit(T.oid) AS toast_blks_hit,
-            pg_stat_get_blocks_fetched(X.indexrelid) -
-                    pg_stat_get_blocks_hit(X.indexrelid) AS tidx_blks_read,
-            pg_stat_get_blocks_hit(X.indexrelid) AS tidx_blks_hit
+            X.idx_blks_read AS tidx_blks_read,
+            X.idx_blks_hit AS tidx_blks_hit
     FROM pg_class C LEFT JOIN
-            pg_index I ON C.oid = I.indrelid LEFT JOIN
-            pg_class T ON C.reltoastrelid = T.oid LEFT JOIN
-            pg_index X ON T.oid = X.indrelid
+            pg_class T ON C.reltoastrelid = T.oid
             LEFT JOIN pg_namespace N ON (N.oid = C.relnamespace)
-    WHERE C.relkind IN ('r', 't', 'm')
-    GROUP BY C.oid, N.nspname, C.relname, T.oid, X.indexrelid;
+            LEFT JOIN LATERAL (
+              SELECT sum(pg_stat_get_blocks_fetched(indexrelid) -
+                         pg_stat_get_blocks_hit(indexrelid))::bigint
+                     AS idx_blks_read,
+                     sum(pg_stat_get_blocks_hit(indexrelid))::bigint
+                     AS idx_blks_hit
+              FROM pg_index WHERE indrelid = C.oid ) I ON true
+            LEFT JOIN LATERAL (
+              SELECT sum(pg_stat_get_blocks_fetched(indexrelid) -
+                         pg_stat_get_blocks_hit(indexrelid))::bigint
+                     AS idx_blks_read,
+                     sum(pg_stat_get_blocks_hit(indexrelid))::bigint
+                     AS idx_blks_hit
+              FROM pg_index WHERE indrelid = T.oid ) X ON true
+    WHERE C.relkind IN ('r', 't', 'm');
 
 CREATE VIEW pg_statio_sys_tables AS
     SELECT * FROM pg_statio_all_tables
@@ -1261,7 +1286,7 @@ REVOKE ALL ON pg_replication_origin_status FROM public;
 -- All columns of pg_subscription except subconninfo are publicly readable.
 REVOKE ALL ON pg_subscription FROM public;
 GRANT SELECT (oid, subdbid, subname, subowner, subenabled, subbinary,
-              substream, subtwophasestate, subdisableonerr, subslotname,
+              substream, subtwophasestate, subdisableonerr, subskiplsn, subslotname,
               subsynccommit, subpublications)
     ON pg_subscription TO public;
 

@@ -734,6 +734,7 @@ autodepend
 PKG_CONFIG_LIBDIR
 PKG_CONFIG_PATH
 PKG_CONFIG
+DLSUFFIX
 TAS
 GCC
 CPP
@@ -3032,6 +3033,9 @@ PORTNAME=$template
 # when it's executed.
 need_tas=no
 tas_file=dummy.s
+
+# Default, works for most platforms, override in template file if needed
+DLSUFFIX=".so"
 
 
 
@@ -7688,6 +7692,12 @@ else
 fi
 
 
+
+cat >>confdefs.h <<_ACEOF
+#define DLSUFFIX "$DLSUFFIX"
+_ACEOF
+
+
 #
 # Set up pkg_config in case we need it below
 #
@@ -9082,19 +9092,19 @@ $as_echo "$with_zstd" >&6; }
 if test "$with_zstd" = yes; then
 
 pkg_failed=no
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for libzstd" >&5
-$as_echo_n "checking for libzstd... " >&6; }
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for libzstd >= 1.4.0" >&5
+$as_echo_n "checking for libzstd >= 1.4.0... " >&6; }
 
 if test -n "$ZSTD_CFLAGS"; then
     pkg_cv_ZSTD_CFLAGS="$ZSTD_CFLAGS"
  elif test -n "$PKG_CONFIG"; then
     if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libzstd\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libzstd") 2>&5
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libzstd >= 1.4.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libzstd >= 1.4.0") 2>&5
   ac_status=$?
   $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
   test $ac_status = 0; }; then
-  pkg_cv_ZSTD_CFLAGS=`$PKG_CONFIG --cflags "libzstd" 2>/dev/null`
+  pkg_cv_ZSTD_CFLAGS=`$PKG_CONFIG --cflags "libzstd >= 1.4.0" 2>/dev/null`
 		      test "x$?" != "x0" && pkg_failed=yes
 else
   pkg_failed=yes
@@ -9106,12 +9116,12 @@ if test -n "$ZSTD_LIBS"; then
     pkg_cv_ZSTD_LIBS="$ZSTD_LIBS"
  elif test -n "$PKG_CONFIG"; then
     if test -n "$PKG_CONFIG" && \
-    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libzstd\""; } >&5
-  ($PKG_CONFIG --exists --print-errors "libzstd") 2>&5
+    { { $as_echo "$as_me:${as_lineno-$LINENO}: \$PKG_CONFIG --exists --print-errors \"libzstd >= 1.4.0\""; } >&5
+  ($PKG_CONFIG --exists --print-errors "libzstd >= 1.4.0") 2>&5
   ac_status=$?
   $as_echo "$as_me:${as_lineno-$LINENO}: \$? = $ac_status" >&5
   test $ac_status = 0; }; then
-  pkg_cv_ZSTD_LIBS=`$PKG_CONFIG --libs "libzstd" 2>/dev/null`
+  pkg_cv_ZSTD_LIBS=`$PKG_CONFIG --libs "libzstd >= 1.4.0" 2>/dev/null`
 		      test "x$?" != "x0" && pkg_failed=yes
 else
   pkg_failed=yes
@@ -9132,14 +9142,14 @@ else
         _pkg_short_errors_supported=no
 fi
         if test $_pkg_short_errors_supported = yes; then
-	        ZSTD_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libzstd" 2>&1`
+	        ZSTD_PKG_ERRORS=`$PKG_CONFIG --short-errors --print-errors --cflags --libs "libzstd >= 1.4.0" 2>&1`
         else
-	        ZSTD_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libzstd" 2>&1`
+	        ZSTD_PKG_ERRORS=`$PKG_CONFIG --print-errors --cflags --libs "libzstd >= 1.4.0" 2>&1`
         fi
 	# Put the nasty error message in config.log where it belongs
 	echo "$ZSTD_PKG_ERRORS" >&5
 
-	as_fn_error $? "Package requirements (libzstd) were not met:
+	as_fn_error $? "Package requirements (libzstd >= 1.4.0) were not met:
 
 $ZSTD_PKG_ERRORS
 
@@ -10560,7 +10570,9 @@ else
 	found_shlib=0
 	for d in "${python_libdir}" "${python_configdir}" /usr/lib64 /usr/lib
 	do
-		# We don't know the platform DLSUFFIX here, so check 'em all.
+		# Note: DLSUFFIX is for loadable modules, not shared
+		# libraries, so cannot be used here portably.  Just
+		# check all known possibilities.
 		for e in .so .dll .dylib .sl; do
 			if test -e "$d/lib${ldlibrary}$e"; then
 				python_libdir="$d"
@@ -11856,9 +11868,12 @@ if test "$ac_res" != no; then :
 
 fi
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for library containing dlopen" >&5
-$as_echo_n "checking for library containing dlopen... " >&6; }
-if ${ac_cv_search_dlopen+:} false; then :
+# gcc/clang's sanitizer helper library provides dlopen but not dlsym, thus
+# when enabling asan the dlopen check doesn't notice that -ldl is actually
+# required. Just checking for dlsym() ought to suffice.
+{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for library containing dlsym" >&5
+$as_echo_n "checking for library containing dlsym... " >&6; }
+if ${ac_cv_search_dlsym+:} false; then :
   $as_echo_n "(cached) " >&6
 else
   ac_func_search_save_LIBS=$LIBS
@@ -11871,11 +11886,11 @@ cat confdefs.h - <<_ACEOF >conftest.$ac_ext
 #ifdef __cplusplus
 extern "C"
 #endif
-char dlopen ();
+char dlsym ();
 int
 main ()
 {
-return dlopen ();
+return dlsym ();
   ;
   return 0;
 }
@@ -11888,25 +11903,25 @@ for ac_lib in '' dl; do
     LIBS="-l$ac_lib  $ac_func_search_save_LIBS"
   fi
   if ac_fn_c_try_link "$LINENO"; then :
-  ac_cv_search_dlopen=$ac_res
+  ac_cv_search_dlsym=$ac_res
 fi
 rm -f core conftest.err conftest.$ac_objext \
     conftest$ac_exeext
-  if ${ac_cv_search_dlopen+:} false; then :
+  if ${ac_cv_search_dlsym+:} false; then :
   break
 fi
 done
-if ${ac_cv_search_dlopen+:} false; then :
+if ${ac_cv_search_dlsym+:} false; then :
 
 else
-  ac_cv_search_dlopen=no
+  ac_cv_search_dlsym=no
 fi
 rm conftest.$ac_ext
 LIBS=$ac_func_search_save_LIBS
 fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_search_dlopen" >&5
-$as_echo "$ac_cv_search_dlopen" >&6; }
-ac_res=$ac_cv_search_dlopen
+{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $ac_cv_search_dlsym" >&5
+$as_echo "$ac_cv_search_dlsym" >&6; }
+ac_res=$ac_cv_search_dlsym
 if test "$ac_res" != no; then :
   test "$ac_res" = "none required" || LIBS="$ac_res $LIBS"
 
@@ -15967,7 +15982,7 @@ fi
 LIBS_including_readline="$LIBS"
 LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
-for ac_func in backtrace_symbols clock_gettime copyfile fdatasync getifaddrs getpeerucred getrlimit kqueue mbstowcs_l memset_s poll posix_fallocate ppoll pstat pthread_is_threaded_np readlink readv setproctitle setproctitle_fast setsid shm_open strchrnul strsignal symlink syncfs sync_file_range uselocale wcstombs_l writev
+for ac_func in backtrace_symbols clock_gettime copyfile fdatasync getifaddrs getpeerucred getrlimit inet_pton kqueue mbstowcs_l memset_s poll posix_fallocate ppoll pstat pthread_is_threaded_np readlink readv setproctitle setproctitle_fast setsid shm_open strchrnul strsignal symlink syncfs sync_file_range uselocale wcstombs_l writev
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"

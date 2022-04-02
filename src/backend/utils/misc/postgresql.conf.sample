@@ -382,6 +382,7 @@
 #enable_seqscan = on
 #enable_sort = on
 #enable_tidscan = on
+#enable_group_by_reordering = on
 
 # - Planner Cost Constants -
 
@@ -426,6 +427,7 @@
 					# JOIN clauses
 #plan_cache_mode = auto			# auto, force_generic_plan or
 					# force_custom_plan
+#recursive_worktable_factor = 10.0	# range 0.001-1000000
 
 
 #------------------------------------------------------------------------------

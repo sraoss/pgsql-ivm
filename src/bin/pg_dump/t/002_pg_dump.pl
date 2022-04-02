@@ -4,7 +4,6 @@
 use strict;
 use warnings;
 
-use Config;
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -2373,7 +2372,7 @@ my %tests = (
 		create_order => 50,
 		create_sql   => 'CREATE PUBLICATION pub1;',
 		regexp       => qr/^
-			\QCREATE PUBLICATION pub1 WITH (publish = 'insert, update, delete, truncate');\E
+			\QCREATE PUBLICATION pub1 WITH (publish = 'insert, update, delete, truncate, sequence');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -2393,16 +2392,27 @@ my %tests = (
 		create_order => 50,
 		create_sql   => 'CREATE PUBLICATION pub3;',
 		regexp => qr/^
-			\QCREATE PUBLICATION pub3 WITH (publish = 'insert, update, delete, truncate');\E
+			\QCREATE PUBLICATION pub3 WITH (publish = 'insert, update, delete, truncate, sequence');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
 
 	'CREATE PUBLICATION pub4' => {
 		create_order => 50,
-		create_sql   => 'CREATE PUBLICATION pub4;',
+		create_sql   => 'CREATE PUBLICATION pub4
+						 FOR ALL SEQUENCES
+						 WITH (publish = \'\');',
 		regexp => qr/^
-			\QCREATE PUBLICATION pub4 WITH (publish = 'insert, update, delete, truncate');\E
+			\QCREATE PUBLICATION pub4 FOR ALL SEQUENCES WITH (publish = '');\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
+	},
+
+	'CREATE PUBLICATION pub5' => {
+		create_order => 50,
+		create_sql   => 'CREATE PUBLICATION pub5;',
+		regexp => qr/^
+			\QCREATE PUBLICATION pub5 WITH (publish = 'insert, update, delete, truncate, sequence');\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 	},
@@ -2438,6 +2448,28 @@ my %tests = (
 		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_second_table;',
 		regexp => qr/^
 			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_second_table;\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub1 ADD TABLE test_sixth_table (col3, col2)' => {
+		create_order => 52,
+		create_sql =>
+		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_sixth_table (col3, col2);',
+		regexp => qr/^
+			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_sixth_table (col2, col3);\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub1 ADD TABLE test_seventh_table (col3, col2) WHERE (col1 = 1)' => {
+		create_order => 52,
+		create_sql =>
+		  'ALTER PUBLICATION pub1 ADD TABLE dump_test.test_seventh_table (col3, col2) WHERE (col1 = 1);',
+		regexp => qr/^
+			\QALTER PUBLICATION pub1 ADD TABLE ONLY dump_test.test_seventh_table (col2, col3) WHERE ((col1 = 1));\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
@@ -2487,6 +2519,27 @@ my %tests = (
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test' => {
+		create_order => 51,
+		create_sql =>
+		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;',
+		regexp => qr/^
+			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA dump_test;\E
+			/xm,
+		like   => { %full_runs, section_post_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public' => {
+		create_order => 52,
+		create_sql =>
+		  'ALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;',
+		regexp => qr/^
+			\QALTER PUBLICATION pub3 ADD ALL SEQUENCES IN SCHEMA public;\E
+			/xm,
+		like => { %full_runs, section_post_data => 1, },
 	},
 
 	'CREATE SCHEMA public' => {
@@ -2786,6 +2839,44 @@ my %tests = (
 			\n\s+\Qcol3 boolean,\E
 			\n\s+\Qcol4 bit(5),\E
 			\n\s+\Qcol5 double precision\E
+			\n\);
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_sixth_table' => {
+		create_order => 6,
+		create_sql   => 'CREATE TABLE dump_test.test_sixth_table (
+						   col1 int,
+						   col2 text,
+						   col3 bytea
+					   );',
+		regexp => qr/^
+			\QCREATE TABLE dump_test.test_sixth_table (\E
+			\n\s+\Qcol1 integer,\E
+			\n\s+\Qcol2 text,\E
+			\n\s+\Qcol3 bytea\E
+			\n\);
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_pre_data => 1, },
+		unlike => { exclude_dump_test_schema => 1, },
+	},
+
+	'CREATE TABLE test_seventh_table' => {
+		create_order => 6,
+		create_sql   => 'CREATE TABLE dump_test.test_seventh_table (
+						   col1 int,
+						   col2 text,
+						   col3 bytea
+					   );',
+		regexp => qr/^
+			\QCREATE TABLE dump_test.test_seventh_table (\E
+			\n\s+\Qcol1 integer,\E
+			\n\s+\Qcol2 text,\E
+			\n\s+\Qcol3 bytea\E
 			\n\);
 			/xm,
 		like =>
@@ -3758,7 +3849,7 @@ if ($collation_check_stderr !~ /ERROR: /)
 }
 
 # Determine whether build supports LZ4.
-my $supports_lz4 = check_pg_config("#define HAVE_LIBLZ4 1");
+my $supports_lz4 = check_pg_config("#define USE_LZ4 1");
 
 # Create additional databases for mutations of schema public
 $node->psql('postgres', 'create database regress_pg_dump_test;');

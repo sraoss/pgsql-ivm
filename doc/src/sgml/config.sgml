@@ -1184,7 +1184,13 @@ include_dir 'conf.d'
      <title>SSL</title>
 
      <para>
-      See <xref linkend="ssl-tcp"/> for more information about setting up SSL.
+      See <xref linkend="ssl-tcp"/> for more information about setting up
+      <acronym>SSL</acronym>. The configuration parameters for controlling
+      transfer encryption using <acronym>TLS</acronym> protocols are named
+      <literal>ssl</literal> for historic reasons, even though support for
+      the <acronym>SSL</acronym> protocol has been deprecated.
+      <acronym>SSL</acronym> is in this context used interchangeably with
+      <acronym>TLS</acronym>.
      </para>
 
      <variablelist>
@@ -4746,7 +4752,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         log file by reducing the value of this parameter. On a system with
         low WAL activity, increasing it reduces the amount of requests necessary
         to access WAL archives, something useful for example in cloud
-        environments where the amount of times an infrastructure is accessed
+        environments where the number of times an infrastructure is accessed
         is taken into account.
        </para>
       </listitem>
@@ -4957,6 +4963,20 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
        <para>
         Enables or disables the query planner's use of gather
         merge plan types. The default is <literal>on</literal>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-enable-groupby-reordering" xreflabel="enable_group_by_reordering">
+      <term><varname>enable_group_by_reordering</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>enable_group_by_reordering</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Enables or disables reodering of keys in <literal>GROUP BY</literal>
+        clause. The default is <literal>on</literal>.
        </para>
       </listitem>
      </varlistentry>
@@ -5915,6 +5935,29 @@ SELECT * FROM parent WHERE key = 2400;
         This setting is considered when a cached plan is to be executed,
         not when it is prepared.
         For more information see <xref linkend="sql-prepare"/>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recursive-worktable-factor" xreflabel="recursive_worktable_factor">
+      <term><varname>recursive_worktable_factor</varname> (<type>floating point</type>)
+      <indexterm>
+       <primary><varname>recursive_worktable_factor</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the planner's estimate of the average size of the working
+        table of a <link linkend="queries-with-recursive">recursive
+        query</link>, as a multiple of the estimated size of the initial
+        non-recursive term of the query.  This helps the planner choose
+        the most appropriate method for joining the working table to the
+        query's other tables.
+        The default value is <literal>10.0</literal>.  A smaller value
+        such as <literal>1.0</literal> can be helpful when the recursion
+        has low <quote>fan-out</quote> from one step to the next, as for
+        example in shortest-path queries.  Graph analytics queries may
+        benefit from larger-than-default values.
        </para>
       </listitem>
      </varlistentry>
@@ -7515,7 +7558,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
       Including <literal>jsonlog</literal> in the
       <varname>log_destination</varname> list provides a convenient way to
       import log files into many different programs. This option emits log
-      lines in (<acronym>JSON</acronym>) format.
+      lines in <acronym>JSON</acronym> format.
      </para>
 
      <para>

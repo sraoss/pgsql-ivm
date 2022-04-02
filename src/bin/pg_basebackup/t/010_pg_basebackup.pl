@@ -3,11 +3,8 @@
 
 use strict;
 use warnings;
-use Cwd;
-use Config;
 use File::Basename qw(basename dirname);
 use File::Path qw(rmtree);
-use Fcntl qw(:seek);
 use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
@@ -22,7 +19,7 @@ my $node = PostgreSQL::Test::Cluster->new('main');
 
 # For nearly all pg_basebackup invocations some options should be specified,
 # to keep test times reasonable. Using @pg_basebackup_defs as the first
-# element of the array passed to to IPC::Run interpolate the array (as it is
+# element of the array passed to IPC::Run interpolate the array (as it is
 # not a reference to an array)...
 my @pg_basebackup_defs = ('pg_basebackup', '--no-sync', '-cfast');
 
@@ -42,16 +39,12 @@ $node->command_fails(['pg_basebackup'],
 # Sanity checks for options
 $node->command_fails_like(
 	[ 'pg_basebackup', '-D', "$tempdir/backup", '--compress', 'none:1' ],
-	qr/\Qpg_basebackup: error: cannot use compression level with method none/,
+	qr/\Qcompression algorithm "none" does not accept a compression level/,
 	'failure if method "none" specified with compression level');
 $node->command_fails_like(
 	[ 'pg_basebackup', '-D', "$tempdir/backup", '--compress', 'none+' ],
-	qr/\Qpg_basebackup: error: invalid value "none+" for option/,
+	qr/\Qunrecognized compression algorithm "none+"/,
 	'failure on incorrect separator to define compression level');
-$node->command_fails_like(
-	[ 'pg_basebackup', '-D', "$tempdir/backup", '--compress', 'none:' ],
-	qr/\Qpg_basebackup: error: no compression level defined for method none/,
-	'failure on missing compression level value');
 
 # Some Windows ANSI code pages may reject this filename, in which case we
 # quietly proceed without this bit of test coverage.
@@ -62,7 +55,7 @@ if (open my $badchars, '>>', "$tempdir/pgdata/FOO\xe0\xe0\xe0BAR")
 }
 
 $node->set_replication_conf();
-system_or_bail 'pg_ctl', '-D', $pgdata, 'reload';
+$node->reload;
 
 $node->command_fails(
 	[ @pg_basebackup_defs, '-D', "$tempdir/backup" ],
@@ -88,6 +81,75 @@ print $conf "max_wal_senders = 10\n";
 print $conf "wal_level = replica\n";
 close $conf;
 $node->restart;
+
+# Now that we have a server that supports replication commands, test whether
+# certain invalid compression commands fail on the client side with client-side
+# compression and on the server side with server-side compression.
+my $client_fails =
+	'pg_basebackup: error: ';
+my $server_fails =
+	'pg_basebackup: error: could not initiate base backup: ERROR:  ';
+my @compression_failure_tests = (
+	[
+		'extrasquishy',
+		'unrecognized compression algorithm "extrasquishy"',
+		'failure on invalid compression algorithm'
+	],
+	[
+		'gzip:',
+		'invalid compression specification: found empty string where a compression option was expected',
+		'failure on empty compression options list'
+	],
+	[
+		'gzip:thunk',
+		'invalid compression specification: unknown compression option "thunk"',
+		'failure on unknown compression option'
+	],
+	[
+		'gzip:level',
+		'invalid compression specification: compression option "level" requires a value',
+		'failure on missing compression level'
+	],
+	[
+		'gzip:level=',
+		'invalid compression specification: value for compression option "level" must be an integer',
+		'failure on empty compression level'
+	],
+	[
+		'gzip:level=high',
+		'invalid compression specification: value for compression option "level" must be an integer',
+		'failure on non-numeric compression level'
+	],
+	[
+		'gzip:level=236',
+		'invalid compression specification: compression algorithm "gzip" expects a compression level between 1 and 9',
+		'failure on out-of-range compression level'
+	],
+	[
+		'gzip:level=9,',
+		'invalid compression specification: found empty string where a compression option was expected',
+		'failure on extra, empty compression option'
+	],
+	[
+		'gzip:workers=3',
+		'invalid compression specification: compression algorithm "gzip" does not accept a worker count',
+		'failure on worker count for gzip'
+	],
+);
+for my $cft (@compression_failure_tests)
+{
+	my $cfail = quotemeta($client_fails . $cft->[1]);
+	my $sfail = quotemeta($server_fails . $cft->[1]);
+	$node->command_fails_like(
+		[ 'pg_basebackup', '-D', "$tempdir/backup", '--compress', $cft->[0] ],
+		qr/$cfail/,
+		'client '. $cft->[2]);
+	$node->command_fails_like(
+		[ 'pg_basebackup', '-D', "$tempdir/backup", '--compress',
+		   'server-' . $cft->[0] ],
+		qr/$sfail/,
+		'server ' . $cft->[2]);
+}
 
 # Write some files to test that they are not copied.
 foreach my $filename (
@@ -287,7 +349,7 @@ is(scalar(@tblspc_tars), 1, 'one tablespace tar was created');
 SKIP:
 {
 	my $tar = $ENV{TAR};
-	# don't check for a working tar here, to accomodate various odd
+	# don't check for a working tar here, to accommodate various odd
 	# cases such as AIX. If tar doesn't work the init_from_backup below
 	# will fail.
 	skip "no tar program available", 1
@@ -648,17 +710,13 @@ my $file_corrupt2 = $node->safe_psql('postgres',
 	q{CREATE TABLE corrupt2 AS SELECT b FROM generate_series(1,2) AS b; ALTER TABLE corrupt2 SET (autovacuum_enabled=false); SELECT pg_relation_filepath('corrupt2')}
 );
 
-# set page header and block sizes
-my $pageheader_size = 24;
+# get block size for corruption steps
 my $block_size = $node->safe_psql('postgres', 'SHOW block_size;');
 
 # induce corruption
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt1";
-seek($file, $pageheader_size, SEEK_SET);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->stop;
+$node->corrupt_page_checksum($file_corrupt1, 0);
+$node->start;
 
 $node->command_checks_all(
 	[ @pg_basebackup_defs, '-D', "$tempdir/backup_corrupt" ],
@@ -669,16 +727,12 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt");
 
 # induce further corruption in 5 more blocks
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt1";
+$node->stop;
 for my $i (1 .. 5)
 {
-	my $offset = $pageheader_size + $i * $block_size;
-	seek($file, $offset, SEEK_SET);
-	syswrite($file, "\0\0\0\0\0\0\0\0\0");
+	$node->corrupt_page_checksum($file_corrupt1, $i * $block_size);
 }
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->start;
 
 $node->command_checks_all(
 	[ @pg_basebackup_defs, '-D', "$tempdir/backup_corrupt2" ],
@@ -689,12 +743,9 @@ $node->command_checks_all(
 rmtree("$tempdir/backup_corrupt2");
 
 # induce corruption in a second file
-system_or_bail 'pg_ctl', '-D', $pgdata, 'stop';
-open $file, '+<', "$pgdata/$file_corrupt2";
-seek($file, $pageheader_size, SEEK_SET);
-syswrite($file, "\0\0\0\0\0\0\0\0\0");
-close $file;
-system_or_bail 'pg_ctl', '-D', $pgdata, 'start';
+$node->stop;
+$node->corrupt_page_checksum($file_corrupt2, 0);
+$node->start;
 
 $node->command_checks_all(
 	[ @pg_basebackup_defs, '-D', "$tempdir/backup_corrupt3" ],

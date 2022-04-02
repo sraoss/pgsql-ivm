@@ -229,4 +229,9 @@ DROP TABLE brin_hot;
 DROP FUNCTION wait_for_hot_stats();
 
 
+-- ensure that stats accessors handle NULL input correctly
+SELECT pg_stat_get_replication_slot(NULL);
+SELECT pg_stat_get_subscription_stats(NULL);
+
+
 -- End of Stats Test

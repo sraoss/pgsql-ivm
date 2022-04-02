@@ -93,7 +93,6 @@ use warnings;
 
 use Carp;
 use Config;
-use Cwd;
 use Fcntl qw(:mode);
 use File::Basename;
 use File::Path qw(rmtree);
@@ -111,6 +110,10 @@ use Scalar::Util qw(blessed);
 
 our ($use_tcp, $test_localhost, $test_pghost, $last_host_assigned,
 	$last_port_assigned, @all_nodes, $died);
+
+# the minimum version we believe to be compatible with this package without
+# subclassing.
+our $min_compat = 12;
 
 INIT
 {
@@ -1064,7 +1067,7 @@ sub enable_streaming
 
 	print "### Enabling streaming replication for node \"$name\"\n";
 	$self->append_conf(
-		'postgresql.conf', qq(
+		$self->_recovery_file, qq(
 primary_conninfo='$root_connstr'
 ));
 	$self->set_standby_mode();
@@ -1093,7 +1096,7 @@ sub enable_restoring
 	  : qq{cp "$path/%f" "%p"};
 
 	$self->append_conf(
-		'postgresql.conf', qq(
+		$self->_recovery_file, qq(
 restore_command = '$copy_command'
 ));
 	if ($standby)
@@ -1106,6 +1109,8 @@ restore_command = '$copy_command'
 	}
 	return;
 }
+
+sub _recovery_file { return "postgresql.conf"; }
 
 =pod
 
@@ -1306,15 +1311,29 @@ sub new
 
 	$node->dump_info;
 
-	# Add node to list of nodes
-	push(@all_nodes, $node);
-
 	$node->_set_pg_version;
 
-	my $v = $node->{_pg_version};
+	my $ver = $node->{_pg_version};
 
-	carp("PostgreSQL::Test::Cluster isn't fully compatible with version " . $v)
-	  if $v < 12;
+	# Use a subclass as defined below (or elsewhere) if this version
+	# isn't fully compatible. Warn if the version is too old and thus we don't
+	# have a subclass of this class.
+	if (ref $ver && $ver < $min_compat)
+    {
+		my $maj      = $ver->major(separator => '_');
+		my $subclass = $class . "::V_$maj";
+		if ($subclass->isa($class))
+		{
+			bless $node, $subclass;
+		}
+		else
+		{
+			carp "PostgreSQL::Test::Cluster isn't fully compatible with version $ver";
+		}
+    }
+
+	# Add node to list of nodes
+	push(@all_nodes, $node);
 
 	return $node;
 }
@@ -1369,12 +1388,12 @@ sub _set_pg_version
 #
 # Routines that call Postgres binaries need to call this routine like this:
 #
-#    local %ENV = $self->_get_env{[%extra_settings]);
+#    local %ENV = $self->_get_env([%extra_settings]);
 #
 # A copy of the environment is taken and node's host and port settings are
-# added as PGHOST and PGPORT, Then the extra settings (if any) are applied.
-# Any setting in %extra_settings with a value that is undefined is deleted
-# the remainder are# set. Then the PATH and (DY)LD_LIBRARY_PATH are adjusted
+# added as PGHOST and PGPORT, then the extra settings (if any) are applied.
+# Any setting in %extra_settings with a value that is undefined is deleted;
+# the remainder are set. Then the PATH and (DY)LD_LIBRARY_PATH are adjusted
 # if the node's install path is set, and the copy environment is returned.
 #
 # The install path set in new() needs to be a directory containing
@@ -2503,8 +2522,7 @@ sub run_log
 
 	local %ENV = $self->_get_env();
 
-	PostgreSQL::Test::Utils::run_log(@_);
-	return;
+	return PostgreSQL::Test::Utils::run_log(@_);
 }
 
 =pod
@@ -2604,8 +2622,12 @@ sub wait_for_catchup
 	  . "_lsn to pass "
 	  . $target_lsn . " on "
 	  . $self->name . "\n";
+	# Before release 12 walreceiver just set the application name to
+	# "walreceiver"
 	my $query =
-	  qq[SELECT '$target_lsn' <= ${mode}_lsn AND state = 'streaming' FROM pg_catalog.pg_stat_replication WHERE application_name = '$standby_name';];
+	  qq[SELECT '$target_lsn' <= ${mode}_lsn AND state = 'streaming'
+         FROM pg_catalog.pg_stat_replication
+         WHERE application_name IN ('$standby_name', 'walreceiver')];
 	$self->poll_query_until('postgres', $query)
 	  or croak "timed out waiting for catchup";
 	print "done\n";
@@ -2857,8 +2879,80 @@ sub pg_recvlogical_upto
 
 =pod
 
+=item $node->corrupt_page_checksum(self, file, page_offset)
+
+Intentionally corrupt the checksum field of one page in a file.
+The server must be stopped for this to work reliably.
+
+The file name should be specified relative to the cluster datadir.
+page_offset had better be a multiple of the cluster's block size.
+
+=cut
+
+sub corrupt_page_checksum
+{
+	my ($self, $file, $page_offset) = @_;
+	my $pgdata = $self->data_dir;
+	my $pageheader;
+
+	open my $fh, '+<', "$pgdata/$file" or die "open($file) failed: $!";
+	binmode $fh;
+	sysseek($fh, $page_offset, 0) or die "sysseek failed: $!";
+	sysread($fh, $pageheader, 24) or die "sysread failed: $!";
+	# This inverts the pd_checksum field (only); see struct PageHeaderData
+	$pageheader ^= "\0\0\0\0\0\0\0\0\xff\xff";
+	sysseek($fh, $page_offset, 0) or die "sysseek failed: $!";
+	syswrite($fh, $pageheader) or die "syswrite failed: $!";
+	close $fh;
+
+	return;
+}
+
+=pod
+
 =back
 
 =cut
+
+##########################################################################
+
+package PostgreSQL::Test::Cluster::V_11; ## no critic (ProhibitMultiplePackages)
+
+# parent.pm is not present in all perl versions before 5.10.1, so instead
+# do directly what it would do for this:
+# use parent -norequire, qw(PostgreSQL::Test::Cluster);
+push @PostgreSQL::Test::Cluster::V_11::ISA, 'PostgreSQL::Test::Cluster';
+
+# https://www.postgresql.org/docs/11/release-11.html
+
+# max_wal_senders + superuser_reserved_connections must be < max_connections
+# uses recovery.conf
+
+sub _recovery_file { return "recovery.conf"; }
+
+sub set_standby_mode
+{
+    my $self = shift;
+    $self->append_conf("recovery.conf", "standby_mode = on\n");
+}
+
+sub init
+{
+    my ($self, %params) = @_;
+    $self->SUPER::init(%params);
+    $self->adjust_conf('postgresql.conf', 'max_wal_senders',
+                      $params{allows_streaming} ? 5 : 0);
+}
+
+##########################################################################
+
+package PostgreSQL::Test::Cluster::V_10; ## no critic (ProhibitMultiplePackages)
+
+# use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
+push @PostgreSQL::Test::Cluster::V_10::ISA, 'PostgreSQL::Test::Cluster::V_11';
+
+# https://www.postgresql.org/docs/10/release-10.html
+
+########################################################################
 
 1;

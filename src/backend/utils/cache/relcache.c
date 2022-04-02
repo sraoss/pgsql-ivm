@@ -56,6 +56,7 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_publication.h"
+#include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_rewrite.h"
 #include "catalog/pg_shseclabel.h"
 #include "catalog/pg_statistic_ext.h"
@@ -722,6 +723,8 @@ RelationBuildTupleDesc(Relation relation)
  * entry, because that keeps the update logic in RelationClearRelation()
  * manageable.  The other subsidiary data structures are simple enough
  * to be easy to free explicitly, anyway.
+ *
+ * Note: The relation's reloptions must have been extracted first.
  */
 static void
 RelationBuildRuleLock(Relation relation)
@@ -787,6 +790,7 @@ RelationBuildRuleLock(Relation relation)
 		Datum		rule_datum;
 		char	   *rule_str;
 		RewriteRule *rule;
+		Oid			check_as_user;
 
 		rule = (RewriteRule *) MemoryContextAlloc(rulescxt,
 												  sizeof(RewriteRule));
@@ -826,10 +830,23 @@ RelationBuildRuleLock(Relation relation)
 		pfree(rule_str);
 
 		/*
-		 * We want the rule's table references to be checked as though by the
-		 * table owner, not the user referencing the rule.  Therefore, scan
-		 * through the rule's actions and set the checkAsUser field on all
-		 * rtable entries.  We have to look at the qual as well, in case it
+		 * If this is a SELECT rule defining a view, and the view has
+		 * "security_invoker" set, we must perform all permissions checks on
+		 * relations referred to by the rule as the invoking user.
+		 *
+		 * In all other cases (including non-SELECT rules on security invoker
+		 * views), perform the permissions checks as the relation owner.
+		 */
+		if (rule->event == CMD_SELECT &&
+			relation->rd_rel->relkind == RELKIND_VIEW &&
+			RelationHasSecurityInvoker(relation))
+			check_as_user = InvalidOid;
+		else
+			check_as_user = relation->rd_rel->relowner;
+
+		/*
+		 * Scan through the rule's actions and set the checkAsUser field on
+		 * all rtable entries. We have to look at the qual as well, in case it
 		 * contains sublinks.
 		 *
 		 * The reason for doing this when the rule is loaded, rather than when
@@ -838,8 +855,8 @@ RelationBuildRuleLock(Relation relation)
 		 * the rule tree during load is relatively cheap (compared to
 		 * constructing it in the first place), so we do it here.
 		 */
-		setRuleCheckAsUser((Node *) rule->actions, relation->rd_rel->relowner);
-		setRuleCheckAsUser(rule->qual, relation->rd_rel->relowner);
+		setRuleCheckAsUser((Node *) rule->actions, check_as_user);
+		setRuleCheckAsUser(rule->qual, check_as_user);
 
 		if (numlocks >= maxlocks)
 		{
@@ -1164,27 +1181,6 @@ retry:
 	 */
 	RelationBuildTupleDesc(relation);
 
-	/*
-	 * Fetch rules and triggers that affect this relation
-	 */
-	if (relation->rd_rel->relhasrules)
-		RelationBuildRuleLock(relation);
-	else
-	{
-		relation->rd_rules = NULL;
-		relation->rd_rulescxt = NULL;
-	}
-
-	if (relation->rd_rel->relhastriggers)
-		RelationBuildTriggers(relation);
-	else
-		relation->trigdesc = NULL;
-
-	if (relation->rd_rel->relrowsecurity)
-		RelationBuildRowSecurity(relation);
-	else
-		relation->rd_rsdesc = NULL;
-
 	/* foreign key data is not loaded till asked for */
 	relation->rd_fkeylist = NIL;
 	relation->rd_fkeyvalid = false;
@@ -1215,6 +1211,30 @@ retry:
 
 	/* extract reloptions if any */
 	RelationParseRelOptions(relation, pg_class_tuple);
+
+	/*
+	 * Fetch rules and triggers that affect this relation.
+	 *
+	 * Note that RelationBuildRuleLock() relies on this being done after
+	 * extracting the relation's reloptions.
+	 */
+	if (relation->rd_rel->relhasrules)
+		RelationBuildRuleLock(relation);
+	else
+	{
+		relation->rd_rules = NULL;
+		relation->rd_rulescxt = NULL;
+	}
+
+	if (relation->rd_rel->relhastriggers)
+		RelationBuildTriggers(relation);
+	else
+		relation->trigdesc = NULL;
+
+	if (relation->rd_rel->relrowsecurity)
+		RelationBuildRowSecurity(relation);
+	else
+		relation->rd_rsdesc = NULL;
 
 	/*
 	 * initialize the relation lock manager information
@@ -3728,7 +3748,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 		/* handle these directly, at least for now */
 		SMgrRelation srel;
 
-		srel = RelationCreateStorage(newrnode, persistence);
+		srel = RelationCreateStorage(newrnode, persistence, true);
 		smgrclose(srel);
 	}
 	else
@@ -5545,6 +5565,8 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 	Oid			schemaid;
 	List	   *ancestors = NIL;
 	Oid			relid = RelationGetRelid(relation);
+	char		relkind = relation->rd_rel->relkind;
+	char		objType;
 
 	/*
 	 * If not publishable, it publishes no actions.  (pgoutput_change() will
@@ -5555,6 +5577,8 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		memset(pubdesc, 0, sizeof(PublicationDesc));
 		pubdesc->rf_valid_for_update = true;
 		pubdesc->rf_valid_for_delete = true;
+		pubdesc->cols_valid_for_update = true;
+		pubdesc->cols_valid_for_delete = true;
 		return;
 	}
 
@@ -5567,12 +5591,21 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 	memset(pubdesc, 0, sizeof(PublicationDesc));
 	pubdesc->rf_valid_for_update = true;
 	pubdesc->rf_valid_for_delete = true;
+	pubdesc->cols_valid_for_update = true;
+	pubdesc->cols_valid_for_delete = true;
 
 	/* Fetch the publication membership info. */
 	puboids = GetRelationPublications(relid);
 	schemaid = RelationGetNamespace(relation);
-	puboids = list_concat_unique_oid(puboids, GetSchemaPublications(schemaid));
+	objType = pub_get_object_type_for_relkind(relkind);
 
+	puboids = list_concat_unique_oid(puboids,
+									 GetSchemaPublications(schemaid, objType));
+
+	/*
+	 * If this is a partion (and thus a table), lookup all ancestors and track
+	 * all publications them too.
+	 */
 	if (relation->rd_rel->relispartition)
 	{
 		/* Add publications that the ancestors are in too. */
@@ -5584,12 +5617,23 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 
 			puboids = list_concat_unique_oid(puboids,
 											 GetRelationPublications(ancestor));
+
+			/* include all publications publishing schema of all ancestors */
 			schemaid = get_rel_namespace(ancestor);
 			puboids = list_concat_unique_oid(puboids,
-											 GetSchemaPublications(schemaid));
+											 GetSchemaPublications(schemaid,
+																   PUB_OBJTYPE_TABLE));
 		}
 	}
-	puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
+
+	/*
+	 * Consider also FOR ALL TABLES and FOR ALL SEQUENCES publications,
+	 * depending on the relkind of the relation.
+	 */
+	if (relation->rd_rel->relkind == RELKIND_SEQUENCE)
+		puboids = list_concat_unique_oid(puboids, GetAllSequencesPublications());
+	else
+		puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
 
 	foreach(lc, puboids)
 	{
@@ -5608,6 +5652,7 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		pubdesc->pubactions.pubupdate |= pubform->pubupdate;
 		pubdesc->pubactions.pubdelete |= pubform->pubdelete;
 		pubdesc->pubactions.pubtruncate |= pubform->pubtruncate;
+		pubdesc->pubactions.pubsequence |= pubform->pubsequence;
 
 		/*
 		 * Check if all columns referenced in the filter expression are part of
@@ -5618,13 +5663,30 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		 */
 		if (!pubform->puballtables &&
 			(pubform->pubupdate || pubform->pubdelete) &&
-			contain_invalid_rfcolumn(pubid, relation, ancestors,
+			pub_rf_contains_invalid_column(pubid, relation, ancestors,
 									 pubform->pubviaroot))
 		{
 			if (pubform->pubupdate)
 				pubdesc->rf_valid_for_update = false;
 			if (pubform->pubdelete)
 				pubdesc->rf_valid_for_delete = false;
+		}
+
+		/*
+		 * Check if all columns are part of the REPLICA IDENTITY index or not.
+		 *
+		 * If the publication is FOR ALL TABLES then it means the table has no
+		 * column list and we can skip the validation.
+		 */
+		if (!pubform->puballtables &&
+			(pubform->pubupdate || pubform->pubdelete) &&
+			pub_collist_contains_invalid_column(pubid, relation, ancestors,
+									 pubform->pubviaroot))
+		{
+			if (pubform->pubupdate)
+				pubdesc->cols_valid_for_update = false;
+			if (pubform->pubdelete)
+				pubdesc->cols_valid_for_delete = false;
 		}
 
 		ReleaseSysCache(tup);
@@ -5637,6 +5699,16 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 		if (pubdesc->pubactions.pubinsert && pubdesc->pubactions.pubupdate &&
 			pubdesc->pubactions.pubdelete && pubdesc->pubactions.pubtruncate &&
 			!pubdesc->rf_valid_for_update && !pubdesc->rf_valid_for_delete)
+			break;
+
+		/*
+		 * If we know everything is replicated and the column list is invalid
+		 * for update and delete, there is no point to check for other
+		 * publications.
+		 */
+		if (pubdesc->pubactions.pubinsert && pubdesc->pubactions.pubupdate &&
+			pubdesc->pubactions.pubdelete && pubdesc->pubactions.pubtruncate &&
+			!pubdesc->cols_valid_for_update && !pubdesc->cols_valid_for_delete)
 			break;
 	}
 
@@ -6511,7 +6583,7 @@ write_item(const void *data, Size len, FILE *fp)
 {
 	if (fwrite(&len, 1, sizeof(len), fp) != sizeof(len))
 		elog(FATAL, "could not write init file");
-	if (fwrite(data, 1, len, fp) != len)
+	if (len > 0 && fwrite(data, 1, len, fp) != len)
 		elog(FATAL, "could not write init file");
 }
 

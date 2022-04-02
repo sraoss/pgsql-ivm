@@ -333,24 +333,46 @@ $node_standby3->init_from_backup($node_primary3, $backup_name,
 $node_standby3->append_conf('postgresql.conf', "primary_slot_name = 'rep3'");
 $node_standby3->start;
 $node_primary3->wait_for_catchup($node_standby3);
-my $senderpid = $node_primary3->safe_psql('postgres',
-	"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walsender'");
 
-# We've seen occasional cases where multiple walsender pids are active. An
-# immediate shutdown may hide evidence of a locking bug. So if multiple
-# walsenders are observed, shut down in fast mode, and collect some more
-# information.
-if (not like($senderpid, qr/^[0-9]+$/, "have walsender pid $senderpid"))
+my $senderpid;
+
+# We've seen occasional cases where multiple walsender pids are active. It
+# could be that we're just observing process shutdown being slow. To collect
+# more information, retry a couple times, print a bit of debugging information
+# each iteration. Don't fail the test if retries find just one pid, the
+# buildfarm failures are too noisy.
+my $i = 0;
+while (1)
 {
 	my ($stdout, $stderr);
+
+	$senderpid = $node_primary3->safe_psql('postgres',
+	    "SELECT pid FROM pg_stat_activity WHERE backend_type = 'walsender'");
+
+	last if $senderpid =~ qr/^[0-9]+$/;
+
+	diag "multiple walsenders active in iteration $i";
+
+	# show information about all active connections
 	$node_primary3->psql('postgres',
 						 "\\a\\t\nSELECT * FROM pg_stat_activity",
 						 stdout => \$stdout, stderr => \$stderr);
 	diag $stdout, $stderr;
-	$node_primary3->stop('fast');
-	$node_standby3->stop('fast');
-	die "could not determine walsender pid, can't continue";
+
+	# unlikely that the problem would resolve after 15s, so give up at point
+	if ($i++ == 150)
+	{
+		# An immediate shutdown may hide evidence of a locking bug. If
+		# retrying didn't resolve the issue, shut down in fast mode.
+		$node_primary3->stop('fast');
+		$node_standby3->stop('fast');
+		die "could not determine walsender pid, can't continue";
+	}
+
+	usleep(100_000);
 }
+
+like($senderpid, qr/^[0-9]+$/, "have walsender pid $senderpid");
 
 my $receiverpid = $node_standby3->safe_psql('postgres',
 	"SELECT pid FROM pg_stat_activity WHERE backend_type = 'walreceiver'");

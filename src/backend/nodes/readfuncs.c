@@ -283,6 +283,8 @@ _readQuery(void)
 	READ_NODE_FIELD(setOperations);
 	READ_NODE_FIELD(constraintDeps);
 	READ_NODE_FIELD(withCheckOptions);
+	READ_NODE_FIELD(mergeActionList);
+	READ_BOOL_FIELD(mergeUseOuterJoin);
 	READ_LOCATION_FIELD(stmt_location);
 	READ_INT_FIELD(stmt_len);
 
@@ -468,6 +470,42 @@ _readCommonTableExpr(void)
 	READ_NODE_FIELD(ctecoltypes);
 	READ_NODE_FIELD(ctecoltypmods);
 	READ_NODE_FIELD(ctecolcollations);
+
+	READ_DONE();
+}
+
+/*
+ * _readMergeWhenClause
+ */
+static MergeWhenClause *
+_readMergeWhenClause(void)
+{
+	READ_LOCALS(MergeWhenClause);
+
+	READ_BOOL_FIELD(matched);
+	READ_ENUM_FIELD(commandType, CmdType);
+	READ_NODE_FIELD(condition);
+	READ_NODE_FIELD(targetList);
+	READ_NODE_FIELD(values);
+	READ_ENUM_FIELD(override, OverridingKind);
+
+	READ_DONE();
+}
+
+/*
+ * _readMergeAction
+ */
+static MergeAction *
+_readMergeAction(void)
+{
+	READ_LOCALS(MergeAction);
+
+	READ_BOOL_FIELD(matched);
+	READ_ENUM_FIELD(commandType, CmdType);
+	READ_ENUM_FIELD(override, OverridingKind);
+	READ_NODE_FIELD(qual);
+	READ_NODE_FIELD(targetList);
+	READ_NODE_FIELD(updateColnos);
 
 	READ_DONE();
 }
@@ -1391,6 +1429,165 @@ _readOnConflictExpr(void)
 }
 
 /*
+ * _readJsonFormat
+ */
+static JsonFormat *
+_readJsonFormat(void)
+{
+	READ_LOCALS(JsonFormat);
+
+	READ_ENUM_FIELD(format_type, JsonFormatType);
+	READ_ENUM_FIELD(encoding, JsonEncoding);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonReturning
+ */
+static JsonReturning *
+_readJsonReturning(void)
+{
+	READ_LOCALS(JsonReturning);
+
+	READ_NODE_FIELD(format);
+	READ_OID_FIELD(typid);
+	READ_INT_FIELD(typmod);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonValueExpr
+ */
+static JsonValueExpr *
+_readJsonValueExpr(void)
+{
+	READ_LOCALS(JsonValueExpr);
+
+	READ_NODE_FIELD(raw_expr);
+	READ_NODE_FIELD(formatted_expr);
+	READ_NODE_FIELD(format);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonConstructorExpr
+ */
+static JsonConstructorExpr *
+_readJsonConstructorExpr(void)
+{
+	READ_LOCALS(JsonConstructorExpr);
+
+	READ_NODE_FIELD(args);
+	READ_NODE_FIELD(func);
+	READ_NODE_FIELD(coercion);
+	READ_INT_FIELD(type);
+	READ_NODE_FIELD(returning);
+	READ_BOOL_FIELD(unique);
+	READ_BOOL_FIELD(absent_on_null);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonBehavior
+ */
+static JsonBehavior *
+_readJsonBehavior(void)
+{
+	READ_LOCALS(JsonBehavior);
+
+	READ_ENUM_FIELD(btype, JsonBehaviorType);
+	READ_NODE_FIELD(default_expr);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonExpr
+ */
+static JsonExpr *
+_readJsonExpr(void)
+{
+	READ_LOCALS(JsonExpr);
+
+	READ_ENUM_FIELD(op, JsonExprOp);
+	READ_NODE_FIELD(formatted_expr);
+	READ_NODE_FIELD(result_coercion);
+	READ_NODE_FIELD(format);
+	READ_NODE_FIELD(path_spec);
+	READ_NODE_FIELD(passing_values);
+	READ_NODE_FIELD(passing_names);
+	READ_NODE_FIELD(returning);
+	READ_NODE_FIELD(on_error);
+	READ_NODE_FIELD(on_empty);
+	READ_NODE_FIELD(coercions);
+	READ_ENUM_FIELD(wrapper, JsonWrapper);
+	READ_BOOL_FIELD(omit_quotes);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonCoercion
+ */
+static JsonCoercion *
+_readJsonCoercion(void)
+{
+	READ_LOCALS(JsonCoercion);
+
+	READ_NODE_FIELD(expr);
+	READ_BOOL_FIELD(via_populate);
+	READ_BOOL_FIELD(via_io);
+	READ_OID_FIELD(collation);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonItemCoercions
+ */
+static JsonItemCoercions *
+_readJsonItemCoercions(void)
+{
+	READ_LOCALS(JsonItemCoercions);
+
+	READ_NODE_FIELD(null);
+	READ_NODE_FIELD(string);
+	READ_NODE_FIELD(numeric);
+	READ_NODE_FIELD(boolean);
+	READ_NODE_FIELD(date);
+	READ_NODE_FIELD(time);
+	READ_NODE_FIELD(timetz);
+	READ_NODE_FIELD(timestamp);
+	READ_NODE_FIELD(timestamptz);
+	READ_NODE_FIELD(composite);
+
+	READ_DONE();
+}
+
+/*
+ * _readJsonIsPredicate
+ */
+static JsonIsPredicate *
+_readJsonIsPredicate()
+{
+	READ_LOCALS(JsonIsPredicate);
+
+	READ_NODE_FIELD(expr);
+	READ_ENUM_FIELD(value_type, JsonValueType);
+	READ_BOOL_FIELD(unique_keys);
+	READ_LOCATION_FIELD(location);
+
+	READ_DONE();
+}
+
+/*
  *	Stuff from pathnodes.h.
  *
  * Mostly we don't need to read planner nodes back in again, but some
@@ -1702,6 +1899,7 @@ _readModifyTable(void)
 	READ_NODE_FIELD(onConflictWhere);
 	READ_UINT_FIELD(exclRelRTI);
 	READ_NODE_FIELD(exclRelTlist);
+	READ_NODE_FIELD(mergeActionLists);
 
 	READ_DONE();
 }
@@ -2746,6 +2944,10 @@ parseNodeString(void)
 		return_value = _readCTECycleClause();
 	else if (MATCH("COMMONTABLEEXPR", 15))
 		return_value = _readCommonTableExpr();
+	else if (MATCH("MERGEWHENCLAUSE", 15))
+		return_value = _readMergeWhenClause();
+	else if (MATCH("MERGEACTION", 11))
+		return_value = _readMergeAction();
 	else if (MATCH("SETOPERATIONSTMT", 16))
 		return_value = _readSetOperationStmt();
 	else if (MATCH("ALIAS", 5))
@@ -2976,6 +3178,24 @@ parseNodeString(void)
 		return_value = _readPartitionBoundSpec();
 	else if (MATCH("PARTITIONRANGEDATUM", 19))
 		return_value = _readPartitionRangeDatum();
+	else if (MATCH("JSONFORMAT", 10))
+		return_value = _readJsonFormat();
+	else if (MATCH("JSONRETURNING", 13))
+		return_value = _readJsonReturning();
+	else if (MATCH("JSONVALUEEXPR", 13))
+		return_value = _readJsonValueExpr();
+	else if (MATCH("JSONCTOREXPR", 12))
+		return_value = _readJsonConstructorExpr();
+	else if (MATCH("JSONISPREDICATE", 15))
+		return_value = _readJsonIsPredicate();
+	else if (MATCH("JSONBEHAVIOR", 12))
+		return_value = _readJsonBehavior();
+	else if (MATCH("JSONEXPR", 8))
+		return_value = _readJsonExpr();
+	else if (MATCH("JSONCOERCION", 12))
+		return_value = _readJsonCoercion();
+	else if (MATCH("JSONITEMCOERCIONS", 17))
+		return_value = _readJsonItemCoercions();
 	else
 	{
 		elog(ERROR, "badly formatted node string \"%.32s\"...", token);

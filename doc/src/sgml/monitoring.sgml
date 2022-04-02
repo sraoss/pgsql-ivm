@@ -280,7 +280,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
    (sessions belonging to a role that they are a member of).  In rows about
    other sessions, many columns will be null.  Note, however, that the
    existence of a session and its general properties such as its sessions user
-   and database are visible to all users.  Superusers and members of the
+   and database are visible to all users.  Superusers and roles with privileges of
    built-in role <literal>pg_read_all_stats</literal> (see also <xref
    linkend="predefined-roles"/>) can see all the information about all sessions.
   </para>
@@ -1503,6 +1503,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting for a write of a two phase state file.</entry>
      </row>
      <row>
+      <entry><literal>VersionFileWrite</literal></entry>
+      <entry>Waiting for the version file to be written while creating a database.</entry>
+     </row>
+     <row>
       <entry><literal>WALBootstrapSync</literal></entry>
       <entry>Waiting for WAL to reach durable storage during
        bootstrapping.</entry>
@@ -2236,6 +2240,10 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry>Waiting during base backup when throttling activity.</entry>
      </row>
      <row>
+      <entry><literal>CheckpointWriteDelay</literal></entry>
+      <entry>Waiting between writes while performing a checkpoint.</entry>
+     </row>
+     <row>
       <entry><literal>PgSleep</literal></entry>
       <entry>Waiting due to a call to <function>pg_sleep</function> or
        a sibling function.</entry>
@@ -2249,6 +2257,11 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry><literal>RecoveryRetrieveRetryInterval</literal></entry>
       <entry>Waiting during recovery when WAL data is not available from any
        source (<filename>pg_wal</filename>, archive or stream).</entry>
+     </row>
+     <row>
+      <entry><literal>RegisterSyncRequest</literal></entry>
+      <entry>Waiting while sending synchronization requests to the
+       checkpointer, because the request queue is full.</entry>
      </row>
      <row>
       <entry><literal>VacuumDelay</literal></entry>

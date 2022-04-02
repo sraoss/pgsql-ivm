@@ -153,6 +153,7 @@ AttrMissing
 AttrNumber
 AttributeOpts
 AuthRequest
+AuthToken
 AutoPrewarmSharedState
 AutoVacOpts
 AutoVacuumShmemStruct
@@ -460,6 +461,8 @@ CoverPos
 CreateAmStmt
 CreateCastStmt
 CreateConversionStmt
+CreateDBRelInfo
+CreateDBStrategy
 CreateDomainStmt
 CreateEnumStmt
 CreateEventTrigStmt
@@ -533,6 +536,7 @@ DeadLockState
 DeallocateStmt
 DeclareCursorStmt
 DecodedBkpBlock
+DecodedXLogRecord
 DecodingOutputState
 DefElem
 DefElemAction
@@ -1062,7 +1066,6 @@ HashState
 HashTapeInfo
 HashValueFunc
 HbaLine
-HbaToken
 HeadlineJsonState
 HeadlineParsedText
 HeadlineWordEntry
@@ -1440,6 +1443,8 @@ MemoryContextCounters
 MemoryContextData
 MemoryContextMethods
 MemoryStatsPrintFunc
+MergeAction
+MergeActionState
 MergeAppend
 MergeAppendPath
 MergeAppendState
@@ -1448,6 +1453,8 @@ MergeJoinClause
 MergeJoinState
 MergePath
 MergeScanSelCache
+MergeStmt
+MergeWhenClause
 MetaCommand
 MinMaxAggInfo
 MinMaxAggPath
@@ -1460,6 +1467,7 @@ MinimalTupleTableSlot
 MinmaxMultiOpaque
 MinmaxOpaque
 ModifyTable
+ModifyTableContext
 ModifyTablePath
 ModifyTableState
 MorphOpaque
@@ -1608,6 +1616,7 @@ PGMessageField
 PGModuleMagicFunction
 PGNoticeHooks
 PGOutputData
+PGOutputTxnData
 PGPROC
 PGP_CFB
 PGP_Context
@@ -1915,6 +1924,8 @@ PgFdwScanState
 PgIfAddrCallback
 PgStat_ArchiverStats
 PgStat_BackendFunctionEntry
+PgStat_BgWriterStats
+PgStat_CheckpointerStats
 PgStat_Counter
 PgStat_FunctionCallUsage
 PgStat_FunctionCounts
@@ -1926,6 +1937,7 @@ PgStat_MsgAnlAncestors
 PgStat_MsgArchiver
 PgStat_MsgAutovacStart
 PgStat_MsgBgWriter
+PgStat_MsgCheckpointer
 PgStat_MsgChecksumFailure
 PgStat_MsgConnect
 PgStat_MsgDeadlock
@@ -2694,7 +2706,7 @@ ToastTupleContext
 ToastedAttribute
 TocEntry
 TokenAuxData
-TokenizedLine
+TokenizedAuthLine
 TrackItem
 TransInvalidationInfo
 TransState
@@ -2793,6 +2805,7 @@ UnlistenStmt
 UnpackTarState
 UnresolvedTup
 UnresolvedTupData
+UpdateContext
 UpdateStmt
 UpperRelationKind
 UpperUniquePath
@@ -2939,6 +2952,7 @@ XLogPageHeader
 XLogPageHeaderData
 XLogPageReadCB
 XLogPageReadPrivate
+XLogPageReadResult
 XLogReaderRoutine
 XLogReaderState
 XLogRecData
@@ -3694,7 +3708,8 @@ xl_btree_update
 xl_btree_vacuum
 xl_clog_truncate
 xl_commit_ts_truncate
-xl_dbase_create_rec
+xl_dbase_create_file_copy_rec
+xl_dbase_create_wal_log_rec
 xl_dbase_drop_rec
 xl_end_of_recovery
 xl_hash_add_ovfl_page

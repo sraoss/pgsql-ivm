@@ -32,6 +32,7 @@
 
 static bool DescribeQuery(const char *query, double *elapsed_msec);
 static bool ExecQueryUsingCursor(const char *query, double *elapsed_msec);
+static bool ExecQueryAndProcessResult(const char *query, double *elapsed_msec, bool *svpt_gone_p);
 static bool command_no_begin(const char *query);
 static bool is_select_command(const char *query);
 
@@ -892,6 +893,116 @@ loop_exit:
 
 
 /*
+ * Marshal the COPY data.  Either subroutine will get the
+ * connection out of its COPY state, then call PQresultStatus()
+ * once and report any error.  Return whether all was ok.
+ *
+ * For COPY OUT, direct the output to pset.copyStream if it's set,
+ * otherwise to pset.gfname if it's set, otherwise to queryFout.
+ * For COPY IN, use pset.copyStream as data source if it's set,
+ * otherwise cur_cmd_source.
+ *
+ * Update result if further processing is necessary, or NULL otherwise.
+ * Return a result when queryFout can safely output a result status: on COPY
+ * IN, or on COPY OUT if written to something other than pset.queryFout.
+ * Returning NULL prevents the command status from being printed, which we
+ * want if the status line doesn't get taken as part of the COPY data.
+ */
+static bool
+HandleCopyResult(PGresult **resultp)
+{
+	bool		success;
+	FILE	   *copystream;
+	PGresult   *copy_result;
+	ExecStatusType result_status = PQresultStatus(*resultp);
+
+	Assert(result_status == PGRES_COPY_OUT ||
+		   result_status == PGRES_COPY_IN);
+
+	SetCancelConn(pset.db);
+
+	if (result_status == PGRES_COPY_OUT)
+	{
+		bool		need_close = false;
+		bool		is_pipe = false;
+
+		if (pset.copyStream)
+		{
+			/* invoked by \copy */
+			copystream = pset.copyStream;
+		}
+		else if (pset.gfname)
+		{
+			/* invoked by \g */
+			if (openQueryOutputFile(pset.gfname,
+									&copystream, &is_pipe))
+			{
+				need_close = true;
+				if (is_pipe)
+					disable_sigpipe_trap();
+			}
+			else
+				copystream = NULL;	/* discard COPY data entirely */
+		}
+		else
+		{
+			/* fall back to the generic query output stream */
+			copystream = pset.queryFout;
+		}
+
+		success = handleCopyOut(pset.db,
+								copystream,
+								&copy_result)
+			&& (copystream != NULL);
+
+		/*
+		 * Suppress status printing if the report would go to the same
+		 * place as the COPY data just went.  Note this doesn't
+		 * prevent error reporting, since handleCopyOut did that.
+		 */
+		if (copystream == pset.queryFout)
+		{
+			PQclear(copy_result);
+			copy_result = NULL;
+		}
+
+		if (need_close)
+		{
+			/* close \g argument file/pipe */
+			if (is_pipe)
+			{
+				pclose(copystream);
+				restore_sigpipe_trap();
+			}
+			else
+			{
+				fclose(copystream);
+			}
+		}
+	}
+	else
+	{
+		/* COPY IN */
+		copystream = pset.copyStream ? pset.copyStream : pset.cur_cmd_source;
+		success = handleCopyIn(pset.db,
+							   copystream,
+							   PQbinaryTuples(*resultp),
+							   &copy_result);
+	}
+	ResetCancelConn();
+
+	/*
+	 * Replace the PGRES_COPY_OUT/IN result with COPY command's exit
+	 * status, or with NULL if we want to suppress printing anything.
+	 */
+	PQclear(*resultp);
+	*resultp = copy_result;
+
+	return success;
+}
+
+
+/*
  * ProcessResult: utility function for use by SendQuery() only
  *
  * When our command string contained a COPY FROM STDIN or COPY TO STDOUT,
@@ -956,99 +1067,7 @@ ProcessResult(PGresult **resultp)
 		}
 
 		if (is_copy)
-		{
-			/*
-			 * Marshal the COPY data.  Either subroutine will get the
-			 * connection out of its COPY state, then call PQresultStatus()
-			 * once and report any error.
-			 *
-			 * For COPY OUT, direct the output to pset.copyStream if it's set,
-			 * otherwise to pset.gfname if it's set, otherwise to queryFout.
-			 * For COPY IN, use pset.copyStream as data source if it's set,
-			 * otherwise cur_cmd_source.
-			 */
-			FILE	   *copystream;
-			PGresult   *copy_result;
-
-			SetCancelConn(pset.db);
-			if (result_status == PGRES_COPY_OUT)
-			{
-				bool		need_close = false;
-				bool		is_pipe = false;
-
-				if (pset.copyStream)
-				{
-					/* invoked by \copy */
-					copystream = pset.copyStream;
-				}
-				else if (pset.gfname)
-				{
-					/* invoked by \g */
-					if (openQueryOutputFile(pset.gfname,
-											&copystream, &is_pipe))
-					{
-						need_close = true;
-						if (is_pipe)
-							disable_sigpipe_trap();
-					}
-					else
-						copystream = NULL;	/* discard COPY data entirely */
-				}
-				else
-				{
-					/* fall back to the generic query output stream */
-					copystream = pset.queryFout;
-				}
-
-				success = handleCopyOut(pset.db,
-										copystream,
-										&copy_result)
-					&& success
-					&& (copystream != NULL);
-
-				/*
-				 * Suppress status printing if the report would go to the same
-				 * place as the COPY data just went.  Note this doesn't
-				 * prevent error reporting, since handleCopyOut did that.
-				 */
-				if (copystream == pset.queryFout)
-				{
-					PQclear(copy_result);
-					copy_result = NULL;
-				}
-
-				if (need_close)
-				{
-					/* close \g argument file/pipe */
-					if (is_pipe)
-					{
-						pclose(copystream);
-						restore_sigpipe_trap();
-					}
-					else
-					{
-						fclose(copystream);
-					}
-				}
-			}
-			else
-			{
-				/* COPY IN */
-				copystream = pset.copyStream ? pset.copyStream : pset.cur_cmd_source;
-				success = handleCopyIn(pset.db,
-									   copystream,
-									   PQbinaryTuples(*resultp),
-									   &copy_result) && success;
-			}
-			ResetCancelConn();
-
-			/*
-			 * Replace the PGRES_COPY_OUT/IN result with COPY command's exit
-			 * status, or with NULL if we want to suppress printing anything.
-			 */
-			PQclear(*resultp);
-			*resultp = copy_result;
-		}
+			success = HandleCopyResult(resultp);
 		else if (first_cycle)
 		{
 			/* fast path: no COPY commands; PQexec visited all results */
@@ -1195,12 +1214,12 @@ bool
 SendQuery(const char *query)
 {
 	bool		timing = pset.timing;
-	PGresult   *result;
 	PGTransactionStatusType transaction_status;
 	double		elapsed_msec = 0;
 	bool		OK = false;
 	int			i;
 	bool		on_error_rollback_savepoint = false;
+	bool		svpt_gone = false;
 
 	if (!pset.db)
 	{
@@ -1247,6 +1266,8 @@ SendQuery(const char *query)
 		!pset.autocommit &&
 		!command_no_begin(query))
 	{
+		PGresult   *result;
+
 		result = PQexec(pset.db, "BEGIN");
 		if (PQresultStatus(result) != PGRES_COMMAND_OK)
 		{
@@ -1264,6 +1285,8 @@ SendQuery(const char *query)
 		(pset.cur_cmd_interactive ||
 		 pset.on_error_rollback == PSQL_ERROR_ROLLBACK_ON))
 	{
+		PGresult   *result;
+
 		result = PQexec(pset.db, "SAVEPOINT pg_psql_temporary_savepoint");
 		if (PQresultStatus(result) != PGRES_COMMAND_OK)
 		{
@@ -1281,41 +1304,18 @@ SendQuery(const char *query)
 		/* Describe query's result columns, without executing it */
 		OK = DescribeQuery(query, &elapsed_msec);
 		ResetCancelConn();
-		result = NULL;			/* PQclear(NULL) does nothing */
 	}
 	else if (pset.fetch_count <= 0 || pset.gexec_flag ||
 			 pset.crosstab_flag || !is_select_command(query))
 	{
 		/* Default fetch-it-all-and-print mode */
-		instr_time	before,
-					after;
-
-		if (timing)
-			INSTR_TIME_SET_CURRENT(before);
-
-		result = PQexec(pset.db, query);
-
-		/* these operations are included in the timing result: */
-		ResetCancelConn();
-		OK = ProcessResult(&result);
-
-		if (timing)
-		{
-			INSTR_TIME_SET_CURRENT(after);
-			INSTR_TIME_SUBTRACT(after, before);
-			elapsed_msec = INSTR_TIME_GET_MILLISEC(after);
-		}
-
-		/* but printing result isn't: */
-		if (OK && result)
-			OK = PrintQueryResult(result);
+		OK = ExecQueryAndProcessResult(query, &elapsed_msec, &svpt_gone);
 	}
 	else
 	{
 		/* Fetch-in-segments mode */
 		OK = ExecQueryUsingCursor(query, &elapsed_msec);
 		ResetCancelConn();
-		result = NULL;			/* PQclear(NULL) does nothing */
 	}
 
 	if (!OK && pset.echo == PSQL_ECHO_ERRORS)
@@ -1340,20 +1340,11 @@ SendQuery(const char *query)
 				break;
 
 			case PQTRANS_INTRANS:
-
 				/*
-				 * Do nothing if they are messing with savepoints themselves:
-				 * If the user did COMMIT AND CHAIN, RELEASE or ROLLBACK, our
-				 * savepoint is gone. If they issued a SAVEPOINT, releasing
-				 * ours would remove theirs.
+				 * Release our savepoint, but do nothing if they are messing
+				 * with savepoints themselves
 				 */
-				if (result &&
-					(strcmp(PQcmdStatus(result), "COMMIT") == 0 ||
-					 strcmp(PQcmdStatus(result), "SAVEPOINT") == 0 ||
-					 strcmp(PQcmdStatus(result), "RELEASE") == 0 ||
-					 strcmp(PQcmdStatus(result), "ROLLBACK") == 0))
-					svptcmd = NULL;
-				else
+				if (!svpt_gone)
 					svptcmd = "RELEASE pg_psql_temporary_savepoint";
 				break;
 
@@ -1379,15 +1370,12 @@ SendQuery(const char *query)
 				ClearOrSaveResult(svptres);
 				OK = false;
 
-				PQclear(result);
 				ResetCancelConn();
 				goto sendquery_cleanup;
 			}
 			PQclear(svptres);
 		}
 	}
-
-	ClearOrSaveResult(result);
 
 	/* Possible microtiming output */
 	if (timing)
@@ -1559,6 +1547,60 @@ DescribeQuery(const char *query, double *elapsed_msec)
 	}
 
 	SetResultVariables(result, OK);
+	ClearOrSaveResult(result);
+
+	return OK;
+}
+
+
+/*
+ * ExecQueryAndProcessResults: SendQuery() subroutine for the normal way to
+ * send a query
+ */
+static bool
+ExecQueryAndProcessResult(const char *query, double *elapsed_msec, bool *svpt_gone_p)
+{
+	bool		timing = pset.timing;
+	bool		OK;
+	instr_time	before,
+				after;
+	PGresult   *result;
+
+	if (timing)
+		INSTR_TIME_SET_CURRENT(before);
+
+	result = PQexec(pset.db, query);
+
+	/* these operations are included in the timing result: */
+	ResetCancelConn();
+	OK = ProcessResult(&result);
+
+	if (timing)
+	{
+		INSTR_TIME_SET_CURRENT(after);
+		INSTR_TIME_SUBTRACT(after, before);
+		*elapsed_msec = INSTR_TIME_GET_MILLISEC(after);
+	}
+
+	/* but printing result isn't: */
+	if (OK && result)
+		OK = PrintQueryResult(result);
+
+	/*
+	 * Check if the user ran any command that would destroy our internal
+	 * savepoint: If the user did COMMIT AND CHAIN, RELEASE or ROLLBACK, our
+	 * savepoint is gone. If they issued a SAVEPOINT, releasing ours would
+	 * remove theirs.
+	 */
+	if (result && svpt_gone_p)
+	{
+		const char *cmd = PQcmdStatus(result);
+		*svpt_gone_p = (strcmp(cmd, "COMMIT") == 0 ||
+						strcmp(cmd, "SAVEPOINT") == 0 ||
+						strcmp(cmd, "RELEASE") == 0 ||
+						strcmp(cmd, "ROLLBACK") == 0);
+	}
+
 	ClearOrSaveResult(result);
 
 	return OK;

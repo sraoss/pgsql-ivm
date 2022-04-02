@@ -66,6 +66,7 @@
 #include "catalog/pg_control.h"
 #include "catalog/pg_database.h"
 #include "common/controldata_utils.h"
+#include "common/file_utils.h"
 #include "executor/instrument.h"
 #include "miscadmin.h"
 #include "pg_trace.h"
@@ -970,6 +971,8 @@ XLogInsertRecord(XLogRecData *rdata,
 	if (XLOG_DEBUG)
 	{
 		static XLogReaderState *debug_reader = NULL;
+		XLogRecord *record;
+		DecodedXLogRecord *decoded;
 		StringInfoData buf;
 		StringInfoData recordBuf;
 		char	   *errormsg = NULL;
@@ -989,6 +992,11 @@ XLogInsertRecord(XLogRecData *rdata,
 		for (; rdata != NULL; rdata = rdata->next)
 			appendBinaryStringInfo(&recordBuf, rdata->data, rdata->len);
 
+		/* We also need temporary space to decode the record. */
+		record = (XLogRecord *) recordBuf.data;
+		decoded = (DecodedXLogRecord *)
+			palloc(DecodeXLogRecordRequiredSpace(record->xl_tot_len));
+
 		if (!debug_reader)
 			debug_reader = XLogReaderAllocate(wal_segment_size, NULL,
 											  XL_ROUTINE(), NULL);
@@ -997,7 +1005,10 @@ XLogInsertRecord(XLogRecData *rdata,
 		{
 			appendStringInfoString(&buf, "error decoding record: out of memory while allocating a WAL reading processor");
 		}
-		else if (!DecodeXLogRecord(debug_reader, (XLogRecord *) recordBuf.data,
+		else if (!DecodeXLogRecord(debug_reader,
+								   decoded,
+								   record,
+								   EndPos,
 								   &errormsg))
 		{
 			appendStringInfo(&buf, "error decoding record: %s",
@@ -1006,10 +1017,14 @@ XLogInsertRecord(XLogRecData *rdata,
 		else
 		{
 			appendStringInfoString(&buf, " - ");
+
+			debug_reader->record = decoded;
 			xlog_outdesc(&buf, debug_reader);
+			debug_reader->record = NULL;
 		}
 		elog(LOG, "%s", buf.data);
 
+		pfree(decoded);
 		pfree(buf.data);
 		pfree(recordBuf.data);
 		MemoryContextSwitchTo(oldCxt);
@@ -5869,7 +5884,7 @@ GetRedoRecPtr(void)
  * full-page image to be included in the WAL record.
  *
  * The returned values are cached copies from backend-private memory, and
- * possibly out-of-date or, indeed, uninitalized, in which case they will
+ * possibly out-of-date or, indeed, uninitialized, in which case they will
  * be InvalidXLogRecPtr and false, respectively.  XLogInsertRecord will
  * re-check them against up-to-date values, while holding the WAL insert lock.
  */
@@ -6297,6 +6312,14 @@ CreateCheckPoint(int flags)
 	CheckpointStats.ckpt_start_t = GetCurrentTimestamp();
 
 	/*
+	 * Let smgr prepare for checkpoint; this has to happen outside the
+	 * critical section and before we determine the REDO pointer.  Note that
+	 * smgr must not do anything that'd have to be undone if we decide no
+	 * checkpoint is needed.
+	 */
+	SyncPreCheckpoint();
+
+	/*
 	 * Use a critical section to force system panic if we have trouble.
 	 */
 	START_CRIT_SECTION();
@@ -6308,13 +6331,6 @@ CreateCheckPoint(int flags)
 		UpdateControlFile();
 		LWLockRelease(ControlFileLock);
 	}
-
-	/*
-	 * Let smgr prepare for checkpoint; this has to happen before we determine
-	 * the REDO pointer.  Note that smgr must not do anything that'd have to
-	 * be undone if we decide no checkpoint is needed.
-	 */
-	SyncPreCheckpoint();
 
 	/* Begin filling in the checkpoint WAL record */
 	MemSet(&checkPoint, 0, sizeof(checkPoint));
@@ -6501,17 +6517,29 @@ CreateCheckPoint(int flags)
 	 * and we will correctly flush the update below.  So we cannot miss any
 	 * xacts we need to wait for.
 	 */
-	vxids = GetVirtualXIDsDelayingChkpt(&nvxids);
+	vxids = GetVirtualXIDsDelayingChkpt(&nvxids, DELAY_CHKPT_START);
 	if (nvxids > 0)
 	{
 		do
 		{
 			pg_usleep(10000L);	/* wait for 10 msec */
-		} while (HaveVirtualXIDsDelayingChkpt(vxids, nvxids));
+		} while (HaveVirtualXIDsDelayingChkpt(vxids, nvxids,
+											  DELAY_CHKPT_START));
 	}
 	pfree(vxids);
 
 	CheckPointGuts(checkPoint.redo, flags);
+
+	vxids = GetVirtualXIDsDelayingChkpt(&nvxids, DELAY_CHKPT_COMPLETE);
+	if (nvxids > 0)
+	{
+		do
+		{
+			pg_usleep(10000L);	/* wait for 10 msec */
+		} while (HaveVirtualXIDsDelayingChkpt(vxids, nvxids,
+											  DELAY_CHKPT_COMPLETE));
+	}
+	pfree(vxids);
 
 	/*
 	 * Take a snapshot of running transactions and write this to WAL. This
@@ -7736,7 +7764,7 @@ xlog_redo(XLogReaderState *record)
 		 * resource manager needs to generate conflicts, it has to define a
 		 * separate WAL record type and redo routine.
 		 */
-		for (uint8 block_id = 0; block_id <= record->max_block_id; block_id++)
+		for (uint8 block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 		{
 			Buffer		buffer;
 
@@ -8291,6 +8319,19 @@ do_pg_start_backup(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 				continue;
 
 			snprintf(fullpath, sizeof(fullpath), "pg_tblspc/%s", de->d_name);
+
+			/*
+			 * Skip anything that isn't a symlink/junction.  For testing only,
+			 * we sometimes use allow_in_place_tablespaces to create
+			 * directories directly under pg_tblspc, which would fail below.
+			 */
+#ifdef WIN32
+			if (!pgwin32_is_junction(fullpath))
+				continue;
+#else
+			if (get_dirent_type(fullpath, de, false, ERROR) != PGFILETYPE_LNK)
+				continue;
+#endif
 
 #if defined(HAVE_READLINK) || defined(WIN32)
 			rllen = readlink(fullpath, linkpath, sizeof(linkpath));

@@ -702,6 +702,7 @@ typedef enum
 	DCH_month,
 	DCH_mon,
 	DCH_ms,
+	DCH_of,
 	DCH_p_m,
 	DCH_pm,
 	DCH_q,
@@ -709,6 +710,8 @@ typedef enum
 	DCH_sssss,
 	DCH_ssss,
 	DCH_ss,
+	DCH_tzh,
+	DCH_tzm,
 	DCH_tz,
 	DCH_us,
 	DCH_ww,
@@ -865,6 +868,7 @@ static const KeyWord DCH_keywords[] = {
 	{"month", 5, DCH_month, false, FROM_CHAR_DATE_GREGORIAN},
 	{"mon", 3, DCH_mon, false, FROM_CHAR_DATE_GREGORIAN},
 	{"ms", 2, DCH_MS, true, FROM_CHAR_DATE_NONE},
+	{"of", 2, DCH_OF, false, FROM_CHAR_DATE_NONE},  /* o */
 	{"p.m.", 4, DCH_p_m, false, FROM_CHAR_DATE_NONE},	/* p */
 	{"pm", 2, DCH_pm, false, FROM_CHAR_DATE_NONE},
 	{"q", 1, DCH_Q, true, FROM_CHAR_DATE_NONE}, /* q */
@@ -872,7 +876,9 @@ static const KeyWord DCH_keywords[] = {
 	{"sssss", 5, DCH_SSSS, true, FROM_CHAR_DATE_NONE},	/* s */
 	{"ssss", 4, DCH_SSSS, true, FROM_CHAR_DATE_NONE},
 	{"ss", 2, DCH_SS, true, FROM_CHAR_DATE_NONE},
-	{"tz", 2, DCH_tz, false, FROM_CHAR_DATE_NONE},	/* t */
+	{"tzh", 3, DCH_TZH, false, FROM_CHAR_DATE_NONE},    /* t */
+	{"tzm", 3, DCH_TZM, true, FROM_CHAR_DATE_NONE},
+	{"tz", 2, DCH_tz, false, FROM_CHAR_DATE_NONE},
 	{"us", 2, DCH_US, true, FROM_CHAR_DATE_NONE},	/* u */
 	{"ww", 2, DCH_WW, true, FROM_CHAR_DATE_GREGORIAN},	/* w */
 	{"w", 1, DCH_W, true, FROM_CHAR_DATE_GREGORIAN},
@@ -954,7 +960,7 @@ static const int DCH_index[KeyWord_INDEX_SIZE] = {
 	DCH_P_M, DCH_Q, DCH_RM, DCH_SSSSS, DCH_TZH, DCH_US, -1, DCH_WW, -1, DCH_Y_YYY,
 	-1, -1, -1, -1, -1, -1, -1, DCH_a_d, DCH_b_c, DCH_cc,
 	DCH_day, -1, DCH_ff1, -1, DCH_hh24, DCH_iddd, DCH_j, -1, -1, DCH_mi,
-	-1, -1, DCH_p_m, DCH_q, DCH_rm, DCH_sssss, DCH_tz, DCH_us, -1, DCH_ww,
+	-1, DCH_of, DCH_p_m, DCH_q, DCH_rm, DCH_sssss, DCH_tzh, DCH_us, -1, DCH_ww,
 	-1, DCH_y_yyy, -1, -1, -1, -1
 
 	/*---- chars over 126 are skipped ----*/
@@ -1016,11 +1022,6 @@ typedef struct NUMProc
 			   *L_thousands_sep,
 			   *L_currency_symbol;
 } NUMProc;
-
-/* Return flags for DCH_from_char() */
-#define DCH_DATED	0x01
-#define DCH_TIMED	0x02
-#define DCH_ZONED	0x04
 
 /* ----------
  * Functions
@@ -6665,4 +6666,44 @@ float8_to_char(PG_FUNCTION_ARGS)
 
 	NUM_TOCHAR_finish;
 	PG_RETURN_TEXT_P(result);
+}
+
+int
+datetime_format_flags(const char *fmt_str, bool *have_error)
+{
+	bool		incache;
+	int			fmt_len = strlen(fmt_str);
+	int			result;
+	FormatNode *format;
+
+	if (fmt_len > DCH_CACHE_SIZE)
+	{
+		/*
+		 * Allocate new memory if format picture is bigger than static cache
+		 * and do not use cache (call parser always)
+		 */
+		incache = false;
+
+		format = (FormatNode *) palloc((fmt_len + 1) * sizeof(FormatNode));
+
+		parse_format(format, fmt_str, DCH_keywords,
+					 DCH_suff, DCH_index, DCH_FLAG, NULL);
+	}
+	else
+	{
+		/*
+		 * Use cache buffers
+		 */
+		DCHCacheEntry *ent = DCH_cache_fetch(fmt_str, false);
+
+		incache = true;
+		format = ent->format;
+	}
+
+	result = DCH_datetime_type(format, have_error);
+
+	if (!incache)
+		pfree(format);
+
+	return result;
 }

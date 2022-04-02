@@ -27,7 +27,7 @@ CREATE PUBLICATION testpub_xxx WITH (publish_via_partition_root = 'true', publis
 
 \dRp
 
-ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete');
+ALTER PUBLICATION testpub_default SET (publish = 'insert, update, delete, sequence');
 
 \dRp
 
@@ -46,6 +46,8 @@ ALTER PUBLICATION testpub_foralltables SET (publish = 'insert, update');
 CREATE TABLE testpub_tbl2 (id serial primary key, data text);
 -- fail - can't add to for all tables publication
 ALTER PUBLICATION testpub_foralltables ADD TABLE testpub_tbl2;
+-- fail - can't add a table using ADD SEQUENCE command
+ALTER PUBLICATION testpub_foralltables ADD SEQUENCE testpub_tbl2;
 -- fail - can't drop from all tables publication
 ALTER PUBLICATION testpub_foralltables DROP TABLE testpub_tbl2;
 -- fail - can't add to for all tables publication
@@ -103,6 +105,199 @@ RESET client_min_messages;
 
 DROP TABLE testpub_tbl3, testpub_tbl3a;
 DROP PUBLICATION testpub3, testpub4;
+
+--- adding sequences
+CREATE SEQUENCE testpub_seq0;
+CREATE SEQUENCE pub_test.testpub_seq1;
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forallsequences FOR ALL SEQUENCES WITH (publish = 'sequence');
+RESET client_min_messages;
+ALTER PUBLICATION testpub_forallsequences SET (publish = 'insert, sequence');
+
+CREATE SEQUENCE testpub_seq2;
+-- fail - can't add to for all sequences publication
+ALTER PUBLICATION testpub_forallsequences ADD SEQUENCE testpub_seq2;
+-- fail - can't drop from all sequences publication
+ALTER PUBLICATION testpub_forallsequences DROP SEQUENCE testpub_seq2;
+-- fail - can't add to for all sequences publication
+ALTER PUBLICATION testpub_forallsequences SET SEQUENCE pub_test.testpub_seq1;
+
+-- fail - can't add schema to 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences ADD ALL SEQUENCES IN SCHEMA pub_test;
+-- fail - can't drop schema from 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences DROP ALL SEQUENCES IN SCHEMA pub_test;
+-- fail - can't set schema to 'FOR ALL SEQUENCES' publication
+ALTER PUBLICATION testpub_forallsequences SET ALL SEQUENCES IN SCHEMA pub_test;
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forsequence FOR SEQUENCE testpub_seq0;
+RESET client_min_messages;
+-- should be able to add schema to 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence ADD ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+-- fail - can't add sequence from the schema we already added
+ALTER PUBLICATION testpub_forsequence ADD SEQUENCE pub_test.testpub_seq1;
+-- fail - can't add sequence using ADD TABLE command
+ALTER PUBLICATION testpub_forsequence ADD TABLE pub_test.testpub_seq1;
+-- should be able to drop schema from 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence DROP ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+-- should be able to set schema to 'FOR SEQUENCE' publication
+ALTER PUBLICATION testpub_forsequence SET ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_forsequence
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_forschema FOR ALL SEQUENCES IN SCHEMA pub_test;
+RESET client_min_messages;
+-- fail - can't create publication with schema and sequence of the same schema
+CREATE PUBLICATION testpub_for_seq_schema FOR ALL SEQUENCES IN SCHEMA pub_test, SEQUENCE pub_test.testpub_seq1;
+-- fail - can't add a sequence of the same schema to the schema publication
+ALTER PUBLICATION testpub_forschema ADD SEQUENCE pub_test.testpub_seq1;
+-- fail - can't drop a sequence from the schema publication which isn't in the
+-- publication
+ALTER PUBLICATION testpub_forschema DROP SEQUENCE pub_test.testpub_seq1;
+-- should be able to set sequence to schema publication
+ALTER PUBLICATION testpub_forschema SET SEQUENCE pub_test.testpub_seq1;
+\dRp+ testpub_forschema
+
+SELECT pubname, puballtables, puballsequences FROM pg_publication WHERE pubname = 'testpub_forallsequences';
+\d+ pub_test.testpub_seq1
+\dRp+ testpub_forallsequences
+DROP SEQUENCE testpub_seq0, pub_test.testpub_seq1, testpub_seq2;
+DROP PUBLICATION testpub_forallsequences, testpub_forsequence, testpub_forschema;
+
+
+-- publication testing multiple sequences at the same time
+CREATE SEQUENCE testpub_seq1;
+CREATE SEQUENCE testpub_seq2;
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_multi FOR SEQUENCE testpub_seq1, testpub_seq2;
+RESET client_min_messages;
+
+\dRp+ testpub_multi
+
+DROP PUBLICATION testpub_multi;
+DROP SEQUENCE testpub_seq1;
+DROP SEQUENCE testpub_seq2;
+
+
+-- Publication mixing tables and sequences
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_mix;
+RESET client_min_messages;
+
+CREATE SEQUENCE testpub_seq1;
+CREATE SEQUENCE pub_test.testpub_seq2;
+
+ALTER PUBLICATION testpub_mix ADD SEQUENCE testpub_seq1, TABLE testpub_tbl1;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix ADD ALL SEQUENCES IN SCHEMA pub_test, ALL TABLES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix DROP ALL SEQUENCES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+ALTER PUBLICATION testpub_mix DROP ALL TABLES IN SCHEMA pub_test;
+\dRp+ testpub_mix
+
+DROP PUBLICATION testpub_mix;
+DROP SEQUENCE testpub_seq1;
+DROP SEQUENCE pub_test.testpub_seq2;
+
+
+-- make sure we replicate only the correct relation type
+CREATE SCHEMA pub_test1;
+CREATE SEQUENCE pub_test1.test_seq1;
+CREATE TABLE pub_test1.test_tbl1 (a int primary key, b int);
+
+CREATE SCHEMA pub_test2;
+CREATE SEQUENCE pub_test2.test_seq2;
+CREATE TABLE pub_test2.test_tbl2 (a int primary key, b int);
+
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_schemas;
+RESET client_min_messages;
+
+-- add tables from one schema, sequences from the other
+ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test1;
+
+\dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- add the other object type from each schema
+ALTER PUBLICATION testpub_schemas ADD ALL TABLES IN SCHEMA pub_test1;
+ALTER PUBLICATION testpub_schemas ADD ALL SEQUENCES IN SCHEMA pub_test2;
+
+\dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- now drop the object type added first
+ALTER PUBLICATION testpub_schemas DROP ALL TABLES IN SCHEMA pub_test2;
+ALTER PUBLICATION testpub_schemas DROP ALL SEQUENCES IN SCHEMA pub_test1;
+
+\dRp+ testpub_schemas
+
+\dn+ pub_test1
+\dn+ pub_test2
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- should fail (publication contains the whole schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test1.test_tbl1;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test2.test_seq2;
+
+-- should work (different schema)
+ALTER PUBLICATION testpub_schemas ADD TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas ADD SEQUENCE pub_test1.test_seq1;
+
+\dRp+ testpub_schemas
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+-- now drop the explicitly added objects again
+ALTER PUBLICATION testpub_schemas DROP TABLE pub_test2.test_tbl2;
+ALTER PUBLICATION testpub_schemas DROP SEQUENCE pub_test1.test_seq1;
+
+\dRp+ testpub_schemas
+
+\d+ pub_test1.test_seq1;
+\d+ pub_test1.test_tbl1;
+
+\d+ pub_test2.test_seq2;
+\d+ pub_test2.test_tbl2;
+
+DROP PUBLICATION testpub_schemas;
+DROP TABLE pub_test1.test_tbl1, pub_test2.test_tbl2;
+DROP SEQUENCE pub_test1.test_seq1, pub_test2.test_seq2;
+DROP SCHEMA pub_test1, pub_test2;
 
 -- Tests for partitioned tables
 SET client_min_messages = 'ERROR';
@@ -373,6 +568,289 @@ DROP TABLE rf_tbl_abcd_nopk;
 DROP TABLE rf_tbl_abcd_part_pk;
 -- ======================================================
 
+-- fail - duplicate tables are not allowed if that table has any column lists
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_dups FOR TABLE testpub_tbl1 (a), testpub_tbl1 WITH (publish = 'insert');
+CREATE PUBLICATION testpub_dups FOR TABLE testpub_tbl1, testpub_tbl1 (a) WITH (publish = 'insert');
+RESET client_min_messages;
+
+-- test for column lists
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_fortable FOR TABLE testpub_tbl1;
+CREATE PUBLICATION testpub_fortable_insert WITH (publish = 'insert');
+RESET client_min_messages;
+CREATE TABLE testpub_tbl5 (a int PRIMARY KEY, b text, c text,
+	d int generated always as (a + length(b)) stored);
+-- error: column "x" does not exist
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, x);
+-- error: replica identity "a" not included in the column list
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (b, c);
+UPDATE testpub_tbl5 SET a = 1;
+ALTER PUBLICATION testpub_fortable DROP TABLE testpub_tbl5;
+-- error: generated column "d" can't be in list
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, d);
+-- error: system attributes "ctid" not allowed in column list
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, ctid);
+-- ok
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);
+ALTER TABLE testpub_tbl5 DROP COLUMN c;		-- no dice
+-- ok: for insert-only publication, any column list is acceptable
+ALTER PUBLICATION testpub_fortable_insert ADD TABLE testpub_tbl5 (b, c);
+
+/* not all replica identities are good enough */
+CREATE UNIQUE INDEX testpub_tbl5_b_key ON testpub_tbl5 (b, c);
+ALTER TABLE testpub_tbl5 ALTER b SET NOT NULL, ALTER c SET NOT NULL;
+ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key;
+-- error: replica identity (b,c) is not covered by column list (a, c)
+UPDATE testpub_tbl5 SET a = 1;
+ALTER PUBLICATION testpub_fortable DROP TABLE testpub_tbl5;
+
+-- error: change the replica identity to "b", and column list to (a, c)
+-- then update fails, because (a, c) does not cover replica identity
+ALTER TABLE testpub_tbl5 REPLICA IDENTITY USING INDEX testpub_tbl5_b_key;
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl5 (a, c);
+UPDATE testpub_tbl5 SET a = 1;
+
+/* But if upd/del are not published, it works OK */
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_table_ins WITH (publish = 'insert, truncate');
+RESET client_min_messages;
+ALTER PUBLICATION testpub_table_ins ADD TABLE testpub_tbl5 (a);		-- ok
+\dRp+ testpub_table_ins
+
+-- tests with REPLICA IDENTITY FULL
+CREATE TABLE testpub_tbl6 (a int, b text, c text);
+ALTER TABLE testpub_tbl6 REPLICA IDENTITY FULL;
+
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6 (a, b, c);
+UPDATE testpub_tbl6 SET a = 1;
+ALTER PUBLICATION testpub_fortable DROP TABLE testpub_tbl6;
+
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl6; -- ok
+UPDATE testpub_tbl6 SET a = 1;
+
+-- make sure changing the column list is propagated to the catalog
+CREATE TABLE testpub_tbl7 (a int primary key, b text, c text);
+ALTER PUBLICATION testpub_fortable ADD TABLE testpub_tbl7 (a, b);
+\d+ testpub_tbl7
+-- ok: the column list is the same, we should skip this table (or at least not fail)
+ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, b);
+\d+ testpub_tbl7
+-- ok: the column list changes, make sure the catalog gets updated
+ALTER PUBLICATION testpub_fortable SET TABLE testpub_tbl7 (a, c);
+\d+ testpub_tbl7
+
+-- column list for partitioned tables has to cover replica identities for
+-- all child relations
+CREATE TABLE testpub_tbl8 (a int, b text, c text) PARTITION BY HASH (a);
+-- first partition has replica identity "a"
+CREATE TABLE testpub_tbl8_0 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 0);
+ALTER TABLE testpub_tbl8_0 ADD PRIMARY KEY (a);
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY USING INDEX testpub_tbl8_0_pkey;
+-- second partition has replica identity "b"
+CREATE TABLE testpub_tbl8_1 PARTITION OF testpub_tbl8 FOR VALUES WITH (modulus 2, remainder 1);
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (b);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+
+-- ok: column list covers both "a" and "b"
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_col_list FOR TABLE testpub_tbl8 (a, b) WITH (publish_via_partition_root = 'true');
+RESET client_min_messages;
+
+-- ok: the same thing, but try plain ADD TABLE
+ALTER PUBLICATION testpub_col_list DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_list ADD TABLE testpub_tbl8 (a, b);
+UPDATE testpub_tbl8 SET a = 1;
+
+-- failure: column list does not cover replica identity for the second partition
+ALTER PUBLICATION testpub_col_list DROP TABLE testpub_tbl8;
+ALTER PUBLICATION testpub_col_list ADD TABLE testpub_tbl8 (a, c);
+UPDATE testpub_tbl8 SET a = 1;
+ALTER PUBLICATION testpub_col_list DROP TABLE testpub_tbl8;
+
+-- failure: one of the partitions has REPLICA IDENTITY FULL
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
+ALTER PUBLICATION testpub_col_list ADD TABLE testpub_tbl8 (a, c);
+UPDATE testpub_tbl8 SET a = 1;
+ALTER PUBLICATION testpub_col_list DROP TABLE testpub_tbl8;
+
+-- add table and then try changing replica identity
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+ALTER PUBLICATION testpub_col_list ADD TABLE testpub_tbl8 (a, b);
+
+-- failure: replica identity full can't be used with a column list
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY FULL;
+UPDATE testpub_tbl8 SET a = 1;
+
+-- failure: replica identity has to be covered by the column list
+ALTER TABLE testpub_tbl8_1 DROP CONSTRAINT testpub_tbl8_1_pkey;
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (c);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+UPDATE testpub_tbl8 SET a = 1;
+
+DROP TABLE testpub_tbl8;
+
+-- column list for partitioned tables has to cover replica identities for
+-- all child relations
+CREATE TABLE testpub_tbl8 (a int, b text, c text) PARTITION BY HASH (a);
+ALTER PUBLICATION testpub_col_list ADD TABLE testpub_tbl8 (a, b);
+-- first partition has replica identity "a"
+CREATE TABLE testpub_tbl8_0 (a int, b text, c text);
+ALTER TABLE testpub_tbl8_0 ADD PRIMARY KEY (a);
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY USING INDEX testpub_tbl8_0_pkey;
+-- second partition has replica identity "b"
+CREATE TABLE testpub_tbl8_1 (a int, b text, c text);
+ALTER TABLE testpub_tbl8_1 ADD PRIMARY KEY (c);
+ALTER TABLE testpub_tbl8_1 REPLICA IDENTITY USING INDEX testpub_tbl8_1_pkey;
+
+-- ok: attaching first partition works, because (a) is in column list
+ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_0 FOR VALUES WITH (modulus 2, remainder 0);
+-- failure: second partition has replica identity (c), which si not in column list
+ALTER TABLE testpub_tbl8 ATTACH PARTITION testpub_tbl8_1 FOR VALUES WITH (modulus 2, remainder 1);
+UPDATE testpub_tbl8 SET a = 1;
+
+-- failure: changing replica identity to FULL for partition fails, because
+-- of the column list on the parent
+ALTER TABLE testpub_tbl8_0 REPLICA IDENTITY FULL;
+UPDATE testpub_tbl8 SET a = 1;
+
+DROP TABLE testpub_tbl5, testpub_tbl6, testpub_tbl7, testpub_tbl8, testpub_tbl8_1;
+DROP PUBLICATION testpub_table_ins, testpub_fortable, testpub_fortable_insert, testpub_col_list;
+-- ======================================================
+
+-- Test combination of column list and row filter
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub_both_filters;
+RESET client_min_messages;
+CREATE TABLE testpub_tbl_both_filters (a int, b int, c int, PRIMARY KEY (a,c));
+ALTER TABLE testpub_tbl_both_filters REPLICA IDENTITY USING INDEX testpub_tbl_both_filters_pkey;
+ALTER PUBLICATION testpub_both_filters ADD TABLE testpub_tbl_both_filters (a,c) WHERE (c != 1);
+\dRp+ testpub_both_filters
+\d+ testpub_tbl_both_filters
+
+DROP TABLE testpub_tbl_both_filters;
+DROP PUBLICATION testpub_both_filters;
+-- ======================================================
+
+-- More column list tests for validating column references
+CREATE TABLE rf_tbl_abcd_nopk(a int, b int, c int, d int);
+CREATE TABLE rf_tbl_abcd_pk(a int, b int, c int, d int, PRIMARY KEY(a,b));
+CREATE TABLE rf_tbl_abcd_part_pk (a int PRIMARY KEY, b int) PARTITION by RANGE (a);
+CREATE TABLE rf_tbl_abcd_part_pk_1 (b int, a int PRIMARY KEY);
+ALTER TABLE rf_tbl_abcd_part_pk ATTACH PARTITION rf_tbl_abcd_part_pk_1 FOR VALUES FROM (1) TO (10);
+
+-- Case 1. REPLICA IDENTITY DEFAULT (means use primary key or nothing)
+
+-- 1a. REPLICA IDENTITY is DEFAULT and table has a PK.
+SET client_min_messages = 'ERROR';
+CREATE PUBLICATION testpub6 FOR TABLE rf_tbl_abcd_pk (a, b);
+RESET client_min_messages;
+-- ok - (a,b) coverts all PK cols
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (a, b, c);
+-- ok - (a,b,c) coverts all PK cols
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (a);
+-- fail - "b" is missing from the column list
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (b);
+-- fail - "a" is missing from the column list
+UPDATE rf_tbl_abcd_pk SET a = 1;
+
+-- 1b. REPLICA IDENTITY is DEFAULT and table has no PK
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_nopk (a);
+-- ok - there's no replica identity, so any column list works
+-- note: it fails anyway, just a bit later because UPDATE requires RI
+UPDATE rf_tbl_abcd_nopk SET a = 1;
+
+-- Case 2. REPLICA IDENTITY FULL
+ALTER TABLE rf_tbl_abcd_pk REPLICA IDENTITY FULL;
+ALTER TABLE rf_tbl_abcd_nopk REPLICA IDENTITY FULL;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (c);
+-- fail - with REPLICA IDENTITY FULL no column list is allowed
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_nopk (a, b, c, d);
+-- fail - with REPLICA IDENTITY FULL no column list is allowed
+UPDATE rf_tbl_abcd_nopk SET a = 1;
+
+-- Case 3. REPLICA IDENTITY NOTHING
+ALTER TABLE rf_tbl_abcd_pk REPLICA IDENTITY NOTHING;
+ALTER TABLE rf_tbl_abcd_nopk REPLICA IDENTITY NOTHING;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (a);
+-- ok - REPLICA IDENTITY NOTHING means all column lists are valid
+-- it still fails later because without RI we can't replicate updates
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (a, b, c, d);
+-- ok - REPLICA IDENTITY NOTHING means all column lists are valid
+-- it still fails later because without RI we can't replicate updates
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_nopk (d);
+-- ok - REPLICA IDENTITY NOTHING means all column lists are valid
+-- it still fails later because without RI we can't replicate updates
+UPDATE rf_tbl_abcd_nopk SET a = 1;
+
+-- Case 4. REPLICA IDENTITY INDEX
+ALTER TABLE rf_tbl_abcd_pk ALTER COLUMN c SET NOT NULL;
+CREATE UNIQUE INDEX idx_abcd_pk_c ON rf_tbl_abcd_pk(c);
+ALTER TABLE rf_tbl_abcd_pk REPLICA IDENTITY USING INDEX idx_abcd_pk_c;
+ALTER TABLE rf_tbl_abcd_nopk ALTER COLUMN c SET NOT NULL;
+CREATE UNIQUE INDEX idx_abcd_nopk_c ON rf_tbl_abcd_nopk(c);
+ALTER TABLE rf_tbl_abcd_nopk REPLICA IDENTITY USING INDEX idx_abcd_nopk_c;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (a);
+-- fail - column list "a" does not cover the REPLICA IDENTITY INDEX on "c"
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_pk (c);
+-- ok - column list "c" does cover the REPLICA IDENTITY INDEX on "c"
+UPDATE rf_tbl_abcd_pk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_nopk (a);
+-- fail - column list "a" does not cover the REPLICA IDENTITY INDEX on "c"
+UPDATE rf_tbl_abcd_nopk SET a = 1;
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_nopk (c);
+-- ok - column list "c" does cover the REPLICA IDENTITY INDEX on "c"
+UPDATE rf_tbl_abcd_nopk SET a = 1;
+
+-- Tests for partitioned table
+
+-- set PUBLISH_VIA_PARTITION_ROOT to false and test column list for partitioned
+-- table
+ALTER PUBLICATION testpub6 SET (PUBLISH_VIA_PARTITION_ROOT=0);
+-- fail - cannot use column list for partitioned table
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_part_pk (a);
+-- ok - can use column list for partition
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_part_pk_1 (a);
+-- ok - "a" is a PK col
+UPDATE rf_tbl_abcd_part_pk SET a = 1;
+-- set PUBLISH_VIA_PARTITION_ROOT to true and test column list for partitioned
+-- table
+ALTER PUBLICATION testpub6 SET (PUBLISH_VIA_PARTITION_ROOT=1);
+-- ok - can use column list for partitioned table
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_part_pk (a);
+-- ok - "a" is a PK col
+UPDATE rf_tbl_abcd_part_pk SET a = 1;
+-- fail - cannot set PUBLISH_VIA_PARTITION_ROOT to false if any column list is
+-- used for partitioned table
+ALTER PUBLICATION testpub6 SET (PUBLISH_VIA_PARTITION_ROOT=0);
+-- Now change the root column list to use a column "b"
+-- (which is not in the replica identity)
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_part_pk_1 (b);
+-- ok - we don't have column list for partitioned table.
+ALTER PUBLICATION testpub6 SET (PUBLISH_VIA_PARTITION_ROOT=0);
+-- fail - "b" is not in REPLICA IDENTITY INDEX
+UPDATE rf_tbl_abcd_part_pk SET a = 1;
+-- set PUBLISH_VIA_PARTITION_ROOT to true
+-- can use column list for partitioned table
+ALTER PUBLICATION testpub6 SET (PUBLISH_VIA_PARTITION_ROOT=1);
+-- ok - can use column list for partitioned table
+ALTER PUBLICATION testpub6 SET TABLE rf_tbl_abcd_part_pk (b);
+-- fail - "b" is not in REPLICA IDENTITY INDEX
+UPDATE rf_tbl_abcd_part_pk SET a = 1;
+
+DROP PUBLICATION testpub6;
+DROP TABLE rf_tbl_abcd_pk;
+DROP TABLE rf_tbl_abcd_nopk;
+DROP TABLE rf_tbl_abcd_part_pk;
+-- ======================================================
+
 -- Test cache invalidation FOR ALL TABLES publication
 SET client_min_messages = 'ERROR';
 CREATE TABLE testpub_tbl4(a int);
@@ -614,6 +1092,10 @@ ALTER PUBLICATION testpub1_forschema SET ALL TABLES IN SCHEMA non_existent_schem
 ALTER PUBLICATION testpub1_forschema SET ALL TABLES IN SCHEMA pub_test1, pub_test1;
 \dRp+ testpub1_forschema
 
+-- Verify that it fails to add a schema with a column specification
+ALTER PUBLICATION testpub1_forschema ADD ALL TABLES IN SCHEMA foo (a, b);
+ALTER PUBLICATION testpub1_forschema ADD ALL TABLES IN SCHEMA foo, bar (a, b);
+
 -- cleanup pub_test1 schema for invalidation tests
 ALTER PUBLICATION testpub2_forschema DROP ALL TABLES IN SCHEMA pub_test1;
 DROP PUBLICATION testpub3_forschema, testpub4_forschema, testpub5_forschema, testpub6_forschema, testpub_fortable;
@@ -717,32 +1199,51 @@ CREATE SCHEMA sch1;
 CREATE SCHEMA sch2;
 CREATE TABLE sch1.tbl1 (a int) PARTITION BY RANGE(a);
 CREATE TABLE sch2.tbl1_part1 PARTITION OF sch1.tbl1 FOR VALUES FROM (1) to (10);
+CREATE SEQUENCE sch1.seq1;
+CREATE SEQUENCE sch2.seq2;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Table publication that does not include the parent table
 CREATE PUBLICATION pub FOR TABLE sch2.tbl1_part1 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
+ALTER PUBLICATION pub ADD SEQUENCE sch2.seq2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Schema publication that does not include the schema that has the parent table
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch2 WITH (PUBLISH_VIA_PARTITION_ROOT=0);
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Sequence publication
+CREATE PUBLICATION pub FOR SEQUENCE sch2.seq2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 -- Table publication that does not include the parent table
 CREATE PUBLICATION pub FOR TABLE sch2.tbl1_part1 WITH (PUBLISH_VIA_PARTITION_ROOT=0);
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 -- Table publication that includes both the parent table and the child table
 ALTER PUBLICATION pub ADD TABLE sch1.tbl1;
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch2;
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 DROP PUBLICATION pub;
 DROP TABLE sch2.tbl1_part1;
@@ -755,10 +1256,36 @@ CREATE TABLE sch1.tbl1_part3 (a int) PARTITION BY RANGE(a);
 ALTER TABLE sch1.tbl1 ATTACH PARTITION sch1.tbl1_part3 FOR VALUES FROM (20) to (30);
 CREATE PUBLICATION pub FOR ALL TABLES IN SCHEMA sch1 WITH (PUBLISH_VIA_PARTITION_ROOT=1);
 SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Schema publication
+CREATE PUBLICATION pub FOR SEQUENCE sch2.seq2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+DROP PUBLICATION pub;
+-- Sequence publication
+CREATE PUBLICATION pub FOR ALL SEQUENCES IN SCHEMA sch2;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub ADD SEQUENCE sch1.seq1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub DROP SEQUENCE sch1.seq1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
+
+ALTER PUBLICATION pub ADD ALL SEQUENCES IN SCHEMA sch1;
+SELECT * FROM pg_publication_tables;
+SELECT * FROM pg_publication_sequences;
 
 RESET client_min_messages;
 DROP PUBLICATION pub;
 DROP TABLE sch1.tbl1;
+DROP SEQUENCE sch1.seq1, sch2.seq2;
 DROP SCHEMA sch1 cascade;
 DROP SCHEMA sch2 cascade;
 

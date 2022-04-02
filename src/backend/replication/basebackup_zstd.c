@@ -12,21 +12,21 @@
  */
 #include "postgres.h"
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 #include <zstd.h>
 #endif
 
 #include "replication/basebackup_sink.h"
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 
 typedef struct bbsink_zstd
 {
 	/* Common information for all types of sink. */
 	bbsink		base;
 
-	/* Compression level */
-	int			compresslevel;
+	/* Compression options */
+	bc_specification *compress;
 
 	ZSTD_CCtx  *cctx;
 	ZSTD_outBuffer zstd_outBuf;
@@ -55,13 +55,12 @@ const bbsink_ops bbsink_zstd_ops = {
 #endif
 
 /*
- * Create a new basebackup sink that performs zstd compression using the
- * designated compression level.
+ * Create a new basebackup sink that performs zstd compression.
  */
 bbsink *
-bbsink_zstd_new(bbsink *next, int compresslevel)
+bbsink_zstd_new(bbsink *next, bc_specification *compress)
 {
-#ifndef HAVE_LIBZSTD
+#ifndef USE_ZSTD
 	ereport(ERROR,
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 			 errmsg("zstd compression is not supported by this build")));
@@ -71,22 +70,16 @@ bbsink_zstd_new(bbsink *next, int compresslevel)
 
 	Assert(next != NULL);
 
-	if (compresslevel < 0 || compresslevel > 22)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("zstd compression level %d is out of range",
-						compresslevel)));
-
 	sink = palloc0(sizeof(bbsink_zstd));
 	*((const bbsink_ops **) &sink->base.bbs_ops) = &bbsink_zstd_ops;
 	sink->base.bbs_next = next;
-	sink->compresslevel = compresslevel;
+	sink->compress = compress;
 
 	return &sink->base;
 #endif
 }
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 
 /*
  * Begin backup.
@@ -96,13 +89,37 @@ bbsink_zstd_begin_backup(bbsink *sink)
 {
 	bbsink_zstd *mysink = (bbsink_zstd *) sink;
 	size_t		output_buffer_bound;
+	size_t		ret;
+	bc_specification *compress = mysink->compress;
 
 	mysink->cctx = ZSTD_createCCtx();
 	if (!mysink->cctx)
 		elog(ERROR, "could not create zstd compression context");
 
-	ZSTD_CCtx_setParameter(mysink->cctx, ZSTD_c_compressionLevel,
-						   mysink->compresslevel);
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_LEVEL) != 0)
+	{
+		ret = ZSTD_CCtx_setParameter(mysink->cctx, ZSTD_c_compressionLevel,
+									 compress->level);
+		if (ZSTD_isError(ret))
+			elog(ERROR, "could not set zstd compression level to %d: %s",
+				 compress->level, ZSTD_getErrorName(ret));
+	}
+
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_WORKERS) != 0)
+	{
+		/*
+		 * On older versions of libzstd, this option does not exist, and trying
+		 * to set it will fail. Similarly for newer versions if they are
+		 * compiled without threading support.
+		 */
+		ret = ZSTD_CCtx_setParameter(mysink->cctx, ZSTD_c_nbWorkers,
+									 compress->workers);
+		if (ZSTD_isError(ret))
+			ereport(ERROR,
+					errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					errmsg("could not set compression worker count to %d: %s",
+						   compress->workers, ZSTD_getErrorName(ret)));
+	}
 
 	/*
 	 * We need our own buffer, because we're going to pass different data to

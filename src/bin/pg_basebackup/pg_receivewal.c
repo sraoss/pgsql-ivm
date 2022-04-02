@@ -19,6 +19,10 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef USE_LZ4
+#include <lz4frame.h>
+#endif
 #ifdef HAVE_LIBZ
 #include <zlib.h>
 #endif
@@ -31,10 +35,6 @@
 #include "libpq-fe.h"
 #include "receivelog.h"
 #include "streamutil.h"
-
-#ifdef HAVE_LIBLZ4
-#include "lz4frame.h"
-#endif
 
 /* Time to sleep between reconnection attempts */
 #define RECONNECT_SLEEP_TIME 5
@@ -382,7 +382,7 @@ FindStreamingStart(uint32 *tli)
 		}
 		else if (!ispartial && wal_compression_method == COMPRESSION_LZ4)
 		{
-#ifdef HAVE_LIBLZ4
+#ifdef USE_LZ4
 #define LZ4_CHUNK_SZ	64 * 1024	/* 64kB as maximum chunk size read */
 			int			fd;
 			ssize_t		r;
@@ -889,7 +889,7 @@ main(int argc, char **argv)
 #endif
 			break;
 		case COMPRESSION_LZ4:
-#ifdef HAVE_LIBLZ4
+#ifdef USE_LZ4
 			if (compresslevel != 0)
 			{
 				pg_log_error("cannot use --compress with --compression-method=%s",

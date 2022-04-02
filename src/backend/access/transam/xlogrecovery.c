@@ -1948,6 +1948,10 @@ xlogrecovery_redo(XLogReaderState *record, TimeLineID replayTLI)
 				 LSN_FORMAT_ARGS(xlrec.overwritten_lsn),
 				 LSN_FORMAT_ARGS(record->overwrittenRecPtr));
 
+		/* We have safely skipped the aborted record */
+		abortedRecPtr = InvalidXLogRecPtr;
+		missingContrecPtr = InvalidXLogRecPtr;
+
 		ereport(LOG,
 				(errmsg("successfully skipped missing contrecord at %X/%X, overwritten at %s",
 						LSN_FORMAT_ARGS(xlrec.overwritten_lsn),
@@ -2139,7 +2143,7 @@ xlog_block_info(StringInfo buf, XLogReaderState *record)
 	int			block_id;
 
 	/* decode block references */
-	for (block_id = 0; block_id <= record->max_block_id; block_id++)
+	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 	{
 		RelFileNode rnode;
 		ForkNumber	forknum;
@@ -2271,7 +2275,7 @@ verifyBackupPageConsistency(XLogReaderState *record)
 
 	Assert((XLogRecGetInfo(record) & XLR_CHECK_CONSISTENCY) != 0);
 
-	for (block_id = 0; block_id <= record->max_block_id; block_id++)
+	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 	{
 		Buffer		buf;
 		Page		page;

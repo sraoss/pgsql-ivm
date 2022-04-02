@@ -4077,15 +4077,18 @@ plpgsql_estate_setup(PLpgSQL_execstate *estate,
 	plpgsql_create_econtext(estate);
 
 	/*
-	 * Let the plugin see this function before we initialize any local
-	 * PL/pgSQL variables - note that we also give the plugin a few function
-	 * pointers so it can call back into PL/pgSQL for doing things like
-	 * variable assignments and stack traces
+	 * Let the plugin, if any, see this function before we initialize local
+	 * PL/pgSQL variables.  Note that we also give the plugin a few function
+	 * pointers, so it can call back into PL/pgSQL for doing things like
+	 * variable assignments and stack traces.
 	 */
 	if (*plpgsql_plugin_ptr)
 	{
 		(*plpgsql_plugin_ptr)->error_callback = plpgsql_exec_error_callback;
 		(*plpgsql_plugin_ptr)->assign_expr = exec_assign_expr;
+		(*plpgsql_plugin_ptr)->assign_value = exec_assign_value;
+		(*plpgsql_plugin_ptr)->eval_datum = exec_eval_datum;
+		(*plpgsql_plugin_ptr)->cast_value = exec_cast_value;
 
 		if ((*plpgsql_plugin_ptr)->func_setup)
 			((*plpgsql_plugin_ptr)->func_setup) (estate, func);
@@ -4194,7 +4197,7 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 
 	/*
 	 * On the first call for this statement generate the plan, and detect
-	 * whether the statement is INSERT/UPDATE/DELETE
+	 * whether the statement is INSERT/UPDATE/DELETE/MERGE
 	 */
 	if (expr->plan == NULL)
 		exec_prepare_plan(estate, expr, CURSOR_OPT_PARALLEL_OK);
@@ -4216,7 +4219,8 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 			 */
 			if (plansource->commandTag == CMDTAG_INSERT ||
 				plansource->commandTag == CMDTAG_UPDATE ||
-				plansource->commandTag == CMDTAG_DELETE)
+				plansource->commandTag == CMDTAG_DELETE ||
+				plansource->commandTag == CMDTAG_MERGE)
 			{
 				stmt->mod_stmt = true;
 				break;
@@ -4276,6 +4280,7 @@ exec_stmt_execsql(PLpgSQL_execstate *estate,
 		case SPI_OK_INSERT_RETURNING:
 		case SPI_OK_UPDATE_RETURNING:
 		case SPI_OK_DELETE_RETURNING:
+		case SPI_OK_MERGE:
 			Assert(stmt->mod_stmt);
 			exec_set_found(estate, (SPI_processed != 0));
 			break;
@@ -4457,6 +4462,7 @@ exec_stmt_dynexecute(PLpgSQL_execstate *estate,
 		case SPI_OK_INSERT_RETURNING:
 		case SPI_OK_UPDATE_RETURNING:
 		case SPI_OK_DELETE_RETURNING:
+		case SPI_OK_MERGE:
 		case SPI_OK_UTILITY:
 		case SPI_OK_REWRITTEN:
 			break;

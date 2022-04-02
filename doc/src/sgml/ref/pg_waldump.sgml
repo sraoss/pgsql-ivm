@@ -79,6 +79,18 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>-B <replaceable>block</replaceable></option></term>
+      <term><option>--block=<replaceable>block</replaceable></option></term>
+      <listitem>
+       <para>
+        Only display records that modify the given block.  The relation must
+        also be provided with <option>--relation</option> or
+        <option>-R</option>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-e <replaceable>end</replaceable></option></term>
       <term><option>--end=<replaceable>end</replaceable></option></term>
       <listitem>
@@ -96,6 +108,20 @@ PostgreSQL documentation
        <para>
         After reaching the end of valid WAL, keep polling once per second for
         new WAL to appear.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
+      <term><option>-F <replaceable>fork</replaceable></option></term>
+      <term><option>--fork=<replaceable>fork</replaceable></option></term>
+      <listitem>
+       <para>
+        If provided, only display records that modify blocks in the given fork.
+        The valid values are <literal>main</literal> for the main fork,
+        <literal>fsm</literal> for the free space map,
+        <literal>vm</literal> for the visibility map,
+        and <literal>init</literal> for the init fork.
        </para>
       </listitem>
      </varlistentry>
@@ -151,6 +177,19 @@ PostgreSQL documentation
      </varlistentry>
 
      <varlistentry>
+      <term><option>-R <replaceable>tblspc</replaceable>/<replaceable>db</replaceable>/<replaceable>rel</replaceable></option></term>
+      <term><option>--relation=<replaceable>tblspc</replaceable>/<replaceable>db</replaceable>/<replaceable>rel</replaceable></option></term>
+      <listitem>
+       <para>
+        Only display records that modify blocks in the given relation.  The
+        relation is specified with tablespace OID, database OID, and relfilenode
+        separated by slashes, for example <literal>1234/12345/12345</literal>.
+        This is the same format used for relations in the program's output.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry>
       <term><option>-s <replaceable>start</replaceable></option></term>
       <term><option>--start=<replaceable>start</replaceable></option></term>
       <listitem>
@@ -179,6 +218,16 @@ PostgreSQL documentation
        <listitem>
        <para>
        Print the <application>pg_waldump</application> version and exit.
+       </para>
+       </listitem>
+     </varlistentry>
+
+     <varlistentry>
+       <term><option>-w</option></term>
+       <term><option>--fullpage</option></term>
+       <listitem>
+       <para>
+        Only display records that include full page images.
        </para>
        </listitem>
      </varlistentry>

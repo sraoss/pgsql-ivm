@@ -1071,6 +1071,16 @@ typedef struct PathKey
 } PathKey;
 
 /*
+ * Combines information about pathkeys and the associated clauses.
+ */
+typedef struct PathKeyInfo
+{
+	NodeTag		type;
+	List	   *pathkeys;
+	List	   *clauses;
+} PathKeyInfo;
+
+/*
  * VolatileFunctionStatus -- allows nodes to cache their
  * contain_volatile_functions properties. VOLATILITY_UNKNOWN means not yet
  * determined.
@@ -1875,7 +1885,7 @@ typedef struct LockRowsPath
 } LockRowsPath;
 
 /*
- * ModifyTablePath represents performing INSERT/UPDATE/DELETE modifications
+ * ModifyTablePath represents performing INSERT/UPDATE/DELETE/MERGE
  *
  * We represent most things that will be in the ModifyTable plan node
  * literally, except we have a child Path not Plan.  But analysis of the
@@ -1885,7 +1895,7 @@ typedef struct ModifyTablePath
 {
 	Path		path;
 	Path	   *subpath;		/* Path producing source data */
-	CmdType		operation;		/* INSERT, UPDATE, or DELETE */
+	CmdType		operation;		/* INSERT, UPDATE, DELETE, or MERGE */
 	bool		canSetTag;		/* do we set the command tag/es_processed? */
 	Index		nominalRelation;	/* Parent RT index for use of EXPLAIN */
 	Index		rootRelation;	/* Root RT index, if target is partitioned */
@@ -1897,6 +1907,8 @@ typedef struct ModifyTablePath
 	List	   *rowMarks;		/* PlanRowMarks (non-locking only) */
 	OnConflictExpr *onconflict; /* ON CONFLICT clause, or NULL */
 	int			epqParam;		/* ID of Param for EvalPlanQual re-eval */
+	List	   *mergeActionLists;	/* per-target-table lists of actions for
+									 * MERGE */
 } ModifyTablePath;
 
 /*

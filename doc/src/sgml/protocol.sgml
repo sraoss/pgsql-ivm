@@ -2731,14 +2731,30 @@ The commands accepted in replication mode are:
        </varlistentry>
 
        <varlistentry>
-        <term><literal>COMPRESSION_LEVEL</literal> <replaceable>level</replaceable></term>
+        <term><literal>COMPRESSION_DETAIL</literal> <replaceable>detail</replaceable></term>
         <listitem>
          <para>
-          Specifies the compression level to be used. This should only be
-          used in conjunction with the <literal>COMPRESSION</literal> option.
-          For <literal>gzip</literal> the value should be an integer between 1
-          and 9, for <literal>lz4</literal> between 1 and 12, and for
-          <literal>zstd</literal> it should be between 1 and 22.
+          Specifies details for the chosen compression method. This should only
+          be used in conjunction with the <literal>COMPRESSION</literal>
+          option.  If the value is an integer, it specifies the compression
+          level.  Otherwise, it should be a comma-separated list of items,
+          each of the form <literal>keyword</literal> or
+          <literal>keyword=value</literal>. Currently, the supported keywords
+          are <literal>level</literal> and <literal>workers</literal>.
+        </para>
+
+        <para>
+          The <literal>level</literal> keyword sets the compression level.
+          For <literal>gzip</literal> the compression level should be an
+          integer between 1 and 9, for <literal>lz4</literal> an integer
+          between 1 and 12, and for <literal>zstd</literal> an integer
+          between 1 and 22.
+         </para>
+
+        <para>
+          The <literal>workers</literal> keyword sets the number of threads
+          that should be used for parallel compression. Parallel compression
+          is supported only for <literal>zstd</literal>.
          </para>
         </listitem>
        </varlistentry>
@@ -7006,7 +7022,8 @@ Relation
 </listitem>
 </varlistentry>
 </variablelist>
-        Next, the following message part appears for each column (except generated columns):
+        Next, the following message part appears for each column included in
+        the publication (except generated columns):
 <variablelist>
 <varlistentry>
 <term>
@@ -7046,6 +7063,125 @@ Relation
 <listitem>
 <para>
                 Type modifier of the column (<structfield>atttypmod</structfield>).
+</para>
+</listitem>
+</varlistentry>
+
+</variablelist>
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry id="protocol-logicalrep-message-formats-Sequence">
+<term>
+Sequence
+</term>
+<listitem>
+<para>
+
+<variablelist>
+<varlistentry>
+<term>
+        Byte1('X')
+</term>
+<listitem>
+<para>
+                Identifies the message as a sequence message.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int32 (TransactionId)
+</term>
+<listitem>
+<para>
+               Xid of the transaction (only present for streamed transactions).
+               This field is available since protocol version 2.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int8(0)
+</term>
+<listitem>
+<para>
+                Flags; currently unused.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        Int64 (XLogRecPtr)
+</term>
+<listitem>
+<para>
+                The LSN of the sequence increment.
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                Namespace (empty string for <literal>pg_catalog</literal>).
+</para>
+</listitem>
+</varlistentry>
+<varlistentry>
+<term>
+        String
+</term>
+<listitem>
+<para>
+                Relation name.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                1 if the sequence update is transactional, 0 otherwise.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Int64
+</term>
+<listitem>
+<para>
+                <structfield>last_value</structfield> value of the sequence.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Int64
+</term>
+<listitem>
+<para>
+                <structfield>log_cnt</structfield> value of the sequence.
+</para>
+</listitem>
+</varlistentry>
+
+<varlistentry>
+<term>
+        Int8
+</term>
+<listitem>
+<para>
+                <structfield>is_called</structfield> value of the sequence.
 </para>
 </listitem>
 </varlistentry>

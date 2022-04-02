@@ -4619,11 +4619,6 @@ pg_role_aclcheck(Oid role_oid, Oid roleid, AclMode mode)
 {
 	if (mode & ACL_GRANT_OPTION_FOR(ACL_CREATE))
 	{
-		/*
-		 * XXX For roleid == role_oid, is_admin_of_role() also examines the
-		 * session and call stack.  That suits two-argument pg_has_role(), but
-		 * it gives the three-argument version a lamentable whimsy.
-		 */
 		if (is_admin_of_role(roleid, role_oid))
 			return ACLCHECK_OK;
 	}
@@ -4864,6 +4859,8 @@ has_privs_of_role(Oid member, Oid role)
  * Is member a member of role (directly or indirectly)?
  *
  * This is defined to recurse through roles regardless of rolinherit.
+ *
+ * Do not use this for privilege checking, instead use has_privs_of_role()
  */
 bool
 is_member_of_role(Oid member, Oid role)
@@ -4904,6 +4901,8 @@ check_is_member_of_role(Oid member, Oid role)
  *
  * This is identical to is_member_of_role except we ignore superuser
  * status.
+ *
+ * Do not use this for privilege checking, instead use has_privs_of_role()
  */
 bool
 is_member_of_role_nosuper(Oid member, Oid role)
@@ -4935,38 +4934,9 @@ is_admin_of_role(Oid member, Oid role)
 	if (superuser_arg(member))
 		return true;
 
+	/* By policy, a role cannot have WITH ADMIN OPTION on itself. */
 	if (member == role)
-
-		/*
-		 * A role can admin itself when it matches the session user and we're
-		 * outside any security-restricted operation, SECURITY DEFINER or
-		 * similar context.  SQL-standard roles cannot self-admin.  However,
-		 * SQL-standard users are distinct from roles, and they are not
-		 * grantable like roles: PostgreSQL's role-user duality extends the
-		 * standard.  Checking for a session user match has the effect of
-		 * letting a role self-admin only when it's conspicuously behaving
-		 * like a user.  Note that allowing self-admin under a mere SET ROLE
-		 * would make WITH ADMIN OPTION largely irrelevant; any member could
-		 * SET ROLE to issue the otherwise-forbidden command.
-		 *
-		 * Withholding self-admin in a security-restricted operation prevents
-		 * object owners from harnessing the session user identity during
-		 * administrative maintenance.  Suppose Alice owns a database, has
-		 * issued "GRANT alice TO bob", and runs a daily ANALYZE.  Bob creates
-		 * an alice-owned SECURITY DEFINER function that issues "REVOKE alice
-		 * FROM carol".  If he creates an expression index calling that
-		 * function, Alice will attempt the REVOKE during each ANALYZE.
-		 * Checking InSecurityRestrictedOperation() thwarts that attack.
-		 *
-		 * Withholding self-admin in SECURITY DEFINER functions makes their
-		 * behavior independent of the calling user.  There's no security or
-		 * SQL-standard-conformance need for that restriction, though.
-		 *
-		 * A role cannot have actual WITH ADMIN OPTION on itself, because that
-		 * would imply a membership loop.  Therefore, we're done either way.
-		 */
-		return member == GetSessionUserId() &&
-			!InLocalUserIdChange() && !InSecurityRestrictedOperation();
+		return false;
 
 	(void) roles_is_member_of(member, ROLERECURSE_MEMBERS, role, &result);
 	return result;

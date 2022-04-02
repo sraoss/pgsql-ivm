@@ -34,6 +34,7 @@
 #include "catalog/objectaccess.h"
 #include "catalog/partition.h"
 #include "catalog/pg_am.h"
+#include "catalog/pg_attrdef.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_constraint.h"
 #include "catalog/pg_depend.h"
@@ -41,6 +42,7 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
+#include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
@@ -296,12 +298,18 @@ static const struct dropmsgstrings dropmsgstringarray[] = {
 	{'\0', 0, NULL, NULL, NULL, NULL}
 };
 
+/* communication between RemoveRelations and RangeVarCallbackForDropRelation */
 struct DropRelationCallbackState
 {
-	char		relkind;
+	/* These fields are set by RemoveRelations: */
+	char		expected_relkind;
+	LOCKMODE	heap_lockmode;
+	/* These fields are state to track which subsidiary locks are held: */
 	Oid			heapOid;
 	Oid			partParentOid;
-	bool		concurrent;
+	/* These fields are passed back by RangeVarCallbackForDropRelation: */
+	char		actual_relkind;
+	char		actual_relpersistence;
 };
 
 /* Alter table target-type flags for ATSimplePermissions */
@@ -1417,10 +1425,13 @@ RemoveRelations(DropStmt *drop)
 		AcceptInvalidationMessages();
 
 		/* Look up the appropriate relation using namespace search. */
-		state.relkind = relkind;
+		state.expected_relkind = relkind;
+		state.heap_lockmode = drop->concurrent ?
+			ShareUpdateExclusiveLock : AccessExclusiveLock;
+		/* We must initialize these fields to show that no locks are held: */
 		state.heapOid = InvalidOid;
 		state.partParentOid = InvalidOid;
-		state.concurrent = drop->concurrent;
+
 		relOid = RangeVarGetRelidExtended(rel, lockmode, RVR_MISSING_OK,
 										  RangeVarCallbackForDropRelation,
 										  (void *) &state);
@@ -1434,10 +1445,10 @@ RemoveRelations(DropStmt *drop)
 
 		/*
 		 * Decide if concurrent mode needs to be used here or not.  The
-		 * relation persistence cannot be known without its OID.
+		 * callback retrieved the rel's persistence for us.
 		 */
 		if (drop->concurrent &&
-			get_rel_persistence(relOid) != RELPERSISTENCE_TEMP)
+			state.actual_relpersistence != RELPERSISTENCE_TEMP)
 		{
 			Assert(list_length(drop->objects) == 1 &&
 				   drop->removeType == OBJECT_INDEX);
@@ -1449,11 +1460,23 @@ RemoveRelations(DropStmt *drop)
 		 * either.
 		 */
 		if ((flags & PERFORM_DELETION_CONCURRENTLY) != 0 &&
-			get_rel_relkind(relOid) == RELKIND_PARTITIONED_INDEX)
+			state.actual_relkind == RELKIND_PARTITIONED_INDEX)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot drop partitioned index \"%s\" concurrently",
 							rel->relname)));
+
+		/*
+		 * If we're told to drop a partitioned index, we must acquire lock on
+		 * all the children of its parent partitioned table before proceeding.
+		 * Otherwise we'd try to lock the child index partitions before their
+		 * tables, leading to potential deadlock against other sessions that
+		 * will lock those objects in the other order.
+		 */
+		if (state.actual_relkind == RELKIND_PARTITIONED_INDEX)
+			(void) find_all_inheritors(state.heapOid,
+									   state.heap_lockmode,
+									   NULL);
 
 		/* OK, we're ready to delete this one */
 		obj.classId = RelationRelationId;
@@ -1480,7 +1503,6 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 {
 	HeapTuple	tuple;
 	struct DropRelationCallbackState *state;
-	char		relkind;
 	char		expected_relkind;
 	bool		is_partition;
 	Form_pg_class classform;
@@ -1488,9 +1510,7 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	bool		invalid_system_index = false;
 
 	state = (struct DropRelationCallbackState *) arg;
-	relkind = state->relkind;
-	heap_lockmode = state->concurrent ?
-		ShareUpdateExclusiveLock : AccessExclusiveLock;
+	heap_lockmode = state->heap_lockmode;
 
 	/*
 	 * If we previously locked some other index's heap, and the name we're
@@ -1524,6 +1544,10 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	classform = (Form_pg_class) GETSTRUCT(tuple);
 	is_partition = classform->relispartition;
 
+	/* Pass back some data to save lookups in RemoveRelations */
+	state->actual_relkind = classform->relkind;
+	state->actual_relpersistence = classform->relpersistence;
+
 	/*
 	 * Both RELKIND_RELATION and RELKIND_PARTITIONED_TABLE are OBJECT_TABLE,
 	 * but RemoveRelations() can only pass one relkind for a given relation.
@@ -1539,13 +1563,15 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	else
 		expected_relkind = classform->relkind;
 
-	if (relkind != expected_relkind)
-		DropErrorMsgWrongType(rel->relname, classform->relkind, relkind);
+	if (state->expected_relkind != expected_relkind)
+		DropErrorMsgWrongType(rel->relname, classform->relkind,
+							  state->expected_relkind);
 
 	/* Allow DROP to either table owner or schema owner */
 	if (!pg_class_ownercheck(relOid, GetUserId()) &&
 		!pg_namespace_ownercheck(classform->relnamespace, GetUserId()))
-		aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(get_rel_relkind(relOid)),
+		aclcheck_error(ACLCHECK_NOT_OWNER,
+					   get_relkind_objtype(classform->relkind),
 					   rel->relname);
 
 	/*
@@ -1554,7 +1580,7 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	 * only concerns indexes of toast relations that became invalid during a
 	 * REINDEX CONCURRENTLY process.
 	 */
-	if (IsSystemClass(relOid, classform) && relkind == RELKIND_INDEX)
+	if (IsSystemClass(relOid, classform) && classform->relkind == RELKIND_INDEX)
 	{
 		HeapTuple	locTuple;
 		Form_pg_index indexform;
@@ -1590,9 +1616,10 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	 * locking the index.  index_drop() will need this anyway, and since
 	 * regular queries lock tables before their indexes, we risk deadlock if
 	 * we do it the other way around.  No error if we don't find a pg_index
-	 * entry, though --- the relation may have been dropped.
+	 * entry, though --- the relation may have been dropped.  Note that this
+	 * code will execute for either plain or partitioned indexes.
 	 */
-	if ((relkind == RELKIND_INDEX || relkind == RELKIND_PARTITIONED_INDEX) &&
+	if (expected_relkind == RELKIND_INDEX &&
 		relOid != oldRelOid)
 	{
 		state->heapOid = IndexGetRelation(relOid, true);
@@ -1603,7 +1630,7 @@ RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid, Oid oldRelOid,
 	/*
 	 * Similarly, if the relation is a partition, we must acquire lock on its
 	 * parent before locking the partition.  That's because queries lock the
-	 * parent before its partitions, so we risk deadlock it we do it the other
+	 * parent before its partitions, so we risk deadlock if we do it the other
 	 * way around.
 	 */
 	if (is_partition && relOid != oldRelOid)
@@ -7882,6 +7909,7 @@ ATExecDropExpression(Relation rel, const char *colName, bool missing_ok, LOCKMOD
 	Form_pg_attribute attTup;
 	AttrNumber	attnum;
 	Relation	attrelation;
+	Oid			attrdefoid;
 	ObjectAddress address;
 
 	attrelation = table_open(AttributeRelationId, RowExclusiveLock);
@@ -7919,71 +7947,44 @@ ATExecDropExpression(Relation rel, const char *colName, bool missing_ok, LOCKMOD
 		}
 	}
 
+	/*
+	 * Mark the column as no longer generated.  (The atthasdef flag needs to
+	 * get cleared too, but RemoveAttrDefault will handle that.)
+	 */
 	attTup->attgenerated = '\0';
 	CatalogTupleUpdate(attrelation, &tuple->t_self, tuple);
 
 	InvokeObjectPostAlterHook(RelationRelationId,
 							  RelationGetRelid(rel),
-							  attTup->attnum);
-	ObjectAddressSubSet(address, RelationRelationId,
-						RelationGetRelid(rel), attnum);
+							  attnum);
 	heap_freetuple(tuple);
 
 	table_close(attrelation, RowExclusiveLock);
 
+	/*
+	 * Drop the dependency records of the GENERATED expression, in particular
+	 * its INTERNAL dependency on the column, which would otherwise cause
+	 * dependency.c to refuse to perform the deletion.
+	 */
+	attrdefoid = GetAttrDefaultOid(RelationGetRelid(rel), attnum);
+	if (!OidIsValid(attrdefoid))
+		elog(ERROR, "could not find attrdef tuple for relation %u attnum %d",
+			 RelationGetRelid(rel), attnum);
+	(void) deleteDependencyRecordsFor(AttrDefaultRelationId, attrdefoid, false);
+
+	/* Make above changes visible */
 	CommandCounterIncrement();
 
-	RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT, false, false);
-
 	/*
-	 * Remove all dependencies of this (formerly generated) column on other
-	 * columns in the same table.  (See StoreAttrDefault() for which
-	 * dependencies are created.)  We don't expect there to be dependencies
-	 * between columns of the same table for other reasons, so it's okay to
-	 * remove all of them.
+	 * Get rid of the GENERATED expression itself.  We use RESTRICT here for
+	 * safety, but at present we do not expect anything to depend on the
+	 * default.
 	 */
-	{
-		Relation	depRel;
-		ScanKeyData key[3];
-		SysScanDesc scan;
-		HeapTuple	tup;
+	RemoveAttrDefault(RelationGetRelid(rel), attnum, DROP_RESTRICT,
+					  false, false);
 
-		depRel = table_open(DependRelationId, RowExclusiveLock);
-
-		ScanKeyInit(&key[0],
-					Anum_pg_depend_classid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(RelationRelationId));
-		ScanKeyInit(&key[1],
-					Anum_pg_depend_objid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(RelationGetRelid(rel)));
-		ScanKeyInit(&key[2],
-					Anum_pg_depend_objsubid,
-					BTEqualStrategyNumber, F_INT4EQ,
-					Int32GetDatum(attnum));
-
-		scan = systable_beginscan(depRel, DependDependerIndexId, true,
-								  NULL, 3, key);
-
-		while (HeapTupleIsValid(tup = systable_getnext(scan)))
-		{
-			Form_pg_depend depform = (Form_pg_depend) GETSTRUCT(tup);
-
-			if (depform->refclassid == RelationRelationId &&
-				depform->refobjid == RelationGetRelid(rel) &&
-				depform->refobjsubid != 0 &&
-				depform->deptype == DEPENDENCY_AUTO)
-			{
-				CatalogTupleDelete(depRel, &tup->t_self);
-			}
-		}
-
-		systable_endscan(scan);
-
-		table_close(depRel, RowExclusiveLock);
-	}
-
+	ObjectAddressSubSet(address, RelationRelationId,
+						RelationGetRelid(rel), attnum);
 	return address;
 }
 
@@ -12531,21 +12532,6 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 						 */
 						Assert(foundObject.objectSubId == 0);
 					}
-					else if (relKind == RELKIND_RELATION &&
-							 foundObject.objectSubId != 0 &&
-							 get_attgenerated(foundObject.objectId, foundObject.objectSubId))
-					{
-						/*
-						 * Changing the type of a column that is used by a
-						 * generated column is not allowed by SQL standard. It
-						 * might be doable with some thinking and effort.
-						 */
-						ereport(ERROR,
-								(errcode(ERRCODE_SYNTAX_ERROR),
-								 errmsg("cannot alter type of a column used by a generated column"),
-								 errdetail("Column \"%s\" is used by generated column \"%s\".",
-										   colName, get_attname(foundObject.objectId, foundObject.objectSubId, false))));
-					}
 					else
 					{
 						/* Not expecting any other direct dependencies... */
@@ -12608,13 +12594,39 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 				break;
 
 			case OCLASS_DEFAULT:
+				{
+					ObjectAddress col = GetAttrDefaultColumnAddress(foundObject.objectId);
 
-				/*
-				 * Ignore the column's default expression, since we will fix
-				 * it below.
-				 */
-				Assert(defaultexpr);
-				break;
+					if (col.objectId == RelationGetRelid(rel) &&
+						col.objectSubId == attnum)
+					{
+						/*
+						 * Ignore the column's own default expression, which
+						 * we will deal with below.
+						 */
+						Assert(defaultexpr);
+					}
+					else
+					{
+						/*
+						 * This must be a reference from the expression of a
+						 * generated column elsewhere in the same table.
+						 * Changing the type of a column that is used by a
+						 * generated column is not allowed by SQL standard, so
+						 * just punt for now.  It might be doable with some
+						 * thinking and effort.
+						 */
+						ereport(ERROR,
+								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+								 errmsg("cannot alter type of a column used by a generated column"),
+								 errdetail("Column \"%s\" is used by generated column \"%s\".",
+										   colName,
+										   get_attname(col.objectId,
+													   col.objectSubId,
+													   false))));
+					}
+					break;
+				}
 
 			case OCLASS_STATISTIC_EXT:
 
@@ -12677,9 +12689,8 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 
 	/*
 	 * Now scan for dependencies of this column on other things.  The only
-	 * thing we should find is the dependency on the column datatype, which we
-	 * want to remove, possibly a collation dependency, and dependencies on
-	 * other columns if it is a generated column.
+	 * things we should find are the dependency on the column datatype and
+	 * possibly a collation dependency.  Those can be removed.
 	 */
 	ScanKeyInit(&key[0],
 				Anum_pg_depend_classid,
@@ -12706,18 +12717,13 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 		foundObject.objectId = foundDep->refobjid;
 		foundObject.objectSubId = foundDep->refobjsubid;
 
-		if (foundDep->deptype != DEPENDENCY_NORMAL &&
-			foundDep->deptype != DEPENDENCY_AUTO)
+		if (foundDep->deptype != DEPENDENCY_NORMAL)
 			elog(ERROR, "found unexpected dependency type '%c'",
 				 foundDep->deptype);
 		if (!(foundDep->refclassid == TypeRelationId &&
 			  foundDep->refobjid == attTup->atttypid) &&
 			!(foundDep->refclassid == CollationRelationId &&
-			  foundDep->refobjid == attTup->attcollation) &&
-			!(foundDep->refclassid == RelationRelationId &&
-			  foundDep->refobjid == RelationGetRelid(rel) &&
-			  foundDep->refobjsubid != 0)
-			)
+			  foundDep->refobjid == attTup->attcollation))
 			elog(ERROR, "found unexpected dependency for column: %s",
 				 getObjectDescription(&foundObject, false));
 
@@ -12833,7 +12839,25 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 	 */
 	if (defaultexpr)
 	{
-		/* Must make new row visible since it will be updated again */
+		/*
+		 * If it's a GENERATED default, drop its dependency records, in
+		 * particular its INTERNAL dependency on the column, which would
+		 * otherwise cause dependency.c to refuse to perform the deletion.
+		 */
+		if (attTup->attgenerated)
+		{
+			Oid			attrdefoid = GetAttrDefaultOid(RelationGetRelid(rel), attnum);
+
+			if (!OidIsValid(attrdefoid))
+				elog(ERROR, "could not find attrdef tuple for relation %u attnum %d",
+					 RelationGetRelid(rel), attnum);
+			(void) deleteDependencyRecordsFor(AttrDefaultRelationId, attrdefoid, false);
+		}
+
+		/*
+		 * Make updates-so-far visible, particularly the new pg_attribute row
+		 * which will be updated again.
+		 */
 		CommandCounterIncrement();
 
 		/*
@@ -14611,7 +14635,7 @@ index_copy_data(Relation rel, RelFileNode newrnode)
 	 * NOTE: any conflict in relfilenode value will be caught in
 	 * RelationCreateStorage().
 	 */
-	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence);
+	RelationCreateStorage(newrnode, rel->rd_rel->relpersistence, true);
 
 	/* copy main fork */
 	RelationCopyStorage(RelationGetSmgr(rel), dstrel, MAIN_FORKNUM,
@@ -16367,11 +16391,14 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 	 * Check that setting the relation to a different schema won't result in a
 	 * publication having both a schema and the same schema's table, as this
 	 * is not supported.
+	 *
+	 * XXX We do this for tables and sequences, but it's better to keep the two
+	 * blocks separate, to make the strings easier to translate.
 	 */
 	if (stmt->objectType == OBJECT_TABLE)
 	{
 		ListCell   *lc;
-		List	   *schemaPubids = GetSchemaPublications(nspOid);
+		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_TABLE);
 		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
 
 		foreach(lc, relPubids)
@@ -16384,6 +16411,27 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 						errmsg("cannot move table \"%s\" to schema \"%s\"",
 							   RelationGetRelationName(rel), stmt->newschema),
 						errdetail("The schema \"%s\" and same schema's table \"%s\" cannot be part of the same publication \"%s\".",
+								  stmt->newschema,
+								  RelationGetRelationName(rel),
+								  get_publication_name(pubid, false)));
+		}
+	}
+	else if (stmt->objectType == OBJECT_SEQUENCE)
+	{
+		ListCell   *lc;
+		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_SEQUENCE);
+		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
+
+		foreach(lc, relPubids)
+		{
+			Oid			pubid = lfirst_oid(lc);
+
+			if (list_member_oid(schemaPubids, pubid))
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cannot move sequence \"%s\" to schema \"%s\"",
+							   RelationGetRelationName(rel), stmt->newschema),
+						errdetail("The schema \"%s\" and same schema's sequence \"%s\" cannot be part of the same publication \"%s\".",
 								  stmt->newschema,
 								  RelationGetRelationName(rel),
 								  get_publication_name(pubid, false)));

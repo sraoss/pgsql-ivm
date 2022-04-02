@@ -132,6 +132,8 @@ static char *lc_monetary = NULL;
 static char *lc_numeric = NULL;
 static char *lc_time = NULL;
 static char *lc_messages = NULL;
+static char locale_provider = COLLPROVIDER_LIBC;
+static char *icu_locale = NULL;
 static const char *default_text_search_config = NULL;
 static char *username = NULL;
 static bool pwprompt = false;
@@ -1405,6 +1407,12 @@ bootstrap_template1(void)
 	bki_lines = replace_token(bki_lines, "LC_CTYPE",
 							  escape_quotes_bki(lc_ctype));
 
+	bki_lines = replace_token(bki_lines, "ICU_LOCALE",
+							  locale_provider == COLLPROVIDER_ICU ? escape_quotes_bki(icu_locale) : "_null_");
+
+	sprintf(buf, "%c", locale_provider);
+	bki_lines = replace_token(bki_lines, "LOCALE_PROVIDER", buf);
+
 	/* Also ensure backend isn't confused by this environment var: */
 	unsetenv("PGCLIENTENCODING");
 
@@ -1852,10 +1860,15 @@ make_template0(FILE *cmdfd)
 	 * objects in the old cluster, the problem scenario only exists if the OID
 	 * that is in use in the old cluster is also used in the new cluster - and
 	 * the new cluster should be the result of a fresh initdb.)
+	 *
+	 * We use "STRATEGY = file_copy" here because checkpoints during initdb
+	 * are cheap. "STRATEGY = wal_log" would generate more WAL, which would
+	 * be a little bit slower and make the new cluster a little bit bigger.
 	 */
 	static const char *const template0_setup[] = {
 		"CREATE DATABASE template0 IS_TEMPLATE = true ALLOW_CONNECTIONS = false OID = "
-		CppAsString2(Template0ObjectId) ";\n\n",
+		CppAsString2(Template0ObjectId)
+		" STRATEGY = file_copy;\n\n",
 
 		/*
 		 * template0 shouldn't have any collation-dependent objects, so unset
@@ -1898,9 +1911,12 @@ make_postgres(FILE *cmdfd)
 {
 	const char *const *line;
 
-	/* Assign a fixed OID to postgres, for the same reasons as template0 */
+	/*
+	 * Just as we did for template0, and for the same reasons, assign a fixed
+	 * OID to postgres and select the file_copy strategy.
+	 */
 	static const char *const postgres_setup[] = {
-		"CREATE DATABASE postgres OID = " CppAsString2(PostgresObjectId) ";\n\n",
+		"CREATE DATABASE postgres OID = " CppAsString2(PostgresObjectId) " STRATEGY = file_copy;\n\n",
 		"COMMENT ON DATABASE postgres IS 'default administrative connection database';\n\n",
 		NULL
 	};
@@ -2165,7 +2181,6 @@ setlocales(void)
 	 * canonicalize locale names, and obtain any missing values from our
 	 * current environment
 	 */
-
 	check_locale_name(LC_CTYPE, lc_ctype, &canonname);
 	lc_ctype = canonname;
 	check_locale_name(LC_COLLATE, lc_collate, &canonname);
@@ -2184,6 +2199,25 @@ setlocales(void)
 	check_locale_name(LC_CTYPE, lc_messages, &canonname);
 	lc_messages = canonname;
 #endif
+
+	if (locale_provider == COLLPROVIDER_ICU)
+	{
+		if (!icu_locale)
+		{
+			pg_log_error("ICU locale must be specified");
+			exit(1);
+		}
+
+		/*
+		 * In supported builds, the ICU locale ID will be checked by the
+		 * backend when performing the post-boostrap initialization.
+		 */
+#ifndef USE_ICU
+		pg_log_error("ICU is not supported in this build");
+		fprintf(stderr, _("You need to rebuild PostgreSQL using %s.\n"), "--with-icu");
+		exit(1);
+#endif
+	}
 }
 
 /*
@@ -2202,6 +2236,7 @@ usage(const char *progname)
 	printf(_(" [-D, --pgdata=]DATADIR     location for this database cluster\n"));
 	printf(_("  -E, --encoding=ENCODING   set default encoding for new databases\n"));
 	printf(_("  -g, --allow-group-access  allow group read/execute on data directory\n"));
+	printf(_("      --icu-locale=LOCALE   set ICU locale ID for new databases\n"));
 	printf(_("  -k, --data-checksums      use data page checksums\n"));
 	printf(_("      --locale=LOCALE       set default locale for new databases\n"));
 	printf(_("      --lc-collate=, --lc-ctype=, --lc-messages=LOCALE\n"
@@ -2209,6 +2244,8 @@ usage(const char *progname)
 			 "                            set default locale in the respective category for\n"
 			 "                            new databases (default taken from environment)\n"));
 	printf(_("      --no-locale           equivalent to --locale=C\n"));
+	printf(_("      --locale-provider={libc|icu}\n"
+			 "                            set default locale provider for new databases\n"));
 	printf(_("      --pwfile=FILE         read password for the new superuser from file\n"));
 	printf(_("  -T, --text-search-config=CFG\n"
 			 "                            default text search configuration\n"));
@@ -2372,21 +2409,26 @@ setup_locale_encoding(void)
 {
 	setlocales();
 
-	if (strcmp(lc_ctype, lc_collate) == 0 &&
+	if (locale_provider == COLLPROVIDER_LIBC &&
+		strcmp(lc_ctype, lc_collate) == 0 &&
 		strcmp(lc_ctype, lc_time) == 0 &&
 		strcmp(lc_ctype, lc_numeric) == 0 &&
 		strcmp(lc_ctype, lc_monetary) == 0 &&
-		strcmp(lc_ctype, lc_messages) == 0)
+		strcmp(lc_ctype, lc_messages) == 0 &&
+		(!icu_locale || strcmp(lc_ctype, icu_locale) == 0))
 		printf(_("The database cluster will be initialized with locale \"%s\".\n"), lc_ctype);
 	else
 	{
-		printf(_("The database cluster will be initialized with locales\n"
-				 "  COLLATE:  %s\n"
-				 "  CTYPE:    %s\n"
-				 "  MESSAGES: %s\n"
-				 "  MONETARY: %s\n"
-				 "  NUMERIC:  %s\n"
-				 "  TIME:     %s\n"),
+		printf(_("The database cluster will be initialized with this locale configuration:\n"));
+		printf(_("  provider:    %s\n"), collprovider_name(locale_provider));
+		if (icu_locale)
+			printf(_("  ICU locale:  %s\n"), icu_locale);
+		printf(_("  LC_COLLATE:  %s\n"
+				 "  LC_CTYPE:    %s\n"
+				 "  LC_MESSAGES: %s\n"
+				 "  LC_MONETARY: %s\n"
+				 "  LC_NUMERIC:  %s\n"
+				 "  LC_TIME:     %s\n"),
 			   lc_collate,
 			   lc_ctype,
 			   lc_messages,
@@ -2395,7 +2437,9 @@ setup_locale_encoding(void)
 			   lc_time);
 	}
 
-	if (!encoding)
+	if (!encoding && locale_provider == COLLPROVIDER_ICU)
+		encodingid = PG_UTF8;
+	else if (!encoding)
 	{
 		int			ctype_enc;
 
@@ -2899,6 +2943,8 @@ main(int argc, char *argv[])
 		{"data-checksums", no_argument, NULL, 'k'},
 		{"allow-group-access", no_argument, NULL, 'g'},
 		{"discard-caches", no_argument, NULL, 14},
+		{"locale-provider", required_argument, NULL, 15},
+		{"icu-locale", required_argument, NULL, 16},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -3045,6 +3091,20 @@ main(int argc, char *argv[])
 										 extra_options,
 										 "-c debug_discard_caches=1");
 				break;
+			case 15:
+				if (strcmp(optarg, "icu") == 0)
+					locale_provider = COLLPROVIDER_ICU;
+				else if (strcmp(optarg, "libc") == 0)
+					locale_provider = COLLPROVIDER_LIBC;
+				else
+				{
+					pg_log_error("unrecognized locale provider: %s", optarg);
+					exit(1);
+				}
+				break;
+			case 16:
+				icu_locale = pg_strdup(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
@@ -3070,6 +3130,13 @@ main(int argc, char *argv[])
 					 argv[optind]);
 		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
 				progname);
+		exit(1);
+	}
+
+	if (icu_locale && locale_provider != COLLPROVIDER_ICU)
+	{
+		pg_log_error("%s cannot be specified unless locale provider \"%s\" is chosen",
+					 "--icu-locale", "icu");
 		exit(1);
 	}
 

@@ -13,14 +13,14 @@
 
 #include <unistd.h>
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 #include <zstd.h>
 #endif
 
 #include "bbstreamer.h"
 #include "common/logging.h"
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 
 typedef struct bbstreamer_zstd_frame
 {
@@ -63,10 +63,11 @@ const bbstreamer_ops bbstreamer_zstd_decompressor_ops = {
  * blocks.
  */
 bbstreamer *
-bbstreamer_zstd_compressor_new(bbstreamer *next, int compresslevel)
+bbstreamer_zstd_compressor_new(bbstreamer *next, bc_specification *compress)
 {
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 	bbstreamer_zstd_frame *streamer;
+	size_t		ret;
 
 	Assert(next != NULL);
 
@@ -81,11 +82,41 @@ bbstreamer_zstd_compressor_new(bbstreamer *next, int compresslevel)
 
 	streamer->cctx = ZSTD_createCCtx();
 	if (!streamer->cctx)
+	{
 		pg_log_error("could not create zstd compression context");
+		exit(1);
+	}
 
-	/* Initialize stream compression preferences */
-	ZSTD_CCtx_setParameter(streamer->cctx, ZSTD_c_compressionLevel,
-						   compresslevel);
+	/* Set compression level, if specified */
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_LEVEL) != 0)
+	{
+		ret = ZSTD_CCtx_setParameter(streamer->cctx, ZSTD_c_compressionLevel,
+									 compress->level);
+		if (ZSTD_isError(ret))
+		{
+			pg_log_error("could not set zstd compression level to %d: %s",
+						 compress->level, ZSTD_getErrorName(ret));
+			exit(1);
+		}
+	}
+
+	/* Set # of workers, if specified */
+	if ((compress->options & BACKUP_COMPRESSION_OPTION_WORKERS) != 0)
+	{
+		/*
+		 * On older versions of libzstd, this option does not exist, and
+		 * trying to set it will fail. Similarly for newer versions if they
+		 * are compiled without threading support.
+		 */
+		ret = ZSTD_CCtx_setParameter(streamer->cctx, ZSTD_c_nbWorkers,
+									 compress->workers);
+		if (ZSTD_isError(ret))
+		{
+			pg_log_error("could not set compression worker count to %d: %s",
+						 compress->workers, ZSTD_getErrorName(ret));
+			exit(1);
+		}
+	}
 
 	/* Initialize the ZSTD output buffer. */
 	streamer->zstd_outBuf.dst = streamer->base.bbs_buffer.data;
@@ -99,7 +130,7 @@ bbstreamer_zstd_compressor_new(bbstreamer *next, int compresslevel)
 #endif
 }
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 /*
  * Compress the input data to output buffer.
  *
@@ -225,7 +256,7 @@ bbstreamer_zstd_compressor_free(bbstreamer *streamer)
 bbstreamer *
 bbstreamer_zstd_decompressor_new(bbstreamer *next)
 {
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 	bbstreamer_zstd_frame *streamer;
 
 	Assert(next != NULL);
@@ -257,7 +288,7 @@ bbstreamer_zstd_decompressor_new(bbstreamer *next)
 #endif
 }
 
-#ifdef HAVE_LIBZSTD
+#ifdef USE_ZSTD
 /*
  * Decompress the input data to output buffer until we run out of input
  * data. Each time the output buffer is full, pass on the decompressed data

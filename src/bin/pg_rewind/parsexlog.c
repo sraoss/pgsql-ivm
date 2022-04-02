@@ -102,7 +102,9 @@ extractPageMap(const char *datadir, XLogRecPtr startpoint, int tliIndex,
 	 * If 'endpoint' didn't point exactly at a record boundary, the caller
 	 * messed up.
 	 */
-	Assert(xlogreader->EndRecPtr == endpoint);
+	if (xlogreader->EndRecPtr != endpoint)
+		pg_fatal("end pointer %X/%X is not a valid end point; expected %X/%X",
+				 LSN_FORMAT_ARGS(endpoint), LSN_FORMAT_ARGS(xlogreader->EndRecPtr));
 
 	XLogReaderFree(xlogreader);
 	if (xlogreadfd != -1)
@@ -370,7 +372,7 @@ extractPageInfo(XLogReaderState *record)
 
 	/* Is this a special record type that I recognize? */
 
-	if (rmid == RM_DBASE_ID && rminfo == XLOG_DBASE_CREATE)
+	if (rmid == RM_DBASE_ID && rminfo == XLOG_DBASE_CREATE_FILE_COPY)
 	{
 		/*
 		 * New databases can be safely ignored. It won't be present in the
@@ -380,6 +382,13 @@ extractPageInfo(XLogReaderState *record)
 		 * That's OK, though; WAL replay of creating the new database, from
 		 * the source systems's WAL, will re-copy the new database,
 		 * overwriting the database created in the target system.
+		 */
+	}
+	else if (rmid == RM_DBASE_ID && rminfo == XLOG_DBASE_CREATE_WAL_LOG)
+	{
+		/*
+		 * New databases can be safely ignored. It won't be present in the
+		 * source system, so it will be deleted.
 		 */
 	}
 	else if (rmid == RM_DBASE_ID && rminfo == XLOG_DBASE_DROP)
@@ -432,7 +441,7 @@ extractPageInfo(XLogReaderState *record)
 				 RmgrNames[rmid], info);
 	}
 
-	for (block_id = 0; block_id <= record->max_block_id; block_id++)
+	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
 	{
 		RelFileNode rnode;
 		ForkNumber	forknum;
