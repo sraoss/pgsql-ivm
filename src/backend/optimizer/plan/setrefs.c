@@ -71,6 +71,13 @@ typedef struct
 	double		num_exec;
 } fix_upper_expr_context;
 
+typedef struct
+{
+	PlannerInfo *root;
+	indexed_tlist *subplan_itlist;
+	int			newvarno;
+} fix_windowagg_cond_context;
+
 /*
  * Selecting the best alternative in an AlternativeSubPlan expression requires
  * estimating how many times that expression will be evaluated.  For an
@@ -115,7 +122,6 @@ static Plan *set_indexonlyscan_references(PlannerInfo *root,
 static Plan *set_subqueryscan_references(PlannerInfo *root,
 										 SubqueryScan *plan,
 										 int rtoffset);
-static bool trivial_subqueryscan(SubqueryScan *plan);
 static Plan *clean_up_removed_plan_level(Plan *parent, Plan *child);
 static void set_foreignscan_references(PlannerInfo *root,
 									   ForeignScan *fscan,
@@ -172,6 +178,9 @@ static List *set_returning_clause_references(PlannerInfo *root,
 											 Plan *topplan,
 											 Index resultRelation,
 											 int rtoffset);
+static List *set_windowagg_runcondition_references(PlannerInfo *root,
+												   List *runcondition,
+												   Plan *plan);
 
 
 /*****************************************************************************
@@ -886,6 +895,18 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 			{
 				WindowAgg  *wplan = (WindowAgg *) plan;
 
+				/*
+				 * Adjust the WindowAgg's run conditions by swapping the
+				 * WindowFuncs references out to instead reference the Var in
+				 * the scan slot so that when the executor evaluates the
+				 * runCondition, it receives the WindowFunc's value from the
+				 * slot that the result has just been stored into rather than
+				 * evaluating the WindowFunc all over again.
+				 */
+				wplan->runCondition = set_windowagg_runcondition_references(root,
+																			wplan->runCondition,
+																			(Plan *) wplan);
+
 				set_upper_references(root, plan, rtoffset);
 
 				/*
@@ -897,6 +918,14 @@ set_plan_refs(PlannerInfo *root, Plan *plan, int rtoffset)
 					fix_scan_expr(root, wplan->startOffset, rtoffset, 1);
 				wplan->endOffset =
 					fix_scan_expr(root, wplan->endOffset, rtoffset, 1);
+				wplan->runCondition = fix_scan_list(root,
+													wplan->runCondition,
+													rtoffset,
+													NUM_EXEC_TLIST(plan));
+				wplan->runConditionOrig = fix_scan_list(root,
+														wplan->runConditionOrig,
+														rtoffset,
+														NUM_EXEC_TLIST(plan));
 			}
 			break;
 		case T_Result:
@@ -1319,13 +1348,25 @@ set_subqueryscan_references(PlannerInfo *root,
  *
  * We can delete it if it has no qual to check and the targetlist just
  * regurgitates the output of the child plan.
+ *
+ * This might be called repeatedly on a SubqueryScan node, so we cache the
+ * result in the SubqueryScan node to avoid repeated computation.
  */
-static bool
+bool
 trivial_subqueryscan(SubqueryScan *plan)
 {
 	int			attrno;
 	ListCell   *lp,
 			   *lc;
+
+	/* We might have detected this already (see mark_async_capable_plan) */
+	if (plan->scanstatus == SUBQUERY_SCAN_TRIVIAL)
+		return true;
+	if (plan->scanstatus == SUBQUERY_SCAN_NONTRIVIAL)
+		return false;
+	Assert(plan->scanstatus == SUBQUERY_SCAN_UNKNOWN);
+	/* Initially, mark the SubqueryScan as non-deletable from the plan tree */
+	plan->scanstatus = SUBQUERY_SCAN_NONTRIVIAL;
 
 	if (plan->scan.plan.qual != NIL)
 		return false;
@@ -1367,6 +1408,9 @@ trivial_subqueryscan(SubqueryScan *plan)
 
 		attrno++;
 	}
+
+	/* Re-mark the SubqueryScan as deletable from the plan tree */
+	plan->scanstatus = SUBQUERY_SCAN_TRIVIAL;
 
 	return true;
 }
@@ -2704,7 +2748,7 @@ search_indexed_tlist_for_sortgroupref(Expr *node,
  *	   relation target lists.  Also perform opcode lookup and add
  *	   regclass OIDs to root->glob->relationOids.
  *
- * This is used in three different scenarios:
+ * This is used in four different scenarios:
  * 1) a normal join clause, where all the Vars in the clause *must* be
  *	  replaced by OUTER_VAR or INNER_VAR references.  In this case
  *	  acceptable_rel should be zero so that any failure to match a Var will be
@@ -2719,6 +2763,11 @@ search_indexed_tlist_for_sortgroupref(Expr *node,
  *	  to-be-updated relation) alone. Correspondingly inner_itlist is to be
  *	  EXCLUDED elements, outer_itlist = NULL and acceptable_rel the target
  *	  relation.
+ * 4) MERGE.  In this case, references to the source relation are to be
+ *    replaced with INNER_VAR references, leaving Vars of the target
+ *    relation (the to-be-modified relation) alone.  So inner_itlist is to be
+ *    the source relation elements, outer_itlist = NULL and acceptable_rel
+ *    the target relation.
  *
  * 'clauses' is the targetlist or list of join clauses
  * 'outer_itlist' is the indexed target list of the outer join relation,
@@ -3050,6 +3099,78 @@ set_returning_clause_references(PlannerInfo *root,
 	return rlist;
 }
 
+/*
+ * fix_windowagg_condition_expr_mutator
+ *		Mutator function for replacing WindowFuncs with the corresponding Var
+ *		in the targetlist which references that WindowFunc.
+ */
+static Node *
+fix_windowagg_condition_expr_mutator(Node *node,
+									 fix_windowagg_cond_context *context)
+{
+	if (node == NULL)
+		return NULL;
+
+	if (IsA(node, WindowFunc))
+	{
+		Var		   *newvar;
+
+		newvar = search_indexed_tlist_for_non_var((Expr *) node,
+												  context->subplan_itlist,
+												  context->newvarno);
+		if (newvar)
+			return (Node *) newvar;
+		elog(ERROR, "WindowFunc not found in subplan target lists");
+	}
+
+	return expression_tree_mutator(node,
+								   fix_windowagg_condition_expr_mutator,
+								   (void *) context);
+}
+
+/*
+ * fix_windowagg_condition_expr
+ *		Converts references in 'runcondition' so that any WindowFunc
+ *		references are swapped out for a Var which references the matching
+ *		WindowFunc in 'subplan_itlist'.
+ */
+static List *
+fix_windowagg_condition_expr(PlannerInfo *root,
+							 List *runcondition,
+							 indexed_tlist *subplan_itlist)
+{
+	fix_windowagg_cond_context context;
+
+	context.root = root;
+	context.subplan_itlist = subplan_itlist;
+	context.newvarno = 0;
+
+	return (List *) fix_windowagg_condition_expr_mutator((Node *) runcondition,
+														 &context);
+}
+
+/*
+ * set_windowagg_runcondition_references
+ *		Converts references in 'runcondition' so that any WindowFunc
+ *		references are swapped out for a Var which references the matching
+ *		WindowFunc in 'plan' targetlist.
+ */
+static List *
+set_windowagg_runcondition_references(PlannerInfo *root,
+									  List *runcondition,
+									  Plan *plan)
+{
+	List	   *newlist;
+	indexed_tlist *itlist;
+
+	itlist = build_tlist_index(plan->targetlist);
+
+	newlist = fix_windowagg_condition_expr(root, runcondition, itlist);
+
+	pfree(itlist);
+
+	return newlist;
+}
 
 /*****************************************************************************
  *					QUERY DEPENDENCY MANAGEMENT

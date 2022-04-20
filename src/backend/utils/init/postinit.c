@@ -25,7 +25,6 @@
 #include "access/session.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
-#include "access/twophase.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -68,9 +67,6 @@
 #include "utils/syscache.h"
 #include "utils/timeout.h"
 
-static int MaxBackends = 0;
-static int MaxBackendsInitialized = false;
-
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
 static void PerformAuthentication(Port *port);
@@ -80,6 +76,7 @@ static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static void IdleSessionTimeoutHandler(void);
+static void IdleStatsUpdateTimeoutHandler(void);
 static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
@@ -541,8 +538,9 @@ pg_split_opts(char **argv, int *argcp, const char *optstr)
 /*
  * Initialize MaxBackends value from config options.
  *
- * This must be called after modules have had the chance to alter GUCs in
- * shared_preload_libraries and before shared memory size is determined.
+ * This must be called after modules have had the chance to register background
+ * workers in shared_preload_libraries, and before shared memory size is
+ * determined.
  *
  * Note that in EXEC_BACKEND environment, the value is passed down from
  * postmaster to subprocesses via BackendParameters in SubPostmasterMain; only
@@ -552,49 +550,15 @@ pg_split_opts(char **argv, int *argcp, const char *optstr)
 void
 InitializeMaxBackends(void)
 {
+	Assert(MaxBackends == 0);
+
 	/* the extra unit accounts for the autovacuum launcher */
-	SetMaxBackends(MaxConnections + autovacuum_max_workers + 1 +
-		max_worker_processes + max_wal_senders);
-}
-
-/*
- * Safely retrieve the value of MaxBackends.
- *
- * Previously, MaxBackends was externally visible, but it was often used before
- * it was initialized (e.g., in preloaded libraries' _PG_init() functions).
- * Unfortunately, we cannot initialize MaxBackends before processing
- * shared_preload_libraries because the libraries sometimes alter GUCs that are
- * used to calculate its value.  Instead, we provide this function for accessing
- * MaxBackends, and we ERROR if someone calls it before it is initialized.
- */
-int
-GetMaxBackends(void)
-{
-	if (unlikely(!MaxBackendsInitialized))
-		elog(ERROR, "MaxBackends not yet initialized");
-
-	return MaxBackends;
-}
-
-/*
- * Set the value of MaxBackends.
- *
- * This should only be used by InitializeMaxBackends() and
- * restore_backend_variables().  If MaxBackends is already initialized or the
- * specified value is greater than the maximum, this will ERROR.
- */
-void
-SetMaxBackends(int max_backends)
-{
-	if (MaxBackendsInitialized)
-		elog(ERROR, "MaxBackends already initialized");
+	MaxBackends = MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes + max_wal_senders;
 
 	/* internal error because the values were all checked previously */
-	if (max_backends > MAX_BACKENDS)
+	if (MaxBackends > MAX_BACKENDS)
 		elog(ERROR, "too many backends configured");
-
-	MaxBackends = max_backends;
-	MaxBackendsInitialized = true;
 }
 
 /*
@@ -706,7 +670,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 
 	SharedInvalBackendInit(false);
 
-	if (MyBackendId > GetMaxBackends() || MyBackendId <= 0)
+	if (MyBackendId > MaxBackends || MyBackendId <= 0)
 		elog(FATAL, "bad backend ID: %d", MyBackendId);
 
 	/* Now that we have a BackendId, we can participate in ProcSignal */
@@ -725,6 +689,8 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 						IdleInTransactionSessionTimeoutHandler);
 		RegisterTimeout(IDLE_SESSION_TIMEOUT, IdleSessionTimeoutHandler);
 		RegisterTimeout(CLIENT_CONNECTION_CHECK_TIMEOUT, ClientCheckTimeoutHandler);
+		RegisterTimeout(IDLE_STATS_UPDATE_TIMEOUT,
+						IdleStatsUpdateTimeoutHandler);
 	}
 
 	/*
@@ -752,6 +718,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		 * Use before_shmem_exit() so that ShutdownXLOG() can rely on DSM
 		 * segments etc to work (which in turn is required for pgstats).
 		 */
+		before_shmem_exit(pgstat_before_server_shutdown, 0);
 		before_shmem_exit(ShutdownXLOG, 0);
 	}
 
@@ -869,24 +836,6 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 		PerformAuthentication(MyProcPort);
 		InitializeSessionUserId(username, useroid);
 		am_superuser = superuser();
-	}
-
-	/*
-	 * If we're trying to shut down, only superusers can connect, and new
-	 * replication connections are not allowed.
-	 */
-	if ((!am_superuser || am_walsender) &&
-		MyProcPort != NULL &&
-		MyProcPort->canAcceptConnections == CAC_SUPERUSER)
-	{
-		if (am_walsender)
-			ereport(FATAL,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("new replication connections are not allowed during database shutdown")));
-		else
-			ereport(FATAL,
-					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to connect during database shutdown")));
 	}
 
 	/*
@@ -1348,6 +1297,14 @@ static void
 IdleSessionTimeoutHandler(void)
 {
 	IdleSessionTimeoutPending = true;
+	InterruptPending = true;
+	SetLatch(MyLatch);
+}
+
+static void
+IdleStatsUpdateTimeoutHandler(void)
+{
+	IdleStatsUpdateTimeoutPending = true;
 	InterruptPending = true;
 	SetLatch(MyLatch);
 }

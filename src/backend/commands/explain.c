@@ -1988,6 +1988,14 @@ ExplainNode(PlanState *planstate, List *ancestors,
 				show_instrumentation_count("Rows Removed by Filter", 1,
 										   planstate, es);
 			break;
+		case T_WindowAgg:
+			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
+			if (plan->qual)
+				show_instrumentation_count("Rows Removed by Filter", 1,
+										   planstate, es);
+			show_upper_qual(((WindowAgg *) plan)->runConditionOrig,
+							"Run Condition", planstate, ancestors, es);
+			break;
 		case T_Group:
 			show_group_keys(castNode(GroupState, planstate), ancestors, es);
 			show_upper_qual(plan->qual, "Filter", planstate, ancestors, es);
@@ -3513,8 +3521,11 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 								usage->temp_blks_written > 0);
 		bool		has_timing = (!INSTR_TIME_IS_ZERO(usage->blk_read_time) ||
 								  !INSTR_TIME_IS_ZERO(usage->blk_write_time));
+		bool		has_temp_timing = (!INSTR_TIME_IS_ZERO(usage->temp_blk_read_time) ||
+									   !INSTR_TIME_IS_ZERO(usage->temp_blk_write_time));
 		bool		show_planning = (planning && (has_shared ||
-												  has_local || has_temp || has_timing));
+												  has_local || has_temp || has_timing ||
+												  has_temp_timing));
 
 		if (show_planning)
 		{
@@ -3579,16 +3590,33 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 		}
 
 		/* As above, show only positive counter values. */
-		if (has_timing)
+		if (has_timing || has_temp_timing)
 		{
 			ExplainIndentText(es);
 			appendStringInfoString(es->str, "I/O Timings:");
-			if (!INSTR_TIME_IS_ZERO(usage->blk_read_time))
-				appendStringInfo(es->str, " read=%0.3f",
-								 INSTR_TIME_GET_MILLISEC(usage->blk_read_time));
-			if (!INSTR_TIME_IS_ZERO(usage->blk_write_time))
-				appendStringInfo(es->str, " write=%0.3f",
-								 INSTR_TIME_GET_MILLISEC(usage->blk_write_time));
+
+			if (has_timing)
+			{
+				appendStringInfoString(es->str, " shared/local");
+				if (!INSTR_TIME_IS_ZERO(usage->blk_read_time))
+					appendStringInfo(es->str, " read=%0.3f",
+									 INSTR_TIME_GET_MILLISEC(usage->blk_read_time));
+				if (!INSTR_TIME_IS_ZERO(usage->blk_write_time))
+					appendStringInfo(es->str, " write=%0.3f",
+									 INSTR_TIME_GET_MILLISEC(usage->blk_write_time));
+				if (has_temp_timing)
+					appendStringInfoChar(es->str, ',');
+			}
+			if (has_temp_timing)
+			{
+				appendStringInfoString(es->str, " temp");
+				if (!INSTR_TIME_IS_ZERO(usage->temp_blk_read_time))
+					appendStringInfo(es->str, " read=%0.3f",
+									 INSTR_TIME_GET_MILLISEC(usage->temp_blk_read_time));
+				if (!INSTR_TIME_IS_ZERO(usage->temp_blk_write_time))
+					appendStringInfo(es->str, " write=%0.3f",
+									 INSTR_TIME_GET_MILLISEC(usage->temp_blk_write_time));
+			}
 			appendStringInfoChar(es->str, '\n');
 		}
 
@@ -3624,6 +3652,12 @@ show_buffer_usage(ExplainState *es, const BufferUsage *usage, bool planning)
 								 3, es);
 			ExplainPropertyFloat("I/O Write Time", "ms",
 								 INSTR_TIME_GET_MILLISEC(usage->blk_write_time),
+								 3, es);
+			ExplainPropertyFloat("Temp I/O Read Time", "ms",
+								 INSTR_TIME_GET_MILLISEC(usage->temp_blk_read_time),
+								 3, es);
+			ExplainPropertyFloat("Temp I/O Write Time", "ms",
+								 INSTR_TIME_GET_MILLISEC(usage->temp_blk_write_time),
 								 3, es);
 		}
 	}
@@ -3796,7 +3830,13 @@ ExplainTargetRel(Plan *plan, Index rti, ExplainState *es)
 			break;
 		case T_TableFuncScan:
 			Assert(rte->rtekind == RTE_TABLEFUNC);
-			objectname = "xmltable";
+			if (rte->tablefunc)
+				if (rte->tablefunc->functype == TFT_XMLTABLE)
+					objectname = "xmltable";
+				else /* Must be TFT_JSON_TABLE */
+					objectname = "json_table";
+			else
+				objectname = NULL;
 			objecttag = "Table Function Name";
 			break;
 		case T_ValuesScan:

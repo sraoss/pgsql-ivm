@@ -169,9 +169,9 @@ typedef struct
 #define OP_PHRASE		4		/* highest code, tsquery_cleanup.c */
 #define OP_COUNT		4
 
-extern const int tsearch_op_priority[OP_COUNT];
+extern PGDLLIMPORT const int tsearch_op_priority[OP_COUNT];
 
-/* get operation priority  by its code*/
+/* get operation priority by its code */
 #define OP_PRIORITY(x)	( tsearch_op_priority[(x) - 1] )
 /* get QueryOperator priority */
 #define QO_PRIORITY(x)	OP_PRIORITY(((QueryOperator *) (x))->oper)

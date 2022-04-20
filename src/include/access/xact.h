@@ -38,7 +38,7 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
-extern int	DefaultXactIsoLevel;
+extern PGDLLIMPORT int DefaultXactIsoLevel;
 extern PGDLLIMPORT int XactIsoLevel;
 
 /*
@@ -52,18 +52,18 @@ extern PGDLLIMPORT int XactIsoLevel;
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
-extern bool DefaultXactReadOnly;
-extern bool XactReadOnly;
+extern PGDLLIMPORT bool DefaultXactReadOnly;
+extern PGDLLIMPORT bool XactReadOnly;
 
 /* flag for logging statements in this transaction */
-extern bool xact_is_sampled;
+extern PGDLLIMPORT bool xact_is_sampled;
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
  */
-extern bool DefaultXactDeferrable;
-extern bool XactDeferrable;
+extern PGDLLIMPORT bool DefaultXactDeferrable;
+extern PGDLLIMPORT bool XactDeferrable;
 
 typedef enum
 {
@@ -80,7 +80,7 @@ typedef enum
 #define SYNCHRONOUS_COMMIT_ON	SYNCHRONOUS_COMMIT_REMOTE_FLUSH
 
 /* Synchronous commit level */
-extern int	synchronous_commit;
+extern PGDLLIMPORT int synchronous_commit;
 
 /* used during logical streaming of a transaction */
 extern PGDLLIMPORT TransactionId CheckXidAlive;
@@ -93,7 +93,7 @@ extern PGDLLIMPORT bool bsysscan;
  * globally accessible, so can be set from anywhere in the code which requires
  * recording flags.
  */
-extern int	MyXactFlags;
+extern PGDLLIMPORT int MyXactFlags;
 
 /*
  * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
@@ -180,6 +180,7 @@ typedef struct SavedTransactionCharacteristics
 #define XACT_XINFO_HAS_ORIGIN			(1U << 5)
 #define XACT_XINFO_HAS_AE_LOCKS			(1U << 6)
 #define XACT_XINFO_HAS_GID				(1U << 7)
+#define XACT_XINFO_HAS_DROPPED_STATS	(1U << 8)
 
 /*
  * Also stored in xinfo, these indicating a variety of additional actions that
@@ -230,7 +231,7 @@ typedef struct xl_xact_assignment
 typedef struct xl_xact_xinfo
 {
 	/*
-	 * Even though we right now only require 1 byte of space in xinfo we use
+	 * Even though we right now only require two bytes of space in xinfo we use
 	 * four so following records don't have to care about alignment. Commit
 	 * records can be large, so copying large portions isn't attractive.
 	 */
@@ -256,6 +257,27 @@ typedef struct xl_xact_relfilenodes
 	RelFileNode xnodes[FLEXIBLE_ARRAY_MEMBER];
 } xl_xact_relfilenodes;
 #define MinSizeOfXactRelfilenodes offsetof(xl_xact_relfilenodes, xnodes)
+
+/*
+ * A transactionally dropped statistics entry.
+ *
+ * Declared here rather than pgstat.h because pgstat.h can't be included from
+ * frontend code, but the WAL format needs to be readable by frontend
+ * programs.
+ */
+typedef struct xl_xact_stats_item
+{
+	int			kind;
+	Oid			dboid;
+	Oid			objoid;
+} xl_xact_stats_item;
+
+typedef struct xl_xact_stats_items
+{
+	int		nitems;
+	xl_xact_stats_item items[FLEXIBLE_ARRAY_MEMBER];
+} xl_xact_stats_items;
+#define MinSizeOfXactStatsItems offsetof(xl_xact_stats_items, items)
 
 typedef struct xl_xact_invals
 {
@@ -283,6 +305,7 @@ typedef struct xl_xact_commit
 	/* xl_xact_dbinfo follows if XINFO_HAS_DBINFO */
 	/* xl_xact_subxacts follows if XINFO_HAS_SUBXACT */
 	/* xl_xact_relfilenodes follows if XINFO_HAS_RELFILENODES */
+	/* xl_xact_stats_items follows if XINFO_HAS_DROPPED_STATS */
 	/* xl_xact_invals follows if XINFO_HAS_INVALS */
 	/* xl_xact_twophase follows if XINFO_HAS_TWOPHASE */
 	/* twophase_gid follows if XINFO_HAS_GID. As a null-terminated string. */
@@ -298,6 +321,7 @@ typedef struct xl_xact_abort
 	/* xl_xact_dbinfo follows if XINFO_HAS_DBINFO */
 	/* xl_xact_subxacts follows if XINFO_HAS_SUBXACT */
 	/* xl_xact_relfilenodes follows if XINFO_HAS_RELFILENODES */
+	/* xl_xact_stats_items follows if XINFO_HAS_DROPPED_STATS */
 	/* No invalidation messages needed. */
 	/* xl_xact_twophase follows if XINFO_HAS_TWOPHASE */
 	/* twophase_gid follows if XINFO_HAS_GID. As a null-terminated string. */
@@ -316,6 +340,8 @@ typedef struct xl_xact_prepare
 	int32		nsubxacts;		/* number of following subxact XIDs */
 	int32		ncommitrels;	/* number of delete-on-commit rels */
 	int32		nabortrels;		/* number of delete-on-abort rels */
+	int32		ncommitstats;	/* number of stats to drop on commit */
+	int32		nabortstats;	/* number of stats to drop on abort */
 	int32		ninvalmsgs;		/* number of cache invalidation messages */
 	bool		initfileinval;	/* does relcache init file need invalidation? */
 	uint16		gidlen;			/* length of the GID - GID follows the header */
@@ -342,6 +368,9 @@ typedef struct xl_xact_parsed_commit
 	int			nrels;
 	RelFileNode *xnodes;
 
+	int			nstats;
+	xl_xact_stats_item *stats;
+
 	int			nmsgs;
 	SharedInvalidationMessage *msgs;
 
@@ -349,6 +378,8 @@ typedef struct xl_xact_parsed_commit
 	char		twophase_gid[GIDSIZE];	/* only for 2PC */
 	int			nabortrels;		/* only for 2PC */
 	RelFileNode *abortnodes;	/* only for 2PC */
+	int			nabortstats;		/* only for 2PC */
+	xl_xact_stats_item *abortstats; /* only for 2PC */
 
 	XLogRecPtr	origin_lsn;
 	TimestampTz origin_timestamp;
@@ -369,6 +400,9 @@ typedef struct xl_xact_parsed_abort
 
 	int			nrels;
 	RelFileNode *xnodes;
+
+	int			nstats;
+	xl_xact_stats_item *stats;
 
 	TransactionId twophase_xid; /* only for 2PC */
 	char		twophase_gid[GIDSIZE];	/* only for 2PC */
@@ -449,6 +483,8 @@ extern int	xactGetCommittedChildren(TransactionId **ptr);
 extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
 									  int nsubxacts, TransactionId *subxacts,
 									  int nrels, RelFileNode *rels,
+									  int nstats,
+									  xl_xact_stats_item *stats,
 									  int nmsgs, SharedInvalidationMessage *msgs,
 									  bool relcacheInval,
 									  int xactflags,
@@ -458,6 +494,8 @@ extern XLogRecPtr XactLogCommitRecord(TimestampTz commit_time,
 extern XLogRecPtr XactLogAbortRecord(TimestampTz abort_time,
 									 int nsubxacts, TransactionId *subxacts,
 									 int nrels, RelFileNode *rels,
+									 int nstats,
+									 xl_xact_stats_item *stats,
 									 int xactflags, TransactionId twophase_xid,
 									 const char *twophase_gid);
 extern void xact_redo(XLogReaderState *record);

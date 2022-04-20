@@ -638,6 +638,7 @@ _outSubqueryScan(StringInfo str, const SubqueryScan *node)
 	_outScanInfo(str, (const Scan *) node);
 
 	WRITE_NODE_FIELD(subplan);
+	WRITE_ENUM_FIELD(scanstatus, SubqueryScanStatus);
 }
 
 static void
@@ -828,11 +829,14 @@ _outWindowAgg(StringInfo str, const WindowAgg *node)
 	WRITE_INT_FIELD(frameOptions);
 	WRITE_NODE_FIELD(startOffset);
 	WRITE_NODE_FIELD(endOffset);
+	WRITE_NODE_FIELD(runCondition);
+	WRITE_NODE_FIELD(runConditionOrig);
 	WRITE_OID_FIELD(startInRangeFunc);
 	WRITE_OID_FIELD(endInRangeFunc);
 	WRITE_OID_FIELD(inRangeColl);
 	WRITE_BOOL_FIELD(inRangeAsc);
 	WRITE_BOOL_FIELD(inRangeNullsFirst);
+	WRITE_BOOL_FIELD(topWindow);
 }
 
 static void
@@ -1092,6 +1096,7 @@ _outTableFunc(StringInfo str, const TableFunc *node)
 {
 	WRITE_NODE_TYPE("TABLEFUNC");
 
+	WRITE_ENUM_FIELD(functype, TableFuncType);
 	WRITE_NODE_FIELD(ns_uris);
 	WRITE_NODE_FIELD(ns_names);
 	WRITE_NODE_FIELD(docexpr);
@@ -1102,7 +1107,9 @@ _outTableFunc(StringInfo str, const TableFunc *node)
 	WRITE_NODE_FIELD(colcollations);
 	WRITE_NODE_FIELD(colexprs);
 	WRITE_NODE_FIELD(coldefexprs);
+	WRITE_NODE_FIELD(colvalexprs);
 	WRITE_BITMAPSET_FIELD(notnulls);
+	WRITE_NODE_FIELD(plan);
 	WRITE_INT_FIELD(ordinalitycol);
 	WRITE_LOCATION_FIELD(location);
 }
@@ -1786,12 +1793,12 @@ _outJsonValueExpr(StringInfo str, const JsonValueExpr *node)
 static void
 _outJsonConstructorExpr(StringInfo str, const JsonConstructorExpr *node)
 {
-	WRITE_NODE_TYPE("JSONCTOREXPR");
+	WRITE_NODE_TYPE("JSONCONSTRUCTOREXPR");
 
 	WRITE_NODE_FIELD(args);
 	WRITE_NODE_FIELD(func);
 	WRITE_NODE_FIELD(coercion);
-	WRITE_INT_FIELD(type);
+	WRITE_ENUM_FIELD(type, JsonConstructorType);
 	WRITE_NODE_FIELD(returning);
 	WRITE_BOOL_FIELD(unique);
 	WRITE_BOOL_FIELD(absent_on_null);
@@ -1865,6 +1872,29 @@ _outJsonItemCoercions(StringInfo str, const JsonItemCoercions *node)
 	WRITE_NODE_FIELD(timestamp);
 	WRITE_NODE_FIELD(timestamptz);
 	WRITE_NODE_FIELD(composite);
+}
+
+static void
+_outJsonTableParent(StringInfo str, const JsonTableParent *node)
+{
+	WRITE_NODE_TYPE("JSONTABPNODE");
+
+	WRITE_NODE_FIELD(path);
+	WRITE_STRING_FIELD(name);
+	WRITE_NODE_FIELD(child);
+	WRITE_BOOL_FIELD(outerJoin);
+	WRITE_INT_FIELD(colMin);
+	WRITE_INT_FIELD(colMax);
+}
+
+static void
+_outJsonTableSibling(StringInfo str, const JsonTableSibling *node)
+{
+	WRITE_NODE_TYPE("JSONTABSNODE");
+
+	WRITE_NODE_FIELD(larg);
+	WRITE_NODE_FIELD(rarg);
+	WRITE_BOOL_FIELD(cross);
 }
 
 /*****************************************************************************
@@ -2257,6 +2287,8 @@ _outWindowAggPath(StringInfo str, const WindowAggPath *node)
 
 	WRITE_NODE_FIELD(subpath);
 	WRITE_NODE_FIELD(winclause);
+	WRITE_NODE_FIELD(qual);
+	WRITE_BOOL_FIELD(topwindow);
 }
 
 static void
@@ -3267,6 +3299,7 @@ _outWindowClause(StringInfo str, const WindowClause *node)
 	WRITE_INT_FIELD(frameOptions);
 	WRITE_NODE_FIELD(startOffset);
 	WRITE_NODE_FIELD(endOffset);
+	WRITE_NODE_FIELD(runCondition);
 	WRITE_OID_FIELD(startInRangeFunc);
 	WRITE_OID_FIELD(endInRangeFunc);
 	WRITE_OID_FIELD(inRangeColl);
@@ -4715,6 +4748,12 @@ outNode(StringInfo str, const void *obj)
 				break;
 			case T_JsonItemCoercions:
 				_outJsonItemCoercions(str, obj);
+				break;
+			case T_JsonTableParent:
+				_outJsonTableParent(str, obj);
+				break;
+			case T_JsonTableSibling:
+				_outJsonTableSibling(str, obj);
 				break;
 
 			default:

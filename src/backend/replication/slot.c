@@ -247,7 +247,7 @@ ReplicationSlotValidateName(const char *name, int elevel)
  *     to be enabled only at the slot creation time. If we allow this option
  *     to be changed during decoding then it is quite possible that we skip
  *     prepare first time because this option was not enabled. Now next time
- *     during getting changes, if the two_phase  option is enabled it can skip
+ *     during getting changes, if the two_phase option is enabled it can skip
  *     prepare because by that time start decoding point has been moved. So the
  *     user will only get commit prepared.
  */
@@ -356,7 +356,7 @@ ReplicationSlotCreate(const char *name, bool db_specific,
 	 * ReplicationSlotAllocationLock.
 	 */
 	if (SlotIsLogical(slot))
-		pgstat_report_replslot_create(NameStr(slot->data.name));
+		pgstat_create_replslot(slot);
 
 	/*
 	 * Now that the slot has been marked as in_use and active, it's safe to
@@ -397,6 +397,22 @@ SearchNamedReplicationSlot(const char *name, bool need_lock)
 		LWLockRelease(ReplicationSlotControlLock);
 
 	return slot;
+}
+
+/*
+ * Return the index of the replication slot in
+ * ReplicationSlotCtl->replication_slots.
+ *
+ * This is mainly useful to have an efficient key for storing replication slot
+ * stats.
+ */
+int
+ReplicationSlotIndex(ReplicationSlot *slot)
+{
+	Assert(slot >= ReplicationSlotCtl->replication_slots &&
+		   slot < ReplicationSlotCtl->replication_slots + max_replication_slots);
+
+	return slot - ReplicationSlotCtl->replication_slots;
 }
 
 /*
@@ -486,6 +502,14 @@ retry:
 
 	/* We made this slot active, so it's ours now. */
 	MyReplicationSlot = s;
+
+	/*
+	 * The call to pgstat_acquire_replslot() protects against stats for
+	 * a different slot, from before a restart or such, being present during
+	 * pgstat_report_replslot().
+	 */
+	if (SlotIsLogical(s))
+		pgstat_acquire_replslot(s);
 }
 
 /*
@@ -730,23 +754,13 @@ ReplicationSlotDropPtr(ReplicationSlot *slot)
 	elog(DEBUG3, "replication slot drop: %s: removed directory", NameStr(slot->data.name));
 
 	/*
-	 * Send a message to drop the replication slot to the stats collector.
-	 * Since there is no guarantee of the order of message transfer on a UDP
-	 * connection, it's possible that a message for creating a new slot
-	 * reaches before a message for removing the old slot. We send the drop
-	 * and create messages while holding ReplicationSlotAllocationLock to
-	 * reduce that possibility. If the messages reached in reverse, we would
-	 * lose one statistics update message. But the next update message will
-	 * create the statistics for the replication slot.
-	 *
-	 * XXX In case, the messages for creation and drop slot of the same name
-	 * get lost and create happens before (auto)vacuum cleans up the dead
-	 * slot, the stats will be accumulated into the old slot. One can imagine
-	 * having OIDs for each slot to avoid the accumulation of stats but that
-	 * doesn't seem worth doing as in practice this won't happen frequently.
+	 * Drop the statistics entry for the replication slot.  Do this while
+	 * holding ReplicationSlotAllocationLock so that we don't drop a
+	 * statistics entry for another slot with the same name just created in
+	 * another session.
 	 */
 	if (SlotIsLogical(slot))
-		pgstat_report_replslot_drop(NameStr(slot->data.name));
+		pgstat_drop_replslot(slot);
 
 	/*
 	 * We release this at the very end, so that nobody starts trying to create

@@ -1435,14 +1435,6 @@ pg_prepared_xacts| SELECT p.transaction,
    FROM ((pg_prepared_xact() p(transaction, gid, prepared, ownerid, dbid)
      LEFT JOIN pg_authid u ON ((p.ownerid = u.oid)))
      LEFT JOIN pg_database d ON ((p.dbid = d.oid)));
-pg_publication_sequences| SELECT p.pubname,
-    n.nspname AS schemaname,
-    c.relname AS sequencename
-   FROM pg_publication p,
-    LATERAL pg_get_publication_sequences((p.pubname)::text) gps(relid),
-    (pg_class c
-     JOIN pg_namespace n ON ((n.oid = c.relnamespace)))
-  WHERE (c.oid = gps.relid);
 pg_publication_tables| SELECT p.pubname,
     n.nspname AS schemaname,
     c.relname AS tablename
@@ -2019,6 +2011,17 @@ pg_stat_progress_vacuum| SELECT s.pid,
     s.param7 AS num_dead_tuples
    FROM (pg_stat_get_progress_info('VACUUM'::text) s(pid, datid, relid, param1, param2, param3, param4, param5, param6, param7, param8, param9, param10, param11, param12, param13, param14, param15, param16, param17, param18, param19, param20)
      LEFT JOIN pg_database d ON ((s.datid = d.oid)));
+pg_stat_recovery_prefetch| SELECT s.stats_reset,
+    s.prefetch,
+    s.hit,
+    s.skip_init,
+    s.skip_new,
+    s.skip_fpw,
+    s.skip_rep,
+    s.wal_distance,
+    s.block_distance,
+    s.io_depth
+   FROM pg_stat_get_recovery_prefetch() s(stats_reset, prefetch, hit, skip_init, skip_new, skip_fpw, skip_rep, wal_distance, block_distance, io_depth);
 pg_stat_replication| SELECT s.pid,
     s.usesysid,
     u.rolname AS usename,
@@ -3550,7 +3553,7 @@ DROP TABLE ruletest2;
 --
 -- Test non-SELECT rule on security invoker view.
 -- Should use view owner's permissions.
--- 
+--
 CREATE USER regress_rule_user1;
 CREATE TABLE ruletest_t1 (x int);
 CREATE TABLE ruletest_t2 (x int);

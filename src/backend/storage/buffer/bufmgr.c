@@ -649,6 +649,8 @@ ReadRecentBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum,
 				pg_atomic_write_u32(&bufHdr->state,
 									buf_state + BUF_USAGECOUNT_ONE);
 
+			pgBufferUsage.local_blks_hit++;
+
 			return true;
 		}
 	}
@@ -679,6 +681,8 @@ ReadRecentBuffer(RelFileNode rnode, ForkNumber forkNum, BlockNumber blockNum,
 				PinBuffer(bufHdr, NULL);	/* bump pin count */
 			else
 				PinBuffer_Locked(bufHdr);	/* pin for first time */
+
+			pgBufferUsage.shared_blks_hit++;
 
 			return true;
 		}
@@ -2151,7 +2155,7 @@ BufferSync(int flags)
 			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
 			{
 				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
-				PendingCheckpointerStats.m_buf_written_checkpoints++;
+				PendingCheckpointerStats.buf_written_checkpoints++;
 				num_written++;
 			}
 		}
@@ -2261,7 +2265,7 @@ BgBufferSync(WritebackContext *wb_context)
 	strategy_buf_id = StrategySyncStart(&strategy_passes, &recent_alloc);
 
 	/* Report buffer alloc counts to pgstat */
-	PendingBgWriterStats.m_buf_alloc += recent_alloc;
+	PendingBgWriterStats.buf_alloc += recent_alloc;
 
 	/*
 	 * If we're not running the LRU scan, just stop after doing the stats
@@ -2451,7 +2455,7 @@ BgBufferSync(WritebackContext *wb_context)
 			reusable_buffers++;
 			if (++num_written >= bgwriter_lru_maxpages)
 			{
-				PendingBgWriterStats.m_maxwritten_clean++;
+				PendingBgWriterStats.maxwritten_clean++;
 				break;
 			}
 		}
@@ -2459,7 +2463,7 @@ BgBufferSync(WritebackContext *wb_context)
 			reusable_buffers++;
 	}
 
-	PendingBgWriterStats.m_buf_written_clean += num_written;
+	PendingBgWriterStats.buf_written_clean += num_written;
 
 #ifdef BGW_DEBUG
 	elog(DEBUG1, "bgwriter: recent_alloc=%u smoothed=%.2f delta=%ld ahead=%d density=%.2f reusable_est=%d upcoming_est=%d scanned=%d wrote=%d reusable=%d",
@@ -2672,7 +2676,6 @@ CheckForBufferLeaks(void)
 			PrintBufferLeakWarning(res->buffer);
 			RefCountErrors++;
 		}
-
 	}
 
 	Assert(RefCountErrors == 0);
@@ -3648,7 +3651,6 @@ FlushRelationsAllBuffers(SMgrRelation *smgrs, int nrels)
 					break;
 				}
 			}
-
 		}
 		else
 		{
@@ -4017,7 +4019,7 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 	{
 		XLogRecPtr	lsn = InvalidXLogRecPtr;
 		bool		dirtied = false;
-		bool		delayChkpt = false;
+		bool		delayChkptFlags = false;
 		uint32		buf_state;
 
 		/*
@@ -4067,9 +4069,9 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 			 * essential that CreateCheckPoint waits for virtual transactions
 			 * rather than full transactionids.
 			 */
-			Assert((MyProc->delayChkpt & DELAY_CHKPT_START) == 0);
-			MyProc->delayChkpt |= DELAY_CHKPT_START;
-			delayChkpt = true;
+			Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
+			MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+			delayChkptFlags = true;
 			lsn = XLogSaveBufferForHint(buffer, buffer_std);
 		}
 
@@ -4101,8 +4103,8 @@ MarkBufferDirtyHint(Buffer buffer, bool buffer_std)
 		buf_state |= BM_DIRTY | BM_JUST_DIRTIED;
 		UnlockBufHdr(bufHdr, buf_state);
 
-		if (delayChkpt)
-			MyProc->delayChkpt &= ~DELAY_CHKPT_START;
+		if (delayChkptFlags)
+			MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
 
 		if (dirtied)
 		{

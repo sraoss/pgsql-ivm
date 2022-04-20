@@ -42,7 +42,6 @@
 #include "catalog/pg_inherits.h"
 #include "catalog/pg_namespace.h"
 #include "catalog/pg_opclass.h"
-#include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_statistic_ext.h"
 #include "catalog/pg_tablespace.h"
 #include "catalog/pg_trigger.h"
@@ -320,6 +319,7 @@ struct DropRelationCallbackState
 #define		ATT_COMPOSITE_TYPE		0x0010
 #define		ATT_FOREIGN_TABLE		0x0020
 #define		ATT_PARTITIONED_INDEX	0x0040
+#define		ATT_SEQUENCE			0x0080
 
 /*
  * ForeignTruncateInfo
@@ -946,7 +946,6 @@ DefineRelation(CreateStmt *stmt, char relkind, Oid ownerId,
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("specifying a table access method is not supported on a partitioned table")));
-
 	}
 	else if (RELKIND_HAS_TABLE_AM(relkind))
 		accessMethod = default_table_access_method;
@@ -3782,7 +3781,6 @@ RenameConstraint(RenameStmt *stmt)
 									stmt->relation->inh),	/* recursive? */
 								   false,	/* recursing? */
 								   0 /* expected inhcount */ );
-
 }
 
 /*
@@ -4669,7 +4667,7 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			pass = AT_PASS_MISC;
 			break;
 		case AT_SetLogged:		/* SET LOGGED */
-			ATSimplePermissions(cmd->subtype, rel, ATT_TABLE);
+			ATSimplePermissions(cmd->subtype, rel, ATT_TABLE | ATT_SEQUENCE);
 			if (tab->chgPersistence)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -4684,7 +4682,7 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			pass = AT_PASS_MISC;
 			break;
 		case AT_SetUnLogged:	/* SET UNLOGGED */
-			ATSimplePermissions(cmd->subtype, rel, ATT_TABLE);
+			ATSimplePermissions(cmd->subtype, rel, ATT_TABLE | ATT_SEQUENCE);
 			if (tab->chgPersistence)
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -5434,7 +5432,7 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
 		 * and assigns a new relfilenode, we automatically create or drop an
 		 * init fork for the relation as appropriate.
 		 */
-		if (tab->rewrite > 0)
+		if (tab->rewrite > 0 && tab->relkind != RELKIND_SEQUENCE)
 		{
 			/* Build a temporary relation and copy data */
 			Relation	OldHeap;
@@ -5555,6 +5553,11 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
 
 			InvokeObjectPostAlterHook(RelationRelationId, tab->relid, 0);
 		}
+		else if (tab->rewrite > 0 && tab->relkind == RELKIND_SEQUENCE)
+		{
+			if (tab->chgPersistence)
+				SequenceChangePersistence(tab->relid, tab->newrelpersistence);
+		}
 		else
 		{
 			/*
@@ -5572,6 +5575,23 @@ ATRewriteTables(AlterTableStmt *parsetree, List **wqueue, LOCKMODE lockmode,
 			 */
 			if (tab->newTableSpace)
 				ATExecSetTableSpace(tab->relid, tab->newTableSpace, lockmode);
+		}
+
+		/*
+		 * Also change persistence of owned sequences, so that it matches the
+		 * table persistence.
+		 */
+		if (tab->chgPersistence)
+		{
+			List	   *seqlist = getOwnedSequences(tab->relid);
+			ListCell   *lc;
+
+			foreach(lc, seqlist)
+			{
+				Oid         seq_relid = lfirst_oid(lc);
+
+				SequenceChangePersistence(seq_relid, tab->newrelpersistence);
+			}
 		}
 	}
 
@@ -6232,6 +6252,9 @@ ATSimplePermissions(AlterTableType cmdtype, Relation rel, int allowed_targets)
 			break;
 		case RELKIND_FOREIGN_TABLE:
 			actual_target = ATT_FOREIGN_TABLE;
+			break;
+		case RELKIND_SEQUENCE:
+			actual_target = ATT_SEQUENCE;
 			break;
 		default:
 			actual_target = 0;
@@ -12664,6 +12687,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 			case OCLASS_DEFACL:
 			case OCLASS_EXTENSION:
 			case OCLASS_EVENT_TRIGGER:
+			case OCLASS_PARAMETER_ACL:
 			case OCLASS_PUBLICATION:
 			case OCLASS_PUBLICATION_NAMESPACE:
 			case OCLASS_PUBLICATION_REL:
@@ -14038,7 +14062,7 @@ ATExecClusterOn(Relation rel, const char *indexName, LOCKMODE lockmode)
 						indexName, RelationGetRelationName(rel))));
 
 	/* Check index is valid to cluster on */
-	check_index_is_clusterable(rel, indexOid, false, lockmode);
+	check_index_is_clusterable(rel, indexOid, lockmode);
 
 	/* And do the work */
 	mark_index_clustered(rel, indexOid, false);
@@ -16391,14 +16415,11 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 	 * Check that setting the relation to a different schema won't result in a
 	 * publication having both a schema and the same schema's table, as this
 	 * is not supported.
-	 *
-	 * XXX We do this for tables and sequences, but it's better to keep the two
-	 * blocks separate, to make the strings easier to translate.
 	 */
 	if (stmt->objectType == OBJECT_TABLE)
 	{
 		ListCell   *lc;
-		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_TABLE);
+		List	   *schemaPubids = GetSchemaPublications(nspOid);
 		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
 
 		foreach(lc, relPubids)
@@ -16411,27 +16432,6 @@ AlterTableNamespace(AlterObjectSchemaStmt *stmt, Oid *oldschema)
 						errmsg("cannot move table \"%s\" to schema \"%s\"",
 							   RelationGetRelationName(rel), stmt->newschema),
 						errdetail("The schema \"%s\" and same schema's table \"%s\" cannot be part of the same publication \"%s\".",
-								  stmt->newschema,
-								  RelationGetRelationName(rel),
-								  get_publication_name(pubid, false)));
-		}
-	}
-	else if (stmt->objectType == OBJECT_SEQUENCE)
-	{
-		ListCell   *lc;
-		List	   *schemaPubids = GetSchemaPublications(nspOid, PUB_OBJTYPE_SEQUENCE);
-		List	   *relPubids = GetRelationPublications(RelationGetRelid(rel));
-
-		foreach(lc, relPubids)
-		{
-			Oid			pubid = lfirst_oid(lc);
-
-			if (list_member_oid(schemaPubids, pubid))
-				ereport(ERROR,
-						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("cannot move sequence \"%s\" to schema \"%s\"",
-							   RelationGetRelationName(rel), stmt->newschema),
-						errdetail("The schema \"%s\" and same schema's sequence \"%s\" cannot be part of the same publication \"%s\".",
 								  stmt->newschema,
 								  RelationGetRelationName(rel),
 								  get_publication_name(pubid, false)));
@@ -16920,11 +16920,11 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 
 /*
  * This is intended as a callback for RangeVarGetRelidExtended().  It allows
- * the relation to be locked only if (1) it's a plain table, materialized
- * view, or TOAST table and (2) the current user is the owner (or the
- * superuser).  This meets the permission-checking needs of CLUSTER, REINDEX
- * TABLE, and REFRESH MATERIALIZED VIEW; we expose it here so that it can be
- * used by all.
+ * the relation to be locked only if (1) it's a plain or partitioned table,
+ * materialized view, or TOAST table and (2) the current user is the owner (or
+ * the superuser).  This meets the permission-checking needs of CLUSTER,
+ * REINDEX TABLE, and REFRESH MATERIALIZED VIEW; we expose it here so that it
+ * can be used by all.
  */
 void
 RangeVarCallbackOwnsTable(const RangeVar *relation,
@@ -17458,7 +17458,6 @@ ComputePartitionAttrs(ParseState *pstate, Relation rel, List *partParams, AttrNu
 							 errmsg("data type %s has no default operator class for access method \"%s\"",
 									format_type_be(atttype), "btree"),
 							 errhint("You must specify a btree operator class or define a default btree operator class for the data type.")));
-
 			}
 		}
 		else

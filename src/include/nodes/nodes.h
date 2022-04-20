@@ -212,6 +212,8 @@ typedef enum NodeTag
 	T_JsonExpr,
 	T_JsonCoercion,
 	T_JsonItemCoercions,
+	T_JsonTableParent,
+	T_JsonTableSibling,
 
 	/*
 	 * TAGS FOR EXPRESSION STATE NODES (execnodes.h)
@@ -514,6 +516,9 @@ typedef enum NodeTag
 	T_JsonArrayAgg,
 	T_JsonFuncExpr,
 	T_JsonIsPredicate,
+	T_JsonTable,
+	T_JsonTableColumn,
+	T_JsonTablePlan,
 	T_JsonCommon,
 	T_JsonArgument,
 	T_JsonKeyValue,
@@ -555,7 +560,8 @@ typedef enum NodeTag
 	T_SupportRequestSelectivity,	/* in nodes/supportnodes.h */
 	T_SupportRequestCost,		/* in nodes/supportnodes.h */
 	T_SupportRequestRows,		/* in nodes/supportnodes.h */
-	T_SupportRequestIndexCondition	/* in nodes/supportnodes.h */
+	T_SupportRequestIndexCondition, /* in nodes/supportnodes.h */
+	T_SupportRequestWFuncMonotonic	/* in nodes/supportnodes.h */
 } NodeTag;
 
 /*

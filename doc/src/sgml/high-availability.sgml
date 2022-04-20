@@ -548,7 +548,7 @@ protocol to make nodes agree on a serializable transactional order.
    rollforward will take considerably longer, so that technique only
    offers a solution for disaster recovery, not high availability.
    A standby server can also be used for read-only queries, in which case
-   it is called a <firstterm>hot standby</firstterm> server. See 
+   it is called a <firstterm>hot standby</firstterm> server. See
    <xref linkend="hot-standby"/> for more information.
   </para>
 
@@ -1361,8 +1361,8 @@ synchronous_standby_names = 'ANY 2 (s1, s2, s3)'
 
    <para>
     If you need to re-create a standby server while transactions are
-    waiting, make sure that the commands pg_start_backup() and
-    pg_stop_backup() are run in a session with
+    waiting, make sure that the commands pg_backup_start() and
+    pg_backup_stop() are run in a session with
     <varname>synchronous_commit</varname> = <literal>off</literal>, otherwise those
     requests will wait forever for the standby to appear.
    </para>
@@ -2159,7 +2159,7 @@ HINT:  You can then restart the server after making the necessary configuration 
 
    <para>
     WAL file control commands will not work during recovery,
-    e.g., <function>pg_start_backup</function>, <function>pg_switch_wal</function> etc.
+    e.g., <function>pg_backup_start</function>, <function>pg_switch_wal</function> etc.
    </para>
 
    <para>
@@ -2227,12 +2227,13 @@ HINT:  You can then restart the server after making the necessary configuration 
    </para>
 
    <para>
-    The statistics collector is active during recovery. All scans, reads, blocks,
-    index usage, etc., will be recorded normally on the standby. Replayed
-    actions will not duplicate their effects on primary, so replaying an
-    insert will not increment the Inserts column of pg_stat_user_tables.
-    The stats file is deleted at the start of recovery, so stats from primary
-    and standby will differ; this is considered a feature, not a bug.
+    The cumulative statistics system is active during recovery. All scans,
+    reads, blocks, index usage, etc., will be recorded normally on the
+    standby. However, WAL replay will not increment relation and database
+    specific counters. I.e. replay will not increment pg_stat_all_tables
+    columns (like n_tup_ins), nor will reads or writes performed by the
+    startup process be tracked in the pg_statio views, nor will associated
+    pg_stat_database columns be incremented.
    </para>
 
    <para>

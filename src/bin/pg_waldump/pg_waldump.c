@@ -21,10 +21,16 @@
 #include "access/xlog_internal.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
+#include "access/xlogstats.h"
 #include "common/fe_memutils.h"
 #include "common/logging.h"
 #include "getopt_long.h"
 #include "rmgrdesc.h"
+
+/*
+ * NOTE: For any code change or issue fix here, it is highly recommended to
+ * give a thought about doing the same in pg_walinspect contrib module as well.
+ */
 
 static const char *progname;
 
@@ -66,25 +72,6 @@ typedef struct XLogDumpConfig
 	bool		filter_by_fpw;
 } XLogDumpConfig;
 
-typedef struct Stats
-{
-	uint64		count;
-	uint64		rec_len;
-	uint64		fpi_len;
-} Stats;
-
-#define MAX_XLINFO_TYPES 16
-
-typedef struct XLogDumpStats
-{
-	uint64		count;
-	XLogRecPtr	startptr;
-	XLogRecPtr	endptr;
-	Stats		rmgr_stats[RM_NEXT_ID];
-	Stats		record_stats[RM_NEXT_ID][MAX_XLINFO_TYPES];
-} XLogDumpStats;
-
-#define fatal_error(...) do { pg_log_fatal(__VA_ARGS__); exit(EXIT_FAILURE); } while(0)
 
 /*
  * When sigint is called, just tell the system to exit at the next possible
@@ -104,9 +91,9 @@ print_rmgr_list(void)
 {
 	int			i;
 
-	for (i = 0; i <= RM_MAX_ID; i++)
+	for (i = 0; i <= RM_MAX_BUILTIN_ID; i++)
 	{
-		printf("%s\n", RmgrDescTable[i].rm_name);
+		printf("%s\n", GetRmgrDesc(i)->rm_name);
 	}
 }
 
@@ -170,7 +157,7 @@ open_file_in_directory(const char *directory, const char *fname)
 	fd = open(fpath, O_RDONLY | PG_BINARY, 0);
 
 	if (fd < 0 && errno != ENOENT)
-		fatal_error("could not open file \"%s\": %m", fname);
+		pg_fatal("could not open file \"%s\": %m", fname);
 	return fd;
 }
 
@@ -226,17 +213,17 @@ search_directory(const char *directory, const char *fname)
 			WalSegSz = longhdr->xlp_seg_size;
 
 			if (!IsValidWalSegSize(WalSegSz))
-				fatal_error(ngettext("WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d byte",
-									 "WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d bytes",
-									 WalSegSz),
-							fname, WalSegSz);
+				pg_fatal(ngettext("WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d byte",
+								  "WAL segment size must be a power of two between 1 MB and 1 GB, but the WAL file \"%s\" header specifies %d bytes",
+								  WalSegSz),
+						 fname, WalSegSz);
 		}
 		else if (r < 0)
-			fatal_error("could not read file \"%s\": %m",
-						fname);
+			pg_fatal("could not read file \"%s\": %m",
+					 fname);
 		else
-			fatal_error("could not read file \"%s\": read %d of %d",
-						fname, r, XLOG_BLCKSZ);
+			pg_fatal("could not read file \"%s\": read %d of %d",
+					 fname, r, XLOG_BLCKSZ);
 		close(fd);
 		return true;
 	}
@@ -296,9 +283,9 @@ identify_target_directory(char *directory, char *fname)
 
 	/* could not locate WAL file */
 	if (fname)
-		fatal_error("could not locate WAL file \"%s\"", fname);
+		pg_fatal("could not locate WAL file \"%s\"", fname);
 	else
-		fatal_error("could not find any WAL file");
+		pg_fatal("could not find any WAL file");
 
 	return NULL;				/* not reached */
 }
@@ -339,7 +326,7 @@ WALDumpOpenSegment(XLogReaderState *state, XLogSegNo nextSegNo,
 		break;
 	}
 
-	fatal_error("could not find file \"%s\": %m", fname);
+	pg_fatal("could not find file \"%s\": %m", fname);
 }
 
 /*
@@ -388,13 +375,13 @@ WALDumpReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 		if (errinfo.wre_errno != 0)
 		{
 			errno = errinfo.wre_errno;
-			fatal_error("could not read from file %s, offset %d: %m",
-						fname, errinfo.wre_off);
+			pg_fatal("could not read from file %s, offset %d: %m",
+					 fname, errinfo.wre_off);
 		}
 		else
-			fatal_error("could not read from file %s, offset %d: read %d of %d",
-						fname, errinfo.wre_off, errinfo.wre_read,
-						errinfo.wre_req);
+			pg_fatal("could not read from file %s, offset %d: read %d of %d",
+					 fname, errinfo.wre_off, errinfo.wre_read,
+					 errinfo.wre_req);
 	}
 
 	return count;
@@ -418,10 +405,9 @@ XLogRecordMatchesRelationBlock(XLogReaderState *record,
 		ForkNumber	forknum;
 		BlockNumber blk;
 
-		if (!XLogRecHasBlockRef(record, block_id))
+		if (!XLogRecGetBlockTagExtended(record, block_id,
+										&rnode, &forknum, &blk, NULL))
 			continue;
-
-		XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blk);
 
 		if ((matchFork == InvalidForkNumber || matchFork == forknum) &&
 			(RelFileNodeEquals(matchRnode, emptyRelFileNode) ||
@@ -454,99 +440,20 @@ XLogRecordHasFPW(XLogReaderState *record)
 }
 
 /*
- * Calculate the size of a record, split into !FPI and FPI parts.
- */
-static void
-XLogDumpRecordLen(XLogReaderState *record, uint32 *rec_len, uint32 *fpi_len)
-{
-	int			block_id;
-
-	/*
-	 * Calculate the amount of FPI data in the record.
-	 *
-	 * XXX: We peek into xlogreader's private decoded backup blocks for the
-	 * bimg_len indicating the length of FPI data.
-	 */
-	*fpi_len = 0;
-	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
-	{
-		if (XLogRecHasBlockImage(record, block_id))
-			*fpi_len += XLogRecGetBlock(record, block_id)->bimg_len;
-	}
-
-	/*
-	 * Calculate the length of the record as the total length - the length of
-	 * all the block images.
-	 */
-	*rec_len = XLogRecGetTotalLen(record) - *fpi_len;
-}
-
-/*
- * Store per-rmgr and per-record statistics for a given record.
- */
-static void
-XLogDumpCountRecord(XLogDumpConfig *config, XLogDumpStats *stats,
-					XLogReaderState *record)
-{
-	RmgrId		rmid;
-	uint8		recid;
-	uint32		rec_len;
-	uint32		fpi_len;
-
-	stats->count++;
-
-	rmid = XLogRecGetRmid(record);
-
-	XLogDumpRecordLen(record, &rec_len, &fpi_len);
-
-	/* Update per-rmgr statistics */
-
-	stats->rmgr_stats[rmid].count++;
-	stats->rmgr_stats[rmid].rec_len += rec_len;
-	stats->rmgr_stats[rmid].fpi_len += fpi_len;
-
-	/*
-	 * Update per-record statistics, where the record is identified by a
-	 * combination of the RmgrId and the four bits of the xl_info field that
-	 * are the rmgr's domain (resulting in sixteen possible entries per
-	 * RmgrId).
-	 */
-
-	recid = XLogRecGetInfo(record) >> 4;
-
-	/*
-	 * XACT records need to be handled differently. Those records use the
-	 * first bit of those four bits for an optional flag variable and the
-	 * following three bits for the opcode. We filter opcode out of xl_info
-	 * and use it as the identifier of the record.
-	 */
-	if (rmid == RM_XACT_ID)
-		recid &= 0x07;
-
-	stats->record_stats[rmid][recid].count++;
-	stats->record_stats[rmid][recid].rec_len += rec_len;
-	stats->record_stats[rmid][recid].fpi_len += fpi_len;
-}
-
-/*
  * Print a record to stdout
  */
 static void
 XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 {
 	const char *id;
-	const RmgrDescData *desc = &RmgrDescTable[XLogRecGetRmid(record)];
+	const RmgrDescData *desc = GetRmgrDesc(XLogRecGetRmid(record));
 	uint32		rec_len;
 	uint32		fpi_len;
-	RelFileNode rnode;
-	ForkNumber	forknum;
-	BlockNumber blk;
-	int			block_id;
 	uint8		info = XLogRecGetInfo(record);
 	XLogRecPtr	xl_prev = XLogRecGetPrev(record);
 	StringInfoData s;
 
-	XLogDumpRecordLen(record, &rec_len, &fpi_len);
+	XLogRecGetLen(record, &rec_len, &fpi_len);
 
 	printf("rmgr: %-11s len (rec/tot): %6u/%6u, tx: %10u, lsn: %X/%08X, prev %X/%08X, ",
 		   desc->rm_name,
@@ -564,93 +471,11 @@ XLogDumpDisplayRecord(XLogDumpConfig *config, XLogReaderState *record)
 	initStringInfo(&s);
 	desc->rm_desc(&s, record);
 	printf("%s", s.data);
+
+	resetStringInfo(&s);
+	XLogRecGetBlockRefInfo(record, true, config->bkp_details, &s, NULL);
+	printf("%s", s.data);
 	pfree(s.data);
-
-	if (!config->bkp_details)
-	{
-		/* print block references (short format) */
-		for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
-		{
-			if (!XLogRecHasBlockRef(record, block_id))
-				continue;
-
-			XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blk);
-			if (forknum != MAIN_FORKNUM)
-				printf(", blkref #%d: rel %u/%u/%u fork %s blk %u",
-					   block_id,
-					   rnode.spcNode, rnode.dbNode, rnode.relNode,
-					   forkNames[forknum],
-					   blk);
-			else
-				printf(", blkref #%d: rel %u/%u/%u blk %u",
-					   block_id,
-					   rnode.spcNode, rnode.dbNode, rnode.relNode,
-					   blk);
-			if (XLogRecHasBlockImage(record, block_id))
-			{
-				if (XLogRecBlockImageApply(record, block_id))
-					printf(" FPW");
-				else
-					printf(" FPW for WAL verification");
-			}
-		}
-		putchar('\n');
-	}
-	else
-	{
-		/* print block references (detailed format) */
-		putchar('\n');
-		for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
-		{
-			if (!XLogRecHasBlockRef(record, block_id))
-				continue;
-
-			XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blk);
-			printf("\tblkref #%d: rel %u/%u/%u fork %s blk %u",
-				   block_id,
-				   rnode.spcNode, rnode.dbNode, rnode.relNode,
-				   forkNames[forknum],
-				   blk);
-			if (XLogRecHasBlockImage(record, block_id))
-			{
-				uint8		bimg_info = XLogRecGetBlock(record, block_id)->bimg_info;
-
-				if (BKPIMAGE_COMPRESSED(bimg_info))
-				{
-					const char *method;
-
-					if ((bimg_info & BKPIMAGE_COMPRESS_PGLZ) != 0)
-						method = "pglz";
-					else if ((bimg_info & BKPIMAGE_COMPRESS_LZ4) != 0)
-						method = "lz4";
-					else if ((bimg_info & BKPIMAGE_COMPRESS_ZSTD) != 0)
-						method = "zstd";
-					else
-						method = "unknown";
-
-					printf(" (FPW%s); hole: offset: %u, length: %u, "
-						   "compression saved: %u, method: %s",
-						   XLogRecBlockImageApply(record, block_id) ?
-						   "" : " for WAL verification",
-						   XLogRecGetBlock(record, block_id)->hole_offset,
-						   XLogRecGetBlock(record, block_id)->hole_length,
-						   BLCKSZ -
-						   XLogRecGetBlock(record, block_id)->hole_length -
-						   XLogRecGetBlock(record, block_id)->bimg_len,
-						   method);
-				}
-				else
-				{
-					printf(" (FPW%s); hole: offset: %u, length: %u",
-						   XLogRecBlockImageApply(record, block_id) ?
-						   "" : " for WAL verification",
-						   XLogRecGetBlock(record, block_id)->hole_offset,
-						   XLogRecGetBlock(record, block_id)->hole_length);
-				}
-			}
-			putchar('\n');
-		}
-	}
 }
 
 /*
@@ -698,7 +523,7 @@ XLogDumpStatsRow(const char *name,
  * Display summary statistics about the records seen so far.
  */
 static void
-XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
+XLogDumpDisplayStats(XLogDumpConfig *config, XLogStats *stats)
 {
 	int			ri,
 				rj;
@@ -720,8 +545,11 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 	 * calculate column totals.
 	 */
 
-	for (ri = 0; ri < RM_NEXT_ID; ri++)
+	for (ri = 0; ri <= RM_MAX_ID; ri++)
 	{
+		if (!RmgrIdIsValid(ri))
+			continue;
+
 		total_count += stats->rmgr_stats[ri].count;
 		total_rec_len += stats->rmgr_stats[ri].rec_len;
 		total_fpi_len += stats->rmgr_stats[ri].fpi_len;
@@ -741,13 +569,18 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 		   "Type", "N", "(%)", "Record size", "(%)", "FPI size", "(%)", "Combined size", "(%)",
 		   "----", "-", "---", "-----------", "---", "--------", "---", "-------------", "---");
 
-	for (ri = 0; ri < RM_NEXT_ID; ri++)
+	for (ri = 0; ri <= RM_MAX_ID; ri++)
 	{
 		uint64		count,
 					rec_len,
 					fpi_len,
 					tot_len;
-		const RmgrDescData *desc = &RmgrDescTable[ri];
+		const RmgrDescData *desc;
+
+		if (!RmgrIdIsValid(ri))
+			continue;
+
+		desc = GetRmgrDesc(ri);
 
 		if (!config->stats_per_record)
 		{
@@ -755,6 +588,9 @@ XLogDumpDisplayStats(XLogDumpConfig *config, XLogDumpStats *stats)
 			rec_len = stats->rmgr_stats[ri].rec_len;
 			fpi_len = stats->rmgr_stats[ri].fpi_len;
 			tot_len = rec_len + fpi_len;
+
+			if (RmgrIdIsCustom(ri) && count == 0)
+				continue;
 
 			XLogDumpStatsRow(desc->rm_name,
 							 count, total_count, rec_len, total_rec_len,
@@ -859,7 +695,7 @@ main(int argc, char **argv)
 	XLogReaderState *xlogreader_state;
 	XLogDumpPrivate private;
 	XLogDumpConfig config;
-	XLogDumpStats stats;
+	XLogStats stats;
 	XLogRecord *record;
 	XLogRecPtr	first_record;
 	char	   *waldir = NULL;
@@ -913,7 +749,7 @@ main(int argc, char **argv)
 
 	memset(&private, 0, sizeof(XLogDumpPrivate));
 	memset(&config, 0, sizeof(XLogDumpConfig));
-	memset(&stats, 0, sizeof(XLogDumpStats));
+	memset(&stats, 0, sizeof(XLogStats));
 
 	private.timeline = 1;
 	private.startptr = InvalidXLogRecPtr;
@@ -1000,7 +836,7 @@ main(int argc, char **argv)
 				break;
 			case 'r':
 				{
-					int			i;
+					int			rmid;
 
 					if (pg_strcasecmp(optarg, "list") == 0)
 					{
@@ -1008,20 +844,42 @@ main(int argc, char **argv)
 						exit(EXIT_SUCCESS);
 					}
 
-					for (i = 0; i <= RM_MAX_ID; i++)
+					/*
+					 * First look for the generated name of a custom rmgr, of
+					 * the form "custom###". We accept this form, because the
+					 * custom rmgr module is not loaded, so there's no way to
+					 * know the real name. This convention should be
+					 * consistent with that in rmgrdesc.c.
+					 */
+					if (sscanf(optarg, "custom%03d", &rmid) == 1)
 					{
-						if (pg_strcasecmp(optarg, RmgrDescTable[i].rm_name) == 0)
+						if (!RmgrIdIsCustom(rmid))
 						{
-							config.filter_by_rmgr[i] = true;
-							config.filter_by_rmgr_enabled = true;
-							break;
+							pg_log_error("custom resource manager \"%s\" does not exist",
+										 optarg);
+							goto bad_argument;
 						}
+						config.filter_by_rmgr[rmid] = true;
+						config.filter_by_rmgr_enabled = true;
 					}
-					if (i > RM_MAX_ID)
+					else
 					{
-						pg_log_error("resource manager \"%s\" does not exist",
-									 optarg);
-						goto bad_argument;
+						/* then look for builtin rmgrs */
+						for (rmid = 0; rmid <= RM_MAX_BUILTIN_ID; rmid++)
+						{
+							if (pg_strcasecmp(optarg, GetRmgrDesc(rmid)->rm_name) == 0)
+							{
+								config.filter_by_rmgr[rmid] = true;
+								config.filter_by_rmgr_enabled = true;
+								break;
+							}
+						}
+						if (rmid > RM_MAX_BUILTIN_ID)
+						{
+							pg_log_error("resource manager \"%s\" does not exist",
+										 optarg);
+							goto bad_argument;
+						}
 					}
 				}
 				break;
@@ -1129,13 +987,13 @@ main(int argc, char **argv)
 			waldir = directory;
 
 			if (!verify_directory(waldir))
-				fatal_error("could not open directory \"%s\": %m", waldir);
+				pg_fatal("could not open directory \"%s\": %m", waldir);
 		}
 
 		waldir = identify_target_directory(waldir, fname);
 		fd = open_file_in_directory(waldir, fname);
 		if (fd < 0)
-			fatal_error("could not open file \"%s\"", fname);
+			pg_fatal("could not open file \"%s\"", fname);
 		close(fd);
 
 		/* parse position from file */
@@ -1165,15 +1023,15 @@ main(int argc, char **argv)
 
 			fd = open_file_in_directory(waldir, fname);
 			if (fd < 0)
-				fatal_error("could not open file \"%s\"", fname);
+				pg_fatal("could not open file \"%s\"", fname);
 			close(fd);
 
 			/* parse position from file */
 			XLogFromFileName(fname, &private.timeline, &endsegno, WalSegSz);
 
 			if (endsegno < segno)
-				fatal_error("ENDSEG %s is before STARTSEG %s",
-							argv[optind + 1], argv[optind]);
+				pg_fatal("ENDSEG %s is before STARTSEG %s",
+						 argv[optind + 1], argv[optind]);
 
 			if (XLogRecPtrIsInvalid(private.endptr))
 				XLogSegNoOffsetToRecPtr(endsegno + 1, 0, WalSegSz,
@@ -1213,14 +1071,14 @@ main(int argc, char **argv)
 									  .segment_close = WALDumpCloseSegment),
 						   &private);
 	if (!xlogreader_state)
-		fatal_error("out of memory while allocating a WAL reading processor");
+		pg_fatal("out of memory while allocating a WAL reading processor");
 
 	/* first find a valid recptr to start from */
 	first_record = XLogFindNextRecord(xlogreader_state, private.startptr);
 
 	if (first_record == InvalidXLogRecPtr)
-		fatal_error("could not find a valid record after %X/%X",
-					LSN_FORMAT_ARGS(private.startptr));
+		pg_fatal("could not find a valid record after %X/%X",
+				 LSN_FORMAT_ARGS(private.startptr));
 
 	/*
 	 * Display a message that we're skipping data if `from` wasn't a pointer
@@ -1289,7 +1147,7 @@ main(int argc, char **argv)
 		{
 			if (config.stats == true)
 			{
-				XLogDumpCountRecord(&config, &stats, xlogreader_state);
+				XLogRecStoreStats(&stats, xlogreader_state);
 				stats.endptr = xlogreader_state->EndRecPtr;
 			}
 			else
@@ -1310,15 +1168,15 @@ main(int argc, char **argv)
 		exit(0);
 
 	if (errormsg)
-		fatal_error("error in WAL record at %X/%X: %s",
-					LSN_FORMAT_ARGS(xlogreader_state->ReadRecPtr),
-					errormsg);
+		pg_fatal("error in WAL record at %X/%X: %s",
+				 LSN_FORMAT_ARGS(xlogreader_state->ReadRecPtr),
+				 errormsg);
 
 	XLogReaderFree(xlogreader_state);
 
 	return EXIT_SUCCESS;
 
 bad_argument:
-	fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+	pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 	return EXIT_FAILURE;
 }

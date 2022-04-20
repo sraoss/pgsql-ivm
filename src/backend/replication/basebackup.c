@@ -17,7 +17,7 @@
 #include <time.h>
 
 #include "access/xlog_internal.h"	/* for pg_start/stop_backup */
-#include "common/backup_compression.h"
+#include "common/compression.h"
 #include "common/file_perm.h"
 #include "commands/defrem.h"
 #include "lib/stringinfo.h"
@@ -68,8 +68,8 @@ typedef struct
 	bool		use_copytblspc;
 	BaseBackupTargetHandle *target_handle;
 	backup_manifest_option manifest;
-	bc_algorithm compression;
-	bc_specification compression_specification;
+	pg_compress_algorithm compression;
+	pg_compress_specification compression_specification;
 	pg_checksum_type manifest_checksum_type;
 } basebackup_options;
 
@@ -98,9 +98,6 @@ static int	basebackup_read_file(int fd, char *buf, size_t nbytes, off_t offset,
 
 /* Was the backup currently in-progress initiated in recovery mode? */
 static bool backup_started_in_recovery = false;
-
-/* Relative path of temporary statistics directory */
-static char *statrelpath = NULL;
 
 /* Total number of checksum failures during base backup. */
 static long long int total_checksum_failures;
@@ -131,9 +128,8 @@ struct exclude_list_item
 static const char *const excludeDirContents[] =
 {
 	/*
-	 * Skip temporary statistics files. PG_STAT_TMP_DIR must be skipped even
-	 * when stats_temp_directory is set because PGSS_TEXT_FILE is always
-	 * created there.
+	 * Skip temporary statistics files. PG_STAT_TMP_DIR must be skipped
+	 * because extensions like pg_stat_statements store data there.
 	 */
 	PG_STAT_TMP_DIR,
 
@@ -184,10 +180,8 @@ static const struct exclude_list_item excludeFiles[] =
 	{RELCACHE_INIT_FILENAME, true},
 
 	/*
-	 * If there's a backup_label or tablespace_map file, it belongs to a
-	 * backup started by the user with pg_start_backup().  It is *not* correct
-	 * for this backup.  Our backup_label/tablespace_map is injected into the
-	 * tar separately.
+	 * backup_label and tablespace_map should not exist in a running cluster
+	 * capable of doing an online backup, but exclude them just in case.
 	 */
 	{BACKUP_LABEL_FILE, false},
 	{TABLESPACE_MAP, false},
@@ -239,7 +233,6 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 	StringInfo	labelfile;
 	StringInfo	tblspc_map_file;
 	backup_manifest_info manifest;
-	int			datadirpathlen;
 
 	/* Initial backup state, insofar as we know it now. */
 	state.tablespaces = NIL;
@@ -252,8 +245,6 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 	Assert(CurrentResourceOwner == NULL);
 	CurrentResourceOwner = ResourceOwnerCreate(NULL, "base backup");
 
-	datadirpathlen = strlen(DataDir);
-
 	backup_started_in_recovery = RecoveryInProgress();
 
 	labelfile = makeStringInfo();
@@ -264,34 +255,22 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 	total_checksum_failures = 0;
 
 	basebackup_progress_wait_checkpoint();
-	state.startptr = do_pg_start_backup(opt->label, opt->fastcheckpoint,
+	state.startptr = do_pg_backup_start(opt->label, opt->fastcheckpoint,
 										&state.starttli,
 										labelfile, &state.tablespaces,
 										tblspc_map_file);
 
 	/*
-	 * Once do_pg_start_backup has been called, ensure that any failure causes
+	 * Once do_pg_backup_start has been called, ensure that any failure causes
 	 * us to abort the backup so we don't "leak" a backup counter. For this
-	 * reason, *all* functionality between do_pg_start_backup() and the end of
-	 * do_pg_stop_backup() should be inside the error cleanup block!
+	 * reason, *all* functionality between do_pg_backup_start() and the end of
+	 * do_pg_backup_stop() should be inside the error cleanup block!
 	 */
 
 	PG_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 	{
 		ListCell   *lc;
 		tablespaceinfo *ti;
-
-		/*
-		 * Calculate the relative path of temporary statistics directory in
-		 * order to skip the files which are located in that directory later.
-		 */
-		if (is_absolute_path(pgstat_stat_directory) &&
-			strncmp(pgstat_stat_directory, DataDir, datadirpathlen) == 0)
-			statrelpath = psprintf("./%s", pgstat_stat_directory + datadirpathlen + 1);
-		else if (strncmp(pgstat_stat_directory, "./", 2) != 0)
-			statrelpath = psprintf("./%s", pgstat_stat_directory);
-		else
-			statrelpath = pgstat_stat_directory;
 
 		/* Add a node for the base directory at the end */
 		ti = palloc0(sizeof(tablespaceinfo));
@@ -394,7 +373,7 @@ perform_base_backup(basebackup_options *opt, bbsink *sink)
 		}
 
 		basebackup_progress_wait_wal_archive(&state);
-		endptr = do_pg_stop_backup(labelfile->data, !opt->nowait, &endtli);
+		endptr = do_pg_backup_stop(labelfile->data, !opt->nowait, &endtli);
 	}
 	PG_END_ENSURE_ERROR_CLEANUP(do_pg_abort_backup, BoolGetDatum(false));
 
@@ -712,8 +691,8 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	MemSet(opt, 0, sizeof(*opt));
 	opt->manifest = MANIFEST_OPTION_NO;
 	opt->manifest_checksum_type = CHECKSUM_TYPE_CRC32C;
-	opt->compression = BACKUP_COMPRESSION_NONE;
-	opt->compression_specification.algorithm = BACKUP_COMPRESSION_NONE;
+	opt->compression = PG_COMPRESSION_NONE;
+	opt->compression_specification.algorithm = PG_COMPRESSION_NONE;
 
 	foreach(lopt, options)
 	{
@@ -880,7 +859,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("duplicate option \"%s\"", defel->defname)));
-			if (!parse_bc_algorithm(optval, &opt->compression))
+			if (!parse_compress_algorithm(optval, &opt->compression))
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("unrecognized compression algorithm \"%s\"",
@@ -945,10 +924,10 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 	{
 		char	   *error_detail;
 
-		parse_bc_specification(opt->compression, compression_detail_str,
-							   &opt->compression_specification);
+		parse_compress_specification(opt->compression, compression_detail_str,
+									 &opt->compression_specification);
 		error_detail =
-			validate_bc_specification(&opt->compression_specification);
+			validate_compress_specification(&opt->compression_specification);
 		if (error_detail != NULL)
 			ereport(ERROR,
 					errcode(ERRCODE_SYNTAX_ERROR),
@@ -961,7 +940,7 @@ parse_basebackup_options(List *options, basebackup_options *opt)
 /*
  * SendBaseBackup() - send a complete base backup.
  *
- * The function will put the system into backup mode like pg_start_backup()
+ * The function will put the system into backup mode like pg_backup_start()
  * does, so that the backup is consistent even though we read directly from
  * the filesystem, bypassing the buffer cache.
  */
@@ -999,11 +978,11 @@ SendBaseBackup(BaseBackupCmd *cmd)
 		sink = bbsink_throttle_new(sink, opt.maxrate);
 
 	/* Set up server-side compression, if client requested it */
-	if (opt.compression == BACKUP_COMPRESSION_GZIP)
+	if (opt.compression == PG_COMPRESSION_GZIP)
 		sink = bbsink_gzip_new(sink, &opt.compression_specification);
-	else if (opt.compression == BACKUP_COMPRESSION_LZ4)
+	else if (opt.compression == PG_COMPRESSION_LZ4)
 		sink = bbsink_lz4_new(sink, &opt.compression_specification);
-	else if (opt.compression == BACKUP_COMPRESSION_ZSTD)
+	else if (opt.compression == PG_COMPRESSION_ZSTD)
 		sink = bbsink_zstd_new(sink, &opt.compression_specification);
 
 	/* Set up progress reporting. */
@@ -1204,7 +1183,7 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 		 * error in that case. The error handler further up will call
 		 * do_pg_abort_backup() for us. Also check that if the backup was
 		 * started while still in recovery, the server wasn't promoted.
-		 * do_pg_stop_backup() will check that too, but it's better to stop
+		 * do_pg_backup_stop() will check that too, but it's better to stop
 		 * the backup early than continue to the end and fail there.
 		 */
 		CHECK_FOR_INTERRUPTS();
@@ -1311,19 +1290,6 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 
 		if (excludeFound)
 			continue;
-
-		/*
-		 * Exclude contents of directory specified by statrelpath if not set
-		 * to the default (pg_stat_tmp) which is caught in the loop above.
-		 */
-		if (statrelpath != NULL && strcmp(pathbuf, statrelpath) == 0)
-		{
-			elog(DEBUG1, "contents of directory \"%s\" excluded from backup", statrelpath);
-			convert_link_to_directory(pathbuf, &statbuf);
-			size += _tarWriteHeader(sink, pathbuf + basepathlen + 1, NULL,
-									&statbuf, sizeonly);
-			continue;
-		}
 
 		/*
 		 * We can skip pg_wal, the WAL segments need to be fetched from the
@@ -1507,8 +1473,8 @@ is_checksummed_file(const char *fullpath, const char *filename)
  *
  * If 'missing_ok' is true, will not throw an error if the file is not found.
  *
- * If dboid is anything other than InvalidOid then any checksum failures detected
- * will get reported to the stats collector.
+ * If dboid is anything other than InvalidOid then any checksum failures
+ * detected will get reported to the cumulative stats system.
  *
  * Returns true if the file was successfully sent, false if 'missing_ok',
  * and the file did not exist.

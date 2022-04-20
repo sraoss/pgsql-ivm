@@ -166,7 +166,7 @@ dsm_postmaster_startup(PGShmemHeader *shim)
 
 	/* Determine size for new control segment. */
 	maxitems = PG_DYNSHMEM_FIXED_SLOTS
-		+ PG_DYNSHMEM_SLOTS_PER_BACKEND * GetMaxBackends();
+		+ PG_DYNSHMEM_SLOTS_PER_BACKEND * MaxBackends;
 	elog(DEBUG2, "dynamic shared memory system will support %u segments",
 		 maxitems);
 	segsize = dsm_control_bytes_needed(maxitems);
@@ -397,6 +397,7 @@ static void
 dsm_backend_startup(void)
 {
 #ifdef EXEC_BACKEND
+	if (IsUnderPostmaster)
 	{
 		void	   *control_address = NULL;
 
@@ -496,8 +497,12 @@ dsm_create(Size size, int flags)
 	FreePageManager *dsm_main_space_fpm = dsm_main_space_begin;
 	bool		using_main_dsm_region = false;
 
-	/* Unsafe in postmaster (and pointless in a stand-alone backend). */
-	Assert(IsUnderPostmaster);
+	/*
+	 * Unsafe in postmaster. It might seem pointless to allow use of dsm in
+	 * single user mode, but otherwise some subsystems will need dedicated
+	 * single user mode code paths.
+	 */
+	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
 
 	if (!dsm_init_done)
 		dsm_backend_startup();

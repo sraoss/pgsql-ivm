@@ -445,6 +445,7 @@ generateSerialExtraStmts(CreateStmtContext *cxt, ColumnDef *column,
 	seqstmt = makeNode(CreateSeqStmt);
 	seqstmt->for_identity = for_identity;
 	seqstmt->sequence = makeRangeVar(snamespace, sname, -1);
+	seqstmt->sequence->relpersistence = cxt->relation->relpersistence;
 	seqstmt->options = seqoptions;
 
 	/*
@@ -3423,7 +3424,8 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 								 errmsg("column \"%s\" of relation \"%s\" does not exist",
 										cmd->name, RelationGetRelationName(rel))));
 
-					if (TupleDescAttr(tupdesc, attnum - 1)->attidentity)
+					if (attnum > 0 &&
+						TupleDescAttr(tupdesc, attnum - 1)->attidentity)
 					{
 						Oid			seq_relid = getIdentitySequence(relid, attnum, false);
 						Oid			typeOid = typenameTypeId(pstate, def->typeName);

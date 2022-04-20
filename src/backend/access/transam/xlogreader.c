@@ -37,6 +37,8 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "utils/memutils.h"
+#else
+#include "common/logging.h"
 #endif
 
 static void report_invalid_record(XLogReaderState *state, const char *fmt,...)
@@ -300,7 +302,7 @@ XLogReleasePreviousRecord(XLogReaderState *state)
 	/* Release the space. */
 	if (unlikely(record->oversized))
 	{
-		/* It's not in the the decode buffer, so free it to release space. */
+		/* It's not in the decode buffer, so free it to release space. */
 		pfree(record);
 	}
 	else
@@ -1102,7 +1104,7 @@ ValidXLogRecordHeader(XLogReaderState *state, XLogRecPtr RecPtr,
 							  (uint32) SizeOfXLogRecord, record->xl_tot_len);
 		return false;
 	}
-	if (record->xl_rmid > RM_MAX_ID)
+	if (!RmgrIdIsValid(record->xl_rmid))
 	{
 		report_invalid_record(state,
 							  "invalid resource manager ID %u at %X/%X",
@@ -1320,13 +1322,6 @@ XLogReaderValidatePageHeader(XLogReaderState *state, XLogRecPtr recptr,
 	return true;
 }
 
-#ifdef FRONTEND
-/*
- * Functions that are currently not needed in the backend, but are better
- * implemented inside xlogreader.c because of the internal facilities available
- * here.
- */
-
 /*
  * Find the first record with an lsn >= RecPtr.
  *
@@ -1446,8 +1441,6 @@ err:
 
 	return InvalidXLogRecPtr;
 }
-
-#endif							/* FRONTEND */
 
 /*
  * Helper function to ease writing of XLogRoutine->page_read callbacks.
@@ -1727,6 +1720,8 @@ DecodeXLogRecord(XLogReaderState *state,
 			blk->has_image = ((fork_flags & BKPBLOCK_HAS_IMAGE) != 0);
 			blk->has_data = ((fork_flags & BKPBLOCK_HAS_DATA) != 0);
 
+			blk->prefetch_buffer = InvalidBuffer;
+
 			COPY_HEADER_FIELD(&blk->data_len, sizeof(uint16));
 			/* cross-check that the HAS_DATA flag is set iff data_length > 0 */
 			if (blk->has_data && blk->data_len == 0)
@@ -1926,18 +1921,43 @@ err:
 /*
  * Returns information about the block that a block reference refers to.
  *
- * If the WAL record contains a block reference with the given ID, *rnode,
- * *forknum, and *blknum are filled in (if not NULL), and returns true.
- * Otherwise returns false.
+ * This is like XLogRecGetBlockTagExtended, except that the block reference
+ * must exist and there's no access to prefetch_buffer.
  */
-bool
+void
 XLogRecGetBlockTag(XLogReaderState *record, uint8 block_id,
 				   RelFileNode *rnode, ForkNumber *forknum, BlockNumber *blknum)
 {
+	if (!XLogRecGetBlockTagExtended(record, block_id, rnode, forknum, blknum,
+									NULL))
+	{
+#ifndef FRONTEND
+		elog(ERROR, "failed to locate backup block with ID %d in WAL record",
+			 block_id);
+#else
+		pg_fatal("failed to locate backup block with ID %d in WAL record",
+				 block_id);
+#endif
+	}
+}
+
+/*
+ * Returns information about the block that a block reference refers to,
+ * optionally including the buffer that the block may already be in.
+ *
+ * If the WAL record contains a block reference with the given ID, *rnode,
+ * *forknum, *blknum and *prefetch_buffer are filled in (if not NULL), and
+ * returns true.  Otherwise returns false.
+ */
+bool
+XLogRecGetBlockTagExtended(XLogReaderState *record, uint8 block_id,
+						   RelFileNode *rnode, ForkNumber *forknum,
+						   BlockNumber *blknum,
+						   Buffer *prefetch_buffer)
+{
 	DecodedBkpBlock *bkpb;
 
-	if (block_id > record->record->max_block_id ||
-		!record->record->blocks[block_id].in_use)
+	if (!XLogRecHasBlockRef(record, block_id))
 		return false;
 
 	bkpb = &record->record->blocks[block_id];
@@ -1947,6 +1967,8 @@ XLogRecGetBlockTag(XLogReaderState *record, uint8 block_id,
 		*forknum = bkpb->forknum;
 	if (blknum)
 		*blknum = bkpb->blkno;
+	if (prefetch_buffer)
+		*prefetch_buffer = bkpb->prefetch_buffer;
 	return true;
 }
 

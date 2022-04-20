@@ -61,6 +61,7 @@ char	   *datadir_target = NULL;
 char	   *datadir_source = NULL;
 char	   *connstr_source = NULL;
 char	   *restore_command = NULL;
+char	   *config_file = NULL;
 
 static bool debug = false;
 bool		showprogress = false;
@@ -96,6 +97,8 @@ usage(const char *progname)
 	printf(_("  -P, --progress                 write progress messages\n"));
 	printf(_("  -R, --write-recovery-conf      write configuration for replication\n"
 			 "                                 (requires --source-server)\n"));
+	printf(_("      --config-file=FILENAME     use specified main server configuration\n"
+			 "                                 file when running target cluster\n"));
 	printf(_("      --debug                    write a lot of debug messages\n"));
 	printf(_("      --no-ensure-shutdown       do not automatically fix unclean shutdown\n"));
 	printf(_("  -V, --version                  output version information, then exit\n"));
@@ -115,6 +118,7 @@ main(int argc, char **argv)
 		{"source-pgdata", required_argument, NULL, 1},
 		{"source-server", required_argument, NULL, 2},
 		{"no-ensure-shutdown", no_argument, NULL, 4},
+		{"config-file", required_argument, NULL, 5},
 		{"version", no_argument, NULL, 'V'},
 		{"restore-target-wal", no_argument, NULL, 'c'},
 		{"dry-run", no_argument, NULL, 'n'},
@@ -161,10 +165,6 @@ main(int argc, char **argv)
 	{
 		switch (c)
 		{
-			case '?':
-				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
-				exit(1);
-
 			case 'c':
 				restore_wal = true;
 				break;
@@ -205,34 +205,43 @@ main(int argc, char **argv)
 			case 4:
 				no_ensure_shutdown = true;
 				break;
+
+			case 5:
+				config_file = pg_strdup(optarg);
+				break;
+
+			default:
+				/* getopt_long already emitted a complaint */
+				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				exit(1);
 		}
 	}
 
 	if (datadir_source == NULL && connstr_source == NULL)
 	{
 		pg_log_error("no source specified (--source-pgdata or --source-server)");
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit(1);
 	}
 
 	if (datadir_source != NULL && connstr_source != NULL)
 	{
 		pg_log_error("only one of --source-pgdata or --source-server can be specified");
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit(1);
 	}
 
 	if (datadir_target == NULL)
 	{
 		pg_log_error("no target data directory specified (--target-pgdata)");
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit(1);
 	}
 
 	if (writerecoveryconf && connstr_source == NULL)
 	{
 		pg_log_error("no source server information (--source-server) specified for --write-recovery-conf");
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit(1);
 	}
 
@@ -240,7 +249,7 @@ main(int argc, char **argv)
 	{
 		pg_log_error("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
-		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 		exit(1);
 	}
 
@@ -254,8 +263,8 @@ main(int argc, char **argv)
 	if (geteuid() == 0)
 	{
 		pg_log_error("cannot be executed by \"root\"");
-		fprintf(stderr, _("You must run %s as the PostgreSQL superuser.\n"),
-				progname);
+		pg_log_error_hint("You must run %s as the PostgreSQL superuser.",
+						  progname);
 		exit(1);
 	}
 #endif
@@ -264,11 +273,8 @@ main(int argc, char **argv)
 
 	/* Set mask based on PGDATA permissions */
 	if (!GetDataDirectoryCreatePerm(datadir_target))
-	{
-		pg_log_error("could not read permissions of directory \"%s\": %m",
-					 datadir_target);
-		exit(1);
-	}
+		pg_fatal("could not read permissions of directory \"%s\": %m",
+				 datadir_target);
 
 	umask(pg_mode_mask);
 
@@ -537,10 +543,7 @@ perform_rewind(filemap_t *filemap, rewind_source *source,
 				break;
 
 			case FILE_ACTION_COPY:
-				/* Truncate the old file out of the way, if any */
-				open_target_file(entry->path, true);
-				source->queue_fetch_range(source, entry->path,
-										  0, entry->source_size);
+				source->queue_fetch_file(source, entry->path, entry->source_size);
 				break;
 
 			case FILE_ACTION_TRUNCATE:
@@ -1036,16 +1039,11 @@ getRestoreCommand(const char *argv0)
 			strlcpy(full_path, progname, sizeof(full_path));
 
 		if (rc == -1)
-			pg_log_error("The program \"%s\" is needed by %s but was not found in the\n"
-						 "same directory as \"%s\".\n"
-						 "Check your installation.",
-						 "postgres", progname, full_path);
+			pg_fatal("program \"%s\" is needed by %s but was not found in the same directory as \"%s\"",
+					 "postgres", progname, full_path);
 		else
-			pg_log_error("The program \"%s\" was found by \"%s\"\n"
-						 "but was not the same version as %s.\n"
-						 "Check your installation.",
-						 "postgres", full_path, progname);
-		exit(1);
+			pg_fatal("program \"%s\" was found by \"%s\" but was not the same version as %s",
+					 "postgres", full_path, progname);
 	}
 
 	/*
@@ -1060,6 +1058,13 @@ getRestoreCommand(const char *argv0)
 	/* add -D switch, with properly quoted data directory */
 	appendPQExpBufferStr(postgres_cmd, " -D ");
 	appendShellString(postgres_cmd, datadir_target);
+
+	/* add custom configuration file only if requested */
+	if (config_file != NULL)
+	{
+		appendPQExpBufferStr(postgres_cmd, " -c config_file=");
+		appendShellString(postgres_cmd, config_file);
+	}
 
 	/* add -C switch, for restore_command */
 	appendPQExpBufferStr(postgres_cmd, " -C restore_command");
@@ -1104,14 +1109,10 @@ ensureCleanShutdown(const char *argv0)
 			strlcpy(full_path, progname, sizeof(full_path));
 
 		if (ret == -1)
-			pg_fatal("The program \"%s\" is needed by %s but was not found in the\n"
-					 "same directory as \"%s\".\n"
-					 "Check your installation.",
+			pg_fatal("program \"%s\" is needed by %s but was not found in the same directory as \"%s\"",
 					 "postgres", progname, full_path);
 		else
-			pg_fatal("The program \"%s\" was found by \"%s\"\n"
-					 "but was not the same version as %s.\n"
-					 "Check your installation.",
+			pg_fatal("program \"%s\" was found by \"%s\" but was not the same version as %s",
 					 "postgres", full_path, progname);
 	}
 
@@ -1139,6 +1140,13 @@ ensureCleanShutdown(const char *argv0)
 	appendPQExpBufferStr(postgres_cmd, " --single -F -D ");
 	appendShellString(postgres_cmd, datadir_target);
 
+	/* add custom configuration file only if requested */
+	if (config_file != NULL)
+	{
+		appendPQExpBufferStr(postgres_cmd, " -c config_file=");
+		appendShellString(postgres_cmd, config_file);
+	}
+
 	/* finish with the database name, and a properly quoted redirection */
 	appendPQExpBufferStr(postgres_cmd, " template1 < ");
 	appendShellString(postgres_cmd, DEVNULL);
@@ -1146,7 +1154,8 @@ ensureCleanShutdown(const char *argv0)
 	if (system(postgres_cmd->data) != 0)
 	{
 		pg_log_error("postgres single-user mode in target cluster failed");
-		pg_fatal("Command was: %s", postgres_cmd->data);
+		pg_log_error_detail("Command was: %s", postgres_cmd->data);
+		exit(1);
 	}
 
 	destroyPQExpBuffer(postgres_cmd);

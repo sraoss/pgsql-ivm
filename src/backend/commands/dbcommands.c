@@ -386,7 +386,7 @@ ScanSourceDatabasePgClassPage(Page page, Buffer buf, Oid tbid, Oid dbid,
  * needs to be copied from the source database to the destination database,
  * and if so, construct a CreateDBRelInfo for it.
  *
- * Visbility checks are handled by the caller, so our job here is just
+ * Visibility checks are handled by the caller, so our job here is just
  * to assess the data stored in the tuple.
  */
 CreateDBRelInfo *
@@ -1665,7 +1665,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	DropDatabaseBuffers(db_id);
 
 	/*
-	 * Tell the stats collector to forget it immediately, too.
+	 * Tell the cumulative stats system to forget it immediately, too.
 	 */
 	pgstat_drop_database(db_id);
 

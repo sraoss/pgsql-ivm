@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * pgstatfuncs.c
- *	  Functions for accessing the statistics collector data
+ *	  Functions for accessing various forms of statistics data
  *
  * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -16,6 +16,7 @@
 
 #include "access/htup_details.h"
 #include "access/xlog.h"
+#include "access/xlogprefetcher.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
 #include "common/ip.h"
@@ -24,7 +25,6 @@
 #include "pgstat.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/postmaster.h"
-#include "replication/slot.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
@@ -1820,7 +1820,7 @@ pg_stat_get_slru(PG_FUNCTION_ARGS)
 
 	SetSingleFuncCall(fcinfo, 0);
 
-	/* request SLRU stats from the stat collector */
+	/* request SLRU stats from the cumulative stats system */
 	stats = pgstat_fetch_slru();
 
 	for (i = 0;; i++)
@@ -1831,7 +1831,7 @@ pg_stat_get_slru(PG_FUNCTION_ARGS)
 		PgStat_SLRUStats stat;
 		const char *name;
 
-		name = pgstat_slru_name(i);
+		name = pgstat_get_slru_name(i);
 
 		if (!name)
 			break;
@@ -2047,7 +2047,15 @@ pg_stat_get_xact_function_self_time(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_snapshot_timestamp(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_TIMESTAMPTZ(pgstat_fetch_global()->stats_timestamp);
+	bool		have_snapshot;
+	TimestampTz ts;
+
+	ts = pgstat_get_stat_snapshot_timestamp(&have_snapshot);
+
+	if (!have_snapshot)
+		PG_RETURN_NULL();
+
+	PG_RETURN_TIMESTAMPTZ(ts);
 }
 
 /* Discard the active statistics snapshot */
@@ -2055,6 +2063,16 @@ Datum
 pg_stat_clear_snapshot(PG_FUNCTION_ARGS)
 {
 	pgstat_clear_snapshot();
+
+	PG_RETURN_VOID();
+}
+
+
+/* Force statistics to be reported at the next occasion */
+Datum
+pg_stat_force_next_flush(PG_FUNCTION_ARGS)
+{
+	pgstat_force_next_flush();
 
 	PG_RETURN_VOID();
 }
@@ -2075,7 +2093,26 @@ pg_stat_reset_shared(PG_FUNCTION_ARGS)
 {
 	char	   *target = text_to_cstring(PG_GETARG_TEXT_PP(0));
 
-	pgstat_reset_shared_counters(target);
+	if (strcmp(target, "archiver") == 0)
+		pgstat_reset_of_kind(PGSTAT_KIND_ARCHIVER);
+	else if (strcmp(target, "bgwriter") == 0)
+	{
+		/*
+		 * Historically checkpointer was part of bgwriter, continue to reset
+		 * both for now.
+		 */
+		pgstat_reset_of_kind(PGSTAT_KIND_BGWRITER);
+		pgstat_reset_of_kind(PGSTAT_KIND_CHECKPOINTER);
+	}
+	else if (strcmp(target, "recovery_prefetch") == 0)
+		XLogPrefetchResetStats();
+	else if (strcmp(target, "wal") == 0)
+		pgstat_reset_of_kind(PGSTAT_KIND_WAL);
+	else
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("unrecognized reset target: \"%s\"", target),
+				 errhint("Target must be \"archiver\", \"bgwriter\", \"recovery_prefetch\", or \"wal\".")));
 
 	PG_RETURN_VOID();
 }
@@ -2086,7 +2123,7 @@ pg_stat_reset_single_table_counters(PG_FUNCTION_ARGS)
 {
 	Oid			taboid = PG_GETARG_OID(0);
 
-	pgstat_reset_single_counter(taboid, RESET_TABLE);
+	pgstat_reset(PGSTAT_KIND_RELATION, MyDatabaseId, taboid);
 
 	PG_RETURN_VOID();
 }
@@ -2096,7 +2133,7 @@ pg_stat_reset_single_function_counters(PG_FUNCTION_ARGS)
 {
 	Oid			funcoid = PG_GETARG_OID(0);
 
-	pgstat_reset_single_counter(funcoid, RESET_FUNCTION);
+	pgstat_reset(PGSTAT_KIND_FUNCTION, MyDatabaseId, funcoid);
 
 	PG_RETURN_VOID();
 }
@@ -2107,10 +2144,13 @@ pg_stat_reset_slru(PG_FUNCTION_ARGS)
 {
 	char	   *target = NULL;
 
-	if (!PG_ARGISNULL(0))
+	if (PG_ARGISNULL(0))
+		pgstat_reset_of_kind(PGSTAT_KIND_SLRU);
+	else
+	{
 		target = text_to_cstring(PG_GETARG_TEXT_PP(0));
-
-	pgstat_reset_slru_counter(target);
+		pgstat_reset_slru(target);
+	}
 
 	PG_RETURN_VOID();
 }
@@ -2121,35 +2161,13 @@ pg_stat_reset_replication_slot(PG_FUNCTION_ARGS)
 {
 	char	   *target = NULL;
 
-	if (!PG_ARGISNULL(0))
+	if (PG_ARGISNULL(0))
+		pgstat_reset_of_kind(PGSTAT_KIND_REPLSLOT);
+	else
 	{
-		ReplicationSlot *slot;
-
 		target = text_to_cstring(PG_GETARG_TEXT_PP(0));
-
-		/*
-		 * Check if the slot exists with the given name. It is possible that
-		 * by the time this message is executed the slot is dropped but at
-		 * least this check will ensure that the given name is for a valid
-		 * slot.
-		 */
-		slot = SearchNamedReplicationSlot(target, true);
-
-		if (!slot)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("replication slot \"%s\" does not exist",
-							target)));
-
-		/*
-		 * Nothing to do for physical slots as we collect stats only for
-		 * logical slots.
-		 */
-		if (SlotIsPhysical(slot))
-			PG_RETURN_VOID();
+		pgstat_reset_replslot(target);
 	}
-
-	pgstat_reset_replslot_counter(target);
 
 	PG_RETURN_VOID();
 }
@@ -2163,7 +2181,7 @@ pg_stat_reset_subscription_stats(PG_FUNCTION_ARGS)
 	if (PG_ARGISNULL(0))
 	{
 		/* Clear all subscription stats */
-		subid = InvalidOid;
+		pgstat_reset_of_kind(PGSTAT_KIND_SUBSCRIPTION);
 	}
 	else
 	{
@@ -2173,9 +2191,8 @@ pg_stat_reset_subscription_stats(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("invalid subscription OID %u", subid)));
+		pgstat_reset(PGSTAT_KIND_SUBSCRIPTION, InvalidOid, subid);
 	}
-
-	pgstat_reset_subscription_counter(subid);
 
 	PG_RETURN_VOID();
 }
@@ -2379,4 +2396,22 @@ pg_stat_get_subscription_stats(PG_FUNCTION_ARGS)
 
 	/* Returns the record as Datum */
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupdesc, values, nulls)));
+}
+
+/*
+ * Checks for presence of stats for object with provided kind, database oid,
+ * object oid.
+ *
+ * This is useful for tests, but not really anything else. Therefore not
+ * documented.
+ */
+Datum
+pg_stat_have_stats(PG_FUNCTION_ARGS)
+{
+	char	   *stats_type = text_to_cstring(PG_GETARG_TEXT_P(0));
+	Oid			dboid = PG_GETARG_OID(1);
+	Oid			objoid = PG_GETARG_OID(2);
+	PgStat_Kind	kind = pgstat_get_kind_from_str(stats_type);
+
+	PG_RETURN_BOOL(pgstat_have_entry(kind, dboid, objoid));
 }

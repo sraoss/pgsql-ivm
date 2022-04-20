@@ -33,6 +33,7 @@ test: fk-deadlock
 test: fk-deadlock2
 test: fk-partitioned-1
 test: fk-partitioned-2
+test: fk-snapshot
 test: eval-plan-qual
 test: eval-plan-qual-trigger
 test: lock-update-delete
@@ -84,11 +85,12 @@ test: alter-table-4
 test: create-trigger
 test: sequence-ddl
 test: async-notify
-test: vacuum-reltuples
+test: vacuum-no-cleanup-lock
 test: timeouts
 test: vacuum-concurrent-drop
 test: vacuum-conflict
 test: vacuum-skip-locked
+test: stats
 test: horizons
 test: predicate-hash
 test: predicate-gist

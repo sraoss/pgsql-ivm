@@ -632,6 +632,7 @@ _copySubqueryScan(const SubqueryScan *from)
 	 * copy remainder of node
 	 */
 	COPY_NODE_FIELD(subplan);
+	COPY_SCALAR_FIELD(scanstatus);
 
 	return newnode;
 }
@@ -1103,11 +1104,14 @@ _copyWindowAgg(const WindowAgg *from)
 	COPY_SCALAR_FIELD(frameOptions);
 	COPY_NODE_FIELD(startOffset);
 	COPY_NODE_FIELD(endOffset);
+	COPY_NODE_FIELD(runCondition);
+	COPY_NODE_FIELD(runConditionOrig);
 	COPY_SCALAR_FIELD(startInRangeFunc);
 	COPY_SCALAR_FIELD(endInRangeFunc);
 	COPY_SCALAR_FIELD(inRangeColl);
 	COPY_SCALAR_FIELD(inRangeAsc);
 	COPY_SCALAR_FIELD(inRangeNullsFirst);
+	COPY_SCALAR_FIELD(topWindow);
 
 	return newnode;
 }
@@ -1394,6 +1398,7 @@ _copyTableFunc(const TableFunc *from)
 {
 	TableFunc  *newnode = makeNode(TableFunc);
 
+	COPY_SCALAR_FIELD(functype);
 	COPY_NODE_FIELD(ns_uris);
 	COPY_NODE_FIELD(ns_names);
 	COPY_NODE_FIELD(docexpr);
@@ -1404,7 +1409,9 @@ _copyTableFunc(const TableFunc *from)
 	COPY_NODE_FIELD(colcollations);
 	COPY_NODE_FIELD(colexprs);
 	COPY_NODE_FIELD(coldefexprs);
+	COPY_NODE_FIELD(colvalexprs);
 	COPY_BITMAPSET_FIELD(notnulls);
+	COPY_NODE_FIELD(plan);
 	COPY_SCALAR_FIELD(ordinalitycol);
 	COPY_LOCATION_FIELD(location);
 
@@ -2684,6 +2691,99 @@ _copyJsonArgument(const JsonArgument *from)
 	return newnode;
 }
 
+/*
+ * _copyJsonTable
+ */
+static JsonTable *
+_copyJsonTable(const JsonTable *from)
+{
+	JsonTable *newnode = makeNode(JsonTable);
+
+	COPY_NODE_FIELD(common);
+	COPY_NODE_FIELD(columns);
+	COPY_NODE_FIELD(plan);
+	COPY_NODE_FIELD(on_error);
+	COPY_NODE_FIELD(alias);
+	COPY_SCALAR_FIELD(location);
+
+	return newnode;
+}
+
+/*
+ * _copyJsonTableColumn
+ */
+static JsonTableColumn *
+_copyJsonTableColumn(const JsonTableColumn *from)
+{
+	JsonTableColumn *newnode = makeNode(JsonTableColumn);
+
+	COPY_SCALAR_FIELD(coltype);
+	COPY_STRING_FIELD(name);
+	COPY_NODE_FIELD(typeName);
+	COPY_STRING_FIELD(pathspec);
+	COPY_STRING_FIELD(pathname);
+	COPY_SCALAR_FIELD(format);
+	COPY_SCALAR_FIELD(wrapper);
+	COPY_SCALAR_FIELD(omit_quotes);
+	COPY_NODE_FIELD(columns);
+	COPY_NODE_FIELD(on_empty);
+	COPY_NODE_FIELD(on_error);
+	COPY_SCALAR_FIELD(location);
+
+	return newnode;
+}
+
+/*
+ * _copyJsonTablePlan
+ */
+static JsonTablePlan *
+_copyJsonTablePlan(const JsonTablePlan *from)
+{
+	JsonTablePlan *newnode = makeNode(JsonTablePlan);
+
+	COPY_SCALAR_FIELD(plan_type);
+	COPY_SCALAR_FIELD(join_type);
+	COPY_STRING_FIELD(pathname);
+	COPY_NODE_FIELD(plan1);
+	COPY_NODE_FIELD(plan2);
+	COPY_SCALAR_FIELD(location);
+
+	return newnode;
+}
+
+/*
+ * _copyJsonTableParent
+ */
+static JsonTableParent *
+_copyJsonTableParent(const JsonTableParent *from)
+{
+	JsonTableParent *newnode = makeNode(JsonTableParent);
+
+	COPY_NODE_FIELD(path);
+	COPY_STRING_FIELD(name);
+	COPY_NODE_FIELD(child);
+	COPY_SCALAR_FIELD(outerJoin);
+	COPY_SCALAR_FIELD(colMin);
+	COPY_SCALAR_FIELD(colMax);
+
+	return newnode;
+}
+
+/*
+ * _copyJsonTableSibling
+ */
+static JsonTableSibling *
+_copyJsonTableSibling(const JsonTableSibling *from)
+{
+	JsonTableSibling *newnode = makeNode(JsonTableSibling);
+
+	COPY_NODE_FIELD(larg);
+	COPY_NODE_FIELD(rarg);
+	COPY_SCALAR_FIELD(cross);
+
+	return newnode;
+}
+
 /* ****************************************************************
  *						pathnodes.h copy functions
  *
@@ -2966,6 +3066,7 @@ _copyWindowClause(const WindowClause *from)
 	COPY_SCALAR_FIELD(frameOptions);
 	COPY_NODE_FIELD(startOffset);
 	COPY_NODE_FIELD(endOffset);
+	COPY_NODE_FIELD(runCondition);
 	COPY_SCALAR_FIELD(startInRangeFunc);
 	COPY_SCALAR_FIELD(endInRangeFunc);
 	COPY_SCALAR_FIELD(inRangeColl);
@@ -5295,7 +5396,7 @@ _copyCreatePublicationStmt(const CreatePublicationStmt *from)
 	COPY_STRING_FIELD(pubname);
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(pubobjects);
-	COPY_NODE_FIELD(for_all_objects);
+	COPY_SCALAR_FIELD(for_all_tables);
 
 	return newnode;
 }
@@ -5308,7 +5409,7 @@ _copyAlterPublicationStmt(const AlterPublicationStmt *from)
 	COPY_STRING_FIELD(pubname);
 	COPY_NODE_FIELD(options);
 	COPY_NODE_FIELD(pubobjects);
-	COPY_NODE_FIELD(for_all_objects);
+	COPY_SCALAR_FIELD(for_all_tables);
 	COPY_SCALAR_FIELD(action);
 
 	return newnode;
@@ -5851,6 +5952,21 @@ copyObjectImpl(const void *from)
 			break;
 		case T_JsonItemCoercions:
 			retval = _copyJsonItemCoercions(from);
+			break;
+		case T_JsonTable:
+			retval = _copyJsonTable(from);
+			break;
+		case T_JsonTableColumn:
+			retval = _copyJsonTableColumn(from);
+			break;
+		case T_JsonTablePlan:
+			retval = _copyJsonTablePlan(from);
+			break;
+		case T_JsonTableParent:
+			retval = _copyJsonTableParent(from);
+			break;
+		case T_JsonTableSibling:
+			retval = _copyJsonTableSibling(from);
 			break;
 
 			/*

@@ -472,11 +472,9 @@ MERGE <replaceable class="parameter">total_count</replaceable>
              the action's event type.
             </para>
            </listitem>
-          </orderedlist>
-         </para>
+          </orderedlist></para>
         </listitem>
-       </orderedlist>
-      </para>
+       </orderedlist></para>
      </listitem>
      <listitem>
       <para>
@@ -596,7 +594,7 @@ ON s.winename = w.winename
 WHEN NOT MATCHED AND s.stock_delta > 0 THEN
   INSERT VALUES(s.winename, s.stock_delta)
 WHEN MATCHED AND w.stock + s.stock_delta > 0 THEN
-  UPDATE SET stock = w.stock + s.stock_delta;
+  UPDATE SET stock = w.stock + s.stock_delta
 WHEN MATCHED THEN
   DELETE;
 </programlisting>

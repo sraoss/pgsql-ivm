@@ -47,6 +47,7 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
+#include "catalog/pg_parameter_acl.h"
 #include "catalog/pg_partitioned_table.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_publication.h"
@@ -574,6 +575,28 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
+	{ParameterAclRelationId,	/* PARAMETERACLNAME */
+		ParameterAclParnameIndexId,
+		1,
+		{
+			Anum_pg_parameter_acl_parname,
+			0,
+			0,
+			0
+		},
+		4
+	},
+	{ParameterAclRelationId,	/* PARAMETERACLOID */
+		ParameterAclOidIndexId,
+		1,
+		{
+			Anum_pg_parameter_acl_oid,
+			0,
+			0,
+			0
+		},
+		4
+	},
 	{PartitionedRelationId,		/* PARTRELID */
 		PartitionedRelidIndexId,
 		1,
@@ -630,12 +653,12 @@ static const struct cachedesc cacheinfo[] = {
 		64
 	},
 	{PublicationNamespaceRelationId,	/* PUBLICATIONNAMESPACEMAP */
-		PublicationNamespacePnnspidPnpubidPntypeIndexId,
-		3,
+		PublicationNamespacePnnspidPnpubidIndexId,
+		2,
 		{
 			Anum_pg_publication_namespace_pnnspid,
 			Anum_pg_publication_namespace_pnpubid,
-			Anum_pg_publication_namespace_pntype,
+			0,
 			0
 		},
 		64

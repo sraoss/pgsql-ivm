@@ -188,7 +188,7 @@ heapam_fetch_row_version(Relation relation,
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
 	bslot->base.tupdata.t_self = *tid;
-	if (heap_fetch(relation, snapshot, &bslot->base.tupdata, &buffer))
+	if (heap_fetch(relation, snapshot, &bslot->base.tupdata, &buffer, false))
 	{
 		/* store in slot, transferring existing pin */
 		ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
@@ -401,7 +401,7 @@ tuple_lock_retry:
 							 errmsg("tuple to be locked was already moved to another partition due to concurrent update")));
 
 				tuple->t_self = *tid;
-				if (heap_fetch(relation, &SnapshotDirty, tuple, &buffer))
+				if (heap_fetch(relation, &SnapshotDirty, tuple, &buffer, true))
 				{
 					/*
 					 * If xmin isn't what we're expecting, the slot must have
@@ -500,6 +500,7 @@ tuple_lock_retry:
 				 */
 				if (tuple->t_data == NULL)
 				{
+					Assert(!BufferIsValid(buffer));
 					return TM_Deleted;
 				}
 
@@ -509,8 +510,7 @@ tuple_lock_retry:
 				if (!TransactionIdEquals(HeapTupleHeaderGetXmin(tuple->t_data),
 										 priorXmax))
 				{
-					if (BufferIsValid(buffer))
-						ReleaseBuffer(buffer);
+					ReleaseBuffer(buffer);
 					return TM_Deleted;
 				}
 
@@ -526,13 +526,12 @@ tuple_lock_retry:
 				 *
 				 * As above, it should be safe to examine xmax and t_ctid
 				 * without the buffer content lock, because they can't be
-				 * changing.
+				 * changing.  We'd better hold a buffer pin though.
 				 */
 				if (ItemPointerEquals(&tuple->t_self, &tuple->t_data->t_ctid))
 				{
 					/* deleted, so forget about it */
-					if (BufferIsValid(buffer))
-						ReleaseBuffer(buffer);
+					ReleaseBuffer(buffer);
 					return TM_Deleted;
 				}
 
@@ -540,8 +539,7 @@ tuple_lock_retry:
 				*tid = tuple->t_data->t_ctid;
 				/* updated row should have xmin matching this xmax */
 				priorXmax = HeapTupleHeaderGetUpdateXid(tuple->t_data);
-				if (BufferIsValid(buffer))
-					ReleaseBuffer(buffer);
+				ReleaseBuffer(buffer);
 				/* loop back to fetch next in chain */
 			}
 		}
@@ -726,7 +724,7 @@ heapam_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	if (use_sort)
 		tuplesort = tuplesort_begin_cluster(oldTupDesc, OldIndex,
 											maintenance_work_mem,
-											NULL, false);
+											NULL, TUPLESORT_NONE);
 	else
 		tuplesort = NULL;
 
@@ -1089,8 +1087,8 @@ heapam_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin,
 				 * our own.  In this case we should count and sample the row,
 				 * to accommodate users who load a table and analyze it in one
 				 * transaction.  (pgstat_report_analyze has to adjust the
-				 * numbers we send to the stats collector to make this come
-				 * out right.)
+				 * numbers we report to the cumulative stats system to make
+				 * this come out right.)
 				 */
 				if (TransactionIdIsCurrentTransactionId(HeapTupleHeaderGetXmin(targtuple->t_data)))
 				{

@@ -232,7 +232,7 @@ HandleSlashCmds(PsqlScanState scan_state,
 	{
 		pg_log_error("invalid command \\%s", cmd);
 		if (pset.cur_cmd_interactive)
-			pg_log_info("Try \\? for help.");
+			pg_log_error_hint("Try \\? for help.");
 		status = PSQL_CMD_ERROR;
 	}
 
@@ -780,7 +780,14 @@ exec_command_d(PsqlScanState scan_state, bool active_branch, const char *cmd)
 				success = describeTablespaces(pattern, show_verbose);
 				break;
 			case 'c':
-				success = listConversions(pattern, show_verbose, show_system);
+				if (strncmp(cmd, "dconfig", 7) == 0)
+					success = describeConfigurationParameters(pattern,
+															  show_verbose,
+															  show_system);
+				else
+					success = listConversions(pattern,
+											  show_verbose,
+											  show_system);
 				break;
 			case 'C':
 				success = listCasts(pattern, show_verbose);

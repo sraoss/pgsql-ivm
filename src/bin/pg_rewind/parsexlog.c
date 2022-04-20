@@ -25,8 +25,8 @@
 #include "pg_rewind.h"
 
 /*
- * RmgrNames is an array of resource manager names, to make error messages
- * a bit nicer.
+ * RmgrNames is an array of the built-in resource manager names, to make error
+ * messages a bit nicer.
  */
 #define PG_RMGR(symname,name,redo,desc,identify,startup,cleanup,mask,decode) \
   name,
@@ -34,6 +34,9 @@
 static const char *RmgrNames[RM_MAX_ID + 1] = {
 #include "access/rmgrlist.h"
 };
+
+#define RmgrName(rmid) (((rmid) <= RM_MAX_BUILTIN_ID) ? \
+						RmgrNames[rmid] : "custom")
 
 static void extractPageInfo(XLogReaderState *record);
 
@@ -95,7 +98,6 @@ extractPageMap(const char *datadir, XLogRecPtr startpoint, int tliIndex,
 		}
 
 		extractPageInfo(xlogreader);
-
 	} while (xlogreader->EndRecPtr < endpoint);
 
 	/*
@@ -436,9 +438,9 @@ extractPageInfo(XLogReaderState *record)
 		 * track that change.
 		 */
 		pg_fatal("WAL record modifies a relation, but record type is not recognized: "
-				 "lsn: %X/%X, rmgr: %s, info: %02X",
+				 "lsn: %X/%X, rmid: %d, rmgr: %s, info: %02X",
 				 LSN_FORMAT_ARGS(record->ReadRecPtr),
-				 RmgrNames[rmid], info);
+				 rmid, RmgrName(rmid), info);
 	}
 
 	for (block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
@@ -447,7 +449,8 @@ extractPageInfo(XLogReaderState *record)
 		ForkNumber	forknum;
 		BlockNumber blkno;
 
-		if (!XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blkno))
+		if (!XLogRecGetBlockTagExtended(record, block_id,
+										&rnode, &forknum, &blkno, NULL))
 			continue;
 
 		/* We only care about the main fork; others are copied in toto */

@@ -176,7 +176,13 @@ static const char *const BuiltinTrancheNames[] = {
 	/* LWTRANCHE_PARALLEL_APPEND: */
 	"ParallelAppend",
 	/* LWTRANCHE_PER_XACT_PREDICATE_LIST: */
-	"PerXactPredicateList"
+	"PerXactPredicateList",
+	/* LWTRANCHE_PGSTATS_DSA: */
+	"PgStatsDSA",
+	/* LWTRANCHE_PGSTATS_HASH: */
+	"PgStatsHash",
+	/* LWTRANCHE_PGSTATS_DATA: */
+	"PgStatsData",
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -1090,7 +1096,6 @@ LWLockQueueSelf(LWLock *lock, LWLockMode mode)
 #ifdef LOCK_DEBUG
 	pg_atomic_fetch_add_u32(&lock->nwaiters, 1);
 #endif
-
 }
 
 /*

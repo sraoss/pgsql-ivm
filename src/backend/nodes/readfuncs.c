@@ -384,6 +384,7 @@ _readWindowClause(void)
 	READ_INT_FIELD(frameOptions);
 	READ_NODE_FIELD(startOffset);
 	READ_NODE_FIELD(endOffset);
+	READ_NODE_FIELD(runCondition);
 	READ_OID_FIELD(startInRangeFunc);
 	READ_OID_FIELD(endInRangeFunc);
 	READ_OID_FIELD(inRangeColl);
@@ -571,6 +572,7 @@ _readTableFunc(void)
 {
 	READ_LOCALS(TableFunc);
 
+	READ_ENUM_FIELD(functype, TableFuncType);
 	READ_NODE_FIELD(ns_uris);
 	READ_NODE_FIELD(ns_names);
 	READ_NODE_FIELD(docexpr);
@@ -581,7 +583,9 @@ _readTableFunc(void)
 	READ_NODE_FIELD(colcollations);
 	READ_NODE_FIELD(colexprs);
 	READ_NODE_FIELD(coldefexprs);
+	READ_NODE_FIELD(colvalexprs);
 	READ_BITMAPSET_FIELD(notnulls);
+	READ_NODE_FIELD(plan);
 	READ_INT_FIELD(ordinalitycol);
 	READ_LOCATION_FIELD(location);
 
@@ -1533,6 +1537,33 @@ _readJsonExpr(void)
 	READ_DONE();
 }
 
+static JsonTableParent *
+_readJsonTableParent(void)
+{
+	READ_LOCALS(JsonTableParent);
+
+	READ_NODE_FIELD(path);
+	READ_STRING_FIELD(name);
+	READ_NODE_FIELD(child);
+	READ_BOOL_FIELD(outerJoin);
+	READ_INT_FIELD(colMin);
+	READ_INT_FIELD(colMax);
+
+	READ_DONE();
+}
+
+static JsonTableSibling *
+_readJsonTableSibling(void)
+{
+	READ_LOCALS(JsonTableSibling);
+
+	READ_NODE_FIELD(larg);
+	READ_NODE_FIELD(rarg);
+	READ_BOOL_FIELD(cross);
+
+	READ_DONE();
+}
+
 /*
  * _readJsonCoercion
  */
@@ -2166,6 +2197,7 @@ _readSubqueryScan(void)
 	ReadCommonScan(&local_node->scan);
 
 	READ_NODE_FIELD(subplan);
+	READ_ENUM_FIELD(scanstatus, SubqueryScanStatus);
 
 	READ_DONE();
 }
@@ -2547,11 +2579,14 @@ _readWindowAgg(void)
 	READ_INT_FIELD(frameOptions);
 	READ_NODE_FIELD(startOffset);
 	READ_NODE_FIELD(endOffset);
+	READ_NODE_FIELD(runCondition);
+	READ_NODE_FIELD(runConditionOrig);
 	READ_OID_FIELD(startInRangeFunc);
 	READ_OID_FIELD(endInRangeFunc);
 	READ_OID_FIELD(inRangeColl);
 	READ_BOOL_FIELD(inRangeAsc);
 	READ_BOOL_FIELD(inRangeNullsFirst);
+	READ_BOOL_FIELD(topWindow);
 
 	READ_DONE();
 }
@@ -3184,7 +3219,7 @@ parseNodeString(void)
 		return_value = _readJsonReturning();
 	else if (MATCH("JSONVALUEEXPR", 13))
 		return_value = _readJsonValueExpr();
-	else if (MATCH("JSONCTOREXPR", 12))
+	else if (MATCH("JSONCONSTRUCTOREXPR", 19))
 		return_value = _readJsonConstructorExpr();
 	else if (MATCH("JSONISPREDICATE", 15))
 		return_value = _readJsonIsPredicate();
@@ -3196,6 +3231,10 @@ parseNodeString(void)
 		return_value = _readJsonCoercion();
 	else if (MATCH("JSONITEMCOERCIONS", 17))
 		return_value = _readJsonItemCoercions();
+	else if (MATCH("JSONTABPNODE", 12))
+		return_value = _readJsonTableParent();
+	else if (MATCH("JSONTABSNODE", 12))
+		return_value = _readJsonTableSibling();
 	else
 	{
 		elog(ERROR, "badly formatted node string \"%.32s\"...", token);

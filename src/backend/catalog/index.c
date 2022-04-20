@@ -1735,30 +1735,8 @@ index_concurrently_swap(Oid newIndexId, Oid oldIndexId, const char *oldName)
 	changeDependenciesOf(RelationRelationId, oldIndexId, newIndexId);
 	changeDependenciesOn(RelationRelationId, oldIndexId, newIndexId);
 
-	/*
-	 * Copy over statistics from old to new index
-	 */
-	{
-		PgStat_StatTabEntry *tabentry;
-
-		tabentry = pgstat_fetch_stat_tabentry(oldIndexId);
-		if (tabentry)
-		{
-			if (pgstat_relation_should_count(newClassRel))
-			{
-				newClassRel->pgstat_info->t_counts.t_numscans = tabentry->numscans;
-				newClassRel->pgstat_info->t_counts.t_tuples_returned = tabentry->tuples_returned;
-				newClassRel->pgstat_info->t_counts.t_tuples_fetched = tabentry->tuples_fetched;
-				newClassRel->pgstat_info->t_counts.t_blocks_fetched = tabentry->blocks_fetched;
-				newClassRel->pgstat_info->t_counts.t_blocks_hit = tabentry->blocks_hit;
-
-				/*
-				 * The data will be sent by the next pgstat_report_stat()
-				 * call.
-				 */
-			}
-		}
-	}
+	/* copy over statistics from old to new index */
+	pgstat_copy_relation_stats(newClassRel, oldClassRel);
 
 	/* Copy data of pg_statistic from the old index to the new one */
 	CopyStatistics(oldIndexId, newIndexId);
@@ -3365,7 +3343,7 @@ validate_index(Oid heapId, Oid indexId, Snapshot snapshot)
 	state.tuplesort = tuplesort_begin_datum(INT8OID, Int8LessOperator,
 											InvalidOid, false,
 											maintenance_work_mem,
-											NULL, false);
+											NULL, TUPLESORT_NONE);
 	state.htups = state.itups = state.tups_inserted = 0;
 
 	/* ambulkdelete updates progress metrics */
