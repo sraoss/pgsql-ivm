@@ -37,7 +37,6 @@ typedef enum DependencyType
 	DEPENDENCY_PARTITION_SEC = 'S',
 	DEPENDENCY_EXTENSION = 'e',
 	DEPENDENCY_AUTO_EXTENSION = 'x',
-	DEPENDENCY_IMMV = 'm'
 } DependencyType;
 
 /*
