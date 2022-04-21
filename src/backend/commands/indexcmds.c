@@ -36,6 +36,7 @@
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
+#include "commands/matview.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/tablespace.h"
@@ -1064,6 +1065,45 @@ DefineIndex(Oid relationId,
 	/* Is index safe for others to ignore?  See set_indexsafe_procflags() */
 	safe_index = indexInfo->ii_Expressions == NIL &&
 		indexInfo->ii_Predicate == NIL;
+
+	/*
+	 * We disallow unique indexes on IVM columns of IMMVs.
+	 */
+	if (RelationIsIVM(rel) && stmt->unique)
+	{
+		for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+		{
+			AttrNumber	attno = indexInfo->ii_IndexAttrNumbers[i];
+			if (attno > 0)
+			{
+				char *name = NameStr(TupleDescAttr(rel->rd_att, attno - 1)->attname);
+				if (name && isIvmName(name))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("unique index creation on IVM columns is not supported")));
+			}
+		}
+
+		if (indexInfo->ii_Expressions)
+		{
+			Bitmapset  *indexattrs = NULL;
+			int			varno = -1;
+
+			pull_varattnos((Node *) indexInfo->ii_Expressions, 1, &indexattrs);
+
+			while ((varno = bms_next_member(indexattrs, varno)) >= 0)
+			{
+				int attno = varno + FirstLowInvalidHeapAttributeNumber;
+				char *name = NameStr(TupleDescAttr(rel->rd_att, attno - 1)->attname);
+				if (name && isIvmName(name))
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("unique index creation on IVM columns is not supported")));
+			}
+
+		}
+	}
+
 
 	/*
 	 * Report index creation if appropriate (delay this till after most of the
