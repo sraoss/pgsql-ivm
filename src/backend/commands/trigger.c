@@ -3885,6 +3885,7 @@ static void TransitionTableAddTuple(EState *estate,
 									TupleTableSlot *original_insert_tuple,
 									Tuplestorestate *tuplestore);
 static void AfterTriggerFreeQuery(AfterTriggersQueryData *qs);
+static void release_or_prolong_tuplestore(Tuplestorestate *ts, bool prolonged);
 static SetConstraintState SetConstraintStateCreate(int numalloc);
 static SetConstraintState SetConstraintStateCopy(SetConstraintState state);
 static SetConstraintState SetConstraintStateAddItem(SetConstraintState state,
@@ -5139,37 +5140,19 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		ts = table->old_upd_tuplestore;
 		table->old_upd_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->new_upd_tuplestore;
 		table->new_upd_tuplestore = NULL;
 		if (ts)
-			tuplestore_end(ts);
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->old_del_tuplestore;
 		table->old_del_tuplestore = NULL;
 		if (ts)
-		{
-			if (table->prolonged && afterTriggers.query_depth > 0)
-			{
-				MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
-				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
-				MemoryContextSwitchTo(oldcxt);
-			}
-			else
-				tuplestore_end(ts);
-		}
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		ts = table->new_ins_tuplestore;
 		table->new_ins_tuplestore = NULL;
 		if (ts)
-		{
-			if (table->prolonged && afterTriggers.query_depth > 0)
-			{
-				MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
-				afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
-				MemoryContextSwitchTo(oldcxt);
-			}
-			else
-				tuplestore_end(ts);
-		}
+			release_or_prolong_tuplestore(ts, table->prolonged);
 		if (table->storeslot)
 			ExecDropSingleTupleTableSlot(table->storeslot);
 	}
@@ -5193,6 +5176,22 @@ AfterTriggerFreeQuery(AfterTriggersQueryData *qs)
 		}
 		afterTriggers.prolonged_tuplestores = NIL;
 	}
+}
+
+/*
+ * Release the tuplestore, or append it to the prolonged tuplestores list.
+ */
+static void
+release_or_prolong_tuplestore(Tuplestorestate *ts, bool prolonged)
+{
+	if (prolonged && afterTriggers.query_depth > 0)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(CurTransactionContext);
+		afterTriggers.prolonged_tuplestores = lappend(afterTriggers.prolonged_tuplestores, ts);
+		MemoryContextSwitchTo(oldcxt);
+	}
+	else
+		tuplestore_end(ts);
 }
 
 
