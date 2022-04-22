@@ -6197,7 +6197,7 @@ getTables(Archive *fout, int *numTables)
 		appendPQExpBufferStr(query,
 							 "false AS ispartition, ");
 
-	if (fout->remoteVersion >= 150000)
+	if (fout->remoteVersion >= 160000)
 		appendPQExpBufferStr(query,
 							 "c.relisivm AS isivm ");
 	else
