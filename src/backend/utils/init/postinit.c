@@ -429,6 +429,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		iculocale = NULL;
 
 	default_locale.provider = dbform->datlocprovider;
+
 	/*
 	 * Default locale is currently always deterministic.  Nondeterministic
 	 * locales currently don't support pattern matching, which would break a
@@ -538,9 +539,8 @@ pg_split_opts(char **argv, int *argcp, const char *optstr)
 /*
  * Initialize MaxBackends value from config options.
  *
- * This must be called after modules have had the chance to register background
- * workers in shared_preload_libraries, and before shared memory size is
- * determined.
+ * This must be called after modules have had the chance to alter GUCs in
+ * shared_preload_libraries and before shared memory size is determined.
  *
  * Note that in EXEC_BACKEND environment, the value is passed down from
  * postmaster to subprocesses via BackendParameters in SubPostmasterMain; only
@@ -605,8 +605,8 @@ BaseInit(void)
 	InitTemporaryFileAccess();
 
 	/*
-	 * Initialize local buffers for WAL record construction, in case we
-	 * ever try to insert XLOG.
+	 * Initialize local buffers for WAL record construction, in case we ever
+	 * try to insert XLOG.
 	 */
 	InitXLogInsert();
 
@@ -694,10 +694,10 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	/*
-	 * If this is either a bootstrap process or a standalone backend, start
-	 * up the XLOG machinery, and register to have it closed down at exit.
-	 * In other cases, the startup process is responsible for starting up
-	 * the XLOG machinery, and the checkpointer for closing it down.
+	 * If this is either a bootstrap process or a standalone backend, start up
+	 * the XLOG machinery, and register to have it closed down at exit. In
+	 * other cases, the startup process is responsible for starting up the
+	 * XLOG machinery, and the checkpointer for closing it down.
 	 */
 	if (!IsUnderPostmaster)
 	{
@@ -908,7 +908,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	 */
 	if (bootstrap)
 	{
-		MyDatabaseId = TemplateDbOid;
+		MyDatabaseId = Template1DbOid;
 		MyDatabaseTableSpace = DEFAULTTABLESPACE_OID;
 	}
 	else if (in_dbname != NULL)
@@ -1057,6 +1057,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 	}
 
 	SetDatabasePath(fullpath);
+	pfree(fullpath);
 
 	/*
 	 * It's now possible to do real access to the system catalogs.
@@ -1241,7 +1242,8 @@ ShutdownPostgres(int code, Datum arg)
 	 */
 #ifdef USE_ASSERT_CHECKING
 	{
-		int held_lwlocks = LWLockHeldCount();
+		int			held_lwlocks = LWLockHeldCount();
+
 		if (held_lwlocks)
 			elog(WARNING, "holding %d lwlocks at the end of ShutdownPostgres()",
 				 held_lwlocks);

@@ -13410,7 +13410,18 @@ _ACEOF
 fi
 done
 
-    if test "$enable_thread_safety" = yes; then
+    # The separate ldap_r library only exists in OpenLDAP < 2.5, and if we
+    # have 2.5 or later, we shouldn't even probe for ldap_r (we might find a
+    # library from a separate OpenLDAP installation).  The most reliable
+    # way to check that is to check for a function introduced in 2.5.
+    ac_fn_c_check_func "$LINENO" "ldap_verify_credentials" "ac_cv_func_ldap_verify_credentials"
+if test "x$ac_cv_func_ldap_verify_credentials" = xyes; then :
+  thread_safe_libldap=yes
+else
+  thread_safe_libldap=no
+fi
+
+    if test "$enable_thread_safety" = yes -a "$thread_safe_libldap" = no; then
       # Use ldap_r for FE if available, else assume ldap is thread-safe.
       # On some platforms ldap_r fails to link without PTHREAD_LIBS.
       LIBS="$_LIBS"
@@ -14103,19 +14114,13 @@ $as_echo "$LZ4" >&6; }
 fi
 
 if test "$with_lz4" = yes; then
-  for ac_header in lz4.h
-do :
   ac_fn_c_check_header_mongrel "$LINENO" "lz4.h" "ac_cv_header_lz4_h" "$ac_includes_default"
 if test "x$ac_cv_header_lz4_h" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_LZ4_H 1
-_ACEOF
 
 else
   as_fn_error $? "lz4.h header file is required for LZ4" "$LINENO" 5
 fi
 
-done
 
 fi
 

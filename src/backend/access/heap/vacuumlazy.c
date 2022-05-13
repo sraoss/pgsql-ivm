@@ -326,7 +326,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	PGRUsage	ru0;
 	TimestampTz starttime = 0;
 	PgStat_Counter startreadtime = 0,
-				   startwritetime = 0;
+				startwritetime = 0;
 	WalUsage	startwalusage = pgWalUsage;
 	int64		StartPageHit = VacuumPageHit,
 				StartPageMiss = VacuumPageMiss,
@@ -512,7 +512,7 @@ heap_vacuum_rel(Relation rel, VacuumParams *params,
 	vacrel->FreezeLimit = FreezeLimit;
 	/* MultiXactCutoff controls MXID freezing (always <= OldestMxact) */
 	vacrel->MultiXactCutoff = MultiXactCutoff;
-	/* Initialize state used to track oldest extant XID/XMID */
+	/* Initialize state used to track oldest extant XID/MXID */
 	vacrel->NewRelfrozenXid = OldestXmin;
 	vacrel->NewRelminMxid = OldestMxact;
 	vacrel->skippedallvis = false;
@@ -1295,7 +1295,7 @@ lazy_scan_heap(LVRelState *vacrel)
  * Note: our opinion of which blocks can be skipped can go stale immediately.
  * It's okay if caller "misses" a page whose all-visible or all-frozen marking
  * was concurrently cleared, though.  All that matters is that caller scan all
- * pages whose tuples might contain XIDs < OldestXmin, or XMIDs < OldestMxact.
+ * pages whose tuples might contain XIDs < OldestXmin, or MXIDs < OldestMxact.
  * (Actually, non-aggressive VACUUMs can choose to skip all-visible pages with
  * older XIDs/MXIDs.  The vacrel->skippedallvis flag will be set here when the
  * choice to skip such a range is actually made, making everything safe.)
@@ -2012,7 +2012,7 @@ lazy_scan_noprune(LVRelState *vacrel,
 				 * relfrozenxid to a value >= FreezeLimit (and be able to
 				 * advance rel's relminmxid to a value >= MultiXactCutoff).
 				 * The ongoing aggressive VACUUM won't be able to do that
-				 * unless it can freeze an XID (or XMID) from this tuple now.
+				 * unless it can freeze an XID (or MXID) from this tuple now.
 				 *
 				 * The only safe option is to have caller perform processing
 				 * of this page using lazy_scan_prune.  Caller might have to
@@ -2232,12 +2232,12 @@ lazy_vacuum(LVRelState *vacrel)
 		 * dead_items space is not CPU cache resident.
 		 *
 		 * We don't take any special steps to remember the LP_DEAD items (such
-		 * as counting them in our final update to the stats system) when
-		 * the optimization is applied.  Though the accounting used in
-		 * analyze.c's acquire_sample_rows() will recognize the same LP_DEAD
-		 * items as dead rows in its own stats report, that's okay.
-		 * The discrepancy should be negligible.  If this optimization is ever
-		 * expanded to cover more cases then this may need to be reconsidered.
+		 * as counting them in our final update to the stats system) when the
+		 * optimization is applied.  Though the accounting used in analyze.c's
+		 * acquire_sample_rows() will recognize the same LP_DEAD items as dead
+		 * rows in its own stats report, that's okay. The discrepancy should
+		 * be negligible.  If this optimization is ever expanded to cover more
+		 * cases then this may need to be reconsidered.
 		 */
 		threshold = (double) vacrel->rel_pages * BYPASS_THRESHOLD_PAGES;
 		bypass = (vacrel->lpdead_item_pages < threshold &&

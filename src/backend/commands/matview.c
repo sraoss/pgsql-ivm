@@ -433,6 +433,17 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 										  lockmode, 0,
 										  RangeVarCallbackOwnsTable, NULL);
 	matviewRel = table_open(matviewOid, NoLock);
+	relowner = matviewRel->rd_rel->relowner;
+
+	/*
+	 * Switch to the owner's userid, so that any functions are run as that
+	 * user.  Also lock down security-restricted operations and arrange to
+	 * make GUC variable changes local to this command.
+	 */
+	GetUserIdAndSecContext(&save_userid, &save_sec_context);
+	SetUserIdAndSecContext(relowner,
+						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
+	save_nestlevel = NewGUCNestLevel();
 	oldPopulated = RelationIsPopulated(matviewRel);
 
 	/* Make sure it is a materialized view. */
@@ -511,19 +522,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * if we fail later).
 	 */
 	SetMatViewPopulatedState(matviewRel, !stmt->skipData);
-
-	relowner = matviewRel->rd_rel->relowner;
-
-	/*
-	 * Switch to the owner's userid, so that any functions are run as that
-	 * user.  Also arrange to make GUC variable changes local to this command.
-	 * Don't lock it down too tight to create a temporary table just yet.  We
-	 * will switch modes when we are about to execute user code.
-	 */
-	GetUserIdAndSecContext(&save_userid, &save_sec_context);
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_LOCAL_USERID_CHANGE);
-	save_nestlevel = NewGUCNestLevel();
 
 	/* Concurrent refresh builds new data in temp tablespace, and does diff. */
 	if (concurrent)
@@ -616,12 +614,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 	dest = CreateTransientRelDestReceiver(OIDNewHeap);
 
-	/*
-	 * Now lock down security-restricted operations.
-	 */
-	SetUserIdAndSecContext(relowner,
-						   save_sec_context | SECURITY_RESTRICTED_OPERATION);
-
 	/* Generate the data, if wanted. */
 	if (!stmt->skipData)
 		processed = refresh_matview_datafill(dest, dataQuery, NULL, NULL, queryString);
@@ -651,8 +643,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		/*
 		 * Inform cumulative stats system about our activity: basically, we
 		 * truncated the matview and inserted some new data.  (The concurrent
-		 * code path above doesn't need to worry about this because the inserts
-		 * and deletes it issues get counted by lower-level code.)
+		 * code path above doesn't need to worry about this because the
+		 * inserts and deletes it issues get counted by lower-level code.)
 		 */
 		pgstat_count_truncate(matviewRel);
 		if (!stmt->skipData)
