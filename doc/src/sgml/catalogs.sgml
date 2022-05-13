@@ -3523,7 +3523,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
      <listitem>
       <para>
        The dependent object was created as part of creation of the Materialized
-       View with Incremental View Maintenance reference, and is really just a 
+       View with Incremental View Maintenance reference, and is really just a
        part of its internal implementation. The dependent object must not be
        dropped unless the materialized view is also dropped.
       </para>

@@ -1655,7 +1655,7 @@ Time: 16386.245 ms (00:16.386)
     if lock acquisition fails because any changes which occurred in
     other transactions are not be visible in these modes and
     <acronym>IMMV</acronym> cannot be updated correctly in such situations.
-    However, as an exception if the view has only one base table, 
+    However, as an exception if the view has only one base table,
     the lock held on thew view is <literal>RowExclusiveLock</literal>.
 </para>
 </sect2>
