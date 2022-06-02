@@ -2,7 +2,7 @@
 use strict;
 use warnings;
 
-use Cwd qw(abs_path getcwd);
+use Cwd qw(abs_path);
 use File::Basename qw(dirname);
 use File::Compare;
 
@@ -13,19 +13,19 @@ use Test::More;
 # Generate a database with a name made of a range of ASCII characters.
 sub generate_db
 {
-	my ($node, $from_char, $to_char) = @_;
+	my ($node, $prefix, $from_char, $to_char, $suffix) = @_;
 
-	my $dbname = '';
+	my $dbname = $prefix;
 	for my $i ($from_char .. $to_char)
 	{
 		next if $i == 7 || $i == 10 || $i == 13;    # skip BEL, LF, and CR
 		$dbname = $dbname . sprintf('%c', $i);
 	}
 
-	# Exercise backslashes adjacent to double quotes, a Windows special
-	# case.
-	$dbname = '\\"\\' . $dbname . '\\\\"\\\\\\';
-	$node->command_ok([ 'createdb', $dbname ]);
+	$dbname .= $suffix;
+	$node->command_ok(
+		[ 'createdb', $dbname ],
+		"created database with ASCII characters from $from_char to $to_char");
 }
 
 # The test of pg_upgrade requires two clusters, an old one and a new one
@@ -73,16 +73,19 @@ if (defined($ENV{olddump}))
 
 	# Load the dump using the "postgres" database as "regression" does
 	# not exist yet, and we are done here.
-	$oldnode->command_ok([ 'psql', '-X', '-f', $olddumpfile, 'postgres' ]);
+	$oldnode->command_ok([ 'psql', '-X', '-f', $olddumpfile, 'postgres' ],
+		'loaded old dump file');
 }
 else
 {
 	# Default is to use pg_regress to set up the old instance.
 
-	# Create databases with names covering most ASCII bytes
-	generate_db($oldnode, 1,  45);
-	generate_db($oldnode, 46, 90);
-	generate_db($oldnode, 91, 127);
+	# Create databases with names covering most ASCII bytes.  The
+	# first name exercises backslashes adjacent to double quotes, a
+	# Windows special case.
+	generate_db($oldnode, 'regression\\"\\', 1,  45,  '\\\\"\\\\\\');
+	generate_db($oldnode, 'regression',      46, 90,  '');
+	generate_db($oldnode, 'regression',      91, 127, '');
 
 	# Grab any regression options that may be passed down by caller.
 	my $extra_opts = $ENV{EXTRA_REGRESS_OPTS} || "";
@@ -99,7 +102,7 @@ else
 
 	my $rc =
 	  system($ENV{PG_REGRESS}
-		  . "$extra_opts "
+		  . " $extra_opts "
 		  . "--dlpath=\"$dlpath\" "
 		  . "--bindir= "
 		  . "--host="
@@ -121,6 +124,7 @@ else
 			print "=== EOF ===\n";
 		}
 	}
+	is($rc, 0, 'regression tests pass');
 }
 
 # Before dumping, get rid of objects not existing or not supported in later
@@ -135,7 +139,8 @@ if (defined($ENV{oldinstall}))
 			'psql', '-X',
 			'-f', "$srcdir/src/bin/pg_upgrade/upgrade_adapt.sql",
 			'regression'
-		]);
+		],
+		'ran adapt script');
 }
 
 # Initialize a new node for the upgrade.
@@ -232,7 +237,8 @@ $newnode->command_ok(
 		'pg_dumpall', '--no-sync',
 		'-d',         $newnode->connstr('postgres'),
 		'-f',         "$tempdir/dump2.sql"
-	]);
+	],
+	'dump before running pg_upgrade');
 
 # Compare the two dumps, there should be no differences.
 my $compare_res = compare("$tempdir/dump1.sql", "$tempdir/dump2.sql");

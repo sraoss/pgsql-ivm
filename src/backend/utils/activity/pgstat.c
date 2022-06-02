@@ -32,9 +32,9 @@
  * backend-local hashtable (pgStatEntryRefHash) in front of the shared
  * hashtable, containing references (PgStat_EntryRef) to shared hashtable
  * entries. The shared hashtable only needs to be accessed when no prior
- * reference is found in the local hashtable. Besides pointing to the the
+ * reference is found in the local hashtable. Besides pointing to the
  * shared hashtable entry (PgStatShared_HashEntry) PgStat_EntryRef also
- * contains a pointer to the the shared statistics data, as a process-local
+ * contains a pointer to the shared statistics data, as a process-local
  * address, to reduce access costs.
  *
  * The names for structs stored in shared memory are prefixed with
@@ -183,7 +183,7 @@ static inline bool pgstat_is_kind_valid(int ikind);
  */
 
 bool		pgstat_track_counts = false;
-int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_NONE;
+int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
 
 
 /* ----------

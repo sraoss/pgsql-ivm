@@ -548,8 +548,7 @@ Allow ordered scans of partitions to avoid sorting in more cases (David Rowley)
 </para>
 
 <para>
-Previously, a partitioned table with any LIST partition containing multiple values could not be used for ordered partition scans.  Now only non-pruned LIST partitions are checked.  This also helps with
-partitioned tables with DEFAULT partitions.
+Previously, a partitioned table with a DEFAULT partition or a LIST partition containing multiple values could not be used for ordered partition scans.  Now they can be used if these partitions are pruned.
 </para>
 </listitem>
 
@@ -565,17 +564,6 @@ Improve foreign key behavior of updates on partitioned tables that move rows bet
 
 <para>
 Previously, such updates ran delete actions on the source partition and insert actions on the target partition.  PostgreSQL will now run update actions on the referenced partition root.
-</para>
-</listitem>
-
-<!--
-Author: Amit Kapila <akapila@postgresql.org>
-2021-12-08 [a61bff2bf] De-duplicate the result of pg_publication_tables view.
--->
-
-<listitem>
-<para>
-Remove incorrect duplicate partitions in system view pg_publication_tables (Hou Zhijie)
 </para>
 </listitem>
 
@@ -768,7 +756,7 @@ Author: John Naylor <john.naylor@postgresql.org>
 
 <listitem>
 <para>
-Improve validation of ASCII and UTF-8 text by processing 16 bytes at a time (John Naylor)
+Improve validation of UTF-8 text (even if only ASCII) by processing 16 bytes at a time (John Naylor, Heikki Linnakangas)
 </para>
 
 <para>
@@ -1332,6 +1320,21 @@ The new CREATE_REPLICATION_SLOT option is called TWO_PHASE.  pg_recvlogical now 
 </listitem>
 
 <!--
+Author: Amit Kapila <akapila@postgresql.org>
+2022-03-30 [d5a9d86d8] Skip empty transactions for logical replication.
+-->
+
+<listitem>
+<para>
+Prevent logical replication of empty transactions (Ajin Cherian, Hou Zhijie, Euler Taveira)
+</para>
+
+<para>
+Previously, write transactions would send empty transactions to subscribers if subscribed tables were not modified.
+</para>
+</listitem>
+
+<!--
 Author: Michael Paquier <michael@paquier.xyz>
 2021-11-23 [1922d7c6e] Add SQL functions to monitor the directory contents of r
 -->
@@ -1347,11 +1350,6 @@ Specifically, the functions are pg_ls_logicalsnapdir(), pg_ls_logicalmapdir(), a
 </listitem>
 
 <!--
-Author: Tom Lane <tgl@sss.pgh.pa.us>
-2021-11-02 [f3d4019da] Ensure consistent logical replication of datetime and fl
--->
-
-<!--
 Author: Amit Kapila <akapila@postgresql.org>
 2022-03-14 [705e20f85] Optionally disable subscriptions on error.
 -->
@@ -1362,7 +1360,7 @@ Allow subscribers to stop logical replication application on error (Osumi Takami
 </para>
 
 <para>
-This is enabled with the subscriber option "disable_on_error" and avoids possible infinite loops during stream application.
+This is enabled with the subscriber option "disable_on_error" and avoids possible infinite error loops during stream application.
 </para>
 </listitem>
 
@@ -1395,6 +1393,17 @@ Add system view pg_stat_subscription_stats to report on subscriber activity (Mas
 
 <para>
 New function pg_stat_reset_subscription_stats() allows the resetting of subscriber statistics.
+</para>
+</listitem>
+
+<!--
+Author: Amit Kapila <akapila@postgresql.org>
+2021-12-08 [a61bff2bf] De-duplicate the result of pg_publication_tables view.
+-->
+
+<listitem>
+<para>
+Remove incorrect duplicate partitions in system view pg_publication_tables (Hou Zhijie)
 </para>
 </listitem>
 
@@ -2477,17 +2486,6 @@ Author: Fujii Masao <fujii@postgresql.org>
 <listitem>
 <para>
 Add documentation for pg_encoding_to_char() and pg_char_to_encoding() (Ian Lawrence Barwick)
-</para>
-</listitem>
-
-<!--
-Author: Peter Eisentraut <peter@eisentraut.org>
-2022-03-30 [b21c4cf95] doc: Document range_intersect_agg(anymultirange)
--->
-
-<listitem>
-<para>
-Add documentation for range_intersect_agg(anymultirange) (Paul Jungwirth)
 </para>
 </listitem>
 
