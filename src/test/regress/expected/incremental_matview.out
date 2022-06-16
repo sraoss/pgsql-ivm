@@ -715,7 +715,7 @@ SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subq
 (3 rows)
 
 ROLLBACK;
--- TRUNCATE a base table in views with EXISTS clause 
+-- TRUNCATE a base table in views with EXISTS clause
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
 NOTICE:  could not create an index on materialized view "mv_ivm_exists_subquery" automatically
@@ -1339,7 +1339,7 @@ SELECT is_match();
 (1 row)
 
 ROLLBACK TO p1;
--- TRUNCATE a base table in views with outer join 
+-- TRUNCATE a base table in views with outer join
 TRUNCATE base_r;
 SELECT is_match();
  is_match 
