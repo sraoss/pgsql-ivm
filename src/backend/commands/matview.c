@@ -1576,14 +1576,21 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		maintenance_graph = make_maintenance_graph(query, matviewRel);
 
 	/*
-	 * When a base table is truncated, the contents of the view must become empty,
-	 * if the view definition query doesn't have outer join. So, we can perform
-	 * a truncate on the view in this case. If it has any outer joins, we perform
-	 * a simple refresh.
+	 * When a base table is truncated, the view content will be empty if the
+	 * view definition query does not contain an outer join or an aggregate
+	 * without a GROUP clause. Therefore, such views can be truncated.
+	 *
+	 * Aggregate views without a GROUP clause always have one row. Therefore,
+	 * if a base table is truncated, the view will not be empty and will contain
+	 * a row with NULL value (or 0 for count()). So, in this case, we refresh the
+	 * view instead of truncating it.
+	 *
+	 * If you have an outer join, truncating a base table will not empty the
+	 * join result. Therefore, refresh the view in this case as well.
 	 */
 	if (TRIGGER_FIRED_BY_TRUNCATE(trigdata->tg_event))
 	{
-		if (!hasOuterJoins)
+		if (!hasOuterJoins && !(query->hasAggs && query->groupClause == NIL))
 			ExecuteTruncateGuts(list_make1(matviewRel), list_make1_oid(matviewOid),
 								NIL, DROP_RESTRICT, false);
 		else

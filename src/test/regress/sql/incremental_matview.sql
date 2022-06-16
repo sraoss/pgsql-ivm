@@ -52,6 +52,17 @@ SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 ROLLBACK;
 SELECT * FROM mv_ivm_1 ORDER BY 1,2,3;
 
+-- TRUNCATE a base table in join views
+BEGIN;
+TRUNCATE mv_base_a;
+SELECT * FROM mv_ivm_1;
+ROLLBACK;
+
+BEGIN;
+TRUNCATE mv_base_b;
+SELECT * FROM mv_ivm_1;
+ROLLBACK;
+
 -- rename of IVM columns
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_rename AS SELECT DISTINCT * FROM mv_base_a;
 ALTER MATERIALIZED VIEW mv_ivm_rename RENAME COLUMN __ivm_count__ TO xxx;
@@ -104,6 +115,15 @@ INSERT INTO mv_base_a VALUES(2,100);
 SELECT * FROM mv_ivm_agg ORDER BY 1,2,3;
 ROLLBACK;
 
+-- TRUNCATE a base table in aggregate views
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_agg AS SELECT i, SUM(j), COUNT(*) FROM mv_base_a GROUP BY i;
+TRUNCATE mv_base_a;
+SELECT * FROM mv_ivm_agg;
+SELECT i, SUM(j), COUNT(*) FROM mv_base_a GROUP BY i;
+ROLLBACK;
+
+
 -- support aggregate functions without GROUP clause
 BEGIN;
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j), COUNT(j), AVG(j) FROM mv_base_a;
@@ -112,6 +132,14 @@ INSERT INTO mv_base_a VALUES(6,60);
 SELECT * FROM mv_ivm_group ORDER BY 1;
 DELETE FROM mv_base_a;
 SELECT * FROM mv_ivm_group ORDER BY 1;
+ROLLBACK;
+
+-- TRUNCATE a base table in aggregate views without GROUP clause
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_group AS SELECT SUM(j), COUNT(j), AVG(j) FROM mv_base_a;
+TRUNCATE mv_base_a;
+SELECT * FROM mv_ivm_group;
+SELECT SUM(j), COUNT(j), AVG(j) FROM mv_base_a;
 ROLLBACK;
 
 -- resolved issue: When use AVG() function and values is indivisible, result of AVG() is incorrect.
@@ -246,6 +274,14 @@ INSERT INTO mv_base_b VALUES(3,300);
 SELECT *, __ivm_exists_count_0__ FROM mv_ivm_exists_subquery2 ORDER BY i, j;
 SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery3 ORDER BY i, j;
 SELECT *, __ivm_exists_count_0__, __ivm_exists_count_1__ FROM mv_ivm_exists_subquery4 ORDER BY i, j;
+ROLLBACK;
+
+-- TRUNCATE a base table in views with EXISTS clause
+BEGIN;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm_exists_subquery AS SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
+TRUNCATE mv_base_b;
+SELECT * FROM mv_ivm_exists_subquery;
+SELECT a.i, a.j FROM mv_base_a a WHERE EXISTS(SELECT 1 FROM mv_base_b b WHERE a.i = b.i);
 ROLLBACK;
 
 -- support simple subquery in FROM clause
@@ -437,6 +473,19 @@ SELECT * FROM mv ORDER BY r, si, sj, t;
 SELECT is_match();
 DELETE FROM base_t WHERE j=3;
 SELECT * FROM mv ORDER BY r, si, sj, t;
+SELECT is_match();
+ROLLBACK TO p1;
+
+-- TRUNCATE a base table in views with outer join
+TRUNCATE base_r;
+SELECT is_match();
+ROLLBACK TO p1;
+
+TRUNCATE base_s;
+SELECT is_match();
+ROLLBACK TO p1;
+
+TRUNCATE base_t;
 SELECT is_match();
 ROLLBACK TO p1;
 
