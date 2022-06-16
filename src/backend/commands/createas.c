@@ -1144,6 +1144,10 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 				ListCell   *lc;
 				List       *vars;
 
+				if (qry->groupClause != NIL && !qry->hasAggs)
+					ereport(ERROR,
+							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+							 errmsg("GROUP BY clause without aggregate is not supported on incrementally maintainable materialized view")));
 				if (qry->havingQual != NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
