@@ -1715,7 +1715,7 @@ CREATE INCREMENTAL MATERIALIZED VIEW  mv_ivm05 AS SELECT i,j, (SELECT k FROM mv_
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm07 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) ORDER BY i,j,k;
 -- contain HAVING
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm08 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) GROUP BY i,j,k HAVING SUM(i) > 5;
--- contain GROUP BY without aggregate 
+-- contain GROUP BY without aggregate
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm08 AS SELECT i,j FROM mv_base_a GROUP BY i,j;
 
 -- contain view or materialized view

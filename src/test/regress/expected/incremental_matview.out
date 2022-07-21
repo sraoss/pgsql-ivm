@@ -5950,7 +5950,7 @@ ERROR:  ORDER BY clause is not supported on incrementally maintainable materiali
 -- contain HAVING
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm08 AS SELECT i,j,k FROM mv_base_a a INNER JOIN mv_base_b b USING(i) GROUP BY i,j,k HAVING SUM(i) > 5;
 ERROR:   HAVING clause is not supported on incrementally maintainable materialized view
--- contain GROUP BY without aggregate 
+-- contain GROUP BY without aggregate
 CREATE INCREMENTAL MATERIALIZED VIEW mv_ivm08 AS SELECT i,j FROM mv_base_a GROUP BY i,j;
 ERROR:  GROUP BY clause without aggregate is not supported on incrementally maintainable materialized view
 -- contain view or materialized view
