@@ -3527,18 +3527,6 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
       </para>
      </listitem>
     </varlistentry>
-
-    <varlistentry>
-     <term><symbol>DEPENDENCY_IMMV</symbol> (<literal>m</literal>)</term>
-     <listitem>
-      <para>
-       The dependent object was created as part of creation of the Materialized
-       View with Incremental View Maintenance reference, and is really just a
-       part of its internal implementation. The dependent object must not be
-       dropped unless the materialized view is also dropped.
-      </para>
-     </listitem>
-    </varlistentry>
    </variablelist>
 
    Other dependency flavors might be needed in future.
@@ -3922,8 +3910,7 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
        <structfield>extrelocatable</structfield> <type>bool</type>
       </para>
       <para>
-      True for materialized views which are enabled for incremental
-      view maintenance (IVM).
+       True if extension can be relocated to another schema
       </para></entry>
      </row>
 
