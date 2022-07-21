@@ -1674,9 +1674,9 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel, bool is_create)
 	index->excludeOpNames = NIL;
 	index->idxcomment = NULL;
 	index->indexOid = InvalidOid;
-	index->oldNode = InvalidOid;
+	index->oldNumber = InvalidRelFileNumber;
 	index->oldCreateSubid = InvalidSubTransactionId;
-	index->oldFirstRelfilenodeSubid = InvalidSubTransactionId;
+	index->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
 	index->transformed = true;
 	index->concurrent = false;
 	index->if_not_exists = false;
