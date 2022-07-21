@@ -417,8 +417,7 @@ SetDataDir(const char *dir)
 	/* If presented path is relative, convert to absolute */
 	new = make_absolute_path(dir);
 
-	if (DataDir)
-		free(DataDir);
+	free(DataDir);
 	DataDir = new;
 }
 
@@ -787,7 +786,7 @@ InitializeSessionUserId(const char *rolename, Oid roleid)
 					PGC_BACKEND, PGC_S_OVERRIDE);
 	SetConfigOption("is_superuser",
 					AuthenticatedUserIsSuperuser ? "on" : "off",
-					PGC_INTERNAL, PGC_S_OVERRIDE);
+					PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
 
 	ReleaseSysCache(roleTup);
 }
@@ -844,7 +843,7 @@ SetSessionAuthorization(Oid userid, bool is_superuser)
 
 	SetConfigOption("is_superuser",
 					is_superuser ? "on" : "off",
-					PGC_INTERNAL, PGC_S_OVERRIDE);
+					PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
 }
 
 /*
@@ -901,7 +900,7 @@ SetCurrentRoleId(Oid roleid, bool is_superuser)
 
 	SetConfigOption("is_superuser",
 					is_superuser ? "on" : "off",
-					PGC_INTERNAL, PGC_S_OVERRIDE);
+					PGC_INTERNAL, PGC_S_DYNAMIC_DEFAULT);
 }
 
 

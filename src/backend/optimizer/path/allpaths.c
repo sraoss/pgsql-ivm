@@ -2053,9 +2053,8 @@ accumulate_append_subpath(Path *path, List **subpaths, List **special_subpaths)
 			*subpaths = list_concat(*subpaths,
 									list_copy_tail(apath->subpaths,
 												   apath->first_partial_path));
-			new_special_subpaths =
-				list_truncate(list_copy(apath->subpaths),
-							  apath->first_partial_path);
+			new_special_subpaths = list_copy_head(apath->subpaths,
+												  apath->first_partial_path);
 			*special_subpaths = list_concat(*special_subpaths,
 											new_special_subpaths);
 			return;
@@ -2452,6 +2451,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 {
 	Query	   *parse = root->parse;
 	Query	   *subquery = rte->subquery;
+	bool		trivial_pathtarget;
 	Relids		required_outer;
 	pushdown_safety_info safetyInfo;
 	double		tuple_fraction;
@@ -2615,6 +2615,36 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	set_subquery_size_estimates(root, rel);
 
 	/*
+	 * Also detect whether the reltarget is trivial, so that we can pass that
+	 * info to cost_subqueryscan (rather than re-deriving it multiple times).
+	 * It's trivial if it fetches all the subplan output columns in order.
+	 */
+	if (list_length(rel->reltarget->exprs) != list_length(subquery->targetList))
+		trivial_pathtarget = false;
+	else
+	{
+		trivial_pathtarget = true;
+		foreach(lc, rel->reltarget->exprs)
+		{
+			Node	   *node = (Node *) lfirst(lc);
+			Var		   *var;
+
+			if (!IsA(node, Var))
+			{
+				trivial_pathtarget = false;
+				break;
+			}
+			var = (Var *) node;
+			if (var->varno != rti ||
+				var->varattno != foreach_current_index(lc) + 1)
+			{
+				trivial_pathtarget = false;
+				break;
+			}
+		}
+	}
+
+	/*
 	 * For each Path that subquery_planner produced, make a SubqueryScanPath
 	 * in the outer query.
 	 */
@@ -2632,6 +2662,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 		/* Generate outer path using this subpath */
 		add_path(rel, (Path *)
 				 create_subqueryscan_path(root, rel, subpath,
+										  trivial_pathtarget,
 										  pathkeys, required_outer));
 	}
 
@@ -2657,6 +2688,7 @@ set_subquery_pathlist(PlannerInfo *root, RelOptInfo *rel,
 			/* Generate outer path using this subpath */
 			add_partial_path(rel, (Path *)
 							 create_subqueryscan_path(root, rel, subpath,
+													  trivial_pathtarget,
 													  pathkeys,
 													  required_outer));
 		}
@@ -3086,8 +3118,8 @@ get_useful_pathkeys_for_relation(PlannerInfo *root, RelOptInfo *rel,
 										   root->query_pathkeys);
 		else if (npathkeys > 0)
 			useful_pathkeys_list = lappend(useful_pathkeys_list,
-										   list_truncate(list_copy(root->query_pathkeys),
-														 npathkeys));
+										   list_copy_head(root->query_pathkeys,
+														  npathkeys));
 	}
 
 	return useful_pathkeys_list;

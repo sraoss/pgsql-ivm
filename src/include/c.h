@@ -145,6 +145,17 @@
 #endif
 
 /*
+ * pg_attribute_nonnull means the compiler should warn if the function is
+ * called with the listed arguments set to NULL.  If no arguments are
+ * listed, the compiler should warn if any pointer arguments are set to NULL.
+ */
+#if __has_attribute (nonnull)
+#define pg_attribute_nonnull(...) __attribute__((nonnull(__VA_ARGS__)))
+#else
+#define pg_attribute_nonnull(...)
+#endif
+
+/*
  * Append PG_USED_FOR_ASSERTS_ONLY to definitions of variables that are only
  * used in assert-enabled builds, to avoid compiler warnings about unused
  * variables in assert-disabled builds.
@@ -1279,7 +1290,7 @@ typedef union PGAlignedXLogBlock
  * standard C library.
  */
 
-#if defined(HAVE_FDATASYNC) && !HAVE_DECL_FDATASYNC
+#if !HAVE_DECL_FDATASYNC
 extern int	fdatasync(int fildes);
 #endif
 
@@ -1336,13 +1347,18 @@ extern unsigned long long strtoull(const char *str, char **endptr, int base);
 
 /*
  * Use "extern PGDLLEXPORT ..." to declare functions that are defined in
- * loadable modules and need to be callable by the core backend.  (Usually,
- * this is not necessary because our build process automatically exports
- * such symbols, but sometimes manual marking is required.)
- * No special marking is required on most ports.
+ * loadable modules and need to be callable by the core backend or other
+ * loadable modules.
+ * If the compiler knows __attribute__((visibility("*"))), we use that,
+ * unless we already have a platform-specific definition.  Otherwise,
+ * no special marking is required.
  */
 #ifndef PGDLLEXPORT
+#ifdef HAVE_VISIBILITY_ATTRIBUTE
+#define PGDLLEXPORT __attribute__((visibility("default")))
+#else
 #define PGDLLEXPORT
+#endif
 #endif
 
 /*

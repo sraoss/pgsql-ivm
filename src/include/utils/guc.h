@@ -83,8 +83,7 @@ typedef enum
  * override the postmaster command line.)  Tracking the source allows us
  * to process sources in any convenient order without affecting results.
  * Sources <= PGC_S_OVERRIDE will set the default used by RESET, as well
- * as the current value.  Note that source == PGC_S_OVERRIDE should be
- * used when setting a PGC_INTERNAL option.
+ * as the current value.
  *
  * PGC_S_INTERACTIVE isn't actually a source value, but is the
  * dividing line between "interactive" and "non-interactive" sources for
@@ -98,6 +97,11 @@ typedef enum
  * In particular, references to nonexistent database objects generally
  * shouldn't throw hard errors in this case, at most NOTICEs, since the
  * objects might exist by the time the setting is used for real.
+ *
+ * When setting the value of a non-compile-time-constant PGC_INTERNAL option,
+ * source == PGC_S_DYNAMIC_DEFAULT should typically be used so that the value
+ * will show as "default" in pg_settings.  If there is a specific reason not
+ * to want that, use source == PGC_S_OVERRIDE.
  *
  * NB: see GucSource_Names in guc.c if you change this.
  */
@@ -303,7 +307,7 @@ extern void DefineCustomBoolVariable(const char *name,
 									 int flags,
 									 GucBoolCheckHook check_hook,
 									 GucBoolAssignHook assign_hook,
-									 GucShowHook show_hook);
+									 GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
 extern void DefineCustomIntVariable(const char *name,
 									const char *short_desc,
@@ -316,7 +320,7 @@ extern void DefineCustomIntVariable(const char *name,
 									int flags,
 									GucIntCheckHook check_hook,
 									GucIntAssignHook assign_hook,
-									GucShowHook show_hook);
+									GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
 extern void DefineCustomRealVariable(const char *name,
 									 const char *short_desc,
@@ -329,7 +333,7 @@ extern void DefineCustomRealVariable(const char *name,
 									 int flags,
 									 GucRealCheckHook check_hook,
 									 GucRealAssignHook assign_hook,
-									 GucShowHook show_hook);
+									 GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
 extern void DefineCustomStringVariable(const char *name,
 									   const char *short_desc,
@@ -340,7 +344,7 @@ extern void DefineCustomStringVariable(const char *name,
 									   int flags,
 									   GucStringCheckHook check_hook,
 									   GucStringAssignHook assign_hook,
-									   GucShowHook show_hook);
+									   GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
 extern void DefineCustomEnumVariable(const char *name,
 									 const char *short_desc,
@@ -352,7 +356,7 @@ extern void DefineCustomEnumVariable(const char *name,
 									 int flags,
 									 GucEnumCheckHook check_hook,
 									 GucEnumAssignHook assign_hook,
-									 GucShowHook show_hook);
+									 GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
 extern void MarkGUCPrefixReserved(const char *className);
 
@@ -384,6 +388,11 @@ extern int	set_config_option(const char *name, const char *value,
 							  GucContext context, GucSource source,
 							  GucAction action, bool changeVal, int elevel,
 							  bool is_reload);
+extern int	set_config_option_ext(const char *name, const char *value,
+								  GucContext context, GucSource source,
+								  Oid srole,
+								  GucAction action, bool changeVal, int elevel,
+								  bool is_reload);
 extern void AlterSystemSetConfigFile(AlterSystemStmt *altersysstmt);
 extern char *GetConfigOptionByName(const char *name, const char **varname,
 								   bool missing_ok);

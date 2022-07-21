@@ -447,7 +447,7 @@ reached_end_position(XLogRecPtr segendpos, uint32 timeline,
 	{
 #ifndef WIN32
 		fd_set		fds;
-		struct timeval tv;
+		struct timeval tv = {0};
 		int			r;
 
 		/*
@@ -457,16 +457,13 @@ reached_end_position(XLogRecPtr segendpos, uint32 timeline,
 		FD_ZERO(&fds);
 		FD_SET(bgpipe[0], &fds);
 
-		MemSet(&tv, 0, sizeof(tv));
-
 		r = select(bgpipe[0] + 1, &fds, NULL, NULL, &tv);
 		if (r == 1)
 		{
-			char		xlogend[64];
+			char		xlogend[64] = {0};
 			uint32		hi,
 						lo;
 
-			MemSet(xlogend, 0, sizeof(xlogend));
 			r = read(bgpipe[0], xlogend, sizeof(xlogend) - 1);
 			if (r < 0)
 				pg_fatal("could not read from ready pipe: %m");
@@ -528,11 +525,10 @@ typedef struct
 static int
 LogStreamerMain(logstreamer_param *param)
 {
-	StreamCtl	stream;
+	StreamCtl	stream = {0};
 
 	in_log_streamer = true;
 
-	MemSet(&stream, 0, sizeof(stream));
 	stream.startpos = param->startptr;
 	stream.timeline = param->timeline;
 	stream.sysidentifier = param->sysidentifier;
@@ -694,16 +690,8 @@ StartLogStreamer(char *startpos, uint32 timeline, char *sysidentifier,
 	bgchild = fork();
 	if (bgchild == 0)
 	{
-		int			ret;
-
 		/* in child process */
-		ret = LogStreamerMain(param);
-
-		/* temp debugging aid to analyze 019_replslot_limit failures */
-		if (verbose)
-			pg_log_info("log streamer with pid %d exiting", getpid());
-
-		exit(ret);
+		exit(LogStreamerMain(param));
 	}
 	else if (bgchild < 0)
 		pg_fatal("could not create background process: %m");
@@ -775,8 +763,7 @@ progress_update_filename(const char *filename)
 	/* We needn't maintain this variable if not doing verbose reports. */
 	if (showprogress && verbose)
 	{
-		if (progress_filename)
-			free(progress_filename);
+		free(progress_filename);
 		if (filename)
 			progress_filename = pg_strdup(filename);
 		else
@@ -1767,7 +1754,7 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 	char	   *basebkp;
 	int			i;
 	char		xlogstart[64];
-	char		xlogend[64];
+	char		xlogend[64] = {0};
 	int			minServerMajor,
 				maxServerMajor;
 	int			serverVersion,
@@ -1961,7 +1948,6 @@ BaseBackup(char *compression_algorithm, char *compression_detail,
 	else
 		starttli = latesttli;
 	PQclear(res);
-	MemSet(xlogend, 0, sizeof(xlogend));
 
 	if (verbose && includewal != NO_WAL)
 		pg_log_info("write-ahead log start point: %s on timeline %u",

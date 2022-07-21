@@ -317,7 +317,7 @@ UPDATE pg_settings SET setting = reset_val WHERE name = 'configuration_parameter
 
    </sect2>
 
-   <sect2>
+   <sect2 id="config-setting-shell">
     <title>Parameter Interaction via the Shell</title>
 
      <para>
@@ -2036,7 +2036,7 @@ include_dir 'conf.d'
         and <literal>mmap</literal> (to simulate shared memory using
         memory-mapped files stored in the data directory).
         Not all values are supported on all platforms; the first supported
-        option is the default for that platform.  The use of the
+        option is usually the default for that platform.  The use of the
         <literal>mmap</literal> option, which is not the default on any platform,
         is generally discouraged because the operating system may write
         modified pages back to disk repeatedly, increasing system I/O load;
@@ -4922,7 +4922,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
      <variablelist>
 
      <varlistentry id="guc-max-logical-replication-workers" xreflabel="max_logical_replication_workers">
-      <term><varname>max_logical_replication_workers</varname> (<type>int</type>)
+      <term><varname>max_logical_replication_workers</varname> (<type>integer</type>)
       <indexterm>
        <primary><varname>max_logical_replication_workers</varname> configuration parameter</primary>
       </indexterm>
@@ -7669,7 +7669,7 @@ COPY postgres_log FROM '/full/path/to/logfile.csv' WITH csv;
      </para>
 
      <table id="runtime-config-logging-jsonlog-keys-values">
-      <title>Keys and values of JSON log entries</title>
+      <title>Keys and Values of JSON Log Entries</title>
       <tgroup cols="3">
        <thead>
         <row>

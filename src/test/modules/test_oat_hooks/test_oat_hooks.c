@@ -69,8 +69,6 @@ static char *accesstype_to_string(ObjectAccessType access, int subId);
 static char *accesstype_arg_to_string(ObjectAccessType access, void *arg);
 
 
-void		_PG_init(void);
-
 /*
  * Module load callback
  */
@@ -468,9 +466,6 @@ nodetag_to_string(NodeTag tag)
 		case T_TupleTableSlot:
 			return "TupleTableSlot";
 			break;
-		case T_Plan:
-			return "Plan";
-			break;
 		case T_Result:
 			return "Result";
 			break;
@@ -494,9 +489,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_BitmapOr:
 			return "BitmapOr";
-			break;
-		case T_Scan:
-			return "Scan";
 			break;
 		case T_SeqScan:
 			return "SeqScan";
@@ -548,9 +540,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_CustomScan:
 			return "CustomScan";
-			break;
-		case T_Join:
-			return "Join";
 			break;
 		case T_NestLoop:
 			return "NestLoop";
@@ -623,9 +612,6 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_PlanInvalItem:
 			return "PlanInvalItem";
-			break;
-		case T_PlanState:
-			return "PlanState";
 			break;
 		case T_ResultState:
 			return "ResultState";
@@ -1133,6 +1119,9 @@ nodetag_to_string(NodeTag tag)
 			break;
 		case T_OidList:
 			return "OidList";
+			break;
+		case T_XidList:
+			return "XidList";
 			break;
 		case T_ExtensibleNode:
 			return "ExtensibleNode";
@@ -1804,15 +1793,15 @@ accesstype_arg_to_string(ObjectAccessType access, void *arg)
 				return psprintf("%s%s%s%s%s%s",
 								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
 								 ? "internal action," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_CONCURRENTLY)
 								 ? "concurrent drop," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_QUIETLY)
 								 ? "suppress notices," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_SKIP_ORIGINAL)
 								 ? "keep original object," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_SKIP_EXTENSIONS)
 								 ? "keep extensions," : ""),
-								((drop_arg->dropflags & PERFORM_DELETION_INTERNAL)
+								((drop_arg->dropflags & PERFORM_DELETION_CONCURRENT_LOCK)
 								 ? "normal concurrent drop," : ""));
 			}
 			break;

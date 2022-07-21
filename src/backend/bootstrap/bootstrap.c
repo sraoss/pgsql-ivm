@@ -262,7 +262,7 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("-X requires a power of two value between 1 MB and 1 GB")));
 					SetConfigOption("wal_segment_size", optarg, PGC_INTERNAL,
-									PGC_S_OVERRIDE);
+									PGC_S_DYNAMIC_DEFAULT);
 				}
 				break;
 			case 'c':
@@ -288,8 +288,7 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
 					free(name);
-					if (value)
-						free(value);
+					free(value);
 					break;
 				}
 			default:

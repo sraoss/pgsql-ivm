@@ -36,8 +36,6 @@
 
 PG_MODULE_MAGIC;
 
-void		_PG_init(void);
-
 struct WalReceiverConn
 {
 	/* Current connection to the primary, if any */
@@ -452,6 +450,11 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		if (options->proto.logical.twophase &&
 			PQserverVersion(conn->streamConn) >= 150000)
 			appendStringInfoString(&cmd, ", two_phase 'on'");
+
+		if (options->proto.logical.origin &&
+			PQserverVersion(conn->streamConn) >= 160000)
+			appendStringInfo(&cmd, ", origin '%s'",
+							 options->proto.logical.origin);
 
 		pubnames = options->proto.logical.publication_names;
 		pubnames_str = stringlist_to_identifierstr(conn->streamConn, pubnames);

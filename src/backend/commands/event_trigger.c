@@ -351,8 +351,7 @@ filter_list_to_array(List *filterlist)
 		pfree(result);
 	}
 
-	return PointerGetDatum(construct_array(data, l, TEXTOID,
-										   -1, false, TYPALIGN_INT));
+	return PointerGetDatum(construct_array_builtin(data, l, TEXTOID));
 }
 
 /*
@@ -1311,13 +1310,10 @@ pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 	{
 		SQLDropObject *obj;
 		int			i = 0;
-		Datum		values[12];
-		bool		nulls[12];
+		Datum		values[12] = {0};
+		bool		nulls[12] = {0};
 
 		obj = slist_container(SQLDropObject, next, iter.cur);
-
-		MemSet(values, 0, sizeof(values));
-		MemSet(nulls, 0, sizeof(nulls));
 
 		/* classid */
 		values[i++] = ObjectIdGetDatum(obj->address.classId);
@@ -1841,7 +1837,7 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 	{
 		CollectedCommand *cmd = lfirst(lc);
 		Datum		values[9];
-		bool		nulls[9];
+		bool		nulls[9] = {0};
 		ObjectAddress addr;
 		int			i = 0;
 
@@ -1858,8 +1854,6 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 		if (cmd->type == SCT_Simple &&
 			!OidIsValid(cmd->d.simple.address.objectId))
 			continue;
-
-		MemSet(nulls, 0, sizeof(nulls));
 
 		switch (cmd->type)
 		{

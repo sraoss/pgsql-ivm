@@ -430,9 +430,6 @@
 /* Define to 1 if you have the `pread' function. */
 #undef HAVE_PREAD
 
-/* Define to 1 if you have the `pstat' function. */
-#undef HAVE_PSTAT
-
 /* Define to 1 if the PS_STRINGS thing exists. */
 #undef HAVE_PS_STRINGS
 
@@ -625,9 +622,6 @@
 /* Define to 1 if you have the <sys/procctl.h> header file. */
 #undef HAVE_SYS_PROCCTL_H
 
-/* Define to 1 if you have the <sys/pstat.h> header file. */
-#undef HAVE_SYS_PSTAT_H
-
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #undef HAVE_SYS_RESOURCE_H
 
@@ -705,6 +699,9 @@
 
 /* Define to 1 if you have the <uuid/uuid.h> header file. */
 #undef HAVE_UUID_UUID_H
+
+/* Define to 1 if your compiler knows the visibility("hidden") attribute. */
+#undef HAVE_VISIBILITY_ATTRIBUTE
 
 /* Define to 1 if you have the `wcstombs_l' function. */
 #undef HAVE_WCSTOMBS_L

@@ -3134,7 +3134,7 @@ dumpDatabase(Archive *fout)
 
 	/*
 	 * pg_largeobject comes from the old system intact, so set its
-	 * relfrozenxids and relminmxids.
+	 * relfrozenxids, relminmxids and relfilenode.
 	 */
 	if (dopt->binary_upgrade)
 	{
@@ -3142,34 +3142,41 @@ dumpDatabase(Archive *fout)
 		PQExpBuffer loFrozenQry = createPQExpBuffer();
 		PQExpBuffer loOutQry = createPQExpBuffer();
 		int			i_relfrozenxid,
+					i_relfilenode,
+					i_oid,
 					i_relminmxid;
 
 		/*
 		 * pg_largeobject
 		 */
 		if (fout->remoteVersion >= 90300)
-			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, relminmxid\n"
+			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, relminmxid, relfilenode, oid\n"
 							  "FROM pg_catalog.pg_class\n"
-							  "WHERE oid = %u;\n",
-							  LargeObjectRelationId);
+							  "WHERE oid IN (%u, %u);\n",
+							  LargeObjectRelationId, LargeObjectLOidPNIndexId);
 		else
-			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, 0 AS relminmxid\n"
+			appendPQExpBuffer(loFrozenQry, "SELECT relfrozenxid, 0 AS relminmxid, relfilenode, oid\n"
 							  "FROM pg_catalog.pg_class\n"
-							  "WHERE oid = %u;\n",
-							  LargeObjectRelationId);
+							  "WHERE oid IN (%u, %u);\n",
+							  LargeObjectRelationId, LargeObjectLOidPNIndexId);
 
-		lo_res = ExecuteSqlQueryForSingleRow(fout, loFrozenQry->data);
+		lo_res = ExecuteSqlQuery(fout, loFrozenQry->data, PGRES_TUPLES_OK);
 
 		i_relfrozenxid = PQfnumber(lo_res, "relfrozenxid");
 		i_relminmxid = PQfnumber(lo_res, "relminmxid");
+		i_relfilenode = PQfnumber(lo_res, "relfilenode");
+		i_oid = PQfnumber(lo_res, "oid");
 
-		appendPQExpBufferStr(loOutQry, "\n-- For binary upgrade, set pg_largeobject relfrozenxid and relminmxid\n");
-		appendPQExpBuffer(loOutQry, "UPDATE pg_catalog.pg_class\n"
-						  "SET relfrozenxid = '%u', relminmxid = '%u'\n"
-						  "WHERE oid = %u;\n",
-						  atooid(PQgetvalue(lo_res, 0, i_relfrozenxid)),
-						  atooid(PQgetvalue(lo_res, 0, i_relminmxid)),
-						  LargeObjectRelationId);
+		appendPQExpBufferStr(loOutQry, "\n-- For binary upgrade, preserve values for pg_largeobject and its index\n");
+		for (int i = 0; i < PQntuples(lo_res); ++i)
+			appendPQExpBuffer(loOutQry, "UPDATE pg_catalog.pg_class\n"
+							  "SET relfrozenxid = '%u', relminmxid = '%u', relfilenode = '%u'\n"
+							  "WHERE oid = %u;\n",
+							  atooid(PQgetvalue(lo_res, i, i_relfrozenxid)),
+							  atooid(PQgetvalue(lo_res, i, i_relminmxid)),
+							  atooid(PQgetvalue(lo_res, i, i_relfilenode)),
+							  atooid(PQgetvalue(lo_res, i, i_oid)));
+
 		ArchiveEntry(fout, nilCatalogId, createDumpId(),
 					 ARCHIVE_OPTS(.tag = "pg_largeobject",
 								  .description = "pg_largeobject",
@@ -3339,8 +3346,7 @@ dumpSearchPath(Archive *AH)
 	/* Also save it in AH->searchpath, in case we're doing plain text dump */
 	AH->searchpath = pg_strdup(qry->data);
 
-	if (schemanames)
-		free(schemanames);
+	free(schemanames);
 	PQclear(res);
 	destroyPQExpBuffer(qry);
 	destroyPQExpBuffer(path);
@@ -4406,6 +4412,7 @@ getSubscriptions(Archive *fout)
 	int			i_substream;
 	int			i_subtwophasestate;
 	int			i_subdisableonerr;
+	int			i_suborigin;
 	int			i_subconninfo;
 	int			i_subslotname;
 	int			i_subsynccommit;
@@ -4455,12 +4462,17 @@ getSubscriptions(Archive *fout)
 	if (fout->remoteVersion >= 150000)
 		appendPQExpBufferStr(query,
 							 " s.subtwophasestate,\n"
-							 " s.subdisableonerr\n");
+							 " s.subdisableonerr,\n");
 	else
 		appendPQExpBuffer(query,
 						  " '%c' AS subtwophasestate,\n"
-						  " false AS subdisableonerr\n",
+						  " false AS subdisableonerr,\n",
 						  LOGICALREP_TWOPHASE_STATE_DISABLED);
+
+	if (fout->remoteVersion >= 160000)
+		appendPQExpBufferStr(query, " s.suborigin\n");
+	else
+		appendPQExpBuffer(query, " '%s' AS suborigin\n", LOGICALREP_ORIGIN_ANY);
 
 	appendPQExpBufferStr(query,
 						 "FROM pg_subscription s\n"
@@ -4487,6 +4499,7 @@ getSubscriptions(Archive *fout)
 	i_substream = PQfnumber(res, "substream");
 	i_subtwophasestate = PQfnumber(res, "subtwophasestate");
 	i_subdisableonerr = PQfnumber(res, "subdisableonerr");
+	i_suborigin = PQfnumber(res, "suborigin");
 
 	subinfo = pg_malloc(ntups * sizeof(SubscriptionInfo));
 
@@ -4516,6 +4529,7 @@ getSubscriptions(Archive *fout)
 			pg_strdup(PQgetvalue(res, i, i_subtwophasestate));
 		subinfo[i].subdisableonerr =
 			pg_strdup(PQgetvalue(res, i, i_subdisableonerr));
+		subinfo[i].suborigin = pg_strdup(PQgetvalue(res, i, i_suborigin));
 
 		/* Decide whether we want to dump it */
 		selectDumpableObject(&(subinfo[i].dobj), fout);
@@ -4589,6 +4603,9 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 	if (strcmp(subinfo->subdisableonerr, "t") == 0)
 		appendPQExpBufferStr(query, ", disable_on_error = true");
 
+	if (pg_strcasecmp(subinfo->suborigin, LOGICALREP_ORIGIN_ANY) != 0)
+		appendPQExpBuffer(query, ", origin = %s", subinfo->suborigin);
+
 	if (strcmp(subinfo->subsynccommit, "off") != 0)
 		appendPQExpBuffer(query, ", synchronous_commit = %s", fmtId(subinfo->subsynccommit));
 
@@ -4614,8 +4631,7 @@ dumpSubscription(Archive *fout, const SubscriptionInfo *subinfo)
 					 subinfo->dobj.catId, 0, subinfo->dobj.dumpId);
 
 	destroyPQExpBuffer(publications);
-	if (pubnames)
-		free(pubnames);
+	free(pubnames);
 
 	destroyPQExpBuffer(delq);
 	destroyPQExpBuffer(query);
@@ -4806,15 +4822,15 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 {
 	PQExpBuffer upgrade_query = createPQExpBuffer();
 	PGresult   *upgrade_res;
-	Oid			relfilenode;
+	RelFileNumber relfilenumber;
 	Oid			toast_oid;
-	Oid			toast_relfilenode;
+	RelFileNumber toast_relfilenumber;
 	char		relkind;
 	Oid			toast_index_oid;
-	Oid			toast_index_relfilenode;
+	RelFileNumber toast_index_relfilenumber;
 
 	/*
-	 * Preserve the OID and relfilenode of the table, table's index, table's
+	 * Preserve the OID and relfilenumber of the table, table's index, table's
 	 * toast table and toast table's index if any.
 	 *
 	 * One complexity is that the current table definition might not require
@@ -4837,16 +4853,16 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 
 	relkind = *PQgetvalue(upgrade_res, 0, PQfnumber(upgrade_res, "relkind"));
 
-	relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-									PQfnumber(upgrade_res, "relfilenode")));
+	relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+									  PQfnumber(upgrade_res, "relfilenode")));
 	toast_oid = atooid(PQgetvalue(upgrade_res, 0,
 								  PQfnumber(upgrade_res, "reltoastrelid")));
-	toast_relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-										  PQfnumber(upgrade_res, "toast_relfilenode")));
+	toast_relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+											PQfnumber(upgrade_res, "toast_relfilenode")));
 	toast_index_oid = atooid(PQgetvalue(upgrade_res, 0,
 										PQfnumber(upgrade_res, "indexrelid")));
-	toast_index_relfilenode = atooid(PQgetvalue(upgrade_res, 0,
-												PQfnumber(upgrade_res, "toast_index_relfilenode")));
+	toast_index_relfilenumber = atooid(PQgetvalue(upgrade_res, 0,
+												  PQfnumber(upgrade_res, "toast_index_relfilenode")));
 
 	appendPQExpBufferStr(upgrade_buffer,
 						 "\n-- For binary upgrade, must preserve pg_class oids and relfilenodes\n");
@@ -4859,13 +4875,13 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 
 		/*
 		 * Not every relation has storage. Also, in a pre-v12 database,
-		 * partitioned tables have a relfilenode, which should not be
+		 * partitioned tables have a relfilenumber, which should not be
 		 * preserved when upgrading.
 		 */
-		if (OidIsValid(relfilenode) && relkind != RELKIND_PARTITIONED_TABLE)
+		if (RelFileNumberIsValid(relfilenumber) && relkind != RELKIND_PARTITIONED_TABLE)
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_heap_relfilenode('%u'::pg_catalog.oid);\n",
-							  relfilenode);
+							  relfilenumber);
 
 		/*
 		 * In a pre-v12 database, partitioned tables might be marked as having
@@ -4879,7 +4895,7 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  toast_oid);
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_toast_relfilenode('%u'::pg_catalog.oid);\n",
-							  toast_relfilenode);
+							  toast_relfilenumber);
 
 			/* every toast table has an index */
 			appendPQExpBuffer(upgrade_buffer,
@@ -4887,20 +4903,20 @@ binary_upgrade_set_pg_class_oids(Archive *fout,
 							  toast_index_oid);
 			appendPQExpBuffer(upgrade_buffer,
 							  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
-							  toast_index_relfilenode);
+							  toast_index_relfilenumber);
 		}
 
 		PQclear(upgrade_res);
 	}
 	else
 	{
-		/* Preserve the OID and relfilenode of the index */
+		/* Preserve the OID and relfilenumber of the index */
 		appendPQExpBuffer(upgrade_buffer,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_pg_class_oid('%u'::pg_catalog.oid);\n",
 						  pg_class_oid);
 		appendPQExpBuffer(upgrade_buffer,
 						  "SELECT pg_catalog.binary_upgrade_set_next_index_relfilenode('%u'::pg_catalog.oid);\n",
-						  relfilenode);
+						  relfilenumber);
 	}
 
 	appendPQExpBufferChar(upgrade_buffer, '\n');
@@ -11918,12 +11934,10 @@ dumpFunc(Archive *fout, const FuncInfo *finfo)
 	destroyPQExpBuffer(delqry);
 	destroyPQExpBuffer(asPart);
 	free(funcsig);
-	if (funcfullsig)
-		free(funcfullsig);
+	free(funcfullsig);
 	free(funcsig_tag);
 	free(qual_funcsig);
-	if (configitems)
-		free(configitems);
+	free(configitems);
 }
 
 
@@ -13668,8 +13682,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 				agginfo->aggfn.rolname, &agginfo->aggfn.dacl);
 
 	free(aggsig);
-	if (aggfullsig)
-		free(aggfullsig);
+	free(aggfullsig);
 	free(aggsig_tag);
 
 	PQclear(res);
@@ -15725,12 +15738,9 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 								  tbinfo->attfdwoptions[j]);
 		}						/* end loop over columns */
 
-		if (partkeydef)
-			free(partkeydef);
-		if (ftoptions)
-			free(ftoptions);
-		if (srvname)
-			free(srvname);
+		free(partkeydef);
+		free(ftoptions);
+		free(srvname);
 	}
 
 	/*
@@ -16117,10 +16127,8 @@ dumpIndex(Archive *fout, const IndxInfo *indxinfo)
 									  .createStmt = q->data,
 									  .dropStmt = delq->data));
 
-		if (indstatcolsarray)
-			free(indstatcolsarray);
-		if (indstatvalsarray)
-			free(indstatvalsarray);
+		free(indstatcolsarray);
+		free(indstatvalsarray);
 	}
 
 	/* Dump Index Comments */

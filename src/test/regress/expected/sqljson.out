@@ -302,12 +302,22 @@ SELECT JSON_SERIALIZE('{ "a" : 1 } ' RETURNING bytea);
  \x7b20226122203a2031207d20
 (1 row)
 
+SELECT JSON_SERIALIZE('{ "a" : 1 } ' RETURNING varchar);
+ json_serialize 
+----------------
+ { "a" : 1 } 
+(1 row)
+
 SELECT pg_typeof(JSON_SERIALIZE(NULL));
  pg_typeof 
 -----------
  text
 (1 row)
 
+-- only string types or bytea allowed
+SELECT JSON_SERIALIZE('{ "a" : 1 } ' RETURNING jsonb);
+ERROR:  cannot use RETURNING type jsonb in JSON_SERIALIZE()
+HINT:  Try returning a string type or bytea.
 EXPLAIN (VERBOSE, COSTS OFF) SELECT JSON_SERIALIZE('{}');
                      QUERY PLAN                      
 -----------------------------------------------------
@@ -393,12 +403,12 @@ SELECT JSON_OBJECT(RETURNING bytea FORMAT JSON ENCODING UTF16);
 ERROR:  unsupported JSON encoding
 LINE 1: SELECT JSON_OBJECT(RETURNING bytea FORMAT JSON ENCODING UTF1...
                                            ^
-HINT:  only UTF8 JSON encoding is supported
+HINT:  Only UTF8 JSON encoding is supported.
 SELECT JSON_OBJECT(RETURNING bytea FORMAT JSON ENCODING UTF32);
 ERROR:  unsupported JSON encoding
 LINE 1: SELECT JSON_OBJECT(RETURNING bytea FORMAT JSON ENCODING UTF3...
                                            ^
-HINT:  only UTF8 JSON encoding is supported
+HINT:  Only UTF8 JSON encoding is supported.
 SELECT JSON_OBJECT('foo': NULL::int FORMAT JSON);
 ERROR:  cannot use non-string types with explicit FORMAT JSON clause
 LINE 1: SELECT JSON_OBJECT('foo': NULL::int FORMAT JSON);
@@ -681,12 +691,12 @@ SELECT JSON_ARRAY(RETURNING bytea FORMAT JSON ENCODING UTF16);
 ERROR:  unsupported JSON encoding
 LINE 1: SELECT JSON_ARRAY(RETURNING bytea FORMAT JSON ENCODING UTF16...
                                           ^
-HINT:  only UTF8 JSON encoding is supported
+HINT:  Only UTF8 JSON encoding is supported.
 SELECT JSON_ARRAY(RETURNING bytea FORMAT JSON ENCODING UTF32);
 ERROR:  unsupported JSON encoding
 LINE 1: SELECT JSON_ARRAY(RETURNING bytea FORMAT JSON ENCODING UTF32...
                                           ^
-HINT:  only UTF8 JSON encoding is supported
+HINT:  Only UTF8 JSON encoding is supported.
 SELECT JSON_ARRAY('aaa', 111, true, array[1,2,3], NULL, json '{"a": [1]}', jsonb '["a",3]');
                      json_array                      
 -----------------------------------------------------

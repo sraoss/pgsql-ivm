@@ -83,6 +83,14 @@
 #define HAVE_FSYNC_WRITETHROUGH
 #define FSYNC_WRITETHROUGH_IS_FSYNC
 
+/*
+ * We have a replacement for fdatasync() in src/port/fdatasync.c, which is
+ * unconditionally used by MSVC and Mingw builds.
+ */
+#ifndef HAVE_FDATASYNC
+#define HAVE_FDATASYNC
+#endif
+
 #define USES_WINSOCK
 
 /*
@@ -531,13 +539,8 @@ typedef unsigned short mode_t;
 
 #endif							/* _MSC_VER */
 
-#if (defined(_MSC_VER) && (_MSC_VER < 1900)) || \
-	defined(__MINGW32__) || defined(__MINGW64__)
+#if defined(__MINGW32__) || defined(__MINGW64__)
 /*
- * VS2013 has a strtof() that seems to give correct answers for valid input,
- * even on the rounding edge cases, but which doesn't handle out-of-range
- * input correctly. Work around that.
- *
  * Mingw claims to have a strtof, and my reading of its source code suggests
  * that it ought to work (and not need this hack), but the regression test
  * results disagree with me; whether this is a version issue or not is not

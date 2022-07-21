@@ -391,7 +391,6 @@ static void getInstallationPaths(const char *argv0);
 static void checkControlFile(void);
 static Port *ConnCreate(int serverFd);
 static void ConnFree(Port *port);
-static void reset_shared(void);
 static void SIGHUP_handler(SIGNAL_ARGS);
 static void pmdie(SIGNAL_ARGS);
 static void reaper(SIGNAL_ARGS);
@@ -854,8 +853,7 @@ PostmasterMain(int argc, char *argv[])
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
 					free(name);
-					if (value)
-						free(value);
+					free(value);
 					break;
 				}
 
@@ -921,7 +919,7 @@ PostmasterMain(int argc, char *argv[])
 		 * useful to show, even if one would only expect at least PANIC.  LOG
 		 * entries are hidden.
 		 */
-		SetConfigOption("log_min_messages", "FATAL", PGC_INTERNAL,
+		SetConfigOption("log_min_messages", "FATAL", PGC_SUSET,
 						PGC_S_OVERRIDE);
 	}
 
@@ -1082,8 +1080,12 @@ PostmasterMain(int argc, char *argv[])
 
 	/*
 	 * Set up shared memory and semaphores.
+	 *
+	 * Note: if using SysV shmem and/or semas, each postmaster startup will
+	 * normally choose the same IPC keys.  This helps ensure that we will
+	 * clean up dead IPC objects if the postmaster crashes and is restarted.
 	 */
-	reset_shared();
+	CreateSharedMemoryAndSemaphores();
 
 	/*
 	 * Estimate number of openable files.  This must happen after setting up
@@ -2725,23 +2727,6 @@ InitProcessGlobals(void)
 
 
 /*
- * reset_shared -- reset shared memory and semaphores
- */
-static void
-reset_shared(void)
-{
-	/*
-	 * Create or re-create shared memory and semaphores.
-	 *
-	 * Note: in each "cycle of life" we will normally assign the same IPC keys
-	 * (if using SysV shmem and/or semas).  This helps ensure that we will
-	 * clean up dead IPC objects if the postmaster crashes and is restarted.
-	 */
-	CreateSharedMemoryAndSemaphores();
-}
-
-
-/*
  * SIGHUP -- reread config files, and tell children to do same
  */
 static void
@@ -4023,7 +4008,8 @@ PostmasterStateMachine(void)
 		/* re-read control file into local memory */
 		LocalProcessControlFile(true);
 
-		reset_shared();
+		/* re-create shared memory and semaphores */
+		CreateSharedMemoryAndSemaphores();
 
 		StartupPID = StartupDataBase();
 		Assert(StartupPID != 0);

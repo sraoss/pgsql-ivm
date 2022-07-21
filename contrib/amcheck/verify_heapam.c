@@ -554,12 +554,10 @@ report_corruption_internal(Tuplestorestate *tupstore, TupleDesc tupdesc,
 						   BlockNumber blkno, OffsetNumber offnum,
 						   AttrNumber attnum, char *msg)
 {
-	Datum		values[HEAPCHECK_RELATION_COLS];
-	bool		nulls[HEAPCHECK_RELATION_COLS];
+	Datum		values[HEAPCHECK_RELATION_COLS] = {0};
+	bool		nulls[HEAPCHECK_RELATION_COLS] = {0};
 	HeapTuple	tuple;
 
-	MemSet(values, 0, sizeof(values));
-	MemSet(nulls, 0, sizeof(nulls));
 	values[0] = Int64GetDatum(blkno);
 	values[1] = Int32GetDatum(offnum);
 	values[2] = Int32GetDatum(attnum);
@@ -1385,18 +1383,10 @@ check_tuple_attribute(HeapCheckContext *ctx)
 								   toast_pointer.va_rawsize,
 								   VARLENA_SIZE_LIMIT));
 
-	if (VARATT_IS_COMPRESSED(&toast_pointer))
+	if (VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer))
 	{
 		ToastCompressionId cmid;
 		bool		valid = false;
-
-		/* Compression should never expand the attribute */
-		if (VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer) > toast_pointer.va_rawsize - VARHDRSZ)
-			report_corruption(ctx,
-							  psprintf("toast value %u external size %u exceeds maximum expected for rawsize %d",
-									   toast_pointer.va_valueid,
-									   VARATT_EXTERNAL_GET_EXTSIZE(toast_pointer),
-									   toast_pointer.va_rawsize));
 
 		/* Compressed attributes should have a valid compression method */
 		cmid = TOAST_COMPRESS_METHOD(&toast_pointer);

@@ -217,6 +217,8 @@ typedef struct ScalarArrayOpExprHashTable
 {
 	saophash_hash *hashtab;		/* underlying hash table */
 	struct ExprEvalStep *op;
+	FmgrInfo	hash_finfo;		/* function's lookup data */
+	FunctionCallInfoBaseData hash_fcinfo_data;	/* arguments etc */
 } ScalarArrayOpExprHashTable;
 
 /* Define parameters for ScalarArrayOpExpr hash table code generation. */
@@ -3474,13 +3476,13 @@ static uint32
 saop_element_hash(struct saophash_hash *tb, Datum key)
 {
 	ScalarArrayOpExprHashTable *elements_tab = (ScalarArrayOpExprHashTable *) tb->private_data;
-	FunctionCallInfo fcinfo = elements_tab->op->d.hashedscalararrayop.hash_fcinfo_data;
+	FunctionCallInfo fcinfo = &elements_tab->hash_fcinfo_data;
 	Datum		hash;
 
 	fcinfo->args[0].value = key;
 	fcinfo->args[0].isnull = false;
 
-	hash = elements_tab->op->d.hashedscalararrayop.hash_fn_addr(fcinfo);
+	hash = elements_tab->hash_finfo.fn_addr(fcinfo);
 
 	return DatumGetUInt32(hash);
 }
@@ -3502,7 +3504,7 @@ saop_hash_element_match(struct saophash_hash *tb, Datum key1, Datum key2)
 	fcinfo->args[1].value = key2;
 	fcinfo->args[1].isnull = false;
 
-	result = elements_tab->op->d.hashedscalararrayop.fn_addr(fcinfo);
+	result = elements_tab->op->d.hashedscalararrayop.finfo->fn_addr(fcinfo);
 
 	return DatumGetBool(result);
 }
@@ -3549,6 +3551,7 @@ ExecEvalHashedScalarArrayOp(ExprState *state, ExprEvalStep *op, ExprContext *eco
 	/* Build the hash table on first evaluation */
 	if (elements_tab == NULL)
 	{
+		ScalarArrayOpExpr *saop;
 		int16		typlen;
 		bool		typbyval;
 		char		typalign;
@@ -3559,6 +3562,8 @@ ExecEvalHashedScalarArrayOp(ExprState *state, ExprEvalStep *op, ExprContext *eco
 		int			bitmask;
 		MemoryContext oldcontext;
 		ArrayType  *arr;
+
+		saop = op->d.hashedscalararrayop.saop;
 
 		arr = DatumGetArrayTypeP(*op->resvalue);
 		nitems = ArrayGetNItems(ARR_NDIM(arr), ARR_DIMS(arr));
@@ -3571,9 +3576,20 @@ ExecEvalHashedScalarArrayOp(ExprState *state, ExprEvalStep *op, ExprContext *eco
 		oldcontext = MemoryContextSwitchTo(econtext->ecxt_per_query_memory);
 
 		elements_tab = (ScalarArrayOpExprHashTable *)
-			palloc(sizeof(ScalarArrayOpExprHashTable));
+			palloc0(offsetof(ScalarArrayOpExprHashTable, hash_fcinfo_data) +
+					SizeForFunctionCallInfo(1));
 		op->d.hashedscalararrayop.elements_tab = elements_tab;
 		elements_tab->op = op;
+
+		fmgr_info(saop->hashfuncid, &elements_tab->hash_finfo);
+		fmgr_info_set_expr((Node *) saop, &elements_tab->hash_finfo);
+
+		InitFunctionCallInfoData(elements_tab->hash_fcinfo_data,
+								 &elements_tab->hash_finfo,
+								 1,
+								 saop->inputcollid,
+								 NULL,
+								 NULL);
 
 		/*
 		 * Create the hash table sizing it according to the number of elements
@@ -3669,7 +3685,7 @@ ExecEvalHashedScalarArrayOp(ExprState *state, ExprEvalStep *op, ExprContext *eco
 			fcinfo->args[1].value = (Datum) 0;
 			fcinfo->args[1].isnull = true;
 
-			result = op->d.hashedscalararrayop.fn_addr(fcinfo);
+			result = op->d.hashedscalararrayop.finfo->fn_addr(fcinfo);
 			resultnull = fcinfo->isnull;
 
 			/*
@@ -4138,8 +4154,12 @@ ExecEvalWholeRowVar(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 			 * generates an INT4 NULL regardless of the dropped column type).
 			 * If we find a dropped column and cannot verify that case (1)
 			 * holds, we have to use the slow path to check (2) for each row.
+			 *
+			 * If vartype is a domain over composite, just look through that
+			 * to the base composite type.
 			 */
-			var_tupdesc = lookup_rowtype_tupdesc(variable->vartype, -1);
+			var_tupdesc = lookup_rowtype_tupdesc_domain(variable->vartype,
+														-1, false);
 
 			slot_tupdesc = slot->tts_tupleDescriptor;
 
@@ -4506,39 +4526,40 @@ ExecEvalJsonConstructor(ExprState *state, ExprEvalStep *op,
 						ExprContext *econtext)
 {
 	Datum		res;
-	JsonConstructorExpr *ctor = op->d.json_constructor.constructor;
+	JsonConstructorExprState *jcstate = op->d.json_constructor.jcstate;
+	JsonConstructorExpr *ctor = jcstate->constructor;
 	bool		is_jsonb = ctor->returning->format->format_type == JS_FORMAT_JSONB;
 	bool		isnull = false;
 
 	if (ctor->type == JSCTOR_JSON_ARRAY)
 		res = (is_jsonb ?
 			   jsonb_build_array_worker :
-			   json_build_array_worker) (op->d.json_constructor.nargs,
-										 op->d.json_constructor.arg_values,
-										 op->d.json_constructor.arg_nulls,
-										 op->d.json_constructor.arg_types,
-										 op->d.json_constructor.constructor->absent_on_null);
+			   json_build_array_worker) (jcstate->nargs,
+										 jcstate->arg_values,
+										 jcstate->arg_nulls,
+										 jcstate->arg_types,
+										 ctor->absent_on_null);
 	else if (ctor->type == JSCTOR_JSON_OBJECT)
 		res = (is_jsonb ?
 			   jsonb_build_object_worker :
-			   json_build_object_worker) (op->d.json_constructor.nargs,
-										  op->d.json_constructor.arg_values,
-										  op->d.json_constructor.arg_nulls,
-										  op->d.json_constructor.arg_types,
-										  op->d.json_constructor.constructor->absent_on_null,
-										  op->d.json_constructor.constructor->unique);
+			   json_build_object_worker) (jcstate->nargs,
+										  jcstate->arg_values,
+										  jcstate->arg_nulls,
+										  jcstate->arg_types,
+										  ctor->absent_on_null,
+										  ctor->unique);
 	else if (ctor->type == JSCTOR_JSON_SCALAR)
 	{
-		if (op->d.json_constructor.arg_nulls[0])
+		if (jcstate->arg_nulls[0])
 		{
 			res = (Datum) 0;
 			isnull = true;
 		}
 		else
 		{
-			Datum		value = op->d.json_constructor.arg_values[0];
-			int			category = op->d.json_constructor.arg_type_cache[0].category;
-			Oid			outfuncid = op->d.json_constructor.arg_type_cache[0].outfuncid;
+			Datum		value = jcstate->arg_values[0];
+			int			category = jcstate->arg_type_cache[0].category;
+			Oid			outfuncid = jcstate->arg_type_cache[0].outfuncid;
 
 			if (is_jsonb)
 				res = to_jsonb_worker(value, category, outfuncid);
@@ -4548,14 +4569,14 @@ ExecEvalJsonConstructor(ExprState *state, ExprEvalStep *op,
 	}
 	else if (ctor->type == JSCTOR_JSON_PARSE)
 	{
-		if (op->d.json_constructor.arg_nulls[0])
+		if (jcstate->arg_nulls[0])
 		{
 			res = (Datum) 0;
 			isnull = true;
 		}
 		else
 		{
-			Datum		value = op->d.json_constructor.arg_values[0];
+			Datum		value = jcstate->arg_values[0];
 			text	   *js = DatumGetTextP(value);
 
 			if (is_jsonb)
@@ -4623,14 +4644,17 @@ ExecEvalJsonExprCoercion(ExprEvalStep *op, ExprContext *econtext,
 						 Datum res, bool *isNull, void *p, bool *error)
 {
 	ExprState  *estate = p;
+	JsonExprState *jsestate;
 
 	if (estate)					/* coerce using specified expression */
 		return ExecEvalExpr(estate, econtext, isNull);
 
-	if (op->d.jsonexpr.jsexpr->op != JSON_EXISTS_OP)
+	jsestate = op->d.jsonexpr.jsestate;
+
+	if (jsestate->jsexpr->op != JSON_EXISTS_OP)
 	{
-		JsonCoercion *coercion = op->d.jsonexpr.jsexpr->result_coercion;
-		JsonExpr   *jexpr = op->d.jsonexpr.jsexpr;
+		JsonCoercion *coercion = jsestate->jsexpr->result_coercion;
+		JsonExpr   *jexpr = jsestate->jsexpr;
 		Jsonb	   *jb = *isNull ? NULL : DatumGetJsonbP(res);
 
 		if ((coercion && coercion->via_io) ||
@@ -4640,25 +4664,25 @@ ExecEvalJsonExprCoercion(ExprEvalStep *op, ExprContext *econtext,
 			/* strip quotes and call typinput function */
 			char	   *str = *isNull ? NULL : JsonbUnquote(jb);
 
-			return InputFunctionCall(&op->d.jsonexpr.input.func, str,
-									 op->d.jsonexpr.input.typioparam,
+			return InputFunctionCall(&jsestate->input.func, str,
+									 jsestate->input.typioparam,
 									 jexpr->returning->typmod);
 		}
 		else if (coercion && coercion->via_populate)
 			return json_populate_type(res, JSONBOID,
 									  jexpr->returning->typid,
 									  jexpr->returning->typmod,
-									  &op->d.jsonexpr.cache,
+									  &jsestate->cache,
 									  econtext->ecxt_per_query_memory,
 									  isNull);
 	}
 
-	if (op->d.jsonexpr.result_expr)
+	if (jsestate->result_expr)
 	{
-		op->d.jsonexpr.res_expr->value = res;
-		op->d.jsonexpr.res_expr->isnull = *isNull;
+		jsestate->res_expr->value = res;
+		jsestate->res_expr->isnull = *isNull;
 
-		res = ExecEvalExpr(op->d.jsonexpr.result_expr, econtext, isNull);
+		res = ExecEvalExpr(jsestate->result_expr, econtext, isNull);
 	}
 
 	return res;
@@ -4891,7 +4915,8 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 {
 	ExecEvalJsonExprContext *cxt = pcxt;
 	JsonPath   *path = cxt->path;
-	JsonExpr   *jexpr = op->d.jsonexpr.jsexpr;
+	JsonExprState *jsestate = op->d.jsonexpr.jsestate;
+	JsonExpr   *jexpr = jsestate->jsexpr;
 	ExprState  *estate = NULL;
 	bool		empty = false;
 	Datum		res = (Datum) 0;
@@ -4900,7 +4925,7 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 	{
 		case JSON_QUERY_OP:
 			res = JsonPathQuery(item, path, jexpr->wrapper, &empty, error,
-								op->d.jsonexpr.args);
+								jsestate->args);
 			if (error && *error)
 			{
 				*resnull = true;
@@ -4913,7 +4938,7 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 			{
 				struct JsonCoercionState *jcstate;
 				JsonbValue *jbv = JsonPathValue(item, path, &empty, error,
-												op->d.jsonexpr.args);
+												jsestate->args);
 
 				if (error && *error)
 					return (Datum) 0;
@@ -4936,8 +4961,8 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 
 				/* Use coercion from SQL/JSON item type to the output type */
 				res = ExecPrepareJsonItemCoercion(jbv,
-												  op->d.jsonexpr.jsexpr->returning,
-												  &op->d.jsonexpr.coercions,
+												  jsestate->jsexpr->returning,
+												  &jsestate->coercions,
 												  &jcstate);
 
 				if (jcstate->coercion &&
@@ -4955,13 +4980,7 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 					 * type simply does not exist.
 					 */
 					ereport(ERROR,
-
-					/*
-					 * XXX Standard says about a separate error code
-					 * ERRCODE_SQL_JSON_ITEM_CANNOT_BE_CAST_TO_TARGET_TYPE but
-					 * does not define its number.
-					 */
-							(errcode(ERRCODE_SQL_JSON_SCALAR_REQUIRED),
+							(errcode(ERRCODE_SQL_JSON_ITEM_CANNOT_BE_CAST_TO_TARGET_TYPE),
 							 errmsg("SQL/JSON item cannot be cast to target type")));
 				}
 				else if (!jcstate->estate)
@@ -4969,27 +4988,27 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 
 				/* coerce using specific expression */
 				estate = jcstate->estate;
-				op->d.jsonexpr.coercion_expr->value = res;
-				op->d.jsonexpr.coercion_expr->isnull = *resnull;
+				jsestate->coercion_expr->value = res;
+				jsestate->coercion_expr->isnull = *resnull;
 				break;
 			}
 
 		case JSON_EXISTS_OP:
 			{
 				bool		exists = JsonPathExists(item, path,
-													op->d.jsonexpr.args,
+													jsestate->args,
 													error);
 
 				*resnull = error && *error;
 				res = BoolGetDatum(exists);
 
-				if (!op->d.jsonexpr.result_expr)
+				if (!jsestate->result_expr)
 					return res;
 
 				/* coerce using result expression */
-				estate = op->d.jsonexpr.result_expr;
-				op->d.jsonexpr.res_expr->value = res;
-				op->d.jsonexpr.res_expr->isnull = *resnull;
+				estate = jsestate->result_expr;
+				jsestate->res_expr->value = res;
+				jsestate->res_expr->isnull = *resnull;
 				break;
 			}
 
@@ -5025,11 +5044,11 @@ ExecEvalJsonExpr(ExprEvalStep *op, ExprContext *econtext,
 			 * Execute DEFAULT expression as a coercion expression, because
 			 * its result is already coerced to the target type.
 			 */
-			estate = op->d.jsonexpr.default_on_empty;
+			estate = jsestate->default_on_empty;
 		else
 			/* Execute ON EMPTY behavior */
 			res = ExecEvalJsonBehavior(econtext, jexpr->on_empty,
-									   op->d.jsonexpr.default_on_empty,
+									   jsestate->default_on_empty,
 									   resnull);
 	}
 
@@ -5062,7 +5081,8 @@ void
 ExecEvalJson(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 {
 	ExecEvalJsonExprContext cxt;
-	JsonExpr   *jexpr = op->d.jsonexpr.jsexpr;
+	JsonExprState *jsestate = op->d.jsonexpr.jsestate;
+	JsonExpr   *jexpr = jsestate->jsexpr;
 	Datum		item;
 	Datum		res = (Datum) 0;
 	JsonPath   *path;
@@ -5074,7 +5094,7 @@ ExecEvalJson(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 	*op->resnull = true;		/* until we get a result */
 	*op->resvalue = (Datum) 0;
 
-	if (op->d.jsonexpr.formatted_expr->isnull || op->d.jsonexpr.pathspec->isnull)
+	if (jsestate->formatted_expr->isnull || jsestate->pathspec->isnull)
 	{
 		/* execute domain checks for NULLs */
 		(void) ExecEvalJsonExprCoercion(op, econtext, res, op->resnull,
@@ -5084,11 +5104,11 @@ ExecEvalJson(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 		return;
 	}
 
-	item = op->d.jsonexpr.formatted_expr->value;
-	path = DatumGetJsonPathP(op->d.jsonexpr.pathspec->value);
+	item = jsestate->formatted_expr->value;
+	path = DatumGetJsonPathP(jsestate->pathspec->value);
 
 	/* reset JSON path variable contexts */
-	foreach(lc, op->d.jsonexpr.args)
+	foreach(lc, jsestate->args)
 	{
 		JsonPathVariableEvalContext *var = lfirst(lc);
 
@@ -5096,7 +5116,7 @@ ExecEvalJson(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 		var->evaluated = false;
 	}
 
-	needSubtrans = ExecEvalJsonNeedsSubTransaction(jexpr, &op->d.jsonexpr.coercions);
+	needSubtrans = ExecEvalJsonNeedsSubTransaction(jexpr, &jsestate->coercions);
 
 	cxt.path = path;
 	cxt.error = throwErrors ? NULL : &error;
@@ -5111,7 +5131,7 @@ ExecEvalJson(ExprState *state, ExprEvalStep *op, ExprContext *econtext)
 	{
 		/* Execute ON ERROR behavior */
 		res = ExecEvalJsonBehavior(econtext, jexpr->on_error,
-								   op->d.jsonexpr.default_on_error,
+								   jsestate->default_on_error,
 								   op->resnull);
 
 		/* result is already coerced in DEFAULT behavior case */

@@ -1500,12 +1500,9 @@ connectDatabase(const char *dbname, const char *connection_string,
 		char	   *err_msg = NULL;
 		int			i = 0;
 
-		if (keywords)
-			free(keywords);
-		if (values)
-			free(values);
-		if (conn_opts)
-			PQconninfoFree(conn_opts);
+		free(keywords);
+		free(values);
+		PQconninfoFree(conn_opts);
 
 		/*
 		 * Merge the connection info inputs given in form of connection string

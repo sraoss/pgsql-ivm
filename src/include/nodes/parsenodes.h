@@ -123,7 +123,11 @@ typedef struct Query
 
 	QuerySource querySource;	/* where did I come from? */
 
-	uint64		queryId;		/* query identifier (can be set by plugins) */
+	/*
+	 * query identifier (can be set by plugins); ignored for equal, as it
+	 * might not be set; also not stored
+	 */
+	uint64		queryId pg_node_attr(equal_ignore, read_write_ignore, read_as(0));
 
 	bool		canSetTag;		/* do I set the command result tag? */
 
@@ -287,6 +291,8 @@ typedef enum A_Expr_Kind
 
 typedef struct A_Expr
 {
+	pg_node_attr(custom_read_write, no_read)
+
 	NodeTag		type;
 	A_Expr_Kind kind;			/* see above */
 	List	   *name;			/* possibly-qualified name of operator */
@@ -297,24 +303,26 @@ typedef struct A_Expr
 
 /*
  * A_Const - a literal constant
+ *
+ * Value nodes are inline for performance.  You can treat 'val' as a node,
+ * as in IsA(&val, Integer).  'val' is not valid if isnull is true.
  */
+union ValUnion
+{
+	Node		node;
+	Integer		ival;
+	Float		fval;
+	Boolean		boolval;
+	String		sval;
+	BitString	bsval;
+};
+
 typedef struct A_Const
 {
-	NodeTag		type;
+	pg_node_attr(custom_copy_equal, custom_read_write, no_read)
 
-	/*
-	 * Value nodes are inline for performance.  You can treat 'val' as a node,
-	 * as in IsA(&val, Integer).  'val' is not valid if isnull is true.
-	 */
-	union ValUnion
-	{
-		Node		node;
-		Integer		ival;
-		Float		fval;
-		Boolean		boolval;
-		String		sval;
-		BitString	bsval;
-	}			val;
+	NodeTag		type;
+	union ValUnion val;
 	bool		isnull;			/* SQL NULL constant */
 	int			location;		/* token location, or -1 if unknown */
 } A_Const;
@@ -683,6 +691,7 @@ typedef struct ColumnDef
 	bool		is_not_null;	/* NOT NULL constraint specified? */
 	bool		is_from_type;	/* column definition came from table type */
 	char		storage;		/* attstorage setting, or 0 for default */
+	char	   *storage_name;	/* attstorage setting name or NULL for default */
 	Node	   *raw_default;	/* default value (untransformed parse tree) */
 	Node	   *cooked_default; /* default value (transformed expr tree) */
 	char		identity;		/* attidentity setting */
@@ -1011,6 +1020,8 @@ typedef enum RTEKind
 
 typedef struct RangeTblEntry
 {
+	pg_node_attr(custom_read_write)
+
 	NodeTag		type;
 
 	RTEKind		rtekind;		/* see above */
@@ -2609,6 +2620,8 @@ typedef enum ConstrType			/* types of constraints */
 
 typedef struct Constraint
 {
+	pg_node_attr(custom_read_write, no_read)
+
 	NodeTag		type;
 	ConstrType	contype;		/* see above */
 
@@ -3249,10 +3262,10 @@ typedef struct IndexStmt
 	List	   *excludeOpNames; /* exclusion operator names, or NIL if none */
 	char	   *idxcomment;		/* comment to apply to index, or NULL */
 	Oid			indexOid;		/* OID of an existing index, if any */
-	Oid			oldNode;		/* relfilenode of existing storage, if any */
-	SubTransactionId oldCreateSubid;	/* rd_createSubid of oldNode */
-	SubTransactionId oldFirstRelfilenodeSubid;	/* rd_firstRelfilenodeSubid of
-												 * oldNode */
+	RelFileNumber oldNumber;	/* relfilenumber of existing storage, if any */
+	SubTransactionId oldCreateSubid;	/* rd_createSubid of oldNumber */
+	SubTransactionId oldFirstRelfilelocatorSubid;	/* rd_firstRelfilelocatorSubid
+													 * of oldNumber */
 	bool		unique;			/* is index unique? */
 	bool		nulls_not_distinct; /* null treatment for UNIQUE constraints */
 	bool		primary;		/* is index a primary key? */
@@ -3368,6 +3381,8 @@ typedef struct DoStmt
 
 typedef struct InlineCodeBlock
 {
+	pg_node_attr(nodetag_only)	/* this is not a member of parse trees */
+
 	NodeTag		type;
 	char	   *source_text;	/* source text of anonymous code block */
 	Oid			langOid;		/* OID of selected language */
@@ -3394,6 +3409,8 @@ typedef struct CallStmt
 
 typedef struct CallContext
 {
+	pg_node_attr(nodetag_only)	/* this is not a member of parse trees */
+
 	NodeTag		type;
 	bool		atomic;
 } CallContext;

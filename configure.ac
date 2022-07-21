@@ -17,7 +17,7 @@ dnl Read the Autoconf manual for details.
 dnl
 m4_pattern_forbid(^PGAC_)dnl to catch undefined macros
 
-AC_INIT([PostgreSQL], [15beta1], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
+AC_INIT([PostgreSQL], [16devel], [pgsql-bugs@lists.postgresql.org], [], [https://www.postgresql.org/])
 
 m4_if(m4_defn([m4_PACKAGE_VERSION]), [2.69], [], [m4_fatal([Autoconf version 2.69 is required.
 Untested combinations of 'autoconf' and PostgreSQL versions are not
@@ -67,7 +67,6 @@ case $host_os in
   darwin*) template=darwin ;;
 dragonfly*) template=netbsd ;;
  freebsd*) template=freebsd ;;
-    hpux*) template=hpux ;;
  linux*|gnu*|k*bsd*-gnu)
            template=linux ;;
    mingw*) template=win32 ;;
@@ -526,6 +525,17 @@ if test "$GCC" = yes -a "$ICC" = no; then
   # Optimization flags for specific files that benefit from vectorization
   PGAC_PROG_CC_VAR_OPT(CFLAGS_VECTORIZE, [-ftree-vectorize])
   #
+  # If the compiler knows how to hide symbols add the switch needed for that
+  # to CFLAGS_SL_MODULE and define HAVE_VISIBILITY_ATTRIBUTE.
+  PGAC_PROG_CC_VAR_OPT(CFLAGS_SL_MODULE, [-fvisibility=hidden])
+  if test "$pgac_cv_prog_CC_cflags__fvisibility_hidden" = yes; then
+     AC_DEFINE([HAVE_VISIBILITY_ATTRIBUTE], 1,
+               [Define to 1 if your compiler knows the visibility("hidden") attribute.])
+  fi
+  # For C++ we additionally want -fvisibility-inlines-hidden
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility=hidden])
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility-inlines-hidden])
+  #
   # The following tests want to suppress various unhelpful warnings by adding
   # -Wno-foo switches.  But gcc won't complain about unrecognized -Wno-foo
   # switches, so we have to test for the positive form and if that works,
@@ -570,15 +580,12 @@ elif test "$PORTNAME" = "aix"; then
   PGAC_PROG_CXX_CFLAGS_OPT([-qnoansialias])
   PGAC_PROG_CC_CFLAGS_OPT([-qlonglong])
   PGAC_PROG_CXX_CFLAGS_OPT([-qlonglong])
-elif test "$PORTNAME" = "hpux"; then
-  # On some versions of HP-UX, libm functions do not set errno by default.
-  # Fix that by using +Olibmerrno if the compiler recognizes it.
-  PGAC_PROG_CC_CFLAGS_OPT([+Olibmerrno])
-  PGAC_PROG_CXX_CFLAGS_OPT([+Olibmerrno])
 fi
 
 AC_SUBST(CFLAGS_UNROLL_LOOPS)
 AC_SUBST(CFLAGS_VECTORIZE)
+AC_SUBST(CFLAGS_SL_MODULE)
+AC_SUBST(CXXFLAGS_SL_MODULE)
 
 # Determine flags used to emit bitcode for JIT inlining.
 # 1. We must duplicate any behaviour-changing compiler flags used above,
@@ -1452,7 +1459,6 @@ AC_CHECK_HEADERS(m4_normalize([
 	sys/personality.h
 	sys/prctl.h
 	sys/procctl.h
-	sys/pstat.h
 	sys/resource.h
 	sys/select.h
 	sys/sem.h
@@ -1801,7 +1807,6 @@ AC_CHECK_FUNCS(m4_normalize([
 	poll
 	posix_fallocate
 	ppoll
-	pstat
 	pthread_is_threaded_np
 	readlink
 	readv
@@ -1927,10 +1932,9 @@ fi
 
 if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
-	# have a broken strtof(), so substitute the same replacement
-	# code we use with VS2013. That's not a perfect fix, since
-	# (unlike with VS2013) it doesn't avoid double-rounding, but
-	# we have no better options. To get that, though, we have to
+	# have a broken strtof(), so substitute its implementation.
+	# That's not a perfect fix, since it doesn't avoid double-rounding,
+	# but we have no better options. To get that, though, we have to
 	# force the file to be compiled despite HAVE_STRTOF.
 	AC_LIBOBJ([strtof])
 	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
@@ -1984,6 +1988,7 @@ if test "$PORTNAME" = "win32"; then
   AC_CHECK_FUNCS(_configthreadlocale)
   AC_REPLACE_FUNCS(gettimeofday)
   AC_LIBOBJ(dirmod)
+  AC_LIBOBJ(fdatasync)
   AC_LIBOBJ(kill)
   AC_LIBOBJ(open)
   AC_LIBOBJ(system)

@@ -250,71 +250,6 @@ spin_delay(void)
 #endif	 /* __x86_64__ */
 
 
-#if defined(__ia64__) || defined(__ia64)
-/*
- * Intel Itanium, gcc or Intel's compiler.
- *
- * Itanium has weak memory ordering, but we rely on the compiler to enforce
- * strict ordering of accesses to volatile data.  In particular, while the
- * xchg instruction implicitly acts as a memory barrier with 'acquire'
- * semantics, we do not have an explicit memory fence instruction in the
- * S_UNLOCK macro.  We use a regular assignment to clear the spinlock, and
- * trust that the compiler marks the generated store instruction with the
- * ".rel" opcode.
- *
- * Testing shows that assumption to hold on gcc, although I could not find
- * any explicit statement on that in the gcc manual.  In Intel's compiler,
- * the -m[no-]serialize-volatile option controls that, and testing shows that
- * it is enabled by default.
- *
- * While icc accepts gcc asm blocks on x86[_64], this is not true on ia64
- * (at least not in icc versions before 12.x).  So we have to carry a separate
- * compiler-intrinsic-based implementation for it.
- */
-#define HAS_TEST_AND_SET
-
-typedef unsigned int slock_t;
-
-#define TAS(lock) tas(lock)
-
-/* On IA64, it's a win to use a non-locking test before the xchg proper */
-#define TAS_SPIN(lock)	(*(lock) ? 1 : TAS(lock))
-
-#ifndef __INTEL_COMPILER
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	long int	ret;
-
-	__asm__ __volatile__(
-		"	xchg4 	%0=%1,%2	\n"
-:		"=r"(ret), "+m"(*lock)
-:		"r"(1)
-:		"memory");
-	return (int) ret;
-}
-
-#else /* __INTEL_COMPILER */
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	int		ret;
-
-	ret = _InterlockedExchange(lock,1);	/* this is a xchg asm macro */
-
-	return ret;
-}
-
-/* icc can't use the regular gcc S_UNLOCK() macro either in this case */
-#define S_UNLOCK(lock)	\
-	do { __memory_barrier(); *(lock) = 0; } while (0)
-
-#endif /* __INTEL_COMPILER */
-#endif	 /* __ia64__ || __ia64 */
-
-
 /*
  * On ARM and ARM64, we use __sync_lock_test_and_set(int *, int) if available.
  *
@@ -563,86 +498,6 @@ do \
 #endif /* powerpc */
 
 
-/* Linux Motorola 68k */
-#if (defined(__mc68000__) || defined(__m68k__)) && defined(__linux__)
-#define HAS_TEST_AND_SET
-
-typedef unsigned char slock_t;
-
-#define TAS(lock) tas(lock)
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	register int rv;
-
-	__asm__	__volatile__(
-		"	clrl	%0		\n"
-		"	tas		%1		\n"
-		"	sne		%0		\n"
-:		"=d"(rv), "+m"(*lock)
-:		/* no inputs */
-:		"memory", "cc");
-	return rv;
-}
-
-#endif	 /* (__mc68000__ || __m68k__) && __linux__ */
-
-
-/* Motorola 88k */
-#if defined(__m88k__)
-#define HAS_TEST_AND_SET
-
-typedef unsigned int slock_t;
-
-#define TAS(lock) tas(lock)
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	register slock_t _res = 1;
-
-	__asm__ __volatile__(
-		"	xmem	%0, %2, %%r0	\n"
-:		"+r"(_res), "+m"(*lock)
-:		"r"(lock)
-:		"memory");
-	return (int) _res;
-}
-
-#endif	 /* __m88k__ */
-
-
-/*
- * VAXen -- even multiprocessor ones
- * (thanks to Tom Ivar Helbekkmo)
- */
-#if defined(__vax__)
-#define HAS_TEST_AND_SET
-
-typedef unsigned char slock_t;
-
-#define TAS(lock) tas(lock)
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	register int	_res;
-
-	__asm__ __volatile__(
-		"	movl 	$1, %0			\n"
-		"	bbssi	$0, (%2), 1f	\n"
-		"	clrl	%0				\n"
-		"1: \n"
-:		"=&r"(_res), "+m"(*lock)
-:		"r"(lock)
-:		"memory");
-	return _res;
-}
-
-#endif	 /* __vax__ */
-
-
 #if defined(__mips__) && !defined(__sgi)	/* non-SGI MIPS */
 #define HAS_TEST_AND_SET
 
@@ -714,56 +569,71 @@ do \
 #endif /* __mips__ && !__sgi */
 
 
-#if defined(__m32r__) && defined(HAVE_SYS_TAS_H)	/* Renesas' M32R */
+#if defined(__hppa) || defined(__hppa__)	/* HP PA-RISC */
+/*
+ * HP's PA-RISC
+ *
+ * Because LDCWX requires a 16-byte-aligned address, we declare slock_t as a
+ * 16-byte struct.  The active word in the struct is whichever has the aligned
+ * address; the other three words just sit at -1.
+ */
 #define HAS_TEST_AND_SET
 
-#include <sys/tas.h>
+typedef struct
+{
+	int			sema[4];
+} slock_t;
 
-typedef int slock_t;
-
-#define TAS(lock) tas(lock)
-
-#endif /* __m32r__ */
-
-
-#if defined(__sh__)				/* Renesas' SuperH */
-#define HAS_TEST_AND_SET
-
-typedef unsigned char slock_t;
-
-#define TAS(lock) tas(lock)
+#define TAS_ACTIVE_WORD(lock)	((volatile int *) (((uintptr_t) (lock) + 15) & ~15))
 
 static __inline__ int
 tas(volatile slock_t *lock)
 {
-	register int _res;
+	volatile int *lockword = TAS_ACTIVE_WORD(lock);
+	register int lockval;
 
 	/*
-	 * This asm is coded as if %0 could be any register, but actually SuperH
-	 * restricts the target of xor-immediate to be R0.  That's handled by
-	 * the "z" constraint on _res.
+	 * The LDCWX instruction atomically clears the target word and
+	 * returns the previous value.  Hence, if the instruction returns
+	 * 0, someone else has already acquired the lock before we tested
+	 * it (i.e., we have failed).
+	 *
+	 * Notice that this means that we actually clear the word to set
+	 * the lock and set the word to clear the lock.  This is the
+	 * opposite behavior from the SPARC LDSTUB instruction.  For some
+	 * reason everything that H-P does is rather baroque...
+	 *
+	 * For details about the LDCWX instruction, see the "Precision
+	 * Architecture and Instruction Reference Manual" (09740-90014 of June
+	 * 1987), p. 5-38.
 	 */
 	__asm__ __volatile__(
-		"	tas.b @%2    \n"
-		"	movt  %0     \n"
-		"	xor   #1,%0  \n"
-:		"=z"(_res), "+m"(*lock)
-:		"r"(lock)
-:		"memory", "t");
-	return _res;
+		"	ldcwx	0(0,%2),%0	\n"
+:		"=r"(lockval), "+m"(*lockword)
+:		"r"(lockword)
+:		"memory");
+	return (lockval == 0);
 }
 
-#endif	 /* __sh__ */
+#define S_UNLOCK(lock)	\
+	do { \
+		__asm__ __volatile__("" : : : "memory"); \
+		*TAS_ACTIVE_WORD(lock) = -1; \
+	} while (0)
 
+#define S_INIT_LOCK(lock) \
+	do { \
+		volatile slock_t *lock_ = (lock); \
+		lock_->sema[0] = -1; \
+		lock_->sema[1] = -1; \
+		lock_->sema[2] = -1; \
+		lock_->sema[3] = -1; \
+	} while (0)
 
-/* These live in s_lock.c, but only for gcc */
+#define S_LOCK_FREE(lock)	(*TAS_ACTIVE_WORD(lock) != 0)
 
+#endif	 /* __hppa || __hppa__ */
 
-#if defined(__m68k__) && !defined(__linux__)	/* non-Linux Motorola 68k */
-#define HAS_TEST_AND_SET
-
-typedef unsigned char slock_t;
-#endif
 
 /*
  * Default implementation of S_UNLOCK() for gcc/icc.
@@ -783,7 +653,6 @@ typedef unsigned char slock_t;
 #endif	/* defined(__GNUC__) || defined(__INTEL_COMPILER) */
 
 
-
 /*
  * ---------------------------------------------------------------------
  * Platforms that use non-gcc inline assembly:
@@ -791,101 +660,6 @@ typedef unsigned char slock_t;
  */
 
 #if !defined(HAS_TEST_AND_SET)	/* We didn't trigger above, let's try here */
-
-
-#if defined(__hppa) || defined(__hppa__)	/* HP PA-RISC, GCC and HP compilers */
-/*
- * HP's PA-RISC
- *
- * See src/backend/port/hpux/tas.c.template for details about LDCWX.  Because
- * LDCWX requires a 16-byte-aligned address, we declare slock_t as a 16-byte
- * struct.  The active word in the struct is whichever has the aligned address;
- * the other three words just sit at -1.
- *
- * When using gcc, we can inline the required assembly code.
- */
-#define HAS_TEST_AND_SET
-
-typedef struct
-{
-	int			sema[4];
-} slock_t;
-
-#define TAS_ACTIVE_WORD(lock)	((volatile int *) (((uintptr_t) (lock) + 15) & ~15))
-
-#if defined(__GNUC__)
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	volatile int *lockword = TAS_ACTIVE_WORD(lock);
-	register int lockval;
-
-	__asm__ __volatile__(
-		"	ldcwx	0(0,%2),%0	\n"
-:		"=r"(lockval), "+m"(*lockword)
-:		"r"(lockword)
-:		"memory");
-	return (lockval == 0);
-}
-
-/*
- * The hppa implementation doesn't follow the rules of this files and provides
- * a gcc specific implementation outside of the above defined(__GNUC__). It
- * does so to avoid duplication between the HP compiler and gcc. So undefine
- * the generic fallback S_UNLOCK from above.
- */
-#ifdef S_UNLOCK
-#undef S_UNLOCK
-#endif
-#define S_UNLOCK(lock)	\
-	do { \
-		__asm__ __volatile__("" : : : "memory"); \
-		*TAS_ACTIVE_WORD(lock) = -1; \
-	} while (0)
-
-#endif /* __GNUC__ */
-
-#define S_INIT_LOCK(lock) \
-	do { \
-		volatile slock_t *lock_ = (lock); \
-		lock_->sema[0] = -1; \
-		lock_->sema[1] = -1; \
-		lock_->sema[2] = -1; \
-		lock_->sema[3] = -1; \
-	} while (0)
-
-#define S_LOCK_FREE(lock)	(*TAS_ACTIVE_WORD(lock) != 0)
-
-#endif	 /* __hppa || __hppa__ */
-
-
-#if defined(__hpux) && defined(__ia64) && !defined(__GNUC__)
-/*
- * HP-UX on Itanium, non-gcc/icc compiler
- *
- * We assume that the compiler enforces strict ordering of loads/stores on
- * volatile data (see comments on the gcc-version earlier in this file).
- * Note that this assumption does *not* hold if you use the
- * +Ovolatile=__unordered option on the HP-UX compiler, so don't do that.
- *
- * See also Implementing Spinlocks on the Intel Itanium Architecture and
- * PA-RISC, by Tor Ekqvist and David Graves, for more information.  As of
- * this writing, version 1.0 of the manual is available at:
- * http://h21007.www2.hp.com/portal/download/files/unprot/itanium/spinlocks.pdf
- */
-#define HAS_TEST_AND_SET
-
-typedef unsigned int slock_t;
-
-#include <ia64/sys/inline.h>
-#define TAS(lock) _Asm_xchg(_SZ_W, lock, 1, _LDHINT_NONE)
-/* On IA64, it's a win to use a non-locking test before the xchg proper */
-#define TAS_SPIN(lock)	(*(lock) ? 1 : TAS(lock))
-#define S_UNLOCK(lock)	\
-	do { _Asm_mf(); (*(lock)) = 0; } while (0)
-
-#endif	/* HPUX on IA64, non gcc/icc */
 
 #if defined(_AIX)	/* AIX */
 /*

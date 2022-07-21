@@ -106,6 +106,14 @@ GetSubscription(Oid subid, bool missing_ok)
 	Assert(!isnull);
 	sub->publications = textarray_to_stringlist(DatumGetArrayTypeP(datum));
 
+	/* Get origin */
+	datum = SysCacheGetAttr(SUBSCRIPTIONOID,
+							tup,
+							Anum_pg_subscription_suborigin,
+							&isnull);
+	Assert(!isnull);
+	sub->origin = TextDatumGetCString(datum);
+
 	ReleaseSysCache(tup);
 
 	return sub;
@@ -260,9 +268,7 @@ textarray_to_stringlist(ArrayType *textarray)
 				i;
 	List	   *res = NIL;
 
-	deconstruct_array(textarray,
-					  TEXTOID, -1, false, TYPALIGN_INT,
-					  &elems, NULL, &nelems);
+	deconstruct_array_builtin(textarray, TEXTOID, &elems, NULL, &nelems);
 
 	if (nelems == 0)
 		return NIL;

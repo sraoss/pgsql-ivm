@@ -17,7 +17,7 @@
 #include "storage/block.h"
 #include "storage/buf.h"
 #include "storage/bufpage.h"
-#include "storage/relfilenode.h"
+#include "storage/relfilelocator.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
 
@@ -97,76 +97,6 @@ extern PGDLLIMPORT int32 *LocalRefCount;
 #define BUFFER_LOCK_SHARE		1
 #define BUFFER_LOCK_EXCLUSIVE	2
 
-/*
- * These routines are beaten on quite heavily, hence the macroization.
- */
-
-/*
- * BufferIsValid
- *		True iff the given buffer number is valid (either as a shared
- *		or local buffer).
- *
- * Note: For a long time this was defined the same as BufferIsPinned,
- * that is it would say False if you didn't hold a pin on the buffer.
- * I believe this was bogus and served only to mask logic errors.
- * Code should always know whether it has a buffer reference,
- * independently of the pin state.
- *
- * Note: For a further long time this was not quite the inverse of the
- * BufferIsInvalid() macro, in that it also did sanity checks to verify
- * that the buffer number was in range.  Most likely, this macro was
- * originally intended only to be used in assertions, but its use has
- * since expanded quite a bit, and the overhead of making those checks
- * even in non-assert-enabled builds can be significant.  Thus, we've
- * now demoted the range checks to assertions within the macro itself.
- */
-#define BufferIsValid(bufnum) \
-( \
-	AssertMacro((bufnum) <= NBuffers && (bufnum) >= -NLocBuffer), \
-	(bufnum) != InvalidBuffer  \
-)
-
-/*
- * BufferGetBlock
- *		Returns a reference to a disk page image associated with a buffer.
- *
- * Note:
- *		Assumes buffer is valid.
- */
-#define BufferGetBlock(buffer) \
-( \
-	AssertMacro(BufferIsValid(buffer)), \
-	BufferIsLocal(buffer) ? \
-		LocalBufferBlockPointers[-(buffer) - 1] \
-	: \
-		(Block) (BufferBlocks + ((Size) ((buffer) - 1)) * BLCKSZ) \
-)
-
-/*
- * BufferGetPageSize
- *		Returns the page size within a buffer.
- *
- * Notes:
- *		Assumes buffer is valid.
- *
- *		The buffer can be a raw disk block and need not contain a valid
- *		(formatted) disk page.
- */
-/* XXX should dig out of buffer descriptor */
-#define BufferGetPageSize(buffer) \
-( \
-	AssertMacro(BufferIsValid(buffer)), \
-	(Size)BLCKSZ \
-)
-
-/*
- * BufferGetPage
- *		Returns the page associated with a buffer.
- *
- * When this is called as part of a scan, there may be a need for a nearby
- * call to TestForOldSnapshot().  See the definition of that for details.
- */
-#define BufferGetPage(buffer) ((Page)BufferGetBlock(buffer))
 
 /*
  * prototypes for functions in bufmgr.c
@@ -176,13 +106,13 @@ extern PrefetchBufferResult PrefetchSharedBuffer(struct SMgrRelationData *smgr_r
 												 BlockNumber blockNum);
 extern PrefetchBufferResult PrefetchBuffer(Relation reln, ForkNumber forkNum,
 										   BlockNumber blockNum);
-extern bool ReadRecentBuffer(RelFileNode rnode, ForkNumber forkNum,
+extern bool ReadRecentBuffer(RelFileLocator rlocator, ForkNumber forkNum,
 							 BlockNumber blockNum, Buffer recent_buffer);
 extern Buffer ReadBuffer(Relation reln, BlockNumber blockNum);
 extern Buffer ReadBufferExtended(Relation reln, ForkNumber forkNum,
 								 BlockNumber blockNum, ReadBufferMode mode,
 								 BufferAccessStrategy strategy);
-extern Buffer ReadBufferWithoutRelcache(RelFileNode rnode,
+extern Buffer ReadBufferWithoutRelcache(RelFileLocator rlocator,
 										ForkNumber forkNum, BlockNumber blockNum,
 										ReadBufferMode mode, BufferAccessStrategy strategy,
 										bool permanent);
@@ -204,13 +134,15 @@ extern BlockNumber RelationGetNumberOfBlocksInFork(Relation relation,
 extern void FlushOneBuffer(Buffer buffer);
 extern void FlushRelationBuffers(Relation rel);
 extern void FlushRelationsAllBuffers(struct SMgrRelationData **smgrs, int nrels);
-extern void CreateAndCopyRelationData(RelFileNode src_rnode,
-									  RelFileNode dst_rnode,
+extern void CreateAndCopyRelationData(RelFileLocator src_rlocator,
+									  RelFileLocator dst_rlocator,
 									  bool permanent);
 extern void FlushDatabaseBuffers(Oid dbid);
-extern void DropRelFileNodeBuffers(struct SMgrRelationData *smgr_reln, ForkNumber *forkNum,
-								   int nforks, BlockNumber *firstDelBlock);
-extern void DropRelFileNodesAllBuffers(struct SMgrRelationData **smgr_reln, int nnodes);
+extern void DropRelationBuffers(struct SMgrRelationData *smgr_reln,
+								ForkNumber *forkNum,
+								int nforks, BlockNumber *firstDelBlock);
+extern void DropRelationsAllBuffers(struct SMgrRelationData **smgr_reln,
+									int nlocators);
 extern void DropDatabaseBuffers(Oid dbid);
 
 #define RelationGetNumberOfBlocks(reln) \
@@ -223,7 +155,7 @@ extern XLogRecPtr BufferGetLSNAtomic(Buffer buffer);
 extern void PrintPinnedBufs(void);
 #endif
 extern Size BufferShmemSize(void);
-extern void BufferGetTag(Buffer buffer, RelFileNode *rnode,
+extern void BufferGetTag(Buffer buffer, RelFileLocator *rlocator,
 						 ForkNumber *forknum, BlockNumber *blknum);
 
 extern void MarkBufferDirtyHint(Buffer buffer, bool buffer_std);
@@ -260,6 +192,83 @@ extern void FreeAccessStrategy(BufferAccessStrategy strategy);
  */
 
 #ifndef FRONTEND
+
+/*
+ * BufferIsValid
+ *		True iff the given buffer number is valid (either as a shared
+ *		or local buffer).
+ *
+ * Note: For a long time this was defined the same as BufferIsPinned,
+ * that is it would say False if you didn't hold a pin on the buffer.
+ * I believe this was bogus and served only to mask logic errors.
+ * Code should always know whether it has a buffer reference,
+ * independently of the pin state.
+ *
+ * Note: For a further long time this was not quite the inverse of the
+ * BufferIsInvalid() macro, in that it also did sanity checks to verify
+ * that the buffer number was in range.  Most likely, this macro was
+ * originally intended only to be used in assertions, but its use has
+ * since expanded quite a bit, and the overhead of making those checks
+ * even in non-assert-enabled builds can be significant.  Thus, we've
+ * now demoted the range checks to assertions within the macro itself.
+ */
+static inline bool
+BufferIsValid(Buffer bufnum)
+{
+	Assert(bufnum <= NBuffers);
+	Assert(bufnum >= -NLocBuffer);
+
+	return bufnum != InvalidBuffer;
+}
+
+/*
+ * BufferGetBlock
+ *		Returns a reference to a disk page image associated with a buffer.
+ *
+ * Note:
+ *		Assumes buffer is valid.
+ */
+static inline Block
+BufferGetBlock(Buffer buffer)
+{
+	Assert(BufferIsValid(buffer));
+
+	if (BufferIsLocal(buffer))
+		return LocalBufferBlockPointers[-buffer - 1];
+	else
+		return (Block) (BufferBlocks + ((Size) (buffer - 1)) * BLCKSZ);
+}
+
+/*
+ * BufferGetPageSize
+ *		Returns the page size within a buffer.
+ *
+ * Notes:
+ *		Assumes buffer is valid.
+ *
+ *		The buffer can be a raw disk block and need not contain a valid
+ *		(formatted) disk page.
+ */
+/* XXX should dig out of buffer descriptor */
+static inline Size
+BufferGetPageSize(Buffer buffer)
+{
+	AssertMacro(BufferIsValid(buffer));
+	return (Size) BLCKSZ;
+}
+
+/*
+ * BufferGetPage
+ *		Returns the page associated with a buffer.
+ *
+ * When this is called as part of a scan, there may be a need for a nearby
+ * call to TestForOldSnapshot().  See the definition of that for details.
+ */
+static inline Page
+BufferGetPage(Buffer buffer)
+{
+	return (Page) BufferGetBlock(buffer);
+}
 
 /*
  * Check whether the given snapshot is too old to have safely read the given

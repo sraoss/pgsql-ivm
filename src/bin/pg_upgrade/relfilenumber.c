@@ -1,10 +1,10 @@
 /*
- *	relfilenode.c
+ *	relfilenumber.c
  *
- *	relfilenode functions
+ *	relfilenumber functions
  *
  *	Copyright (c) 2010-2022, PostgreSQL Global Development Group
- *	src/bin/pg_upgrade/relfilenode.c
+ *	src/bin/pg_upgrade/relfilenumber.c
  */
 
 #include "postgres_fe.h"
@@ -112,7 +112,7 @@ transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 		}
 
 		if (new_dbnum >= new_db_arr->ndbs)
-			pg_fatal("old database \"%s\" not found in the new cluster\n",
+			pg_fatal("old database \"%s\" not found in the new cluster",
 					 old_db->db_name);
 
 		mappings = gen_db_file_maps(old_db, new_db, &n_maps, old_pgdata,
@@ -181,7 +181,7 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 	/*
 	 * Now copy/link any related segments as well. Remember, PG breaks large
 	 * files into 1GB segments, the first segment has no extension, subsequent
-	 * segments are named relfilenode.1, relfilenode.2, relfilenode.3.
+	 * segments are named relfilenumber.1, relfilenumber.2, relfilenumber.3.
 	 */
 	for (segno = 0;; segno++)
 	{
@@ -194,14 +194,14 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 				 map->old_tablespace,
 				 map->old_tablespace_suffix,
 				 map->db_oid,
-				 map->relfilenode,
+				 map->relfilenumber,
 				 type_suffix,
 				 extent_suffix);
 		snprintf(new_file, sizeof(new_file), "%s%s/%u/%u%s%s",
 				 map->new_tablespace,
 				 map->new_tablespace_suffix,
 				 map->db_oid,
-				 map->relfilenode,
+				 map->relfilenumber,
 				 type_suffix,
 				 extent_suffix);
 
@@ -215,7 +215,7 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 				if (errno == ENOENT)
 					return;
 				else
-					pg_fatal("error while checking for file existence \"%s.%s\" (\"%s\" to \"%s\"): %s\n",
+					pg_fatal("error while checking for file existence \"%s.%s\" (\"%s\" to \"%s\"): %s",
 							 map->nspname, map->relname, old_file, new_file,
 							 strerror(errno));
 			}
@@ -233,7 +233,7 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 		if (vm_must_add_frozenbit && strcmp(type_suffix, "_vm") == 0)
 		{
 			/* Need to rewrite visibility map format */
-			pg_log(PG_VERBOSE, "rewriting \"%s\" to \"%s\"\n",
+			pg_log(PG_VERBOSE, "rewriting \"%s\" to \"%s\"",
 				   old_file, new_file);
 			rewriteVisibilityMap(old_file, new_file, map->nspname, map->relname);
 		}
@@ -241,17 +241,17 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 			switch (user_opts.transfer_mode)
 			{
 				case TRANSFER_MODE_CLONE:
-					pg_log(PG_VERBOSE, "cloning \"%s\" to \"%s\"\n",
+					pg_log(PG_VERBOSE, "cloning \"%s\" to \"%s\"",
 						   old_file, new_file);
 					cloneFile(old_file, new_file, map->nspname, map->relname);
 					break;
 				case TRANSFER_MODE_COPY:
-					pg_log(PG_VERBOSE, "copying \"%s\" to \"%s\"\n",
+					pg_log(PG_VERBOSE, "copying \"%s\" to \"%s\"",
 						   old_file, new_file);
 					copyFile(old_file, new_file, map->nspname, map->relname);
 					break;
 				case TRANSFER_MODE_LINK:
-					pg_log(PG_VERBOSE, "linking \"%s\" to \"%s\"\n",
+					pg_log(PG_VERBOSE, "linking \"%s\" to \"%s\"",
 						   old_file, new_file);
 					linkFile(old_file, new_file, map->nspname, map->relname);
 			}
