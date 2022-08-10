@@ -47,6 +47,7 @@
 #include "parser/parsetree.h"
 #include "partitioning/partbounds.h"
 #include "partitioning/partprune.h"
+#include "port/pg_bitutils.h"
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
@@ -553,12 +554,11 @@ set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel,
 	 * its own pool of workers.  Instead, we'll consider gathering partial
 	 * paths for the parent appendrel.
 	 *
-	 * Also, if this is the topmost scan/join rel (that is, the only baserel),
-	 * we postpone gathering until the final scan/join targetlist is available
-	 * (see grouping_planner).
+	 * Also, if this is the topmost scan/join rel, we postpone gathering until
+	 * the final scan/join targetlist is available (see grouping_planner).
 	 */
 	if (rel->reloptkind == RELOPT_BASEREL &&
-		bms_membership(root->all_baserels) != BMS_SINGLETON)
+		!bms_equal(rel->relids, root->all_baserels))
 		generate_useful_gather_paths(root, rel, false);
 
 	/* Now find the cheapest of the paths for this rel */
@@ -1491,7 +1491,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		if (enable_parallel_append)
 		{
 			parallel_workers = Max(parallel_workers,
-								   fls(list_length(live_childrels)));
+								   pg_leftmost_one_pos32(list_length(live_childrels)) + 1);
 			parallel_workers = Min(parallel_workers,
 								   max_parallel_workers_per_gather);
 		}
@@ -1542,7 +1542,7 @@ add_paths_to_append_rel(PlannerInfo *root, RelOptInfo *rel,
 		 * the planned number of parallel workers.
 		 */
 		parallel_workers = Max(parallel_workers,
-							   fls(list_length(live_childrels)));
+							   pg_leftmost_one_pos32(list_length(live_childrels)) + 1);
 		parallel_workers = Min(parallel_workers,
 							   max_parallel_workers_per_gather);
 		Assert(parallel_workers > 0);
@@ -2306,6 +2306,7 @@ find_window_run_conditions(Query *subquery, RangeTblEntry *rte, Index rti,
 			{
 				*keep_original = false;
 				runopexpr = opexpr;
+				runoperator = opexpr->opno;
 				break;
 			}
 
@@ -3434,7 +3435,7 @@ standard_join_search(PlannerInfo *root, int levels_needed, List *initial_rels)
 			 * partial paths.  We'll do the same for the topmost scan/join rel
 			 * once we know the final targetlist (see grouping_planner).
 			 */
-			if (lev < levels_needed)
+			if (!bms_equal(rel->relids, root->all_baserels))
 				generate_useful_gather_paths(root, rel, false);
 
 			/* Find and save the cheapest paths for this rel */

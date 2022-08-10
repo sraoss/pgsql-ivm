@@ -2833,8 +2833,14 @@ TupleHashTable
 TupleQueueReader
 TupleTableSlot
 TupleTableSlotOps
+TuplesortClusterArg
+TuplesortDatumArg
+TuplesortIndexArg
+TuplesortIndexBTreeArg
+TuplesortIndexHashArg
 TuplesortInstrumentation
 TuplesortMethod
+TuplesortPublic
 TuplesortSpaceType
 Tuplesortstate
 Tuplestorestate
@@ -3569,6 +3575,7 @@ printTextFormat
 printTextLineFormat
 printTextLineWrap
 printTextRule
+printXheaderWidthType
 printfunc
 priv_map
 process_file_callback_t

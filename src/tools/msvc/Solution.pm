@@ -220,7 +220,6 @@ sub GenerateFiles
 		ENABLE_GSS                 => $self->{options}->{gss} ? 1 : undef,
 		ENABLE_NLS                 => $self->{options}->{nls} ? 1 : undef,
 		ENABLE_THREAD_SAFETY       => 1,
-		GETTIMEOFDAY_1ARG          => undef,
 		HAVE_APPEND_HISTORY        => undef,
 		HAVE_ASN1_STRING_GET0_DATA => undef,
 		HAVE_ATOMICS               => 1,
@@ -228,7 +227,6 @@ sub GenerateFiles
 		HAVE_BACKTRACE_SYMBOLS     => undef,
 		HAVE_BIO_GET_DATA          => undef,
 		HAVE_BIO_METH_NEW          => undef,
-		HAVE_CLOCK_GETTIME         => undef,
 		HAVE_COMPUTED_GOTO         => undef,
 		HAVE_COPYFILE              => undef,
 		HAVE_COPYFILE_H            => undef,
@@ -244,24 +242,14 @@ sub GenerateFiles
 		HAVE_DECL_POSIX_FADVISE                     => 0,
 		HAVE_DECL_PREADV                            => 0,
 		HAVE_DECL_PWRITEV                           => 0,
-		HAVE_DECL_RTLD_GLOBAL                       => 0,
-		HAVE_DECL_RTLD_NOW                          => 0,
-		HAVE_DECL_SIGWAIT                           => 0,
 		HAVE_DECL_STRLCAT                           => 0,
 		HAVE_DECL_STRLCPY                           => 0,
 		HAVE_DECL_STRNLEN                           => 1,
-		HAVE_DECL_STRTOLL                           => 1,
-		HAVE_DECL_STRTOULL                          => 1,
-		HAVE_DLOPEN                                 => undef,
 		HAVE_EDITLINE_HISTORY_H                     => undef,
 		HAVE_EDITLINE_READLINE_H                    => undef,
 		HAVE_EXECINFO_H                             => undef,
 		HAVE_EXPLICIT_BZERO                         => undef,
-		HAVE_FDATASYNC                              => 1,
-		HAVE_FLS                                    => undef,
 		HAVE_FSEEKO                                 => 1,
-		HAVE_FUNCNAME__FUNC                         => undef,
-		HAVE_FUNCNAME__FUNCTION                     => 1,
 		HAVE_GCC__ATOMIC_INT32_CAS                  => undef,
 		HAVE_GCC__ATOMIC_INT64_CAS                  => undef,
 		HAVE_GCC__SYNC_CHAR_TAS                     => undef,
@@ -276,10 +264,6 @@ sub GenerateFiles
 		HAVE_GETOPT_LONG                            => undef,
 		HAVE_GETPEEREID                             => undef,
 		HAVE_GETPEERUCRED                           => undef,
-		HAVE_GETPWUID_R                             => undef,
-		HAVE_GETRLIMIT                              => undef,
-		HAVE_GETRUSAGE                              => undef,
-		HAVE_GETTIMEOFDAY                           => undef,
 		HAVE_GSSAPI_GSSAPI_H                        => undef,
 		HAVE_GSSAPI_H                               => undef,
 		HAVE_HMAC_CTX_FREE                          => undef,
@@ -314,7 +298,6 @@ sub GenerateFiles
 		HAVE_LIBXSLT                                => undef,
 		HAVE_LIBZ                   => $self->{options}->{zlib} ? 1 : undef,
 		HAVE_LIBZSTD                => undef,
-		HAVE_LINK                   => undef,
 		HAVE_LOCALE_T               => 1,
 		HAVE_LONG_INT_64            => undef,
 		HAVE_LONG_LONG_INT_64       => 1,
@@ -322,32 +305,24 @@ sub GenerateFiles
 		HAVE_MBSTOWCS_L             => 1,
 		HAVE_MEMORY_H               => 1,
 		HAVE_MEMSET_S               => undef,
-		HAVE_MINIDUMP_TYPE          => 1,
 		HAVE_MKDTEMP                => undef,
 		HAVE_NETINET_TCP_H          => undef,
 		HAVE_NET_IF_H               => undef,
 		HAVE_OPENSSL_INIT_SSL       => undef,
 		HAVE_OSSP_UUID_H            => undef,
 		HAVE_PAM_PAM_APPL_H         => undef,
-		HAVE_POLL                   => undef,
-		HAVE_POLL_H                 => undef,
-		HAVE_POSIX_DECL_SIGWAIT     => undef,
 		HAVE_POSIX_FADVISE          => undef,
 		HAVE_POSIX_FALLOCATE        => undef,
 		HAVE_PPC_LWARX_MUTEX_HINT   => undef,
 		HAVE_PPOLL                  => undef,
-		HAVE_PREAD                  => undef,
 		HAVE_PS_STRINGS             => undef,
 		HAVE_PTHREAD                => undef,
 		HAVE_PTHREAD_BARRIER_WAIT   => undef,
 		HAVE_PTHREAD_IS_THREADED_NP => undef,
 		HAVE_PTHREAD_PRIO_INHERIT   => undef,
-		HAVE_PWRITE                 => undef,
 		HAVE_READLINE_H             => undef,
 		HAVE_READLINE_HISTORY_H     => undef,
 		HAVE_READLINE_READLINE_H    => undef,
-		HAVE_READLINK               => undef,
-		HAVE_READV                  => undef,
 		HAVE_RL_COMPLETION_MATCHES  => undef,
 		HAVE_RL_COMPLETION_SUPPRESS_QUOTE        => undef,
 		HAVE_RL_FILENAME_COMPLETION_FUNCTION     => undef,
@@ -356,11 +331,8 @@ sub GenerateFiles
 		HAVE_RL_RESET_SCREEN_SIZE                => undef,
 		HAVE_RL_VARIABLE_BIND                    => undef,
 		HAVE_SECURITY_PAM_APPL_H                 => undef,
-		HAVE_SETENV                              => undef,
 		HAVE_SETPROCTITLE                        => undef,
 		HAVE_SETPROCTITLE_FAST                   => undef,
-		HAVE_SETSID                              => undef,
-		HAVE_SHM_OPEN                            => undef,
 		HAVE_SOCKLEN_T                           => 1,
 		HAVE_SPINLOCKS                           => 1,
 		HAVE_STDBOOL_H                           => 1,
@@ -374,11 +346,6 @@ sub GenerateFiles
 		HAVE_STRLCPY                             => undef,
 		HAVE_STRNLEN                             => 1,
 		HAVE_STRSIGNAL                           => undef,
-		HAVE_STRTOF                              => 1,
-		HAVE_STRTOLL                             => 1,
-		HAVE_STRTOQ                              => undef,
-		HAVE_STRTOULL                            => 1,
-		HAVE_STRTOUQ                             => undef,
 		HAVE_STRUCT_ADDRINFO                     => 1,
 		HAVE_STRUCT_CMSGCRED                     => undef,
 		HAVE_STRUCT_OPTION                       => undef,
@@ -391,7 +358,6 @@ sub GenerateFiles
 		HAVE_STRUCT_SOCKADDR_UN                  => undef,
 		HAVE_STRUCT_TM_TM_ZONE                   => undef,
 		HAVE_SYNC_FILE_RANGE                     => undef,
-		HAVE_SYMLINK                             => 1,
 		HAVE_SYNCFS                              => undef,
 		HAVE_SYSLOG                              => undef,
 		HAVE_SYS_EPOLL_H                         => undef,
@@ -407,7 +373,6 @@ sub GenerateFiles
 		HAVE_SYS_SIGNALFD_H                      => undef,
 		HAVE_SYS_SOCKIO_H                        => undef,
 		HAVE_SYS_STAT_H                          => 1,
-		HAVE_SYS_TAS_H                           => undef,
 		HAVE_SYS_TYPES_H                         => 1,
 		HAVE_SYS_UCRED_H                         => undef,
 		HAVE_SYS_UIO_H                           => undef,
@@ -419,7 +384,6 @@ sub GenerateFiles
 		HAVE_UINT8                               => undef,
 		HAVE_UNION_SEMUN                         => undef,
 		HAVE_UNISTD_H                            => 1,
-		HAVE_UNSETENV                            => undef,
 		HAVE_USELOCALE                           => undef,
 		HAVE_UUID_BSD                            => undef,
 		HAVE_UUID_E2FS                           => undef,
@@ -428,9 +392,7 @@ sub GenerateFiles
 		HAVE_UUID_UUID_H                         => undef,
 		HAVE_WINLDAP_H                           => undef,
 		HAVE_WCSTOMBS_L                          => 1,
-		HAVE_WCTYPE_H                            => 1,
 		HAVE_VISIBILITY_ATTRIBUTE                => undef,
-		HAVE_WRITEV                              => undef,
 		HAVE_X509_GET_SIGNATURE_NID              => 1,
 		HAVE_X86_64_POPCNTQ                      => undef,
 		HAVE__BOOL                               => undef,
@@ -449,8 +411,6 @@ sub GenerateFiles
 		HAVE__CPUID                              => 1,
 		HAVE__GET_CPUID                          => undef,
 		HAVE__STATIC_ASSERT                      => undef,
-		HAVE___STRTOLL                           => undef,
-		HAVE___STRTOULL                          => undef,
 		INT64_MODIFIER                           => qq{"ll"},
 		LOCALE_T_IN_XLOCALE                      => undef,
 		MAXIMUM_ALIGNOF                          => 8,
@@ -837,36 +797,30 @@ EOF
 		close($chs);
 	}
 
-	if (IsNewer(
-			'src/backend/nodes/node-support-stamp',
-			'src/backend/nodes/gen_node_support.pl'))
+	my $nmf = Project::read_file('src/backend/nodes/Makefile');
+	$nmf =~ s{\\\r?\n}{}g;
+	$nmf =~ /^node_headers\s*:?=(.*)$/gm
+	  || croak "Could not find node_headers in Makefile\n";
+	my @node_headers = split /\s+/, $1;
+	@node_headers = grep { $_ ne '' } @node_headers;
+	my @node_files = map { "src/include/$_" } @node_headers;
+
+	my $need_node_support = 0;
+	foreach my $nodefile (@node_files)
 	{
-		# XXX duplicates node_headers list in src/backend/nodes/Makefile
-		my @node_headers = qw(
-		  nodes/nodes.h
-		  nodes/primnodes.h
-		  nodes/parsenodes.h
-		  nodes/pathnodes.h
-		  nodes/plannodes.h
-		  nodes/execnodes.h
-		  access/amapi.h
-		  access/sdir.h
-		  access/tableam.h
-		  access/tsmapi.h
-		  commands/event_trigger.h
-		  commands/trigger.h
-		  executor/tuptable.h
-		  foreign/fdwapi.h
-		  nodes/extensible.h
-		  nodes/lockoptions.h
-		  nodes/replnodes.h
-		  nodes/supportnodes.h
-		  nodes/value.h
-		  utils/rel.h
-		);
+		if (IsNewer('src/backend/nodes/node-support-stamp', $nodefile))
+		{
+			$need_node_support = 1;
+			last;
+		}
+	}
+	$need_node_support = 1
+	  if IsNewer(
+		'src/backend/nodes/node-support-stamp',
+		'src/backend/nodes/gen_node_support.pl');
 
-		my @node_files = map { "src/include/$_" } @node_headers;
-
+	if ($need_node_support)
+	{
 		system("perl src/backend/nodes/gen_node_support.pl --outdir src/backend/nodes @node_files");
 		open(my $f, '>', 'src/backend/nodes/node-support-stamp')
 		  || confess "Could not touch node-support-stamp";

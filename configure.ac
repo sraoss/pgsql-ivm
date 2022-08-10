@@ -1214,7 +1214,7 @@ LIBS="$LIBS $PTHREAD_LIBS"
 AC_CHECK_HEADER(pthread.h, [], [AC_MSG_ERROR([
 pthread.h not found;  use --disable-thread-safety to disable thread safety])])
 
-AC_CHECK_FUNCS([strerror_r getpwuid_r gethostbyname_r])
+AC_CHECK_FUNCS([strerror_r gethostbyname_r])
 
 # Do test here with the proper thread flags
 PGAC_FUNC_STRERROR_R_INT
@@ -1452,7 +1452,8 @@ AC_CHECK_HEADERS(m4_normalize([
 	ifaddrs.h
 	langinfo.h
 	mbarrier.h
-	poll.h
+	net/if.h
+	netinet/tcp.h
 	sys/epoll.h
 	sys/event.h
 	sys/ipc.h
@@ -1465,34 +1466,12 @@ AC_CHECK_HEADERS(m4_normalize([
 	sys/shm.h
 	sys/signalfd.h
 	sys/sockio.h
-	sys/tas.h
+	sys/ucred.h
 	sys/uio.h
 	sys/un.h
 	termios.h
 	ucred.h
-	wctype.h
 ]))
-
-# On BSD, test for net/if.h will fail unless sys/socket.h
-# is included first.
-AC_CHECK_HEADERS(net/if.h, [], [],
-[AC_INCLUDES_DEFAULT
-#include <sys/socket.h>
-])
-
-# On OpenBSD, test for sys/ucred.h will fail unless sys/param.h
-# is included first.
-AC_CHECK_HEADERS(sys/ucred.h, [], [],
-[AC_INCLUDES_DEFAULT
-#include <sys/param.h>
-])
-
-# At least on IRIX, test for netinet/tcp.h will fail unless
-# netinet/in.h is included first.
-AC_CHECK_HEADERS(netinet/tcp.h, [], [],
-[AC_INCLUDES_DEFAULT
-#include <netinet/in.h>
-])
 
 if expr x"$pgac_cv_check_readline" : 'x-lreadline' >/dev/null ; then
   AC_CHECK_HEADERS(readline/readline.h, [],
@@ -1638,7 +1617,6 @@ m4_defun([AC_PROG_CC_STDC], []) dnl We don't want that.
 AC_C_BIGENDIAN
 AC_C_INLINE
 PGAC_PRINTF_ARCHETYPE
-PGAC_C_FUNCNAME_SUPPORT
 PGAC_C_STATIC_ASSERT
 PGAC_C_TYPEOF
 PGAC_C_TYPES_COMPATIBLE
@@ -1782,7 +1760,6 @@ fi
 ##
 
 PGAC_VAR_INT_TIMEZONE
-PGAC_FUNC_GETTIMEOFDAY_1ARG
 PGAC_FUNC_WCSTOMBS_L
 
 # Some versions of libedit contain strlcpy(), setproctitle(), and other
@@ -1794,34 +1771,24 @@ LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
 AC_CHECK_FUNCS(m4_normalize([
 	backtrace_symbols
-	clock_gettime
 	copyfile
-	fdatasync
 	getifaddrs
 	getpeerucred
-	getrlimit
 	inet_pton
 	kqueue
 	mbstowcs_l
 	memset_s
-	poll
 	posix_fallocate
 	ppoll
 	pthread_is_threaded_np
-	readlink
-	readv
 	setproctitle
 	setproctitle_fast
-	setsid
-	shm_open
 	strchrnul
 	strsignal
-	symlink
 	syncfs
 	sync_file_range
 	uselocale
 	wcstombs_l
-	writev
 ]))
 
 # These typically are compiler builtins, for which AC_CHECK_FUNCS fails.
@@ -1839,33 +1806,6 @@ PGAC_CHECK_BUILTIN_FUNC_PTR([__builtin_frame_address], [0])
 # We require 64-bit fseeko() to be available, but run this check anyway
 # in case it finds that _LARGEFILE_SOURCE has to be #define'd for that.
 AC_FUNC_FSEEKO
-
-# Make sure there's a declaration for sigwait(), then make sure
-# that it conforms to the POSIX standard (there seem to still be
-# some platforms out there with pre-POSIX sigwait()).  On Solaris,
-# _POSIX_PTHREAD_SEMANTICS affects the result, but we already
-# added that to CPPFLAGS.
-AC_CHECK_DECLS(sigwait, [], [], [#include <signal.h>])
-if test "x$ac_cv_have_decl_sigwait" = xyes; then
-  AC_CACHE_CHECK([for POSIX-conforming sigwait declaration],
-    [pgac_cv_have_posix_decl_sigwait],
-    [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([
-      #include <signal.h>
-      int sigwait(const sigset_t *set, int *sig);
-      ],
-      [])],
-      [pgac_cv_have_posix_decl_sigwait=yes],
-      [pgac_cv_have_posix_decl_sigwait=no])])
-fi
-if test "x$pgac_cv_have_posix_decl_sigwait" = xyes; then
-  AC_DEFINE(HAVE_POSIX_DECL_SIGWAIT, 1,
-            [Define to 1 if you have a POSIX-conforming sigwait declaration.])
-else
-  # On non-Windows, libpq requires POSIX sigwait() for thread safety.
-  if test "$enable_thread_safety" = yes -a "$PORTNAME" != "win32"; then
-    AC_MSG_ERROR([POSIX-conforming sigwait is required to enable thread safety.])
-  fi
-fi
 
 # posix_fadvise() is a no-op on Solaris, so don't incur function overhead
 # by calling it, 2009-04-02
@@ -1887,8 +1827,6 @@ AC_CHECK_DECLS([pwritev], [], [AC_LIBOBJ(pwritev)], [#include <sys/uio.h>])
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
 
-AC_CHECK_DECLS([RTLD_GLOBAL, RTLD_NOW], [], [], [#include <dlfcn.h>])
-
 AC_CHECK_TYPE([struct sockaddr_in6],
         [AC_DEFINE(HAVE_IPV6, 1, [Define to 1 if you have support for IPv6.])],
         [],
@@ -1909,21 +1847,14 @@ if test "$pgac_cv_var_PS_STRINGS" = yes ; then
 fi
 
 AC_REPLACE_FUNCS(m4_normalize([
-	dlopen
 	explicit_bzero
-	fls
 	getopt
 	getpeereid
-	getrusage
 	inet_aton
-	link
 	mkdtemp
-	pread
-	pwrite
 	strlcat
 	strlcpy
 	strnlen
-	strtof
 ]))
 
 if test "$enable_thread_safety" = yes; then
@@ -1934,24 +1865,10 @@ if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
 	# have a broken strtof(), so substitute its implementation.
 	# That's not a perfect fix, since it doesn't avoid double-rounding,
-	# but we have no better options. To get that, though, we have to
-	# force the file to be compiled despite HAVE_STRTOF.
+	# but we have no better options.
 	AC_LIBOBJ([strtof])
 	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
 fi
-
-case $host_os in
-        # Windows uses a specialised env handler
-        mingw*)
-                AC_DEFINE(HAVE_SETENV, 1, [Define to 1 because replacement version used.])
-                AC_DEFINE(HAVE_UNSETENV, 1, [Define to 1 because replacement version used.])
-                ac_cv_func_setenv=yes
-                ac_cv_func_unsetenv=yes
-                ;;
-        *)
-                AC_REPLACE_FUNCS([setenv unsetenv])
-                ;;
-esac
 
 # System's version of getaddrinfo(), if any, may be used only if we found
 # a definition for struct addrinfo; see notes in src/include/getaddrinfo.h.
@@ -1986,32 +1903,23 @@ fi
 # Win32 (really MinGW) support
 if test "$PORTNAME" = "win32"; then
   AC_CHECK_FUNCS(_configthreadlocale)
-  AC_REPLACE_FUNCS(gettimeofday)
   AC_LIBOBJ(dirmod)
-  AC_LIBOBJ(fdatasync)
+  AC_LIBOBJ(getrusage)
   AC_LIBOBJ(kill)
   AC_LIBOBJ(open)
   AC_LIBOBJ(system)
+  AC_LIBOBJ(win32dlopen)
   AC_LIBOBJ(win32env)
   AC_LIBOBJ(win32error)
+  AC_LIBOBJ(win32fdatasync)
+  AC_LIBOBJ(win32link)
   AC_LIBOBJ(win32ntdll)
+  AC_LIBOBJ(win32pread)
+  AC_LIBOBJ(win32pwrite)
   AC_LIBOBJ(win32security)
   AC_LIBOBJ(win32setlocale)
   AC_LIBOBJ(win32stat)
-  AC_DEFINE([HAVE_SYMLINK], 1,
-            [Define to 1 if you have the `symlink' function.])
-  AC_CHECK_TYPES(MINIDUMP_TYPE, [pgac_minidump_type=yes], [pgac_minidump_type=no], [
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <string.h>
-#include <dbghelp.h>])
 fi
-if test x"$pgac_minidump_type" = x"yes" ; then
-  AC_SUBST(have_win32_dbghelp,yes)
-else
-  AC_SUBST(have_win32_dbghelp,no)
-fi
-
 # Cygwin needs only a bit of that
 if test "$PORTNAME" = "cygwin"; then
   AC_LIBOBJ(dirmod)
@@ -2038,11 +1946,6 @@ AC_CACHE_CHECK([for optreset], pgac_cv_var_int_optreset,
 if test x"$pgac_cv_var_int_optreset" = x"yes"; then
   AC_DEFINE(HAVE_INT_OPTRESET, 1, [Define to 1 if you have the global variable 'int optreset'.])
 fi
-
-AC_CHECK_FUNCS([strtoll __strtoll strtoq], [break])
-AC_CHECK_FUNCS([strtoull __strtoull strtouq], [break])
-# strto[u]ll may exist but not be declared
-AC_CHECK_DECLS([strtoll, strtoull])
 
 if test "$with_icu" = yes; then
   ac_save_CPPFLAGS=$CPPFLAGS

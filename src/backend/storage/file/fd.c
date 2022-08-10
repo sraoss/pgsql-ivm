@@ -442,20 +442,12 @@ pg_fsync_writethrough(int fd)
 
 /*
  * pg_fdatasync --- same as fdatasync except does nothing if enableFsync is off
- *
- * Not all platforms have fdatasync; treat as fsync if not available.
  */
 int
 pg_fdatasync(int fd)
 {
 	if (enableFsync)
-	{
-#ifdef HAVE_FDATASYNC
 		return fdatasync(fd);
-#else
-		return fsync(fd);
-#endif
-	}
 	else
 		return 0;
 }
@@ -895,11 +887,7 @@ count_usable_fds(int max_to_probe, int *usable_fds, int *already_open)
 	fd = (int *) palloc(size * sizeof(int));
 
 #ifdef HAVE_GETRLIMIT
-#ifdef RLIMIT_NOFILE			/* most platforms use RLIMIT_NOFILE */
 	getrlimit_status = getrlimit(RLIMIT_NOFILE, &rlim);
-#else							/* but BSD doesn't ... */
-	getrlimit_status = getrlimit(RLIMIT_OFILE, &rlim);
-#endif							/* RLIMIT_NOFILE */
 	if (getrlimit_status != 0)
 		ereport(WARNING, (errmsg("getrlimit failed: %m")));
 #endif							/* HAVE_GETRLIMIT */
@@ -2067,7 +2055,7 @@ FileRead(File file, char *buffer, int amount, off_t offset,
 
 retry:
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pg_pread(vfdP->fd, buffer, amount, offset);
+	returnCode = pread(vfdP->fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	if (returnCode < 0)
@@ -2149,7 +2137,7 @@ FileWrite(File file, char *buffer, int amount, off_t offset,
 retry:
 	errno = 0;
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pg_pwrite(VfdCache[file].fd, buffer, amount, offset);
+	returnCode = pwrite(VfdCache[file].fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	/* if write didn't set errno, assume problem is no disk space */
@@ -3377,7 +3365,6 @@ SyncDataDirectory(void)
 	 */
 	xlog_is_symlink = false;
 
-#ifndef WIN32
 	{
 		struct stat st;
 
@@ -3389,10 +3376,6 @@ SyncDataDirectory(void)
 		else if (S_ISLNK(st.st_mode))
 			xlog_is_symlink = true;
 	}
-#else
-	if (pgwin32_is_junction("pg_wal"))
-		xlog_is_symlink = true;
-#endif
 
 #ifdef HAVE_SYNCFS
 	if (recovery_init_sync_method == RECOVERY_INIT_SYNC_METHOD_SYNCFS)
@@ -3766,7 +3749,7 @@ data_sync_elevel(int elevel)
 }
 
 /*
- * A convenience wrapper for pg_pwritev() that retries on partial write.  If an
+ * A convenience wrapper for pwritev() that retries on partial write.  If an
  * error is returned, it is unspecified how much has been written.
  */
 ssize_t
@@ -3786,7 +3769,7 @@ pg_pwritev_with_retry(int fd, const struct iovec *iov, int iovcnt, off_t offset)
 	for (;;)
 	{
 		/* Write as much as we can. */
-		part = pg_pwritev(fd, iov, iovcnt, offset);
+		part = pwritev(fd, iov, iovcnt, offset);
 		if (part < 0)
 			return -1;
 

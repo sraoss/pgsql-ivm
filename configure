@@ -648,7 +648,6 @@ MSGFMT
 PG_CRC32C_OBJS
 CFLAGS_ARMV8_CRC32C
 CFLAGS_SSE42
-have_win32_dbghelp
 LIBOBJS
 ZSTD
 LZ4
@@ -11751,7 +11750,7 @@ fi
 
 
 
-for ac_func in strerror_r getpwuid_r gethostbyname_r
+for ac_func in strerror_r gethostbyname_r
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
@@ -13875,67 +13874,13 @@ $as_echo "#define HAVE_STDBOOL_H 1" >>confdefs.h
 fi
 
 
-for ac_header in atomic.h copyfile.h execinfo.h getopt.h ifaddrs.h langinfo.h mbarrier.h poll.h sys/epoll.h sys/event.h sys/ipc.h sys/personality.h sys/prctl.h sys/procctl.h sys/resource.h sys/select.h sys/sem.h sys/shm.h sys/signalfd.h sys/sockio.h sys/tas.h sys/uio.h sys/un.h termios.h ucred.h wctype.h
+for ac_header in atomic.h copyfile.h execinfo.h getopt.h ifaddrs.h langinfo.h mbarrier.h net/if.h netinet/tcp.h sys/epoll.h sys/event.h sys/ipc.h sys/personality.h sys/prctl.h sys/procctl.h sys/resource.h sys/select.h sys/sem.h sys/shm.h sys/signalfd.h sys/sockio.h sys/ucred.h sys/uio.h sys/un.h termios.h ucred.h
 do :
   as_ac_Header=`$as_echo "ac_cv_header_$ac_header" | $as_tr_sh`
 ac_fn_c_check_header_mongrel "$LINENO" "$ac_header" "$as_ac_Header" "$ac_includes_default"
 if eval test \"x\$"$as_ac_Header"\" = x"yes"; then :
   cat >>confdefs.h <<_ACEOF
 #define `$as_echo "HAVE_$ac_header" | $as_tr_cpp` 1
-_ACEOF
-
-fi
-
-done
-
-
-# On BSD, test for net/if.h will fail unless sys/socket.h
-# is included first.
-for ac_header in net/if.h
-do :
-  ac_fn_c_check_header_compile "$LINENO" "net/if.h" "ac_cv_header_net_if_h" "$ac_includes_default
-#include <sys/socket.h>
-
-"
-if test "x$ac_cv_header_net_if_h" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_NET_IF_H 1
-_ACEOF
-
-fi
-
-done
-
-
-# On OpenBSD, test for sys/ucred.h will fail unless sys/param.h
-# is included first.
-for ac_header in sys/ucred.h
-do :
-  ac_fn_c_check_header_compile "$LINENO" "sys/ucred.h" "ac_cv_header_sys_ucred_h" "$ac_includes_default
-#include <sys/param.h>
-
-"
-if test "x$ac_cv_header_sys_ucred_h" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_SYS_UCRED_H 1
-_ACEOF
-
-fi
-
-done
-
-
-# At least on IRIX, test for netinet/tcp.h will fail unless
-# netinet/in.h is included first.
-for ac_header in netinet/tcp.h
-do :
-  ac_fn_c_check_header_compile "$LINENO" "netinet/tcp.h" "ac_cv_header_netinet_tcp_h" "$ac_includes_default
-#include <netinet/in.h>
-
-"
-if test "x$ac_cv_header_netinet_tcp_h" = xyes; then :
-  cat >>confdefs.h <<_ACEOF
-#define HAVE_NETINET_TCP_H 1
 _ACEOF
 
 fi
@@ -14937,67 +14882,6 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for __func__" >&5
-$as_echo_n "checking for __func__... " >&6; }
-if ${pgac_cv_funcname_func_support+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <stdio.h>
-int
-main ()
-{
-printf("%s\n", __func__);
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-  pgac_cv_funcname_func_support=yes
-else
-  pgac_cv_funcname_func_support=no
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $pgac_cv_funcname_func_support" >&5
-$as_echo "$pgac_cv_funcname_func_support" >&6; }
-if test x"$pgac_cv_funcname_func_support" = xyes ; then
-
-$as_echo "#define HAVE_FUNCNAME__FUNC 1" >>confdefs.h
-
-else
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking for __FUNCTION__" >&5
-$as_echo_n "checking for __FUNCTION__... " >&6; }
-if ${pgac_cv_funcname_function_support+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <stdio.h>
-int
-main ()
-{
-printf("%s\n", __FUNCTION__);
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-  pgac_cv_funcname_function_support=yes
-else
-  pgac_cv_funcname_function_support=no
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $pgac_cv_funcname_function_support" >&5
-$as_echo "$pgac_cv_funcname_function_support" >&6; }
-if test x"$pgac_cv_funcname_function_support" = xyes ; then
-
-$as_echo "#define HAVE_FUNCNAME__FUNCTION 1" >>confdefs.h
-
-fi
-fi
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for _Static_assert" >&5
 $as_echo_n "checking for _Static_assert... " >&6; }
 if ${pgac_cv__static_assert+:} false; then :
@@ -15945,39 +15829,6 @@ if test x"$pgac_cv_var_int_timezone" = xyes ; then
 $as_echo "#define HAVE_INT_TIMEZONE 1" >>confdefs.h
 
 fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: checking whether gettimeofday takes only one argument" >&5
-$as_echo_n "checking whether gettimeofday takes only one argument... " >&6; }
-if ${pgac_cv_func_gettimeofday_1arg+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-#include <sys/time.h>
-int
-main ()
-{
-struct timeval *tp;
-struct timezone *tzp;
-gettimeofday(tp,tzp);
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-  pgac_cv_func_gettimeofday_1arg=no
-else
-  pgac_cv_func_gettimeofday_1arg=yes
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $pgac_cv_func_gettimeofday_1arg" >&5
-$as_echo "$pgac_cv_func_gettimeofday_1arg" >&6; }
-if test x"$pgac_cv_func_gettimeofday_1arg" = xyes ; then
-
-$as_echo "#define GETTIMEOFDAY_1ARG 1" >>confdefs.h
-
-fi
-
 { $as_echo "$as_me:${as_lineno-$LINENO}: checking for wcstombs_l declaration" >&5
 $as_echo_n "checking for wcstombs_l declaration... " >&6; }
 if ${pgac_cv_func_wcstombs_l+:} false; then :
@@ -16039,7 +15890,7 @@ fi
 LIBS_including_readline="$LIBS"
 LIBS=`echo "$LIBS" | sed -e 's/-ledit//g' -e 's/-lreadline//g'`
 
-for ac_func in backtrace_symbols clock_gettime copyfile fdatasync getifaddrs getpeerucred getrlimit inet_pton kqueue mbstowcs_l memset_s poll posix_fallocate ppoll pthread_is_threaded_np readlink readv setproctitle setproctitle_fast setsid shm_open strchrnul strsignal symlink syncfs sync_file_range uselocale wcstombs_l writev
+for ac_func in backtrace_symbols copyfile getifaddrs getpeerucred inet_pton kqueue mbstowcs_l memset_s posix_fallocate ppoll pthread_is_threaded_np setproctitle setproctitle_fast strchrnul strsignal syncfs sync_file_range uselocale wcstombs_l
 do :
   as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
 ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
@@ -16394,11 +16245,9 @@ $as_echo "#define HAVE_FSEEKO 1" >>confdefs.h
 fi
 
 
-# Make sure there's a declaration for sigwait(), then make sure
-# that it conforms to the POSIX standard (there seem to still be
-# some platforms out there with pre-POSIX sigwait()).  On Solaris,
-# _POSIX_PTHREAD_SEMANTICS affects the result, but we already
-# added that to CPPFLAGS.
+# posix_fadvise() is a no-op on Solaris, so don't incur function overhead
+# by calling it, 2009-04-02
+# http://src.opensolaris.org/source/xref/onnv/onnv-gate/usr/src/lib/libc/port/gen/posix_fadvise.c
 # The Clang compiler raises a warning for an undeclared identifier that matches
 # a compiler builtin function.  All extant Clang versions are affected, as of
 # Clang 3.6.0.  Test a builtin known to every version.  This problem affects the
@@ -16487,62 +16336,6 @@ case $ac_cv_c_decl_report in
   *) ac_c_decl_warn_flag= ;;
 esac
 
-ac_fn_c_check_decl "$LINENO" "sigwait" "ac_cv_have_decl_sigwait" "#include <signal.h>
-"
-if test "x$ac_cv_have_decl_sigwait" = xyes; then :
-  ac_have_decl=1
-else
-  ac_have_decl=0
-fi
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_DECL_SIGWAIT $ac_have_decl
-_ACEOF
-
-if test "x$ac_cv_have_decl_sigwait" = xyes; then
-  { $as_echo "$as_me:${as_lineno-$LINENO}: checking for POSIX-conforming sigwait declaration" >&5
-$as_echo_n "checking for POSIX-conforming sigwait declaration... " >&6; }
-if ${pgac_cv_have_posix_decl_sigwait+:} false; then :
-  $as_echo_n "(cached) " >&6
-else
-  cat confdefs.h - <<_ACEOF >conftest.$ac_ext
-/* end confdefs.h.  */
-
-      #include <signal.h>
-      int sigwait(const sigset_t *set, int *sig);
-
-int
-main ()
-{
-
-  ;
-  return 0;
-}
-_ACEOF
-if ac_fn_c_try_compile "$LINENO"; then :
-  pgac_cv_have_posix_decl_sigwait=yes
-else
-  pgac_cv_have_posix_decl_sigwait=no
-fi
-rm -f core conftest.err conftest.$ac_objext conftest.$ac_ext
-fi
-{ $as_echo "$as_me:${as_lineno-$LINENO}: result: $pgac_cv_have_posix_decl_sigwait" >&5
-$as_echo "$pgac_cv_have_posix_decl_sigwait" >&6; }
-fi
-if test "x$pgac_cv_have_posix_decl_sigwait" = xyes; then
-
-$as_echo "#define HAVE_POSIX_DECL_SIGWAIT 1" >>confdefs.h
-
-else
-  # On non-Windows, libpq requires POSIX sigwait() for thread safety.
-  if test "$enable_thread_safety" = yes -a "$PORTNAME" != "win32"; then
-    as_fn_error $? "POSIX-conforming sigwait is required to enable thread safety." "$LINENO" 5
-  fi
-fi
-
-# posix_fadvise() is a no-op on Solaris, so don't incur function overhead
-# by calling it, 2009-04-02
-# http://src.opensolaris.org/source/xref/onnv/onnv-gate/usr/src/lib/libc/port/gen/posix_fadvise.c
 if test "$PORTNAME" != "solaris"; then :
 
 for ac_func in posix_fadvise
@@ -16676,30 +16469,6 @@ cat >>confdefs.h <<_ACEOF
 _ACEOF
 
 
-ac_fn_c_check_decl "$LINENO" "RTLD_GLOBAL" "ac_cv_have_decl_RTLD_GLOBAL" "#include <dlfcn.h>
-"
-if test "x$ac_cv_have_decl_RTLD_GLOBAL" = xyes; then :
-  ac_have_decl=1
-else
-  ac_have_decl=0
-fi
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_DECL_RTLD_GLOBAL $ac_have_decl
-_ACEOF
-ac_fn_c_check_decl "$LINENO" "RTLD_NOW" "ac_cv_have_decl_RTLD_NOW" "#include <dlfcn.h>
-"
-if test "x$ac_cv_have_decl_RTLD_NOW" = xyes; then :
-  ac_have_decl=1
-else
-  ac_have_decl=0
-fi
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_DECL_RTLD_NOW $ac_have_decl
-_ACEOF
-
-
 ac_fn_c_check_type "$LINENO" "struct sockaddr_in6" "ac_cv_type_struct_sockaddr_in6" "$ac_includes_default
 #include <netinet/in.h>
 "
@@ -16745,19 +16514,6 @@ $as_echo "#define HAVE_PS_STRINGS 1" >>confdefs.h
 
 fi
 
-ac_fn_c_check_func "$LINENO" "dlopen" "ac_cv_func_dlopen"
-if test "x$ac_cv_func_dlopen" = xyes; then :
-  $as_echo "#define HAVE_DLOPEN 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" dlopen.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS dlopen.$ac_objext"
- ;;
-esac
-
-fi
-
 ac_fn_c_check_func "$LINENO" "explicit_bzero" "ac_cv_func_explicit_bzero"
 if test "x$ac_cv_func_explicit_bzero" = xyes; then :
   $as_echo "#define HAVE_EXPLICIT_BZERO 1" >>confdefs.h
@@ -16766,19 +16522,6 @@ else
   case " $LIBOBJS " in
   *" explicit_bzero.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS explicit_bzero.$ac_objext"
- ;;
-esac
-
-fi
-
-ac_fn_c_check_func "$LINENO" "fls" "ac_cv_func_fls"
-if test "x$ac_cv_func_fls" = xyes; then :
-  $as_echo "#define HAVE_FLS 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" fls.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS fls.$ac_objext"
  ;;
 esac
 
@@ -16810,19 +16553,6 @@ esac
 
 fi
 
-ac_fn_c_check_func "$LINENO" "getrusage" "ac_cv_func_getrusage"
-if test "x$ac_cv_func_getrusage" = xyes; then :
-  $as_echo "#define HAVE_GETRUSAGE 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" getrusage.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS getrusage.$ac_objext"
- ;;
-esac
-
-fi
-
 ac_fn_c_check_func "$LINENO" "inet_aton" "ac_cv_func_inet_aton"
 if test "x$ac_cv_func_inet_aton" = xyes; then :
   $as_echo "#define HAVE_INET_ATON 1" >>confdefs.h
@@ -16836,19 +16566,6 @@ esac
 
 fi
 
-ac_fn_c_check_func "$LINENO" "link" "ac_cv_func_link"
-if test "x$ac_cv_func_link" = xyes; then :
-  $as_echo "#define HAVE_LINK 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" link.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS link.$ac_objext"
- ;;
-esac
-
-fi
-
 ac_fn_c_check_func "$LINENO" "mkdtemp" "ac_cv_func_mkdtemp"
 if test "x$ac_cv_func_mkdtemp" = xyes; then :
   $as_echo "#define HAVE_MKDTEMP 1" >>confdefs.h
@@ -16857,32 +16574,6 @@ else
   case " $LIBOBJS " in
   *" mkdtemp.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS mkdtemp.$ac_objext"
- ;;
-esac
-
-fi
-
-ac_fn_c_check_func "$LINENO" "pread" "ac_cv_func_pread"
-if test "x$ac_cv_func_pread" = xyes; then :
-  $as_echo "#define HAVE_PREAD 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" pread.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS pread.$ac_objext"
- ;;
-esac
-
-fi
-
-ac_fn_c_check_func "$LINENO" "pwrite" "ac_cv_func_pwrite"
-if test "x$ac_cv_func_pwrite" = xyes; then :
-  $as_echo "#define HAVE_PWRITE 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" pwrite.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS pwrite.$ac_objext"
  ;;
 esac
 
@@ -16927,19 +16618,6 @@ esac
 
 fi
 
-ac_fn_c_check_func "$LINENO" "strtof" "ac_cv_func_strtof"
-if test "x$ac_cv_func_strtof" = xyes; then :
-  $as_echo "#define HAVE_STRTOF 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" strtof.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS strtof.$ac_objext"
- ;;
-esac
-
-fi
-
 
 
 if test "$enable_thread_safety" = yes; then
@@ -16963,8 +16641,7 @@ if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	# Cygwin and (apparently, based on test results) Mingw both
 	# have a broken strtof(), so substitute its implementation.
 	# That's not a perfect fix, since it doesn't avoid double-rounding,
-	# but we have no better options. To get that, though, we have to
-	# force the file to be compiled despite HAVE_STRTOF.
+	# but we have no better options.
 	case " $LIBOBJS " in
   *" strtof.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS strtof.$ac_objext"
@@ -16974,49 +16651,6 @@ esac
 	{ $as_echo "$as_me:${as_lineno-$LINENO}: On $host_os we will use our strtof wrapper." >&5
 $as_echo "$as_me: On $host_os we will use our strtof wrapper." >&6;}
 fi
-
-case $host_os in
-        # Windows uses a specialised env handler
-        mingw*)
-
-$as_echo "#define HAVE_SETENV 1" >>confdefs.h
-
-
-$as_echo "#define HAVE_UNSETENV 1" >>confdefs.h
-
-                ac_cv_func_setenv=yes
-                ac_cv_func_unsetenv=yes
-                ;;
-        *)
-                ac_fn_c_check_func "$LINENO" "setenv" "ac_cv_func_setenv"
-if test "x$ac_cv_func_setenv" = xyes; then :
-  $as_echo "#define HAVE_SETENV 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" setenv.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS setenv.$ac_objext"
- ;;
-esac
-
-fi
-
-ac_fn_c_check_func "$LINENO" "unsetenv" "ac_cv_func_unsetenv"
-if test "x$ac_cv_func_unsetenv" = xyes; then :
-  $as_echo "#define HAVE_UNSETENV 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" unsetenv.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS unsetenv.$ac_objext"
- ;;
-esac
-
-fi
-
-
-                ;;
-esac
 
 # System's version of getaddrinfo(), if any, may be used only if we found
 # a definition for struct addrinfo; see notes in src/include/getaddrinfo.h.
@@ -17112,20 +16746,6 @@ _ACEOF
 fi
 done
 
-  ac_fn_c_check_func "$LINENO" "gettimeofday" "ac_cv_func_gettimeofday"
-if test "x$ac_cv_func_gettimeofday" = xyes; then :
-  $as_echo "#define HAVE_GETTIMEOFDAY 1" >>confdefs.h
-
-else
-  case " $LIBOBJS " in
-  *" gettimeofday.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS gettimeofday.$ac_objext"
- ;;
-esac
-
-fi
-
-
   case " $LIBOBJS " in
   *" dirmod.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS dirmod.$ac_objext"
@@ -17133,8 +16753,8 @@ fi
 esac
 
   case " $LIBOBJS " in
-  *" fdatasync.$ac_objext "* ) ;;
-  *) LIBOBJS="$LIBOBJS fdatasync.$ac_objext"
+  *" getrusage.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS getrusage.$ac_objext"
  ;;
 esac
 
@@ -17157,6 +16777,12 @@ esac
 esac
 
   case " $LIBOBJS " in
+  *" win32dlopen.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS win32dlopen.$ac_objext"
+ ;;
+esac
+
+  case " $LIBOBJS " in
   *" win32env.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS win32env.$ac_objext"
  ;;
@@ -17169,8 +16795,32 @@ esac
 esac
 
   case " $LIBOBJS " in
+  *" win32fdatasync.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS win32fdatasync.$ac_objext"
+ ;;
+esac
+
+  case " $LIBOBJS " in
+  *" win32link.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS win32link.$ac_objext"
+ ;;
+esac
+
+  case " $LIBOBJS " in
   *" win32ntdll.$ac_objext "* ) ;;
   *) LIBOBJS="$LIBOBJS win32ntdll.$ac_objext"
+ ;;
+esac
+
+  case " $LIBOBJS " in
+  *" win32pread.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS win32pread.$ac_objext"
+ ;;
+esac
+
+  case " $LIBOBJS " in
+  *" win32pwrite.$ac_objext "* ) ;;
+  *) LIBOBJS="$LIBOBJS win32pwrite.$ac_objext"
  ;;
 esac
 
@@ -17192,35 +16842,7 @@ esac
  ;;
 esac
 
-
-$as_echo "#define HAVE_SYMLINK 1" >>confdefs.h
-
-  ac_fn_c_check_type "$LINENO" "MINIDUMP_TYPE" "ac_cv_type_MINIDUMP_TYPE" "
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <string.h>
-#include <dbghelp.h>
-"
-if test "x$ac_cv_type_MINIDUMP_TYPE" = xyes; then :
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_MINIDUMP_TYPE 1
-_ACEOF
-
-pgac_minidump_type=yes
-else
-  pgac_minidump_type=no
 fi
-
-fi
-if test x"$pgac_minidump_type" = x"yes" ; then
-  have_win32_dbghelp=yes
-
-else
-  have_win32_dbghelp=no
-
-fi
-
 # Cygwin needs only a bit of that
 if test "$PORTNAME" = "cygwin"; then
   case " $LIBOBJS " in
@@ -17307,53 +16929,6 @@ if test x"$pgac_cv_var_int_optreset" = x"yes"; then
 $as_echo "#define HAVE_INT_OPTRESET 1" >>confdefs.h
 
 fi
-
-for ac_func in strtoll __strtoll strtoq
-do :
-  as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
-ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
-if eval test \"x\$"$as_ac_var"\" = x"yes"; then :
-  cat >>confdefs.h <<_ACEOF
-#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
-_ACEOF
- break
-fi
-done
-
-for ac_func in strtoull __strtoull strtouq
-do :
-  as_ac_var=`$as_echo "ac_cv_func_$ac_func" | $as_tr_sh`
-ac_fn_c_check_func "$LINENO" "$ac_func" "$as_ac_var"
-if eval test \"x\$"$as_ac_var"\" = x"yes"; then :
-  cat >>confdefs.h <<_ACEOF
-#define `$as_echo "HAVE_$ac_func" | $as_tr_cpp` 1
-_ACEOF
- break
-fi
-done
-
-# strto[u]ll may exist but not be declared
-ac_fn_c_check_decl "$LINENO" "strtoll" "ac_cv_have_decl_strtoll" "$ac_includes_default"
-if test "x$ac_cv_have_decl_strtoll" = xyes; then :
-  ac_have_decl=1
-else
-  ac_have_decl=0
-fi
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_DECL_STRTOLL $ac_have_decl
-_ACEOF
-ac_fn_c_check_decl "$LINENO" "strtoull" "ac_cv_have_decl_strtoull" "$ac_includes_default"
-if test "x$ac_cv_have_decl_strtoull" = xyes; then :
-  ac_have_decl=1
-else
-  ac_have_decl=0
-fi
-
-cat >>confdefs.h <<_ACEOF
-#define HAVE_DECL_STRTOULL $ac_have_decl
-_ACEOF
-
 
 if test "$with_icu" = yes; then
   ac_save_CPPFLAGS=$CPPFLAGS

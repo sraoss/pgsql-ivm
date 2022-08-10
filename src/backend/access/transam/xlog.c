@@ -168,13 +168,11 @@ const struct config_enum_entry sync_method_options[] = {
 #ifdef HAVE_FSYNC_WRITETHROUGH
 	{"fsync_writethrough", SYNC_METHOD_FSYNC_WRITETHROUGH, false},
 #endif
-#ifdef HAVE_FDATASYNC
 	{"fdatasync", SYNC_METHOD_FDATASYNC, false},
-#endif
-#ifdef OPEN_SYNC_FLAG
+#ifdef O_SYNC
 	{"open_sync", SYNC_METHOD_OPEN, false},
 #endif
-#ifdef OPEN_DATASYNC_FLAG
+#ifdef O_DSYNC
 	{"open_datasync", SYNC_METHOD_OPEN_DSYNC, false},
 #endif
 	{NULL, 0, false}
@@ -2189,7 +2187,7 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 					INSTR_TIME_SET_CURRENT(start);
 
 				pgstat_report_wait_start(WAIT_EVENT_WAL_WRITE);
-				written = pg_pwrite(openLogFile, from, nleft, startoffset);
+				written = pwrite(openLogFile, from, nleft, startoffset);
 				pgstat_report_wait_end();
 
 				/*
@@ -3011,7 +3009,7 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 		 * enough.
 		 */
 		errno = 0;
-		if (pg_pwrite(fd, zbuffer.data, 1, wal_segment_size - 1) != 1)
+		if (pwrite(fd, zbuffer.data, 1, wal_segment_size - 1) != 1)
 		{
 			/* if write didn't set errno, assume no disk space */
 			save_errno = errno ? errno : ENOSPC;
@@ -7894,10 +7892,10 @@ get_sync_bit(int method)
 
 	/*
 	 * Optimize writes by bypassing kernel cache with O_DIRECT when using
-	 * O_SYNC/O_FSYNC and O_DSYNC.  But only if archiving and streaming are
-	 * disabled, otherwise the archive command or walsender process will read
-	 * the WAL soon after writing it, which is guaranteed to cause a physical
-	 * read if we bypassed the kernel cache. We also skip the
+	 * O_SYNC and O_DSYNC.  But only if archiving and streaming are disabled,
+	 * otherwise the archive command or walsender process will read the WAL
+	 * soon after writing it, which is guaranteed to cause a physical read if
+	 * we bypassed the kernel cache. We also skip the
 	 * posix_fadvise(POSIX_FADV_DONTNEED) call in XLogFileClose() for the same
 	 * reason.
 	 *
@@ -7921,13 +7919,13 @@ get_sync_bit(int method)
 		case SYNC_METHOD_FSYNC_WRITETHROUGH:
 		case SYNC_METHOD_FDATASYNC:
 			return 0;
-#ifdef OPEN_SYNC_FLAG
+#ifdef O_SYNC
 		case SYNC_METHOD_OPEN:
-			return OPEN_SYNC_FLAG | o_direct_flag;
+			return O_SYNC | o_direct_flag;
 #endif
-#ifdef OPEN_DATASYNC_FLAG
+#ifdef O_DSYNC
 		case SYNC_METHOD_OPEN_DSYNC:
-			return OPEN_DATASYNC_FLAG | o_direct_flag;
+			return O_DSYNC | o_direct_flag;
 #endif
 		default:
 			/* can't happen (unless we are out of sync with option array) */
@@ -8015,12 +8013,10 @@ issue_xlog_fsync(int fd, XLogSegNo segno, TimeLineID tli)
 				msg = _("could not fsync write-through file \"%s\": %m");
 			break;
 #endif
-#ifdef HAVE_FDATASYNC
 		case SYNC_METHOD_FDATASYNC:
 			if (pg_fdatasync(fd) != 0)
 				msg = _("could not fdatasync file \"%s\": %m");
 			break;
-#endif
 		case SYNC_METHOD_OPEN:
 		case SYNC_METHOD_OPEN_DSYNC:
 			/* not reachable */
@@ -8302,15 +8298,9 @@ do_pg_backup_start(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 			 * we sometimes use allow_in_place_tablespaces to create
 			 * directories directly under pg_tblspc, which would fail below.
 			 */
-#ifdef WIN32
-			if (!pgwin32_is_junction(fullpath))
-				continue;
-#else
 			if (get_dirent_type(fullpath, de, false, ERROR) != PGFILETYPE_LNK)
 				continue;
-#endif
 
-#if defined(HAVE_READLINK) || defined(WIN32)
 			rllen = readlink(fullpath, linkpath, sizeof(linkpath));
 			if (rllen < 0)
 			{
@@ -8363,17 +8353,6 @@ do_pg_backup_start(const char *backupidstr, bool fast, TimeLineID *starttli_p,
 							 ti->oid, escapedpath.data);
 
 			pfree(escapedpath.data);
-#else
-
-			/*
-			 * If the platform does not have symbolic links, it should not be
-			 * possible to have tablespaces - clearly somebody else created
-			 * them. Warn about it and ignore.
-			 */
-			ereport(WARNING,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("tablespaces are not supported on this platform")));
-#endif
 		}
 		FreeDir(tblspcdir);
 

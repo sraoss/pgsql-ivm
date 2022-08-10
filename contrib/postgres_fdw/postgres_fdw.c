@@ -2043,8 +2043,9 @@ postgresGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 		batch_size = get_batch_size_option(resultRelInfo->ri_RelationDesc);
 
 	/*
-	 * Disable batching when we have to use RETURNING or there are any
-	 * BEFORE/AFTER ROW INSERT triggers on the foreign table.
+	 * Disable batching when we have to use RETURNING, there are any
+	 * BEFORE/AFTER ROW INSERT triggers on the foreign table, or there are any
+	 * WITH CHECK OPTION constraints from parent views.
 	 *
 	 * When there are any BEFORE ROW INSERT triggers on the table, we can't
 	 * support it, because such triggers might query the table we're inserting
@@ -2052,6 +2053,7 @@ postgresGetForeignModifyBatchSize(ResultRelInfo *resultRelInfo)
 	 * and prepared for insertion are not there.
 	 */
 	if (resultRelInfo->ri_projectReturning != NULL ||
+		resultRelInfo->ri_WithCheckOptions != NIL ||
 		(resultRelInfo->ri_TrigDesc &&
 		 (resultRelInfo->ri_TrigDesc->trig_insert_before_row ||
 		  resultRelInfo->ri_TrigDesc->trig_insert_after_row)))
@@ -7070,7 +7072,7 @@ fetch_more_data_begin(AsyncRequest *areq)
 	snprintf(sql, sizeof(sql), "FETCH %d FROM c%u",
 			 fsstate->fetch_size, fsstate->cursor_number);
 
-	if (PQsendQuery(fsstate->conn, sql) < 0)
+	if (!PQsendQuery(fsstate->conn, sql))
 		pgfdw_report_error(ERROR, NULL, fsstate->conn, false, fsstate->query);
 
 	/* Remember that the request is in process */
