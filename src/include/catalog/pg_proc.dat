@@ -11901,5 +11901,8 @@
 { oid => '787', descr => 'ivm trigger (after)',
   proname => 'IVM_immediate_maintenance', provolatile => 'v', prorettype => 'trigger',
   proargtypes => '', prosrc => 'IVM_immediate_maintenance' },
+{ oid => '788', descr => 'ivm filetring ',
+  proname => 'ivm_visible_in_prestate', provolatile => 's', prorettype => 'bool',
+  proargtypes => 'oid tid oid', prosrc => 'ivm_visible_in_prestate' },
 
 ]
