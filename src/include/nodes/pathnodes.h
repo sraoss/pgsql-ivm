@@ -328,11 +328,11 @@ struct PlannerInfo
 
 	/*
 	 * all_result_relids is empty for SELECT, otherwise it contains at least
-	 * parse->resultRelation.  For UPDATE/DELETE across an inheritance or
-	 * partitioning tree, the result rel's child relids are added.  When using
-	 * multi-level partitioning, intermediate partitioned rels are included.
-	 * leaf_result_relids is similar except that only actual result tables,
-	 * not partitioned tables, are included in it.
+	 * parse->resultRelation.  For UPDATE/DELETE/MERGE across an inheritance
+	 * or partitioning tree, the result rel's child relids are added.  When
+	 * using multi-level partitioning, intermediate partitioned rels are
+	 * included. leaf_result_relids is similar except that only actual result
+	 * tables, not partitioned tables, are included in it.
 	 */
 	/* set of all result relids */
 	Relids		all_result_relids;
@@ -356,6 +356,11 @@ struct PlannerInfo
 
 	/* list of PlaceHolderInfos */
 	List	   *placeholder_list;
+
+	/* array of PlaceHolderInfos indexed by phid */
+	struct PlaceHolderInfo **placeholder_array pg_node_attr(read_write_ignore, array_size(placeholder_array_size));
+	/* allocated size of array */
+	int			placeholder_array_size pg_node_attr(read_write_ignore);
 
 	/* list of ForeignKeyOptInfos */
 	List	   *fkey_list;
@@ -449,6 +454,8 @@ struct PlannerInfo
 	bool		hasPseudoConstantQuals;
 	/* true if we've made any of those */
 	bool		hasAlternativeSubPlans;
+	/* true once we're no longer allowed to add PlaceHolderInfos */
+	bool		placeholdersFrozen;
 	/* true if planning a recursive WITH item */
 	bool		hasRecursion;
 
@@ -904,13 +911,11 @@ typedef struct RelOptInfo
 
 	/*
 	 * cache space for remembering if we have proven this relation unique
-	 *
-	 * can't print unique_for_rels/non_unique_for_rels; BMSes aren't Nodes
 	 */
 	/* known unique for these other relid set(s) */
-	List	   *unique_for_rels pg_node_attr(read_write_ignore);
+	List	   *unique_for_rels;
 	/* known not unique for these set(s) */
-	List	   *non_unique_for_rels pg_node_attr(read_write_ignore);
+	List	   *non_unique_for_rels;
 
 	/*
 	 * used by various scans and joins:
@@ -931,7 +936,15 @@ typedef struct RelOptInfo
 	 */
 	/* consider partitionwise join paths? (if partitioned rel) */
 	bool		consider_partitionwise_join;
-	/* Relids of topmost parents (if "other" rel) */
+
+	/*
+	 * inheritance links, if this is an otherrel (otherwise NULL):
+	 */
+	/* Immediate parent relation (dumping it would be too verbose) */
+	struct RelOptInfo *parent pg_node_attr(read_write_ignore);
+	/* Topmost parent relation (dumping it would be too verbose) */
+	struct RelOptInfo *top_parent pg_node_attr(read_write_ignore);
+	/* Relids of topmost parent (redundant, but handy) */
 	Relids		top_parent_relids;
 
 	/*
@@ -1356,18 +1369,6 @@ typedef struct PathKey
 	int			pk_strategy;	/* sort direction (ASC or DESC) */
 	bool		pk_nulls_first; /* do NULLs come before normal values? */
 } PathKey;
-
-/*
- * Combines information about pathkeys and the associated clauses.
- */
-typedef struct PathKeyInfo
-{
-	pg_node_attr(no_read)
-
-	NodeTag		type;
-	List	   *pathkeys;
-	List	   *clauses;
-} PathKeyInfo;
 
 /*
  * VolatileFunctionStatus -- allows nodes to cache their
@@ -2789,10 +2790,10 @@ typedef struct AppendRelInfo
 } AppendRelInfo;
 
 /*
- * Information about a row-identity "resjunk" column in UPDATE/DELETE.
+ * Information about a row-identity "resjunk" column in UPDATE/DELETE/MERGE.
  *
- * In partitioned UPDATE/DELETE it's important for child partitions to share
- * row-identity columns whenever possible, so as not to chew up too many
+ * In partitioned UPDATE/DELETE/MERGE it's important for child partitions to
+ * share row-identity columns whenever possible, so as not to chew up too many
  * targetlist columns.  We use these structs to track which identity columns
  * have been requested.  In the finished plan, each of these will give rise
  * to one resjunk entry in the targetlist of the ModifyTable's subplan node.

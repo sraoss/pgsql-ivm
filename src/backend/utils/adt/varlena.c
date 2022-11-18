@@ -34,6 +34,7 @@
 #include "regex/regex.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
@@ -80,8 +81,8 @@ typedef struct
 	char	   *buf1;			/* 1st string, or abbreviation original string
 								 * buf */
 	char	   *buf2;			/* 2nd string, or abbreviation strxfrm() buf */
-	int			buflen1;
-	int			buflen2;
+	int			buflen1;		/* Allocated length of buf1 */
+	int			buflen2;		/* Allocated length of buf2 */
 	int			last_len1;		/* Length of last buf1 string/strxfrm() input */
 	int			last_len2;		/* Length of last buf2 string/strxfrm() blob */
 	int			last_returned;	/* Last comparison result (cache) */
@@ -2330,15 +2331,13 @@ varstrfastcmp_locale(char *a1p, int len1, char *a2p, int len2, SortSupport ssup)
 
 	if (len1 >= sss->buflen1)
 	{
-		pfree(sss->buf1);
 		sss->buflen1 = Max(len1 + 1, Min(sss->buflen1 * 2, MaxAllocSize));
-		sss->buf1 = MemoryContextAlloc(ssup->ssup_cxt, sss->buflen1);
+		sss->buf1 = repalloc(sss->buf1, sss->buflen1);
 	}
 	if (len2 >= sss->buflen2)
 	{
-		pfree(sss->buf2);
 		sss->buflen2 = Max(len2 + 1, Min(sss->buflen2 * 2, MaxAllocSize));
-		sss->buf2 = MemoryContextAlloc(ssup->ssup_cxt, sss->buflen2);
+		sss->buf2 = repalloc(sss->buf2, sss->buflen2);
 	}
 
 	/*
@@ -2518,9 +2517,8 @@ varstr_abbrev_convert(Datum original, SortSupport ssup)
 		/* By convention, we use buffer 1 to store and NUL-terminate */
 		if (len >= sss->buflen1)
 		{
-			pfree(sss->buf1);
 			sss->buflen1 = Max(len + 1, Min(sss->buflen1 * 2, MaxAllocSize));
-			sss->buf1 = palloc(sss->buflen1);
+			sss->buf1 = repalloc(sss->buf1, sss->buflen1);
 		}
 
 		/* Might be able to reuse strxfrm() blob from last call */
@@ -2607,10 +2605,9 @@ varstr_abbrev_convert(Datum original, SortSupport ssup)
 			/*
 			 * Grow buffer and retry.
 			 */
-			pfree(sss->buf2);
 			sss->buflen2 = Max(bsize + 1,
 							   Min(sss->buflen2 * 2, MaxAllocSize));
-			sss->buf2 = palloc(sss->buflen2);
+			sss->buf2 = repalloc(sss->buf2, sss->buflen2);
 		}
 
 		/*
@@ -4783,7 +4780,7 @@ text_to_array(PG_FUNCTION_ARGS)
 	if (tstate.astate == NULL)
 		PG_RETURN_ARRAYTYPE_P(construct_empty_array(TEXTOID));
 
-	PG_RETURN_ARRAYTYPE_P(makeArrayResult(tstate.astate,
+	PG_RETURN_DATUM(makeArrayResult(tstate.astate,
 										  CurrentMemoryContext));
 }
 
@@ -4813,7 +4810,7 @@ text_to_table(PG_FUNCTION_ARGS)
 	SplitTextOutputData tstate;
 
 	tstate.astate = NULL;
-	SetSingleFuncCall(fcinfo, SRF_SINGLE_USE_EXPECTED);
+	InitMaterializedSRF(fcinfo, MAT_SRF_USE_EXPECTED_DESC);
 	tstate.tupstore = rsi->setResult;
 	tstate.tupdesc = rsi->setDesc;
 
@@ -6198,6 +6195,88 @@ rest_of_char_same(const char *s1, const char *s2, int len)
 #include "levenshtein.c"
 #define LEVENSHTEIN_LESS_EQUAL
 #include "levenshtein.c"
+
+
+/*
+ * The following *ClosestMatch() functions can be used to determine whether a
+ * user-provided string resembles any known valid values, which is useful for
+ * providing hints in log messages, among other things.  Use these functions
+ * like so:
+ *
+ *		initClosestMatch(&state, source_string, max_distance);
+ *
+ *		for (int i = 0; i < num_valid_strings; i++)
+ *			updateClosestMatch(&state, valid_strings[i]);
+ *
+ *		closestMatch = getClosestMatch(&state);
+ */
+
+/*
+ * Initialize the given state with the source string and maximum Levenshtein
+ * distance to consider.
+ */
+void
+initClosestMatch(ClosestMatchState *state, const char *source, int max_d)
+{
+	Assert(state);
+	Assert(max_d >= 0);
+
+	state->source = source;
+	state->min_d = -1;
+	state->max_d = max_d;
+	state->match = NULL;
+}
+
+/*
+ * If the candidate string is a closer match than the current one saved (or
+ * there is no match saved), save it as the closest match.
+ *
+ * If the source or candidate string is NULL, empty, or too long, this function
+ * takes no action.  Likewise, if the Levenshtein distance exceeds the maximum
+ * allowed or more than half the characters are different, no action is taken.
+ */
+void
+updateClosestMatch(ClosestMatchState *state, const char *candidate)
+{
+	int			dist;
+
+	Assert(state);
+
+	if (state->source == NULL || state->source[0] == '\0' ||
+		candidate == NULL || candidate[0] == '\0')
+		return;
+
+	/*
+	 * To avoid ERROR-ing, we check the lengths here instead of setting
+	 * 'trusted' to false in the call to varstr_levenshtein_less_equal().
+	 */
+	if (strlen(state->source) > MAX_LEVENSHTEIN_STRLEN ||
+		strlen(candidate) > MAX_LEVENSHTEIN_STRLEN)
+		return;
+
+	dist = varstr_levenshtein_less_equal(state->source, strlen(state->source),
+										 candidate, strlen(candidate), 1, 1, 1,
+										 state->max_d, true);
+	if (dist <= state->max_d &&
+		dist <= strlen(state->source) / 2 &&
+		(state->min_d == -1 || dist < state->min_d))
+	{
+		state->min_d = dist;
+		state->match = candidate;
+	}
+}
+
+/*
+ * Return the closest match.  If no suitable candidates were provided via
+ * updateClosestMatch(), return NULL.
+ */
+const char *
+getClosestMatch(ClosestMatchState *state)
+{
+	Assert(state);
+
+	return state->match;
+}
 
 
 /*

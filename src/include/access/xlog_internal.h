@@ -31,7 +31,7 @@
 /*
  * Each page of XLOG file has a header like this:
  */
-#define XLOG_PAGE_MAGIC 0xD110	/* can be used as WAL version indicator */
+#define XLOG_PAGE_MAGIC 0xD111	/* can be used as WAL version indicator */
 
 typedef struct XLogPageHeaderData
 {
@@ -362,7 +362,7 @@ extern PGDLLIMPORT RmgrData RmgrTable[];
 extern void RmgrStartup(void);
 extern void RmgrCleanup(void);
 extern void RmgrNotFound(RmgrId rmid);
-extern void RegisterCustomRmgr(RmgrId rmid, RmgrData *rmgr);
+extern void RegisterCustomRmgr(RmgrId rmid, const RmgrData *rmgr);
 
 #ifndef FRONTEND
 static inline bool

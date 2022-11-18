@@ -75,7 +75,8 @@ static List *build_index_tlist(PlannerInfo *root, IndexOptInfo *index,
 static List *get_relation_statistics(RelOptInfo *rel, Relation relation);
 static void set_relation_partition_info(PlannerInfo *root, RelOptInfo *rel,
 										Relation relation);
-static PartitionScheme find_partition_scheme(PlannerInfo *root, Relation rel);
+static PartitionScheme find_partition_scheme(PlannerInfo *root,
+											 Relation relation);
 static void set_baserel_partition_key_exprs(Relation relation,
 											RelOptInfo *rel);
 static void set_baserel_partition_constraint(Relation relation,
@@ -125,6 +126,24 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 	 * rangetable.
 	 */
 	relation = table_open(relationObjectId, NoLock);
+
+	/*
+	 * Relations without a table AM can be used in a query only if they are of
+	 * special-cased relkinds.  This check prevents us from crashing later if,
+	 * for example, a view's ON SELECT rule has gone missing.  Note that
+	 * table_open() already rejected indexes and composite types; spell the
+	 * error the same way it does.
+	 */
+	if (!relation->rd_tableam)
+	{
+		if (!(relation->rd_rel->relkind == RELKIND_FOREIGN_TABLE ||
+			  relation->rd_rel->relkind == RELKIND_PARTITIONED_TABLE))
+			ereport(ERROR,
+					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+					 errmsg("cannot open relation \"%s\"",
+							RelationGetRelationName(relation)),
+					 errdetail_relkind_not_supported(relation->rd_rel->relkind)));
+	}
 
 	/* Temporary and unlogged relations are inaccessible during recovery. */
 	if (!RelationIsPermanent(relation) && RecoveryInProgress())

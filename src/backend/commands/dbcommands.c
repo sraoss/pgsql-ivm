@@ -125,9 +125,9 @@ static bool have_createdb_privilege(void);
 static void remove_dbtablespaces(Oid db_id);
 static bool check_db_file_conflict(Oid db_id);
 static int	errdetail_busy_db(int notherbackends, int npreparedxacts);
-static void CreateDatabaseUsingWalLog(Oid src_dboid, Oid dboid, Oid src_tsid,
+static void CreateDatabaseUsingWalLog(Oid src_dboid, Oid dst_dboid, Oid src_tsid,
 									  Oid dst_tsid);
-static List *ScanSourceDatabasePgClass(Oid srctbid, Oid srcdbid, char *srcpath);
+static List *ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath);
 static List *ScanSourceDatabasePgClassPage(Page page, Buffer buf, Oid tbid,
 										   Oid dbid, char *srcpath,
 										   List *rlocatorlist, Snapshot snapshot);
@@ -136,8 +136,8 @@ static CreateDBRelInfo *ScanSourceDatabasePgClassTuple(HeapTupleData *tuple,
 													   char *srcpath);
 static void CreateDirAndVersionFile(char *dbpath, Oid dbid, Oid tsid,
 									bool isRedo);
-static void CreateDatabaseUsingFileCopy(Oid src_dboid, Oid dboid, Oid src_tsid,
-										Oid dst_tsid);
+static void CreateDatabaseUsingFileCopy(Oid src_dboid, Oid dst_dboid,
+										Oid src_tsid, Oid dst_tsid);
 static void recovery_create_dbdir(char *path, bool only_tblspc);
 
 /*
@@ -258,8 +258,8 @@ ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath)
 	Page		page;
 	List	   *rlocatorlist = NIL;
 	LockRelId	relid;
-	Relation	rel;
 	Snapshot	snapshot;
+	SMgrRelation	smgr;
 	BufferAccessStrategy bstrategy;
 
 	/* Get pg_class relfilenumber. */
@@ -276,16 +276,9 @@ ScanSourceDatabasePgClass(Oid tbid, Oid dbid, char *srcpath)
 	rlocator.dbOid = dbid;
 	rlocator.relNumber = relfilenumber;
 
-	/*
-	 * We can't use a real relcache entry for a relation in some other
-	 * database, but since we're only going to access the fields related to
-	 * physical storage, a fake one is good enough. If we didn't do this and
-	 * used the smgr layer directly, we would have to worry about
-	 * invalidations.
-	 */
-	rel = CreateFakeRelcacheEntry(rlocator);
-	nblocks = smgrnblocks(RelationGetSmgr(rel), MAIN_FORKNUM);
-	FreeFakeRelcacheEntry(rel);
+	smgr = smgropen(rlocator, InvalidBackendId);
+	nblocks = smgrnblocks(smgr, MAIN_FORKNUM);
+	smgrclose(smgr);
 
 	/* Use a buffer access strategy since this is a bulk read operation. */
 	bstrategy = GetAccessStrategy(BAS_BULKREAD);
@@ -823,7 +816,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		}
 		else if (strcmp(defel->defname, "oid") == 0)
 		{
-			dboid = defGetInt32(defel);
+			dboid = defGetObjectId(defel);
 
 			/*
 			 * We don't normally permit new databases to be created with
@@ -915,15 +908,6 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 					 errmsg("unrecognized locale provider: %s",
 							locproviderstr)));
 	}
-	if (diculocale && dblocprovider != COLLPROVIDER_ICU)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-				 errmsg("ICU locale cannot be specified unless locale provider is ICU")));
-	if (dblocprovider == COLLPROVIDER_ICU && !dbiculocale)
-	{
-		if (dlocale && dlocale->arg)
-			dbiculocale = defGetString(dlocale);
-	}
 	if (distemplate && distemplate->arg)
 		dbistemplate = defGetBoolean(distemplate);
 	if (dallowconnections && dallowconnections->arg)
@@ -988,7 +972,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 	 */
 	if (!src_istemplate)
 	{
-		if (!pg_database_ownercheck(src_dboid, GetUserId()))
+		if (!object_ownercheck(DatabaseRelationId, src_dboid, GetUserId()))
 			ereport(ERROR,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 					 errmsg("permission denied to copy database \"%s\"",
@@ -1008,7 +992,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid create database strategy %s", strategy),
+					 errmsg("invalid create database strategy \"%s\"", strategy),
 					 errhint("Valid strategies are \"wal_log\", and \"file_copy\".")));
 	}
 
@@ -1019,10 +1003,10 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		dbcollate = src_collate;
 	if (dbctype == NULL)
 		dbctype = src_ctype;
-	if (dbiculocale == NULL)
-		dbiculocale = src_iculocale;
 	if (dblocprovider == '\0')
 		dblocprovider = src_locprovider;
+	if (dbiculocale == NULL && dblocprovider == COLLPROVIDER_ICU)
+		dbiculocale = src_iculocale;
 
 	/* Some encodings are client only */
 	if (!PG_VALID_BE_ENCODING(encoding))
@@ -1046,6 +1030,12 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 
 	if (dblocprovider == COLLPROVIDER_ICU)
 	{
+		if (!(is_encoding_supported_by_icu(encoding)))
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("encoding \"%s\" is not supported with ICU provider",
+							pg_encoding_to_char(encoding))));
+
 		/*
 		 * This would happen if template0 uses the libc provider but the new
 		 * database uses icu.
@@ -1054,10 +1044,16 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("ICU locale must be specified")));
-	}
 
-	if (dblocprovider == COLLPROVIDER_ICU)
 		check_icu_locale(dbiculocale);
+	}
+	else
+	{
+		if (dbiculocale)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("ICU locale cannot be specified unless locale provider is ICU")));
+	}
 
 	/*
 	 * Check that the new encoding and locale settings match the source
@@ -1168,7 +1164,7 @@ createdb(ParseState *pstate, const CreatedbStmt *stmt)
 		tablespacename = defGetString(dtablespacename);
 		dst_deftablespace = get_tablespace_oid(tablespacename, false);
 		/* check permissions */
-		aclresult = pg_tablespace_aclcheck(dst_deftablespace, GetUserId(),
+		aclresult = object_aclcheck(TableSpaceRelationId, dst_deftablespace, GetUserId(),
 										   ACL_CREATE);
 		if (aclresult != ACLCHECK_OK)
 			aclcheck_error(aclresult, OBJECT_TABLESPACE,
@@ -1553,7 +1549,7 @@ dropdb(const char *dbname, bool missing_ok, bool force)
 	/*
 	 * Permission checks
 	 */
-	if (!pg_database_ownercheck(db_id, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, db_id, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   dbname);
 
@@ -1737,7 +1733,7 @@ RenameDatabase(const char *oldname, const char *newname)
 				 errmsg("database \"%s\" does not exist", oldname)));
 
 	/* must be owner */
-	if (!pg_database_ownercheck(db_id, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, db_id, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   oldname);
 
@@ -1858,7 +1854,7 @@ movedb(const char *dbname, const char *tblspcname)
 	/*
 	 * Permission checks
 	 */
-	if (!pg_database_ownercheck(db_id, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, db_id, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   dbname);
 
@@ -1878,7 +1874,7 @@ movedb(const char *dbname, const char *tblspcname)
 	/*
 	 * Permission checks
 	 */
-	aclresult = pg_tablespace_aclcheck(dst_tblspcoid, GetUserId(),
+	aclresult = object_aclcheck(TableSpaceRelationId, dst_tblspcoid, GetUserId(),
 									   ACL_CREATE);
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, OBJECT_TABLESPACE,
@@ -2285,7 +2281,7 @@ AlterDatabase(ParseState *pstate, AlterDatabaseStmt *stmt, bool isTopLevel)
 	datform = (Form_pg_database) GETSTRUCT(tuple);
 	dboid = datform->oid;
 
-	if (!pg_database_ownercheck(dboid, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, dboid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   stmt->dbname);
 
@@ -2368,7 +2364,7 @@ AlterDatabaseRefreshColl(AlterDatabaseRefreshCollStmt *stmt)
 	datForm = (Form_pg_database) GETSTRUCT(tuple);
 	db_id = datForm->oid;
 
-	if (!pg_database_ownercheck(db_id, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, db_id, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   stmt->dbname);
 
@@ -2431,7 +2427,7 @@ AlterDatabaseSet(AlterDatabaseSetStmt *stmt)
 	 */
 	shdepLockAndCheckObject(DatabaseRelationId, datid);
 
-	if (!pg_database_ownercheck(datid, GetUserId()))
+	if (!object_ownercheck(DatabaseRelationId, datid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 					   stmt->dbname);
 
@@ -2494,7 +2490,7 @@ AlterDatabaseOwner(const char *dbname, Oid newOwnerId)
 		HeapTuple	newtuple;
 
 		/* Otherwise, must be owner of the existing object */
-		if (!pg_database_ownercheck(db_id, GetUserId()))
+		if (!object_ownercheck(DatabaseRelationId, db_id, GetUserId()))
 			aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_DATABASE,
 						   dbname);
 
@@ -2610,7 +2606,7 @@ get_db_info(const char *name, LOCKMODE lockmode,
 	bool		result = false;
 	Relation	relation;
 
-	AssertArg(name);
+	Assert(name);
 
 	/* Caller may wish to grab a better lock on pg_database beforehand... */
 	relation = table_open(DatabaseRelationId, AccessShareLock);

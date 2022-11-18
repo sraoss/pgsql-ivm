@@ -993,6 +993,17 @@
     <tbody>
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>rule_number</structfield> <type>int4</type>
+      </para>
+      <para>
+       Number of this rule, if valid, otherwise <literal>NULL</literal>.
+       This indicates the order in which each rule is considered
+       until a match is found during authentication.
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>line_number</structfield> <type>int4</type>
       </para>
       <para>
@@ -1101,7 +1112,7 @@
    of the contents of the client user name mapping configuration file,
    <link linkend="auth-username-maps"><filename>pg_ident.conf</filename></link>.
    A row appears in this view for each non-empty, non-comment line in the file,
-   with annotations indicating whether the rule could be applied successfully.
+   with annotations indicating whether the map could be applied successfully.
   </para>
 
   <para>
@@ -1133,10 +1144,20 @@
     <tbody>
      <row>
       <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>map_number</structfield> <type>int4</type>
+      </para>
+      <para>
+       Number of this map, in priority order, if valid, otherwise
+       <literal>NULL</literal>
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
        <structfield>line_number</structfield> <type>int4</type>
       </para>
       <para>
-       Line number of this rule in <filename>pg_ident.conf</filename>
+       Line number of this map in <filename>pg_ident.conf</filename>
       </para></entry>
      </row>
 
@@ -2090,7 +2111,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    tables they contain.  Unlike the underlying catalog
    <link linkend="catalog-pg-publication-rel"><structname>pg_publication_rel</structname></link>,
    this view expands publications defined as <literal>FOR ALL TABLES</literal>
-   and <literal>FOR ALL TABLES IN SCHEMA</literal>, so for such publications
+   and <literal>FOR TABLES IN SCHEMA</literal>, so for such publications
    there will be a row for each eligible table.
   </para>
 
@@ -2392,8 +2413,9 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
       </para>
       <para>
        The address (<literal>LSN</literal>) up to which the logical
-       slot's consumer has confirmed receiving data. Data older than this is
-       not available anymore. <literal>NULL</literal> for physical slots.
+       slot's consumer has confirmed receiving data. Data corresponding to the
+       transactions committed before this <literal>LSN</literal> is not
+       available anymore. <literal>NULL</literal> for physical slots.
       </para></entry>
      </row>
 
@@ -3274,11 +3296,6 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
   </para>
 
   <para>
-   This view does not display <link linkend="runtime-config-custom">customized options</link>
-   until the extension module that defines them has been loaded.
-  </para>
-
-  <para>
    This view cannot be inserted into or deleted from, but it can be updated.  An
    <command>UPDATE</command> applied to a row of <structname>pg_settings</structname>
    is equivalent to executing the <command>SET</command> command on that named
@@ -3289,6 +3306,21 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
    transaction is committed, the effects will persist until the end of the
    session, unless overridden by another <command>UPDATE</command> or
    <command>SET</command>.
+  </para>
+
+  <para>
+   This view does not
+   display <link linkend="runtime-config-custom">customized options</link>
+   unless the extension module that defines them has been loaded by the
+   backend process executing the query (e.g., via a mention in
+   <xref linkend="guc-shared-preload-libraries"/>,
+   a call to a C function in the extension, or the
+   <link linkend="sql-load"><command>LOAD</command></link> command).
+   For example, since <link linkend="archive-modules">archive modules</link>
+   are normally loaded only by the archiver process not regular sessions,
+   this view will not display any customized options defined by such modules
+   unless special action is taken to load them into the backend process
+   executing the query.
   </para>
 
  </sect1>
@@ -3485,7 +3517,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
        <structfield>size</structfield> <type>int8</type>
       </para>
       <para>
-       Size of the allocation
+       Size of the allocation in bytes
       </para></entry>
      </row>
 
@@ -3494,7 +3526,7 @@ SELECT * FROM pg_locks pl LEFT JOIN pg_prepared_xacts ppx
        <structfield>allocated_size</structfield> <type>int8</type>
       </para>
       <para>
-       Size of the allocation including padding. For anonymous
+       Size of the allocation in bytes including padding. For anonymous
        allocations, no information about padding is available, so the
        <literal>size</literal> and <literal>allocated_size</literal> columns
        will always be equal. Padding is not meaningful for free memory, so

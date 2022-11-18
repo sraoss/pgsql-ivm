@@ -56,7 +56,7 @@ AggregateInstrumentation
 AlenState
 Alias
 AllocBlock
-AllocChunk
+AllocFreeListLink
 AllocPointer
 AllocSet
 AllocSetContext
@@ -233,6 +233,7 @@ BackgroundWorker
 BackgroundWorkerArray
 BackgroundWorkerHandle
 BackgroundWorkerSlot
+BackupState
 Barrier
 BaseBackupCmd
 BaseBackupTargetHandle
@@ -373,6 +374,7 @@ CkptTsStatus
 ClientAuthentication_hook_type
 ClientCertMode
 ClientCertName
+ClientConnectionInfo
 ClientData
 ClonePtrType
 ClosePortalStmt
@@ -946,7 +948,6 @@ GatherState
 Gene
 GeneratePruningStepsContext
 GenerationBlock
-GenerationChunk
 GenerationContext
 GenerationPointer
 GenericCosts
@@ -1237,12 +1238,10 @@ JsonBehaviorType
 JsonCoercion
 JsonCommon
 JsonConstructorExpr
-JsonConstructorExprState
 JsonConstructorType
 JsonEncoding
 JsonExpr
 JsonExprOp
-JsonExprState
 JsonFormat
 JsonFormatType
 JsonFunc
@@ -1291,18 +1290,6 @@ JsonQuotes
 JsonReturning
 JsonScalarExpr
 JsonSemAction
-JsonSerializeExpr
-JsonTable
-JsonTableColumn
-JsonTableColumnType
-JsonTableContext
-JsonTableJoinState
-JsonTableParent
-JsonTablePlan
-JsonTablePlanJoinType
-JsonTablePlanType
-JsonTableScanState
-JsonTableSibling
 JsonTokenType
 JsonTransformStringValuesAction
 JsonTypeCategory
@@ -1521,11 +1508,13 @@ MemoizeKey
 MemoizePath
 MemoizeState
 MemoizeTuple
+MemoryChunk
 MemoryContext
 MemoryContextCallback
 MemoryContextCallbackFunction
 MemoryContextCounters
 MemoryContextData
+MemoryContextMethodID
 MemoryContextMethods
 MemoryStatsPrintFunc
 MergeAction
@@ -2455,6 +2444,7 @@ SerCommitSeqNo
 SerialControl
 SerializableXactHandle
 SerializedActiveRelMaps
+SerializedClientConnectionInfo
 SerializedRanges
 SerializedReindexState
 SerializedSnapshotData
@@ -2528,7 +2518,6 @@ SingleBoundSortItem
 Size
 SkipPages
 SlabBlock
-SlabChunk
 SlabContext
 SlabSlot
 SlotNumber
@@ -2722,7 +2711,6 @@ TableFunc
 TableFuncRoutine
 TableFuncScan
 TableFuncScanState
-TableFuncType
 TableInfo
 TableLikeClause
 TableSampleClause
@@ -2939,6 +2927,7 @@ WALInsertLock
 WALInsertLockPadded
 WALOpenSegment
 WALReadError
+WalRcvWakeupReason
 WALSegmentCloseCB
 WALSegmentContext
 WALSegmentOpenCB
@@ -3189,6 +3178,7 @@ compare_context
 config_var_value
 contain_aggs_of_level_context
 convert_testexpr_context
+copy_data_dest_cb
 copy_data_source_cb
 core_YYSTYPE
 core_yy_extra_type
@@ -3205,6 +3195,7 @@ datapagemap_t
 dateKEY
 datetkn
 dce_uuid_t
+dclist_head
 decimal
 deparse_columns
 deparse_context
@@ -3525,7 +3516,6 @@ pg_wc_probefunc
 pg_wchar
 pg_wchar_tbl
 pgp_armor_headers_state
-pgpid_t
 pgsocket
 pgsql_thing_t
 pgssEntry
@@ -3733,6 +3723,7 @@ timeout_params
 timerCA
 tlist_vinfo
 toast_compress_header
+tokenize_error_callback_arg
 transferMode
 transfer_thread_arg
 trgm

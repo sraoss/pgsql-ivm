@@ -57,6 +57,7 @@
 #include "access/xlogreader.h"
 #include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
+#include "backup/basebackup.h"
 #include "catalog/pg_authid.h"
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
@@ -68,7 +69,6 @@
 #include "nodes/replnodes.h"
 #include "pgstat.h"
 #include "postmaster/interrupt.h"
-#include "replication/basebackup.h"
 #include "replication/decode.h"
 #include "replication/logical.h"
 #include "replication/slot.h"
@@ -118,8 +118,8 @@ bool		am_cascading_walsender = false; /* Am I cascading WAL to another
 											 * standby? */
 bool		am_db_walsender = false;	/* Connected to a database? */
 
-/* User-settable parameters for walsender */
-int			max_wal_senders = 0;	/* the maximum number of concurrent
+/* GUC variables */
+int			max_wal_senders = 10;	/* the maximum number of concurrent
 									 * walsenders */
 int			wal_sender_timeout = 60 * 1000; /* maximum time to send one WAL
 											 * data message */
@@ -516,9 +516,8 @@ ReadReplicationSlot(ReadReplicationSlotCmd *cmd)
 		if (OidIsValid(slot_contents.data.database))
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					errmsg("cannot use \"%s\" with logical replication slot \"%s\"",
-						   "READ_REPLICATION_SLOT",
-						   NameStr(slot_contents.data.name)));
+					errmsg("cannot use %s with a logical replication slot",
+						   "READ_REPLICATION_SLOT"));
 
 		/* slot type */
 		values[i] = CStringGetTextDatum("physical");
@@ -3460,7 +3459,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 	int			num_standbys;
 	int			i;
 
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
 	/*
 	 * Get the currently active synchronous standbys.  This could be out of

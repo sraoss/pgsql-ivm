@@ -165,7 +165,7 @@ su - postgres
       <application>PL/Perl</application> you need a full
       <productname>Perl</productname> installation, including the
       <filename>libperl</filename> library and the header files.
-      The minimum required version is <productname>Perl</productname> 5.8.3.
+      The minimum required version is <productname>Perl</productname> 5.14.
       Since <application>PL/Perl</application> will be a shared
       library, the <indexterm><primary>libperl</primary></indexterm>
       <filename>libperl</filename> library must be a shared library
@@ -314,8 +314,8 @@ su - postgres
       <application>Flex</application> and <application>Bison</application>
       are needed to build from a Git checkout, or if you changed the actual
       scanner and parser definition files. If you need them, be sure
-      to get <application>Flex</application> 2.5.31 or later and
-      <application>Bison</application> 1.875 or later. Other <application>lex</application>
+      to get <application>Flex</application> 2.5.35 or later and
+      <application>Bison</application> 2.3 or later. Other <application>lex</application>
       and <application>yacc</application> programs cannot be used.
      </para>
     </listitem>
@@ -325,7 +325,7 @@ su - postgres
        <primary>perl</primary>
       </indexterm>
 
-      <application>Perl</application> 5.8.3 or later is needed to build from a Git checkout,
+      <application>Perl</application> 5.14 or later is needed to build from a Git checkout,
       or if you changed the input files for any of the build steps that
       use Perl scripts.  If building on Windows you will need
       <application>Perl</application> in any case.  <application>Perl</application> is
@@ -1125,7 +1125,7 @@ build-postgresql:
         <itemizedlist>
          <listitem>
           <para>
-           <option>bsd</option> to use the UUID functions found in FreeBSD, NetBSD,
+           <option>bsd</option> to use the UUID functions found in FreeBSD
            and some other BSD-derived systems
           </para>
          </listitem>

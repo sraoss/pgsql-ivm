@@ -26,6 +26,14 @@ PostgreSQL::Test::Cluster - class representing PostgreSQL server instance
   # Modify or delete an existing setting
   $node->adjust_conf('postgresql.conf', 'max_wal_senders', '10');
 
+  # get pg_config settings
+  # all the settings in one string
+  $pgconfig = $node->config_data;
+  # all the settings as a map
+  %config_map = ($node->config_data);
+  # specified settings
+  ($incdir, $sharedir) = $node->config_data(qw(--includedir --sharedir));
+
   # run a query with psql, like:
   #   echo 'SELECT 1' | psql -qAXt postgres -v ON_ERROR_STOP=1
   $psql_stdout = $node->safe_psql('postgres', 'SELECT 1');
@@ -345,27 +353,46 @@ sub pg_version
 
 =pod
 
-=item $node->config_data($option)
+=item $node->config_data( option ...)
 
-Return a string holding configuration data from pg_config, with $option
-being the option switch used with the pg_config command.
+Return configuration data from pg_config, using options (if supplied).
+The options will be things like '--sharedir'.
+
+If no options are supplied, return a string in scalar context or a map in
+array context.
+
+If options are supplied, return the list of values.
 
 =cut
 
 sub config_data
 {
-	my ($self, $option) = @_;
+	my ($self, @options) = @_;
 	local %ENV = $self->_get_env();
 
 	my ($stdout, $stderr);
 	my $result =
-	  IPC::Run::run [ $self->installed_command('pg_config'), $option ],
+	  IPC::Run::run [ $self->installed_command('pg_config'), @options ],
 	  '>', \$stdout, '2>', \$stderr
 	  or die "could not execute pg_config";
+	# standardize line endings
+	$stdout =~ s/\r(?=\n)//g;
+	# no options, scalar context: just hand back the output
+	return $stdout unless (wantarray || @options);
 	chomp($stdout);
-	$stdout =~ s/\r$//;
-
-	return $stdout;
+	# exactly one option: hand back the output (minus LF)
+	return $stdout if (@options == 1);
+	my @lines = split(/\n/, $stdout);
+	# more than one option: hand back the list of values;
+	return @lines if (@options);
+	# no options, array context: return a map
+	my @map;
+	foreach my $line (@lines)
+	{
+		my ($k,$v) = split (/ = /,$line,2);
+		push(@map, $k, $v);
+	}
+	return @map;
 }
 
 =pod
@@ -1545,7 +1572,14 @@ END
 
 	foreach my $node (@all_nodes)
 	{
-		$node->teardown_node;
+		# During unclean termination (which could be a signal or some
+		# other failure), we're not sure that the status of our nodes
+		# has been correctly set up already, so try and update it to
+		# improve our chances of shutting them down.
+		$node->_update_pid(-1) if $exit_code != 0;
+
+		# If that fails, don't let that foil other nodes' shutdown
+		$node->teardown_node(fail_ok => 1);
 
 		# skip clean if we are requested to retain the basedir
 		next if defined $ENV{'PG_TEST_NOCLEAN'};
@@ -1564,13 +1598,15 @@ END
 
 Do an immediate stop of the node
 
+Any optional extra parameter is passed to ->stop.
+
 =cut
 
 sub teardown_node
 {
-	my $self = shift;
+	my ($self, %params) = @_;
 
-	$self->stop('immediate');
+	$self->stop('immediate', %params);
 	return;
 }
 
@@ -1790,7 +1826,7 @@ sub psql
 	# and set the flag.  Otherwise, and for any other exception, rethrow.
 	#
 	# For background, see
-	# https://metacpan.org/pod/release/ETHER/Try-Tiny-0.24/lib/Try/Tiny.pm
+	# https://metacpan.org/release/ETHER/Try-Tiny-0.24/view/lib/Try/Tiny.pm
 	do
 	{
 		local $@;
@@ -2597,8 +2633,23 @@ sub wait_for_catchup
 	my $query = qq[SELECT '$target_lsn' <= ${mode}_lsn AND state = 'streaming'
          FROM pg_catalog.pg_stat_replication
          WHERE application_name IN ('$standby_name', 'walreceiver')];
-	$self->poll_query_until('postgres', $query)
-	  or croak "timed out waiting for catchup";
+	if (!$self->poll_query_until('postgres', $query))
+	{
+		if (PostgreSQL::Test::Utils::has_wal_read_bug)
+		{
+			# Mimic having skipped the test file.  If >0 tests have run, the
+			# harness won't accept a skip; otherwise, it won't accept
+			# done_testing().  Force a nonzero count by running one test.
+			ok(1, 'dummy test before skip for filesystem bug');
+			carp "skip rest: timed out waiting for catchup & filesystem bug";
+			done_testing();
+			exit 0;
+		}
+		else
+		{
+			croak "timed out waiting for catchup";
+		}
+	}
 	print "done\n";
 	return;
 }
@@ -2780,7 +2831,7 @@ all values '' if not found. Does not differentiate between null and empty string
 for fields, no field is ever undef.
 
 The restart_lsn and confirmed_flush_lsn fields are returned verbatim, and also
-as a 2-list of [highword, lowword] integer. Since we rely on Perl 5.8.8 we can't
+as a 2-list of [highword, lowword] integer. Since we rely on Perl 5.14 we can't
 "use bigint", it's from 5.20, and we can't assume we have Math::Bigint from CPAN
 either.
 
@@ -2922,6 +2973,13 @@ sub corrupt_page_checksum
 	return;
 }
 
+#
+# Signal handlers
+#
+$SIG{TERM} = $SIG{INT} = sub {
+	die "death by signal";
+};
+
 =pod
 
 =back
@@ -2933,10 +2991,7 @@ sub corrupt_page_checksum
 package PostgreSQL::Test::Cluster::V_11
   ;    ## no critic (ProhibitMultiplePackages)
 
-# parent.pm is not present in all perl versions before 5.10.1, so instead
-# do directly what it would do for this:
-# use parent -norequire, qw(PostgreSQL::Test::Cluster);
-push @PostgreSQL::Test::Cluster::V_11::ISA, 'PostgreSQL::Test::Cluster';
+use parent -norequire, qw(PostgreSQL::Test::Cluster);
 
 # https://www.postgresql.org/docs/11/release-11.html
 
@@ -2964,8 +3019,7 @@ sub init
 package PostgreSQL::Test::Cluster::V_10
   ;    ## no critic (ProhibitMultiplePackages)
 
-# use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
-push @PostgreSQL::Test::Cluster::V_10::ISA, 'PostgreSQL::Test::Cluster::V_11';
+use parent -norequire, qw(PostgreSQL::Test::Cluster::V_11);
 
 # https://www.postgresql.org/docs/10/release-10.html
 

@@ -41,6 +41,7 @@
 
 #include "access/transam.h"
 #include "access/xlog_internal.h"
+#include "common/file_utils.h"
 #include "common/string.h"
 #include "miscadmin.h"
 #include "pgstat.h"
@@ -96,8 +97,8 @@ ReplicationSlotCtlData *ReplicationSlotCtl = NULL;
 /* My backend's replication slot in the shared memory array */
 ReplicationSlot *MyReplicationSlot = NULL;
 
-/* GUCs */
-int			max_replication_slots = 0;	/* the maximum number of replication
+/* GUC variable */
+int			max_replication_slots = 10; /* the maximum number of replication
 										 * slots */
 
 static void ReplicationSlotShmemExit(int code, Datum arg);
@@ -107,7 +108,7 @@ static void ReplicationSlotDropPtr(ReplicationSlot *slot);
 /* internal persistency functions */
 static void RestoreSlotFromDisk(const char *name);
 static void CreateSlotOnDisk(ReplicationSlot *slot);
-static void SaveSlotToPath(ReplicationSlot *slot, const char *path, int elevel);
+static void SaveSlotToPath(ReplicationSlot *slot, const char *dir, int elevel);
 
 /*
  * Report shared-memory space needed by ReplicationSlotsShmemInit.
@@ -412,6 +413,34 @@ ReplicationSlotIndex(ReplicationSlot *slot)
 }
 
 /*
+ * If the slot at 'index' is unused, return false. Otherwise 'name' is set to
+ * the slot's name and true is returned.
+ *
+ * This likely is only useful for pgstat_replslot.c during shutdown, in other
+ * cases there are obvious TOCTOU issues.
+ */
+bool
+ReplicationSlotName(int index, Name name)
+{
+	ReplicationSlot *slot;
+	bool		found;
+
+	slot = &ReplicationSlotCtl->replication_slots[index];
+
+	/*
+	 * Ensure that the slot cannot be dropped while we copy the name. Don't
+	 * need the spinlock as the name of an existing slot cannot change.
+	 */
+	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
+	found = slot->in_use;
+	if (slot->in_use)
+		namestrcpy(name, NameStr(slot->data.name));
+	LWLockRelease(ReplicationSlotControlLock);
+
+	return found;
+}
+
+/*
  * Find a previously created slot and mark it as used by this process.
  *
  * An error is raised if nowait is true and the slot is currently in use. If
@@ -423,7 +452,7 @@ ReplicationSlotAcquire(const char *name, bool nowait)
 	ReplicationSlot *s;
 	int			active_pid;
 
-	AssertArg(name != NULL);
+	Assert(name != NULL);
 
 retry:
 	Assert(MyReplicationSlot == NULL);
@@ -1292,8 +1321,12 @@ InvalidatePossiblyObsoleteSlot(ReplicationSlot *s, XLogRecPtr oldestLSN,
 			if (last_signaled_pid != active_pid)
 			{
 				ereport(LOG,
-						(errmsg("terminating process %d to release replication slot \"%s\"",
-								active_pid, NameStr(slotname))));
+						errmsg("terminating process %d to release replication slot \"%s\"",
+							   active_pid, NameStr(slotname)),
+						errdetail("The slot's restart_lsn %X/%X exceeds the limit by %llu bytes.",
+								  LSN_FORMAT_ARGS(restart_lsn),
+								  (unsigned long long) (oldestLSN - restart_lsn)),
+						errhint("You might need to increase max_slot_wal_keep_size."));
 
 				(void) kill(active_pid, SIGTERM);
 				last_signaled_pid = active_pid;
@@ -1330,9 +1363,12 @@ InvalidatePossiblyObsoleteSlot(ReplicationSlot *s, XLogRecPtr oldestLSN,
 			ReplicationSlotRelease();
 
 			ereport(LOG,
-					(errmsg("invalidating slot \"%s\" because its restart_lsn %X/%X exceeds max_slot_wal_keep_size",
-							NameStr(slotname),
-							LSN_FORMAT_ARGS(restart_lsn))));
+					errmsg("invalidating obsolete replication slot \"%s\"",
+						   NameStr(slotname)),
+					errdetail("The slot's restart_lsn %X/%X exceeds the limit by %llu bytes.",
+							  LSN_FORMAT_ARGS(restart_lsn),
+							  (unsigned long long) (oldestLSN - restart_lsn)),
+					errhint("You might need to increase max_slot_wal_keep_size."));
 
 			/* done with this slot for now */
 			break;
@@ -1442,17 +1478,18 @@ StartupReplicationSlots(void)
 	replication_dir = AllocateDir("pg_replslot");
 	while ((replication_de = ReadDir(replication_dir, "pg_replslot")) != NULL)
 	{
-		struct stat statbuf;
 		char		path[MAXPGPATH + 12];
+		PGFileType	de_type;
 
 		if (strcmp(replication_de->d_name, ".") == 0 ||
 			strcmp(replication_de->d_name, "..") == 0)
 			continue;
 
 		snprintf(path, sizeof(path), "pg_replslot/%s", replication_de->d_name);
+		de_type = get_dirent_type(path, replication_de, false, DEBUG1);
 
 		/* we're only creating directories here, skip if it's not our's */
-		if (lstat(path, &statbuf) == 0 && !S_ISDIR(statbuf.st_mode))
+		if (de_type != PGFILETYPE_ERROR && de_type != PGFILETYPE_DIR)
 			continue;
 
 		/* we crashed while a slot was being setup or deleted, clean up */

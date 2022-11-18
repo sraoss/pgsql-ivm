@@ -17,6 +17,10 @@ if ($ENV{with_ssl} ne 'openssl')
 {
 	plan skip_all => 'OpenSSL not supported by this build';
 }
+elsif ($ENV{PG_TEST_EXTRA} !~ /\bssl\b/)
+{
+	plan skip_all => 'Potentially unsafe test SSL not enabled in PG_TEST_EXTRA';
+}
 
 my $ssl_server = SSL::Server->new();
 
@@ -607,7 +611,7 @@ TODO:
 
 # pg_stat_ssl
 
-my $serialno = `openssl x509 -serial -noout -in ssl/client.crt`;
+my $serialno = `$ENV{OPENSSL} x509 -serial -noout -in ssl/client.crt`;
 if ($? == 0)
 {
 	# OpenSSL prints serial numbers in hexadecimal and converting the serial
@@ -629,7 +633,7 @@ else
 {
 	# OpenSSL isn't functioning on the user's PATH. This probably isn't worth
 	# skipping the test over, so just fall back to a generic integer match.
-	warn 'couldn\'t run `openssl x509` to get client cert serialno';
+	warn "couldn't run \"$ENV{OPENSSL} x509\" to get client cert serialno";
 	$serialno = '\d+';
 }
 
@@ -790,6 +794,19 @@ $node->connect_fails(
 #	log_like => [
 #		qr{Client certificate verification failed at depth 0: certificate revoked},
 #		qr{Failed certificate data \(unverified\): subject "/CN=ssltestuser", serial number 2315134995201656577, issuer "/CN=Test CA for PostgreSQL SSL regression test client certs"},
+#	]
+);
+
+# revoked client cert, non-ASCII subject
+$node->connect_fails(
+	"$common_connstr user=ssltestuser sslcert=ssl/client-revoked-utf8.crt "
+	  . sslkey('client-revoked-utf8.key'),
+	"certificate authorization fails with revoked UTF-8 client cert with server-side CRL directory",
+	expected_stderr => qr/SSL error: sslv3 alert certificate revoked/,
+	# temporarily(?) skip this check due to timing issue
+#	log_like => [
+#		qr{Client certificate verification failed at depth 0: certificate revoked},
+#		qr{Failed certificate data \(unverified\): subject "/CN=\\xce\\x9f\\xce\\xb4\\xcf\\x85\\xcf\\x83\\xcf\\x83\\xce\\xad\\xce\\xb1\\xcf\\x82", serial number 2315420958437414144, issuer "/CN=Test CA for PostgreSQL SSL regression test client certs"},
 #	]
 );
 

@@ -48,7 +48,7 @@ CREATE TRANSFORM FOR int LANGUAGE SQL (
 -- suppress warning that depends on wal_level
 SET client_min_messages = 'ERROR';
 CREATE PUBLICATION addr_pub FOR TABLE addr_nsp.gentable;
-CREATE PUBLICATION addr_pub_schema FOR ALL TABLES IN SCHEMA addr_nsp;
+CREATE PUBLICATION addr_pub_schema FOR TABLES IN SCHEMA addr_nsp;
 RESET client_min_messages;
 CREATE SUBSCRIPTION regress_addr_sub CONNECTION '' PUBLICATION bar WITH (connect = false, slot_name = NONE);
 CREATE STATISTICS addr_nsp.gentable_stat ON a, b FROM addr_nsp.gentable;
@@ -98,7 +98,7 @@ BEGIN
 		('text search template'), ('text search configuration'),
 		('policy'), ('user mapping'), ('default acl'), ('transform'),
 		('operator of access method'), ('function of access method'),
-		('publication relation')
+		('publication namespace'), ('publication relation')
 	LOOP
 		FOR names IN VALUES ('{eins}'), ('{addr_nsp, zwei}'), ('{eins, zwei, drei}')
 		LOOP
@@ -263,6 +263,7 @@ WITH objects (classid, objid, objsubid) AS (VALUES
     ('pg_ts_template'::regclass, 0, 0), -- no TS template
     ('pg_ts_config'::regclass, 0, 0), -- no TS configuration
     ('pg_authid'::regclass, 0, 0), -- no role
+    ('pg_auth_members'::regclass, 0, 0),  -- no role membership
     ('pg_database'::regclass, 0, 0), -- no database
     ('pg_tablespace'::regclass, 0, 0), -- no tablespace
     ('pg_foreign_data_wrapper'::regclass, 0, 0), -- no FDW
@@ -271,8 +272,10 @@ WITH objects (classid, objid, objsubid) AS (VALUES
     ('pg_default_acl'::regclass, 0, 0), -- no default ACL
     ('pg_extension'::regclass, 0, 0), -- no extension
     ('pg_event_trigger'::regclass, 0, 0), -- no event trigger
+    ('pg_parameter_acl'::regclass, 0, 0), -- no parameter ACL
     ('pg_policy'::regclass, 0, 0), -- no policy
     ('pg_publication'::regclass, 0, 0), -- no publication
+    ('pg_publication_namespace'::regclass, 0, 0), -- no publication namespace
     ('pg_publication_rel'::regclass, 0, 0), -- no publication relation
     ('pg_subscription'::regclass, 0, 0), -- no subscription
     ('pg_transform'::regclass, 0, 0) -- no transformation

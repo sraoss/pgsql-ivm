@@ -48,12 +48,21 @@
  * significantly.  WIN32_LEAN_AND_MEAN reduces that a bit. It'd be better to
  * remove the include of windows.h (as well as indirect inclusions of it) from
  * such a central place, but until then...
+ *
+ * To be able to include ntstatus.h tell windows.h to not declare NTSTATUS by
+ * temporarily defining UMDF_USING_NTSTATUS, otherwise we'll get warning about
+ * macro redefinitions, as windows.h also defines NTSTATUS (yuck). That in
+ * turn requires including ntstatus.h, winternl.h to get common symbols.
  */
 #define WIN32_LEAN_AND_MEAN
+#define UMDF_USING_NTSTATUS
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <ntstatus.h>
+#include <winternl.h>
+
 #undef small
 #include <process.h>
 #include <signal.h>
@@ -564,9 +573,9 @@ typedef unsigned short mode_t;
 #endif
 
 /* in port/win32pread.c */
-extern ssize_t pread(int fd, void *buf, size_t nbyte, off_t offset);
+extern ssize_t pg_pread(int fd, void *buf, size_t nbyte, off_t offset);
 
 /* in port/win32pwrite.c */
-extern ssize_t pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
+extern ssize_t pg_pwrite(int fd, const void *buf, size_t nbyte, off_t offset);
 
 #endif							/* PG_WIN32_PORT_H */

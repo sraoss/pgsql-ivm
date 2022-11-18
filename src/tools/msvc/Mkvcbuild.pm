@@ -53,7 +53,7 @@ my @contrib_excludes       = (
 	'unsafe_tests');
 
 # Set of variables for frontend modules
-my $frontend_defines = { 'initdb' => 'FRONTEND' };
+my $frontend_defines = { 'pgbench' => 'FD_SETSIZE=1024' };
 my @frontend_uselibpq =
   ('pg_amcheck', 'pg_ctl', 'pg_upgrade', 'pgbench', 'psql', 'initdb');
 my @frontend_uselibpgport = (
@@ -100,8 +100,8 @@ sub mkvcbuild
 
 	our @pgportfiles = qw(
 	  chklocale.c explicit_bzero.c
-	  getpeereid.c getrusage.c inet_aton.c
-	  getaddrinfo.c inet_net_ntop.c kill.c open.c
+	  getpeereid.c inet_aton.c
+	  inet_net_ntop.c kill.c open.c
 	  snprintf.c strlcat.c strlcpy.c dirmod.c noblock.c path.c
 	  dirent.c getopt.c getopt_long.c
 	  preadv.c pwritev.c pg_bitutils.c
@@ -111,6 +111,7 @@ sub mkvcbuild
 	  win32dlopen.c
 	  win32env.c win32error.c
 	  win32fdatasync.c
+	  win32getrusage.c
 	  win32gettimeofday.c
 	  win32link.c
 	  win32pread.c
@@ -176,6 +177,7 @@ sub mkvcbuild
 
 	$libpgfeutils = $solution->AddProject('libpgfeutils', 'lib', 'misc');
 	$libpgfeutils->AddDefine('FRONTEND');
+	$libpgfeutils->AddDefine('FD_SETSIZE=1024');
 	$libpgfeutils->AddIncludeDir('src/interfaces/libpq');
 	$libpgfeutils->AddFiles('src/fe_utils', @pgfeutilsfiles);
 
@@ -264,8 +266,6 @@ sub mkvcbuild
 
 	$libpq = $solution->AddProject('libpq', 'dll', 'interfaces',
 		'src/interfaces/libpq');
-	$libpq->AddDefine('FRONTEND');
-	$libpq->AddDefine('UNSAFE_STAT_OK');
 	$libpq->AddIncludeDir('src/port');
 	$libpq->AddLibrary('secur32.lib');
 	$libpq->AddLibrary('ws2_32.lib');
@@ -317,14 +317,12 @@ sub mkvcbuild
 	my $pgtypes = $solution->AddProject(
 		'libpgtypes', 'dll',
 		'interfaces', 'src/interfaces/ecpg/pgtypeslib');
-	$pgtypes->AddDefine('FRONTEND');
 	$pgtypes->AddReference($libpgcommon, $libpgport);
 	$pgtypes->UseDef('src/interfaces/ecpg/pgtypeslib/pgtypeslib.def');
 	$pgtypes->AddIncludeDir('src/interfaces/ecpg/include');
 
 	my $libecpg = $solution->AddProject('libecpg', 'dll', 'interfaces',
 		'src/interfaces/ecpg/ecpglib');
-	$libecpg->AddDefine('FRONTEND');
 	$libecpg->AddIncludeDir('src/interfaces/ecpg/include');
 	$libecpg->AddIncludeDir('src/interfaces/libpq');
 	$libecpg->AddIncludeDir('src/port');
@@ -335,7 +333,6 @@ sub mkvcbuild
 	my $libecpgcompat = $solution->AddProject(
 		'libecpg_compat', 'dll',
 		'interfaces',     'src/interfaces/ecpg/compatlib');
-	$libecpgcompat->AddDefine('FRONTEND');
 	$libecpgcompat->AddIncludeDir('src/interfaces/ecpg/include');
 	$libecpgcompat->AddIncludeDir('src/interfaces/libpq');
 	$libecpgcompat->UseDef('src/interfaces/ecpg/compatlib/compatlib.def');
@@ -368,6 +365,7 @@ sub mkvcbuild
 	$isolation_tester->AddFile('src/test/isolation/specparse.y');
 	$isolation_tester->AddFile('src/test/isolation/specscanner.l');
 	$isolation_tester->AddFile('src/test/isolation/specparse.c');
+	$isolation_tester->AddFile('src/test/isolation/specscanner.c');
 	$isolation_tester->AddIncludeDir('src/test/isolation');
 	$isolation_tester->AddIncludeDir('src/port');
 	$isolation_tester->AddIncludeDir('src/test/regress');
@@ -430,7 +428,6 @@ sub mkvcbuild
 	$pgevent->AddFiles('src/bin/pgevent', 'pgevent.c', 'pgmsgevent.rc');
 	$pgevent->AddResourceFile('src/bin/pgevent', 'Eventlog message formatter',
 		'win32');
-	$pgevent->RemoveFile('src/bin/pgevent/win32ver.rc');
 	$pgevent->UseDef('src/bin/pgevent/pgevent.def');
 	$pgevent->DisableLinkerWarnings('4104');
 

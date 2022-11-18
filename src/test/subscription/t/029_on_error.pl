@@ -29,7 +29,7 @@ sub test_skip_lsn
 	# Get the finish LSN of the error transaction.
 	my $contents = slurp_file($node_subscriber->logfile, $offset);
 	$contents =~
-	  qr/processing remote data for replication origin \"pg_\d+\" during "INSERT" for replication target relation "public.tbl" in transaction \d+ finished at ([[:xdigit:]]+\/[[:xdigit:]]+)/
+	  qr/processing remote data for replication origin \"pg_\d+\" during message type "INSERT" for replication target relation "public.tbl" in transaction \d+, finished at ([[:xdigit:]]+\/[[:xdigit:]]+)/
 	  or die "could not get error-LSN";
 	my $lsn = $1;
 
@@ -48,7 +48,7 @@ sub test_skip_lsn
 	# Check the log to ensure that the transaction is skipped, and advance the
 	# offset of the log file for the next test.
 	$offset = $node_subscriber->wait_for_log(
-		qr/LOG: ( [A-Z0-9]+:)? done skipping logical replication transaction finished at $lsn/,
+		qr/LOG: ( [A-Z0-9]+:)? logical replication completed skipping transaction at LSN $lsn/,
 		$offset);
 
 	# Insert non-conflict data

@@ -56,7 +56,7 @@ static int	comparetup_cluster(const SortTuple *a, const SortTuple *b,
 static void writetup_cluster(Tuplesortstate *state, LogicalTape *tape,
 							 SortTuple *stup);
 static void readtup_cluster(Tuplesortstate *state, SortTuple *stup,
-							LogicalTape *tape, unsigned int len);
+							LogicalTape *tape, unsigned int tuplen);
 static int	comparetup_index_btree(const SortTuple *a, const SortTuple *b,
 								   Tuplesortstate *state);
 static int	comparetup_index_hash(const SortTuple *a, const SortTuple *b,
@@ -145,7 +145,7 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 
 	oldcontext = MemoryContextSwitchTo(base->maincontext);
 
-	AssertArg(nkeys > 0);
+	Assert(nkeys > 0);
 
 #ifdef TRACE_SORT
 	if (trace_sort)
@@ -177,8 +177,8 @@ tuplesort_begin_heap(TupleDesc tupDesc,
 	{
 		SortSupport sortKey = base->sortKeys + i;
 
-		AssertArg(attNums[i] != 0);
-		AssertArg(sortOperators[i] != 0);
+		Assert(attNums[i] != 0);
+		Assert(sortOperators[i] != 0);
 
 		sortKey->ssup_cxt = CurrentMemoryContext;
 		sortKey->ssup_collation = sortCollations[i];
@@ -297,7 +297,7 @@ tuplesort_begin_cluster(TupleDesc tupDesc,
 		/* Convey if abbreviation optimization is applicable in principle */
 		sortKey->abbreviate = (i == 0 && base->haveDatum1);
 
-		AssertState(sortKey->ssup_attno != 0);
+		Assert(sortKey->ssup_attno != 0);
 
 		strategy = (scanKey->sk_flags & SK_BT_DESC) != 0 ?
 			BTGreaterStrategyNumber : BTLessStrategyNumber;
@@ -381,7 +381,7 @@ tuplesort_begin_index_btree(Relation heapRel,
 		/* Convey if abbreviation optimization is applicable in principle */
 		sortKey->abbreviate = (i == 0 && base->haveDatum1);
 
-		AssertState(sortKey->ssup_attno != 0);
+		Assert(sortKey->ssup_attno != 0);
 
 		strategy = (scanKey->sk_flags & SK_BT_DESC) != 0 ?
 			BTGreaterStrategyNumber : BTLessStrategyNumber;
@@ -501,7 +501,7 @@ tuplesort_begin_index_gist(Relation heapRel,
 		/* Convey if abbreviation optimization is applicable in principle */
 		sortKey->abbreviate = (i == 0 && base->haveDatum1);
 
-		AssertState(sortKey->ssup_attno != 0);
+		Assert(sortKey->ssup_attno != 0);
 
 		/* Look for a sort support function */
 		PrepareSortSupportFromGistIndexRel(indexRel, sortKey);
@@ -848,9 +848,19 @@ tuplesort_getindextuple(Tuplesortstate *state, bool forward)
  * determination of "non-equal tuple" based on simple binary inequality.  A
  * NULL value will have a zeroed abbreviated value representation, which caller
  * may rely on in abbreviated inequality check.
+ *
+ * For byref Datums, if copy is true, *val is set to a copy of the Datum
+ * copied into the caller's memory context, so that it will stay valid
+ * regardless of future manipulations of the tuplesort's state (up to and
+ * including deleting the tuplesort).  If copy is false, *val will just be
+ * set to a pointer to the Datum held within the tuplesort, which is more
+ * efficient, but only safe for callers that are prepared to have any
+ * subsequent manipulation of the tuplesort's state invalidate slot contents.
+ * For byval Datums, the value of the 'copy' parameter has no effect.
+
  */
 bool
-tuplesort_getdatum(Tuplesortstate *state, bool forward,
+tuplesort_getdatum(Tuplesortstate *state, bool forward, bool copy,
 				   Datum *val, bool *isNull, Datum *abbrev)
 {
 	TuplesortPublic *base = TuplesortstateGetPublic(state);
@@ -879,7 +889,11 @@ tuplesort_getdatum(Tuplesortstate *state, bool forward,
 	else
 	{
 		/* use stup.tuple because stup.datum1 may be an abbreviation */
-		*val = datumCopy(PointerGetDatum(stup.tuple), false, arg->datumTypeLen);
+		if (copy)
+			*val = datumCopy(PointerGetDatum(stup.tuple), false,
+							 arg->datumTypeLen);
+		else
+			*val = PointerGetDatum(stup.tuple);
 		*isNull = false;
 	}
 

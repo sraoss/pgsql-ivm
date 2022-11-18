@@ -161,7 +161,6 @@ compute_tsvector_stats(VacAttrStats *stats,
 	int			vector_no,
 				lexeme_no;
 	LexemeHashKey hash_key;
-	TrackItem  *item;
 
 	/*
 	 * We want statistics_target * 10 lexemes in the MCELEM array.  This
@@ -240,6 +239,7 @@ compute_tsvector_stats(VacAttrStats *stats,
 		curentryptr = ARRPTR(vector);
 		for (j = 0; j < vector->size; j++)
 		{
+			TrackItem  *item;
 			bool		found;
 
 			/*
@@ -296,6 +296,7 @@ compute_tsvector_stats(VacAttrStats *stats,
 		int			nonnull_cnt = samplerows - null_cnt;
 		int			i;
 		TrackItem **sort_table;
+		TrackItem  *item;
 		int			track_len;
 		int			cutoff_freq;
 		int			minfreq,
@@ -404,12 +405,12 @@ compute_tsvector_stats(VacAttrStats *stats,
 			 */
 			for (i = 0; i < num_mcelem; i++)
 			{
-				TrackItem  *item = sort_table[i];
+				TrackItem  *titem = sort_table[i];
 
 				mcelem_values[i] =
-					PointerGetDatum(cstring_to_text_with_len(item->key.lexeme,
-															 item->key.length));
-				mcelem_freqs[i] = (double) item->frequency / (double) nonnull_cnt;
+					PointerGetDatum(cstring_to_text_with_len(titem->key.lexeme,
+															 titem->key.length));
+				mcelem_freqs[i] = (double) titem->frequency / (double) nonnull_cnt;
 			}
 			mcelem_freqs[i++] = (double) minfreq / (double) nonnull_cnt;
 			mcelem_freqs[i] = (double) maxfreq / (double) nonnull_cnt;

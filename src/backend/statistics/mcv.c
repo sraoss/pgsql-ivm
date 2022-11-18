@@ -1444,8 +1444,8 @@ pg_stats_ext_mcvlist_items(PG_FUNCTION_ARGS)
 		}
 
 		values[0] = Int32GetDatum(funcctx->call_cntr);
-		values[1] = PointerGetDatum(makeArrayResult(astate_values, CurrentMemoryContext));
-		values[2] = PointerGetDatum(makeArrayResult(astate_nulls, CurrentMemoryContext));
+		values[1] = makeArrayResult(astate_values, CurrentMemoryContext);
+		values[2] = makeArrayResult(astate_nulls, CurrentMemoryContext);
 		values[3] = Float8GetDatum(item->frequency);
 		values[4] = Float8GetDatum(item->base_frequency);
 
@@ -1604,13 +1604,11 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 					 Bitmapset *keys, List *exprs,
 					 MCVList *mcvlist, bool is_or)
 {
-	int			i;
 	ListCell   *l;
 	bool	   *matches;
 
 	/* The bitmap may be partially built. */
 	Assert(clauses != NIL);
-	Assert(list_length(clauses) >= 1);
 	Assert(mcvlist != NULL);
 	Assert(mcvlist->nitems > 0);
 	Assert(mcvlist->nitems <= STATS_MCVLIST_MAX_ITEMS);
@@ -1660,7 +1658,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			 * can skip items that were already ruled out, and terminate if
 			 * there are no remaining MCV items that might possibly match.
 			 */
-			for (i = 0; i < mcvlist->nitems; i++)
+			for (int i = 0; i < mcvlist->nitems; i++)
 			{
 				bool		match = true;
 				MCVItem    *item = &mcvlist->items[i];
@@ -1767,7 +1765,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			 * can skip items that were already ruled out, and terminate if
 			 * there are no remaining MCV items that might possibly match.
 			 */
-			for (i = 0; i < mcvlist->nitems; i++)
+			for (int i = 0; i < mcvlist->nitems; i++)
 			{
 				int			j;
 				bool		match = !expr->useOr;
@@ -1838,7 +1836,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			 * can skip items that were already ruled out, and terminate if
 			 * there are no remaining MCV items that might possibly match.
 			 */
-			for (i = 0; i < mcvlist->nitems; i++)
+			for (int i = 0; i < mcvlist->nitems; i++)
 			{
 				bool		match = false;	/* assume mismatch */
 				MCVItem    *item = &mcvlist->items[i];
@@ -1931,7 +1929,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			 * can skip items that were already ruled out, and terminate if
 			 * there are no remaining MCV items that might possibly match.
 			 */
-			for (i = 0; i < mcvlist->nitems; i++)
+			for (int i = 0; i < mcvlist->nitems; i++)
 			{
 				MCVItem    *item = &mcvlist->items[i];
 				bool		match = false;
@@ -1957,7 +1955,7 @@ mcv_get_match_bitmap(PlannerInfo *root, List *clauses,
 			 * can skip items that were already ruled out, and terminate if
 			 * there are no remaining MCV items that might possibly match.
 			 */
-			for (i = 0; i < mcvlist->nitems; i++)
+			for (int i = 0; i < mcvlist->nitems; i++)
 			{
 				bool		match;
 				MCVItem    *item = &mcvlist->items[i];

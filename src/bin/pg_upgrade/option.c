@@ -384,6 +384,7 @@ adjust_data_dir(ClusterInfo *cluster)
 				cmd_output[MAX_STRING];
 	FILE	   *fp,
 			   *output;
+	int			rc;
 
 	/* Initially assume config dir and data dir are the same */
 	cluster->pgconfig = pg_strdup(cluster->pgdata);
@@ -416,13 +417,17 @@ adjust_data_dir(ClusterInfo *cluster)
 	 */
 	snprintf(cmd, sizeof(cmd), "\"%s/postgres\" -D \"%s\" -C data_directory",
 			 cluster->bindir, cluster->pgconfig);
+	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL ||
 		fgets(cmd_output, sizeof(cmd_output), output) == NULL)
 		pg_fatal("could not get data directory using %s: %s",
 				 cmd, strerror(errno));
 
-	pclose(output);
+	rc = pclose(output);
+	if (rc != 0)
+		pg_fatal("could not get control data directory using %s: %s",
+				 cmd, wait_result_to_str(rc));
 
 	/* strip trailing newline and carriage return */
 	(void) pg_strip_crlf(cmd_output);
@@ -444,7 +449,7 @@ adjust_data_dir(ClusterInfo *cluster)
 void
 get_sock_dir(ClusterInfo *cluster, bool live_check)
 {
-#if defined(HAVE_UNIX_SOCKETS) && !defined(WIN32)
+#if !defined(WIN32)
 	if (!live_check)
 		cluster->sockdir = user_opts.socketdir;
 	else
@@ -490,7 +495,7 @@ get_sock_dir(ClusterInfo *cluster, bool live_check)
 			pg_log(PG_WARNING, "user-supplied old port number %hu corrected to %hu",
 				   orig_port, cluster->port);
 	}
-#else							/* !HAVE_UNIX_SOCKETS || WIN32 */
+#else							/* WIN32 */
 	cluster->sockdir = NULL;
 #endif
 }

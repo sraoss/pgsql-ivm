@@ -414,6 +414,41 @@ with recursive search_graph(f, t, label) as (
 ) search breadth first by f, t set seq
 select * from search_graph order by seq;
 
+-- a constant initial value causes issues for EXPLAIN
+explain (verbose, costs off)
+with recursive test as (
+  select 1 as x
+  union all
+  select x + 1
+  from test
+) search depth first by x set y
+select * from test limit 5;
+
+with recursive test as (
+  select 1 as x
+  union all
+  select x + 1
+  from test
+) search depth first by x set y
+select * from test limit 5;
+
+explain (verbose, costs off)
+with recursive test as (
+  select 1 as x
+  union all
+  select x + 1
+  from test
+) search breadth first by x set y
+select * from test limit 5;
+
+with recursive test as (
+  select 1 as x
+  union all
+  select x + 1
+  from test
+) search breadth first by x set y
+select * from test limit 5;
+
 -- various syntax errors
 with recursive search_graph(f, t, label) as (
 	select * from graph0 g
@@ -560,6 +595,23 @@ with recursive search_graph(f, t, label) as (
 	where g.f = sg.t
 ) cycle f, t set is_cycle to 'Y' default 'N' using path
 select * from search_graph;
+
+explain (verbose, costs off)
+with recursive test as (
+  select 0 as x
+  union all
+  select (x + 1) % 10
+  from test
+) cycle x set is_cycle using path
+select * from test;
+
+with recursive test as (
+  select 0 as x
+  union all
+  select (x + 1) % 10
+  from test
+) cycle x set is_cycle using path
+select * from test;
 
 -- multiple CTEs
 with recursive
@@ -1169,7 +1221,7 @@ INSERT INTO bug6051 SELECT * FROM t1;
 SELECT * FROM bug6051;
 SELECT * FROM bug6051_2;
 
--- check INSERT...SELECT rule actions are disallowed on commands
+-- check INSERT ... SELECT rule actions are disallowed on commands
 -- that have modifyingCTEs
 CREATE OR REPLACE RULE bug6051_ins AS ON INSERT TO bug6051 DO INSTEAD
  INSERT INTO bug6051_2

@@ -76,7 +76,7 @@
  *	User-tweakable parameters
  */
 int			DefaultXactIsoLevel = XACT_READ_COMMITTED;
-int			XactIsoLevel;
+int			XactIsoLevel = XACT_READ_COMMITTED;
 
 bool		DefaultXactReadOnly = false;
 bool		XactReadOnly;
@@ -264,7 +264,10 @@ static bool currentCommandIdUsed;
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
  * stmtStartTimestamp is the value of statement_timestamp().
- * xactStopTimestamp is the time at which we log a commit or abort WAL record.
+ * xactStopTimestamp is the time at which we log a commit / abort WAL record,
+ * or if that was skipped, the time of the first subsequent
+ * GetCurrentTransactionStopTimestamp() call.
+ *
  * These do not change as we enter and exit subtransactions, so we don't
  * keep them inside the TransactionState stack.
  */
@@ -355,7 +358,7 @@ static void AtSubStart_Memory(void);
 static void AtSubStart_ResourceOwner(void);
 
 static void ShowTransactionState(const char *str);
-static void ShowTransactionStateRec(const char *str, TransactionState state);
+static void ShowTransactionStateRec(const char *str, TransactionState s);
 static const char *BlockStateAsString(TBlockState blockState);
 static const char *TransStateAsString(TransState state);
 
@@ -681,12 +684,12 @@ AssignTransactionId(TransactionState s)
 		log_unknown_top = true;
 
 	/*
-	 * Generate a new FullTransactionId and record its xid in PG_PROC and
+	 * Generate a new FullTransactionId and record its xid in PGPROC and
 	 * pg_subtrans.
 	 *
 	 * NB: we must make the subtrans entry BEFORE the Xid appears anywhere in
-	 * shared storage other than PG_PROC; because if there's no room for it in
-	 * PG_PROC, the subtrans entry is needed to ensure that other backends see
+	 * shared storage other than PGPROC; because if there's no room for it in
+	 * PGPROC, the subtrans entry is needed to ensure that other backends see
 	 * the Xid as "running".  See GetNewTransactionId.
 	 */
 	s->fullTransactionId = GetNewTransactionId(isSubXact);
@@ -866,15 +869,24 @@ GetCurrentStatementStartTimestamp(void)
 /*
  *	GetCurrentTransactionStopTimestamp
  *
- * We return current time if the transaction stop time hasn't been set
- * (which can happen if we decide we don't need to log an XLOG record).
+ * If the transaction stop time hasn't already been set, which can happen if
+ * we decided we don't need to log an XLOG record, set xactStopTimestamp.
  */
 TimestampTz
 GetCurrentTransactionStopTimestamp(void)
 {
-	if (xactStopTimestamp != 0)
-		return xactStopTimestamp;
-	return GetCurrentTimestamp();
+	TransactionState s PG_USED_FOR_ASSERTS_ONLY = CurrentTransactionState;
+
+	/* should only be called after commit / abort processing */
+	Assert(s->state == TRANS_DEFAULT ||
+		   s->state == TRANS_COMMIT ||
+		   s->state == TRANS_ABORT ||
+		   s->state == TRANS_PREPARE);
+
+	if (xactStopTimestamp == 0)
+		xactStopTimestamp = GetCurrentTimestamp();
+
+	return xactStopTimestamp;
 }
 
 /*
@@ -890,15 +902,6 @@ SetCurrentStatementStartTimestamp(void)
 		stmtStartTimestamp = GetCurrentTimestamp();
 	else
 		Assert(stmtStartTimestamp != 0);
-}
-
-/*
- *	SetCurrentTransactionStopTimestamp
- */
-static inline void
-SetCurrentTransactionStopTimestamp(void)
-{
-	xactStopTimestamp = GetCurrentTimestamp();
 }
 
 /*
@@ -1397,9 +1400,7 @@ RecordTransactionCommit(void)
 		START_CRIT_SECTION();
 		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
 
-		SetCurrentTransactionStopTimestamp();
-
-		XactLogCommitRecord(xactStopTimestamp,
+		XactLogCommitRecord(GetCurrentTransactionStopTimestamp(),
 							nchildren, children, nrels, rels,
 							ndroppedstats, droppedstats,
 							nmsgs, invalMessages,
@@ -1423,7 +1424,7 @@ RecordTransactionCommit(void)
 		 */
 
 		if (!replorigin || replorigin_session_origin_timestamp == 0)
-			replorigin_session_origin_timestamp = xactStopTimestamp;
+			replorigin_session_origin_timestamp = GetCurrentTransactionStopTimestamp();
 
 		TransactionTreeSetCommitTsData(xid, nchildren, children,
 									   replorigin_session_origin_timestamp,
@@ -1755,8 +1756,7 @@ RecordTransactionAbort(bool isSubXact)
 		xact_time = GetCurrentTimestamp();
 	else
 	{
-		SetCurrentTransactionStopTimestamp();
-		xact_time = xactStopTimestamp;
+		xact_time = GetCurrentTransactionStopTimestamp();
 	}
 
 	XactLogAbortRecord(xact_time,
@@ -3252,7 +3252,7 @@ CommitTransactionCommand(void)
 				s->savepointLevel = savepointLevel;
 
 				/* This is the same as TBLOCK_SUBBEGIN case */
-				AssertState(s->blockState == TBLOCK_SUBBEGIN);
+				Assert(s->blockState == TBLOCK_SUBBEGIN);
 				StartSubTransaction();
 				s->blockState = TBLOCK_SUBINPROGRESS;
 			}
@@ -3280,7 +3280,7 @@ CommitTransactionCommand(void)
 				s->savepointLevel = savepointLevel;
 
 				/* This is the same as TBLOCK_SUBBEGIN case */
-				AssertState(s->blockState == TBLOCK_SUBBEGIN);
+				Assert(s->blockState == TBLOCK_SUBBEGIN);
 				StartSubTransaction();
 				s->blockState = TBLOCK_SUBINPROGRESS;
 			}
@@ -3450,6 +3450,10 @@ AbortCurrentTransaction(void)
  *	a transaction block, typically because they have non-rollback-able
  *	side effects or do internal commits.
  *
+ *	If this routine completes successfully, then the calling statement is
+ *	guaranteed that if it completes without error, its results will be
+ *	committed immediately.
+ *
  *	If we have already started a transaction block, issue an error; also issue
  *	an error if we appear to be running inside a user-defined function (which
  *	could issue more commands and possibly cause a failure after the statement
@@ -3575,6 +3579,10 @@ CheckTransactionBlock(bool isTopLevel, bool throwError, const char *stmtType)
  *	a transaction block than when running as single commands.  ANALYZE is
  *	currently the only example.
  *
+ *	If this routine returns "false", then the calling statement is
+ *	guaranteed that if it completes without error, its results will be
+ *	committed immediately.
+ *
  *	isTopLevel: passed down from ProcessUtility to determine whether we are
  *	inside a function.
  */
@@ -3658,9 +3666,14 @@ static void
 CallXactCallbacks(XactEvent event)
 {
 	XactCallbackItem *item;
+	XactCallbackItem *next;
 
-	for (item = Xact_callbacks; item; item = item->next)
+	for (item = Xact_callbacks; item; item = next)
+	{
+		/* allow callbacks to unregister themselves when called */
+		next = item->next;
 		item->callback(event, item->arg);
+	}
 }
 
 
@@ -3715,9 +3728,14 @@ CallSubXactCallbacks(SubXactEvent event,
 					 SubTransactionId parentSubid)
 {
 	SubXactCallbackItem *item;
+	SubXactCallbackItem *next;
 
-	for (item = SubXact_callbacks; item; item = item->next)
+	for (item = SubXact_callbacks; item; item = next)
+	{
+		/* allow callbacks to unregister themselves when called */
+		next = item->next;
 		item->callback(event, mySubid, parentSubid, item->arg);
+	}
 }
 
 
@@ -4659,7 +4677,7 @@ RollbackAndReleaseCurrentSubTransaction(void)
 	CleanupSubTransaction();
 
 	s = CurrentTransactionState;	/* changed by pop */
-	AssertState(s->blockState == TBLOCK_SUBINPROGRESS ||
+	Assert(s->blockState == TBLOCK_SUBINPROGRESS ||
 				s->blockState == TBLOCK_INPROGRESS ||
 				s->blockState == TBLOCK_IMPLICIT_INPROGRESS ||
 				s->blockState == TBLOCK_STARTED);

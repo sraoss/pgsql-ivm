@@ -53,7 +53,7 @@ CREATE VIEW pg_group AS
     SELECT
         rolname AS groname,
         oid AS grosysid,
-        ARRAY(SELECT member FROM pg_auth_members WHERE roleid = oid) AS grolist
+        ARRAY(SELECT member FROM pg_auth_members WHERE roleid = pg_authid.oid) AS grolist
     FROM pg_authid
     WHERE NOT rolcanlogin;
 
@@ -370,11 +370,10 @@ CREATE VIEW pg_publication_tables AS
         N.nspname AS schemaname,
         C.relname AS tablename,
         ( SELECT array_agg(a.attname ORDER BY a.attnum)
-          FROM unnest(CASE WHEN GPT.attrs IS NOT NULL THEN GPT.attrs
-                      ELSE (SELECT array_agg(g) FROM generate_series(1, C.relnatts) g)
-                      END) k
-               JOIN pg_attribute a
-                    ON (a.attrelid = GPT.relid AND a.attnum = k)
+          FROM pg_attribute a
+          WHERE a.attrelid = GPT.relid AND a.attnum > 0 AND
+                NOT a.attisdropped AND
+                (a.attnum = ANY(GPT.attrs) OR GPT.attrs IS NULL)
         ) AS attnames,
         pg_get_expr(GPT.qual, GPT.relid) AS rowfilter
     FROM pg_publication P,
@@ -657,8 +656,10 @@ CREATE VIEW pg_stat_all_tables AS
             N.nspname AS schemaname,
             C.relname AS relname,
             pg_stat_get_numscans(C.oid) AS seq_scan,
+            pg_stat_get_lastscan(C.oid) AS last_seq_scan,
             pg_stat_get_tuples_returned(C.oid) AS seq_tup_read,
             sum(pg_stat_get_numscans(I.indexrelid))::bigint AS idx_scan,
+            max(pg_stat_get_lastscan(I.indexrelid)) AS last_idx_scan,
             sum(pg_stat_get_tuples_fetched(I.indexrelid))::bigint +
             pg_stat_get_tuples_fetched(C.oid) AS idx_tup_fetch,
             pg_stat_get_tuples_inserted(C.oid) AS n_tup_ins,
@@ -775,6 +776,7 @@ CREATE VIEW pg_stat_all_indexes AS
             C.relname AS relname,
             I.relname AS indexrelname,
             pg_stat_get_numscans(I.oid) AS idx_scan,
+            pg_stat_get_lastscan(I.oid) AS last_idx_scan,
             pg_stat_get_tuples_returned(I.oid) AS idx_tup_read,
             pg_stat_get_tuples_fetched(I.oid) AS idx_tup_fetch
     FROM pg_class C JOIN

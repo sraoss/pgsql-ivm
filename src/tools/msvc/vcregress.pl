@@ -146,6 +146,7 @@ sub set_command_env
 {
 	set_single_env('GZIP_PROGRAM', 'gzip');
 	set_single_env('LZ4',          'lz4');
+	set_single_env('OPENSSL',      'openssl');
 	set_single_env('ZSTD',         'zstd');
 }
 
@@ -291,7 +292,9 @@ sub tap_check
 	$ENV{PG_REGRESS}    = "$topdir/$Config/pg_regress/pg_regress";
 	$ENV{REGRESS_SHLIB} = "$topdir/src/test/regress/regress.dll";
 
-	$ENV{TESTDIR} = "$dir";
+	$ENV{TESTDATADIR} = "$dir/tmp_check";
+	$ENV{TESTLOGDIR} = "$dir/tmp_check/log";
+
 	my $module = basename $dir;
 	# add the module build dir as the second element in the PATH
 	$ENV{PATH} =~ s!;!;$topdir/$Config/$module;!;

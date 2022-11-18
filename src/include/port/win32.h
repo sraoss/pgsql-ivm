@@ -49,20 +49,11 @@
 #endif
 
 /*
- * Under MSVC, functions exported by a loadable module must be marked
- * "dllexport".  Other compilers don't need that.
+ * Functions exported by a loadable module must be marked "dllexport".
+ *
+ * While mingw would otherwise fall back to
+ * __attribute__((visibility("default"))), that appears to only work as long
+ * as no symbols are declared with __declspec(dllexport). But we can end up
+ * with some, e.g. plpython's Py_Init.
  */
-#ifdef _MSC_VER
 #define PGDLLEXPORT __declspec (dllexport)
-#endif
-
-/*
- * Windows headers don't define this structure, but you can define it yourself
- * to use the functionality.
- */
-struct sockaddr_un
-{
-	unsigned short sun_family;
-	char		sun_path[108];
-};
-#define HAVE_STRUCT_SOCKADDR_UN 1

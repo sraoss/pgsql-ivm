@@ -183,7 +183,9 @@ old_9_3_check_for_line_data_type_usage(ClusterInfo *cluster)
 
 	prep_status("Checking for incompatible \"line\" data type");
 
-	snprintf(output_path, sizeof(output_path), "tables_using_line.txt");
+	snprintf(output_path, sizeof(output_path), "%s/%s",
+			 log_opts.basedir,
+			 "tables_using_line.txt");
 
 	if (check_for_data_type_usage(cluster, "pg_catalog.line", output_path))
 	{
@@ -221,7 +223,9 @@ old_9_6_check_for_unknown_data_type_usage(ClusterInfo *cluster)
 
 	prep_status("Checking for invalid \"unknown\" user columns");
 
-	snprintf(output_path, sizeof(output_path), "tables_using_unknown.txt");
+	snprintf(output_path, sizeof(output_path), "%s/%s",
+			 log_opts.basedir,
+			 "tables_using_unknown.txt");
 
 	if (check_for_data_type_usage(cluster, "pg_catalog.unknown", output_path))
 	{
@@ -364,7 +368,9 @@ old_11_check_for_sql_identifier_data_type_usage(ClusterInfo *cluster)
 
 	prep_status("Checking for invalid \"sql_identifier\" user columns");
 
-	snprintf(output_path, sizeof(output_path), "tables_using_sql_identifier.txt");
+	snprintf(output_path, sizeof(output_path), "%s/%s",
+			 log_opts.basedir,
+			 "tables_using_sql_identifier.txt");
 
 	if (check_for_data_type_usage(cluster, "information_schema.sql_identifier",
 								  output_path))
@@ -391,7 +397,6 @@ report_extension_updates(ClusterInfo *cluster)
 {
 	int			dbnum;
 	FILE	   *script = NULL;
-	bool		found = false;
 	char	   *output_path = "update_extensions.sql";
 
 	prep_status("Checking for extension updates");
@@ -417,8 +422,6 @@ report_extension_updates(ClusterInfo *cluster)
 		i_name = PQfnumber(res, "name");
 		for (rowno = 0; rowno < ntups; rowno++)
 		{
-			found = true;
-
 			if (script == NULL && (script = fopen_priv(output_path, "w")) == NULL)
 				pg_fatal("could not open file \"%s\": %s", output_path,
 						 strerror(errno));
@@ -442,10 +445,8 @@ report_extension_updates(ClusterInfo *cluster)
 	}
 
 	if (script)
-		fclose(script);
-
-	if (found)
 	{
+		fclose(script);
 		report_status(PG_REPORT, "notice");
 		pg_log(PG_REPORT, "\n"
 			   "Your installation contains extensions that should be updated\n"

@@ -93,9 +93,9 @@ get_altertable_subcmdinfo(PG_FUNCTION_ARGS)
 	if (cmd->type != SCT_AlterTable)
 		elog(ERROR, "command is not ALTER TABLE");
 
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
-	if (list_length(cmd->d.alterTable.subcmds) == 0)
+	if (cmd->d.alterTable.subcmds == NIL)
 		elog(ERROR, "empty alter table subcommand list");
 
 	foreach(cell, cmd->d.alterTable.subcmds)

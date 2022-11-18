@@ -23,7 +23,7 @@ static void free_db_and_rel_infos(DbInfoArr *db_arr);
 static void get_db_infos(ClusterInfo *cluster);
 static void get_rel_infos(ClusterInfo *cluster, DbInfo *dbinfo);
 static void free_rel_infos(RelInfoArr *rel_arr);
-static void print_db_infos(DbInfoArr *dbinfo);
+static void print_db_infos(DbInfoArr *db_arr);
 static void print_rel_infos(RelInfoArr *rel_arr);
 
 
@@ -319,7 +319,7 @@ get_db_infos(ClusterInfo *cluster)
 
 	snprintf(query, sizeof(query),
 			 "SELECT d.oid, d.datname, d.encoding, d.datcollate, d.datctype, ");
-	if (GET_MAJOR_VERSION(old_cluster.major_version) < 1500)
+	if (GET_MAJOR_VERSION(cluster->major_version) < 1500)
 		snprintf(query + strlen(query), sizeof(query) - strlen(query),
 				 "'c' AS datlocprovider, NULL AS daticulocale, ");
 	else

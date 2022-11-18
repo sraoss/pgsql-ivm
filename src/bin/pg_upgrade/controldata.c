@@ -75,7 +75,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 	uint32		logid = 0;
 	uint32		segno = 0;
 	char	   *resetwal_bin;
-
+	int			rc;
 
 	/*
 	 * Because we test the pg_resetwal output as strings, it has to be in
@@ -123,8 +123,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 		/* only pg_controldata outputs the cluster state */
 		snprintf(cmd, sizeof(cmd), "\"%s/pg_controldata\" \"%s\"",
 				 cluster->bindir, cluster->pgdata);
-		fflush(stdout);
-		fflush(stderr);
+		fflush(NULL);
 
 		if ((output = popen(cmd, "r")) == NULL)
 			pg_fatal("could not get control data using %s: %s",
@@ -171,7 +170,10 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 			}
 		}
 
-		pclose(output);
+		rc = pclose(output);
+		if (rc != 0)
+			pg_fatal("could not get control data using %s: %s",
+					 cmd, wait_result_to_str(rc));
 
 		if (!got_cluster_state)
 		{
@@ -191,8 +193,7 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 			 cluster->bindir,
 			 live_check ? "pg_controldata\"" : resetwal_bin,
 			 cluster->pgdata);
-	fflush(stdout);
-	fflush(stderr);
+	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL)
 		pg_fatal("could not get control data using %s: %s",
@@ -497,13 +498,15 @@ get_control_data(ClusterInfo *cluster, bool live_check)
 				pg_fatal("%d: controldata retrieval problem", __LINE__);
 
 			p++;				/* remove ':' char */
-			/* used later for contrib check */
 			cluster->controldata.data_checksum_version = str2uint(p);
 			got_data_checksum_version = true;
 		}
 	}
 
-	pclose(output);
+	rc = pclose(output);
+	if (rc != 0)
+		pg_fatal("could not get control data using %s: %s",
+				 cmd, wait_result_to_str(rc));
 
 	/*
 	 * Restore environment variables.  Note all but LANG and LC_MESSAGES were

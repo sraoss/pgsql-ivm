@@ -176,6 +176,8 @@ InitStandaloneProcess(const char *argv0)
 {
 	Assert(!IsPostmasterEnvironment);
 
+	MyBackendType = B_STANDALONE_BACKEND;
+
 	/*
 	 * Start our win32 signal implementation
 	 */
@@ -255,6 +257,9 @@ GetBackendTypeDesc(BackendType backendType)
 		case B_INVALID:
 			backendDesc = "not initialized";
 			break;
+		case B_ARCHIVER:
+			backendDesc = "archiver";
+			break;
 		case B_AUTOVAC_LAUNCHER:
 			backendDesc = "autovacuum launcher";
 			break;
@@ -273,6 +278,12 @@ GetBackendTypeDesc(BackendType backendType)
 		case B_CHECKPOINTER:
 			backendDesc = "checkpointer";
 			break;
+		case B_LOGGER:
+			backendDesc = "logger";
+			break;
+		case B_STANDALONE_BACKEND:
+			backendDesc = "standalone backend";
+			break;
 		case B_STARTUP:
 			backendDesc = "startup";
 			break;
@@ -284,12 +295,6 @@ GetBackendTypeDesc(BackendType backendType)
 			break;
 		case B_WAL_WRITER:
 			backendDesc = "walwriter";
-			break;
-		case B_ARCHIVER:
-			backendDesc = "archiver";
-			break;
-		case B_LOGGER:
-			backendDesc = "logger";
 			break;
 	}
 
@@ -412,7 +417,7 @@ SetDataDir(const char *dir)
 {
 	char	   *new;
 
-	AssertArg(dir);
+	Assert(dir);
 
 	/* If presented path is relative, convert to absolute */
 	new = make_absolute_path(dir);
@@ -430,7 +435,7 @@ SetDataDir(const char *dir)
 void
 ChangeToDataDir(void)
 {
-	AssertState(DataDir);
+	Assert(DataDir);
 
 	if (chdir(DataDir) < 0)
 		ereport(FATAL,
@@ -472,6 +477,7 @@ static Oid	AuthenticatedUserId = InvalidOid;
 static Oid	SessionUserId = InvalidOid;
 static Oid	OuterUserId = InvalidOid;
 static Oid	CurrentUserId = InvalidOid;
+static const char *SystemUser = NULL;
 
 /* We also have to remember the superuser state of some of these levels */
 static bool AuthenticatedUserIsSuperuser = false;
@@ -490,7 +496,7 @@ static bool SetRoleIsActive = false;
 Oid
 GetUserId(void)
 {
-	AssertState(OidIsValid(CurrentUserId));
+	Assert(OidIsValid(CurrentUserId));
 	return CurrentUserId;
 }
 
@@ -501,7 +507,7 @@ GetUserId(void)
 Oid
 GetOuterUserId(void)
 {
-	AssertState(OidIsValid(OuterUserId));
+	Assert(OidIsValid(OuterUserId));
 	return OuterUserId;
 }
 
@@ -509,8 +515,8 @@ GetOuterUserId(void)
 static void
 SetOuterUserId(Oid userid)
 {
-	AssertState(SecurityRestrictionContext == 0);
-	AssertArg(OidIsValid(userid));
+	Assert(SecurityRestrictionContext == 0);
+	Assert(OidIsValid(userid));
 	OuterUserId = userid;
 
 	/* We force the effective user ID to match, too */
@@ -524,7 +530,7 @@ SetOuterUserId(Oid userid)
 Oid
 GetSessionUserId(void)
 {
-	AssertState(OidIsValid(SessionUserId));
+	Assert(OidIsValid(SessionUserId));
 	return SessionUserId;
 }
 
@@ -532,8 +538,8 @@ GetSessionUserId(void)
 static void
 SetSessionUserId(Oid userid, bool is_superuser)
 {
-	AssertState(SecurityRestrictionContext == 0);
-	AssertArg(OidIsValid(userid));
+	Assert(SecurityRestrictionContext == 0);
+	Assert(OidIsValid(userid));
 	SessionUserId = userid;
 	SessionUserIsSuperuser = is_superuser;
 	SetRoleIsActive = false;
@@ -544,12 +550,22 @@ SetSessionUserId(Oid userid, bool is_superuser)
 }
 
 /*
+ * Return the system user representing the authenticated identity.
+ * It is defined in InitializeSystemUser() as auth_method:authn_id.
+ */
+const char *
+GetSystemUser(void)
+{
+	return SystemUser;
+}
+
+/*
  * GetAuthenticatedUserId - get the authenticated user ID
  */
 Oid
 GetAuthenticatedUserId(void)
 {
-	AssertState(OidIsValid(AuthenticatedUserId));
+	Assert(OidIsValid(AuthenticatedUserId));
 	return AuthenticatedUserId;
 }
 
@@ -703,10 +719,10 @@ InitializeSessionUserId(const char *rolename, Oid roleid)
 	 * Don't do scans if we're bootstrapping, none of the system catalogs
 	 * exist yet, and they should be owned by postgres anyway.
 	 */
-	AssertState(!IsBootstrapProcessingMode());
+	Assert(!IsBootstrapProcessingMode());
 
 	/* call only once */
-	AssertState(!OidIsValid(AuthenticatedUserId));
+	Assert(!OidIsValid(AuthenticatedUserId));
 
 	/*
 	 * Make sure syscache entries are flushed for recent catalog changes. This
@@ -802,10 +818,10 @@ InitializeSessionUserIdStandalone(void)
 	 * This function should only be called in single-user mode, in autovacuum
 	 * workers, and in background workers.
 	 */
-	AssertState(!IsUnderPostmaster || IsAutoVacuumWorkerProcess() || IsBackgroundWorker);
+	Assert(!IsUnderPostmaster || IsAutoVacuumWorkerProcess() || IsBackgroundWorker);
 
 	/* call only once */
-	AssertState(!OidIsValid(AuthenticatedUserId));
+	Assert(!OidIsValid(AuthenticatedUserId));
 
 	AuthenticatedUserId = BOOTSTRAP_SUPERUSERID;
 	AuthenticatedUserIsSuperuser = true;
@@ -813,6 +829,45 @@ InitializeSessionUserIdStandalone(void)
 	SetSessionUserId(BOOTSTRAP_SUPERUSERID, true);
 }
 
+/*
+ * Initialize the system user.
+ *
+ * This is built as auth_method:authn_id.
+ */
+void
+InitializeSystemUser(const char *authn_id, const char *auth_method)
+{
+	char	   *system_user;
+
+	/* call only once */
+	Assert(SystemUser == NULL);
+
+	/*
+	 * InitializeSystemUser should be called only when authn_id is not NULL,
+	 * meaning that auth_method is valid.
+	 */
+	Assert(authn_id != NULL);
+
+	system_user = psprintf("%s:%s", auth_method, authn_id);
+
+	/* Store SystemUser in long-lived storage */
+	SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
+	pfree(system_user);
+}
+
+/*
+ * SQL-function SYSTEM_USER
+ */
+Datum
+system_user(PG_FUNCTION_ARGS)
+{
+	const char *sysuser = GetSystemUser();
+
+	if (sysuser)
+		PG_RETURN_DATUM(CStringGetTextDatum(sysuser));
+	else
+		PG_RETURN_NULL();
+}
 
 /*
  * Change session auth ID while running
@@ -831,7 +886,7 @@ void
 SetSessionAuthorization(Oid userid, bool is_superuser)
 {
 	/* Must have authenticated already, else can't make permission check */
-	AssertState(OidIsValid(AuthenticatedUserId));
+	Assert(OidIsValid(AuthenticatedUserId));
 
 	if (userid != AuthenticatedUserId &&
 		!AuthenticatedUserIsSuperuser)
@@ -929,6 +984,99 @@ GetUserNameFromId(Oid roleid, bool noerr)
 		ReleaseSysCache(tuple);
 	}
 	return result;
+}
+
+/* ------------------------------------------------------------------------
+ *				Client connection state shared with parallel workers
+ *
+ * ClientConnectionInfo contains pieces of information about the client that
+ * need to be synced to parallel workers when they initialize.
+ *-------------------------------------------------------------------------
+ */
+
+ClientConnectionInfo MyClientConnectionInfo;
+
+/*
+ * Intermediate representation of ClientConnectionInfo for easier
+ * serialization.  Variable-length fields are allocated right after this
+ * header.
+ */
+typedef struct SerializedClientConnectionInfo
+{
+	int32		authn_id_len;	/* strlen(authn_id), or -1 if NULL */
+	UserAuth	auth_method;
+} SerializedClientConnectionInfo;
+
+/*
+ * Calculate the space needed to serialize MyClientConnectionInfo.
+ */
+Size
+EstimateClientConnectionInfoSpace(void)
+{
+	Size		size = 0;
+
+	size = add_size(size, sizeof(SerializedClientConnectionInfo));
+
+	if (MyClientConnectionInfo.authn_id)
+		size = add_size(size, strlen(MyClientConnectionInfo.authn_id) + 1);
+
+	return size;
+}
+
+/*
+ * Serialize MyClientConnectionInfo for use by parallel workers.
+ */
+void
+SerializeClientConnectionInfo(Size maxsize, char *start_address)
+{
+	SerializedClientConnectionInfo serialized = {0};
+
+	serialized.authn_id_len = -1;
+	serialized.auth_method = MyClientConnectionInfo.auth_method;
+
+	if (MyClientConnectionInfo.authn_id)
+		serialized.authn_id_len = strlen(MyClientConnectionInfo.authn_id);
+
+	/* Copy serialized representation to buffer */
+	Assert(maxsize >= sizeof(serialized));
+	memcpy(start_address, &serialized, sizeof(serialized));
+
+	maxsize -= sizeof(serialized);
+	start_address += sizeof(serialized);
+
+	/* Copy authn_id into the space after the struct */
+	if (serialized.authn_id_len >= 0)
+	{
+		Assert(maxsize >= (serialized.authn_id_len + 1));
+		memcpy(start_address,
+			   MyClientConnectionInfo.authn_id,
+		/* include the NULL terminator to ease deserialization */
+			   serialized.authn_id_len + 1);
+	}
+}
+
+/*
+ * Restore MyClientConnectionInfo from its serialized representation.
+ */
+void
+RestoreClientConnectionInfo(char *conninfo)
+{
+	SerializedClientConnectionInfo serialized;
+
+	memcpy(&serialized, conninfo, sizeof(serialized));
+
+	/* Copy the fields back into place */
+	MyClientConnectionInfo.authn_id = NULL;
+	MyClientConnectionInfo.auth_method = serialized.auth_method;
+
+	if (serialized.authn_id_len >= 0)
+	{
+		char	   *authn_id;
+
+		authn_id = conninfo + sizeof(serialized);
+		MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext,
+															  authn_id);
+	}
 }
 
 
@@ -1429,7 +1577,7 @@ AddToDataDirLockFile(int target_line, const char *str)
 	len = strlen(destbuffer);
 	errno = 0;
 	pgstat_report_wait_start(WAIT_EVENT_LOCK_FILE_ADDTODATADIR_WRITE);
-	if (pwrite(fd, destbuffer, len, 0) != len)
+	if (pg_pwrite(fd, destbuffer, len, 0) != len)
 	{
 		pgstat_report_wait_end();
 		/* if write didn't set errno, assume problem is no disk space */

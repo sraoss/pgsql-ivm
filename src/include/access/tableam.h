@@ -20,7 +20,7 @@
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
-#include "utils/guc.h"
+#include "executor/tuptable.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
@@ -863,13 +863,13 @@ typedef struct TableAmRoutine
  * for the relation.  Works for tables, views, foreign tables and partitioned
  * tables.
  */
-extern const TupleTableSlotOps *table_slot_callbacks(Relation rel);
+extern const TupleTableSlotOps *table_slot_callbacks(Relation relation);
 
 /*
  * Returns slot using the callbacks returned by table_slot_callbacks(), and
  * registers it on *reglist.
  */
-extern TupleTableSlot *table_slot_create(Relation rel, List **reglist);
+extern TupleTableSlot *table_slot_create(Relation relation, List **reglist);
 
 
 /* ----------------------------------------------------------------------------
@@ -895,7 +895,7 @@ table_beginscan(Relation rel, Snapshot snapshot,
  * Like table_beginscan(), but for scanning catalog. It'll automatically use a
  * snapshot appropriate for scanning catalog relations.
  */
-extern TableScanDesc table_beginscan_catalog(Relation rel, int nkeys,
+extern TableScanDesc table_beginscan_catalog(Relation relation, int nkeys,
 											 struct ScanKeyData *key);
 
 /*
@@ -1133,7 +1133,7 @@ extern void table_parallelscan_initialize(Relation rel,
  *
  * Caller must hold a suitable lock on the relation.
  */
-extern TableScanDesc table_beginscan_parallel(Relation rel,
+extern TableScanDesc table_beginscan_parallel(Relation relation,
 											  ParallelTableScanDesc pscan);
 
 /*
@@ -1318,7 +1318,7 @@ table_tuple_satisfies_snapshot(Relation rel, TupleTableSlot *slot,
  * marked as deletable.  See comments above TM_IndexDelete and comments above
  * TM_IndexDeleteOp for full details.
  *
- * Returns a latestRemovedXid transaction ID that caller generally places in
+ * Returns a snapshotConflictHorizon transaction ID that caller places in
  * its index deletion WAL record.  This might be used during subsequent REDO
  * of the WAL record when in Hot Standby mode -- a recovery conflict for the
  * index deletion operation might be required on the standby.
@@ -2072,7 +2072,5 @@ extern void table_block_relation_estimate_size(Relation rel,
 
 extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
-extern bool check_default_table_access_method(char **newval, void **extra,
-											  GucSource source);
 
 #endif							/* TABLEAM_H */

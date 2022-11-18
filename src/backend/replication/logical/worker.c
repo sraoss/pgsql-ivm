@@ -312,7 +312,8 @@ static inline void cleanup_subxact_info(void);
  * Serialize and deserialize changes for a toplevel transaction.
  */
 static void stream_cleanup_files(Oid subid, TransactionId xid);
-static void stream_open_file(Oid subid, TransactionId xid, bool first);
+static void stream_open_file(Oid subid, TransactionId xid,
+							 bool first_segment);
 static void stream_write_change(char action, StringInfo s);
 static void stream_close_file(void);
 
@@ -362,6 +363,30 @@ static void clear_subscription_skip_lsn(XLogRecPtr finish_lsn);
 static void apply_error_callback(void *arg);
 static inline void set_apply_error_context_xact(TransactionId xid, XLogRecPtr lsn);
 static inline void reset_apply_error_context_info(void);
+
+/*
+ * Form the origin name for the subscription.
+ *
+ * This is a common function for tablesync and other workers. Tablesync workers
+ * must pass a valid relid. Other callers must pass relid = InvalidOid.
+ *
+ * Return the name in the supplied buffer.
+ */
+void
+ReplicationOriginNameForLogicalRep(Oid suboid, Oid relid,
+								   char *originname, Size szoriginname)
+{
+	if (OidIsValid(relid))
+	{
+		/* Replication origin name for tablesync workers. */
+		snprintf(originname, szoriginname, "pg_%u_%u", suboid, relid);
+	}
+	else
+	{
+		/* Replication origin name for non-tablesync workers. */
+		snprintf(originname, szoriginname, "pg_%u", suboid);
+	}
+}
 
 /*
  * Should this worker apply changes for given relation.
@@ -1631,7 +1656,7 @@ TargetPrivilegesCheck(Relation rel, AclMode mode)
 	if (check_enable_rls(relid, InvalidOid, false) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("\"%s\" cannot replicate into relation with row-level security enabled: \"%s\"",
+				 errmsg("user \"%s\" cannot replicate into relation with row-level security enabled: \"%s\"",
 						GetUserNameFromId(GetUserId(), true),
 						RelationGetRelationName(rel))));
 }
@@ -2152,6 +2177,15 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 	partrel = partrelinfo->ri_RelationDesc;
 
 	/*
+	 * Check for supported relkind.  We need this since partitions might be of
+	 * unsupported relkinds; and the set of partitions can change, so checking
+	 * at CREATE/ALTER SUBSCRIPTION would be insufficient.
+	 */
+	CheckSubscriptionRelkind(partrel->rd_rel->relkind,
+							 get_namespace_name(RelationGetNamespace(partrel)),
+							 RelationGetRelationName(partrel));
+
+	/*
 	 * To perform any of the operations below, the tuple must match the
 	 * partition's rowtype. Convert if needed or just copy, using a dedicated
 	 * slot to store the tuple in any case.
@@ -2204,6 +2238,7 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 			{
 				TupleTableSlot *localslot;
 				ResultRelInfo *partrelinfo_new;
+				Relation	partrel_new;
 				bool		found;
 
 				/* Get the matching local tuple from the partition. */
@@ -2289,7 +2324,6 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 						slot_getallattrs(remoteslot);
 					}
 
-
 					/* Find the new partition. */
 					oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
 					partrelinfo_new = ExecFindPartition(mtstate, relinfo,
@@ -2297,6 +2331,12 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 														estate);
 					MemoryContextSwitchTo(oldctx);
 					Assert(partrelinfo_new != partrelinfo);
+					partrel_new = partrelinfo_new->ri_RelationDesc;
+
+					/* Check that new partition also has supported relkind. */
+					CheckSubscriptionRelkind(partrel_new->rd_rel->relkind,
+											 get_namespace_name(RelationGetNamespace(partrel_new)),
+											 RelationGetRelationName(partrel_new));
 
 					/* DELETE old tuple found in the old partition. */
 					apply_handle_delete_internal(edata, partrelinfo,
@@ -2309,10 +2349,9 @@ apply_handle_tuple_routing(ApplyExecutionData *edata,
 					 * partition rowtype.
 					 */
 					oldctx = MemoryContextSwitchTo(GetPerTupleMemoryContext(estate));
-					partrel = partrelinfo_new->ri_RelationDesc;
 					remoteslot_part = partrelinfo_new->ri_PartitionTupleSlot;
 					if (remoteslot_part == NULL)
-						remoteslot_part = table_slot_create(partrel,
+						remoteslot_part = table_slot_create(partrel_new,
 															&estate->es_tupleTable);
 					map = partrelinfo_new->ri_RootToPartitionMap;
 					if (map != NULL)
@@ -3678,10 +3717,10 @@ ApplyWorkerMain(Datum main_arg)
 		 * Allocate the origin name in long-lived context for error context
 		 * message.
 		 */
-		ReplicationOriginNameForTablesync(MySubscription->oid,
-										  MyLogicalRepWorker->relid,
-										  originname,
-										  sizeof(originname));
+		ReplicationOriginNameForLogicalRep(MySubscription->oid,
+										   MyLogicalRepWorker->relid,
+										   originname,
+										   sizeof(originname));
 		apply_error_callback_arg.origin_name = MemoryContextStrdup(ApplyContext,
 																   originname);
 	}
@@ -3706,7 +3745,8 @@ ApplyWorkerMain(Datum main_arg)
 
 		/* Setup replication origin tracking. */
 		StartTransactionCommand();
-		snprintf(originname, sizeof(originname), "pg_%u", MySubscription->oid);
+		ReplicationOriginNameForLogicalRep(MySubscription->oid, InvalidOid,
+										   originname, sizeof(originname));
 		originid = replorigin_by_name(originname, true);
 		if (!OidIsValid(originid))
 			originid = replorigin_create(originname);
@@ -3790,7 +3830,7 @@ ApplyWorkerMain(Datum main_arg)
 		}
 
 		ereport(DEBUG1,
-				(errmsg("logical replication apply worker for subscription \"%s\" two_phase is %s",
+				(errmsg_internal("logical replication apply worker for subscription \"%s\" two_phase is %s",
 						MySubscription->name,
 						MySubscription->twophasestate == LOGICALREP_TWOPHASE_STATE_DISABLED ? "DISABLED" :
 						MySubscription->twophasestate == LOGICALREP_TWOPHASE_STATE_PENDING ? "PENDING" :
@@ -3839,7 +3879,7 @@ DisableSubscriptionAndExit(void)
 
 	/* Notify the subscription has been disabled and exit */
 	ereport(LOG,
-			errmsg("logical replication subscription \"%s\" has been disabled due to an error",
+			errmsg("subscription \"%s\" has been disabled because of an error",
 				   MySubscription->name));
 
 	proc_exit(0);
@@ -3878,7 +3918,7 @@ maybe_start_skipping_changes(XLogRecPtr finish_lsn)
 	skip_xact_finish_lsn = finish_lsn;
 
 	ereport(LOG,
-			errmsg("start skipping logical replication transaction finished at %X/%X",
+			errmsg("logical replication starts skipping transaction at LSN %X/%X",
 				   LSN_FORMAT_ARGS(skip_xact_finish_lsn)));
 }
 
@@ -3892,7 +3932,7 @@ stop_skipping_changes(void)
 		return;
 
 	ereport(LOG,
-			(errmsg("done skipping logical replication transaction finished at %X/%X",
+			(errmsg("logical replication completed skipping transaction at LSN %X/%X",
 					LSN_FORMAT_ARGS(skip_xact_finish_lsn))));
 
 	/* Stop skipping changes */
@@ -3974,8 +4014,8 @@ clear_subscription_skip_lsn(XLogRecPtr finish_lsn)
 
 		if (myskiplsn != finish_lsn)
 			ereport(WARNING,
-					errmsg("skip-LSN of logical replication subscription \"%s\" cleared", MySubscription->name),
-					errdetail("Remote transaction's finish WAL location (LSN) %X/%X did not match skip-LSN %X/%X",
+					errmsg("skip-LSN of subscription \"%s\" cleared", MySubscription->name),
+					errdetail("Remote transaction's finish WAL location (LSN) %X/%X did not match skip-LSN %X/%X.",
 							  LSN_FORMAT_ARGS(finish_lsn),
 							  LSN_FORMAT_ARGS(myskiplsn)));
 	}
@@ -4001,23 +4041,23 @@ apply_error_callback(void *arg)
 	if (errarg->rel == NULL)
 	{
 		if (!TransactionIdIsValid(errarg->remote_xid))
-			errcontext("processing remote data for replication origin \"%s\" during \"%s\"",
+			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\"",
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command));
 		else if (XLogRecPtrIsInvalid(errarg->finish_lsn))
-			errcontext("processing remote data for replication origin \"%s\" during \"%s\" in transaction %u",
+			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %u",
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command),
 					   errarg->remote_xid);
 		else
-			errcontext("processing remote data for replication origin \"%s\" during \"%s\" in transaction %u finished at %X/%X",
+			errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" in transaction %u, finished at %X/%X",
 					   errarg->origin_name,
 					   logicalrep_message_type(errarg->command),
 					   errarg->remote_xid,
 					   LSN_FORMAT_ARGS(errarg->finish_lsn));
 	}
 	else if (errarg->remote_attnum < 0)
-		errcontext("processing remote data for replication origin \"%s\" during \"%s\" for replication target relation \"%s.%s\" in transaction %u finished at %X/%X",
+		errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" in transaction %u, finished at %X/%X",
 				   errarg->origin_name,
 				   logicalrep_message_type(errarg->command),
 				   errarg->rel->remoterel.nspname,
@@ -4025,7 +4065,7 @@ apply_error_callback(void *arg)
 				   errarg->remote_xid,
 				   LSN_FORMAT_ARGS(errarg->finish_lsn));
 	else
-		errcontext("processing remote data for replication origin \"%s\" during \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %u finished at %X/%X",
+		errcontext("processing remote data for replication origin \"%s\" during message type \"%s\" for replication target relation \"%s.%s\" column \"%s\" in transaction %u, finished at %X/%X",
 				   errarg->origin_name,
 				   logicalrep_message_type(errarg->command),
 				   errarg->rel->remoterel.nspname,

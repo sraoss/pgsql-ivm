@@ -476,9 +476,10 @@ type_declaration: S_TYPEDEF
 		$$ = mm_strdup("");
 	};
 
-var_declaration: storage_declaration
-		var_type
+var_declaration:
+		storage_declaration var_type
 		{
+			actual_type[struct_level].type_storage = $1;
 			actual_type[struct_level].type_enum = $2.type_enum;
 			actual_type[struct_level].type_str = $2.type_str;
 			actual_type[struct_level].type_dimension = $2.type_dimension;
@@ -493,6 +494,7 @@ var_declaration: storage_declaration
 		}
 		| var_type
 		{
+			actual_type[struct_level].type_storage = EMPTY;
 			actual_type[struct_level].type_enum = $1.type_enum;
 			actual_type[struct_level].type_str = $1.type_str;
 			actual_type[struct_level].type_dimension = $1.type_dimension;
@@ -656,34 +658,6 @@ var_type:	simple_type
 			$$.type_dimension = mm_strdup("-1");
 			$$.type_index = mm_strdup("-1");
 			$$.type_sizeof = NULL;
-		}
-		| STRING
-		{
-			if (INFORMIX_MODE)
-			{
-				/* In Informix mode, "string" is automatically a typedef */
-				$$.type_enum = ECPGt_string;
-				$$.type_str = mm_strdup("char");
-				$$.type_dimension = mm_strdup("-1");
-				$$.type_index = mm_strdup("-1");
-				$$.type_sizeof = NULL;
-			}
-			else
-			{
-				/* Otherwise, legal only if user typedef'ed it */
-				struct typedefs *this = get_typedef("string", false);
-
-				$$.type_str = (this->type->type_enum == ECPGt_varchar || this->type->type_enum == ECPGt_bytea) ? EMPTY : mm_strdup(this->name);
-				$$.type_enum = this->type->type_enum;
-				$$.type_dimension = this->type->type_dimension;
-				$$.type_index = this->type->type_index;
-				if (this->type->type_sizeof && strlen(this->type->type_sizeof) != 0)
-					$$.type_sizeof = this->type->type_sizeof;
-				else
-					$$.type_sizeof = cat_str(3, mm_strdup("sizeof("), mm_strdup(this->name), mm_strdup(")"));
-
-				struct_member_list[struct_level] = ECPGstruct_member_dup(this->struct_member_list);
-			}
 		}
 		| IDENT ecpg_interval
 		{
@@ -977,7 +951,7 @@ variable_list: variable
 		| variable_list ',' variable
 		{
 			if (actual_type[struct_level].type_enum == ECPGt_varchar || actual_type[struct_level].type_enum == ECPGt_bytea)
-				$$ = cat_str(3, $1, mm_strdup(";"), $3);
+				$$ = cat_str(4, $1, mm_strdup(";"), mm_strdup(actual_type[struct_level].type_storage), $3);
 			else
 				$$ = cat_str(3, $1, mm_strdup(","), $3);
 		}

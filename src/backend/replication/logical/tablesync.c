@@ -291,6 +291,7 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 	{
 		TimeLineID	tli;
 		char		syncslotname[NAMEDATALEN] = {0};
+		char		originname[NAMEDATALEN] = {0};
 
 		MyLogicalRepWorker->relstate = SUBREL_STATE_SYNCDONE;
 		MyLogicalRepWorker->relstate_lsn = current_lsn;
@@ -299,7 +300,6 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 
 		/*
 		 * UpdateSubscriptionRelState must be called within a transaction.
-		 * That transaction will be ended within the finish_sync_worker().
 		 */
 		if (!IsTransactionState())
 			StartTransactionCommand();
@@ -333,6 +333,49 @@ process_syncing_tables_for_sync(XLogRecPtr current_lsn)
 		 * is dropped. So passing missing_ok = false.
 		 */
 		ReplicationSlotDropAtPubNode(LogRepWorkerWalRcvConn, syncslotname, false);
+
+		CommitTransactionCommand();
+		pgstat_report_stat(false);
+
+		/*
+		 * Start a new transaction to clean up the tablesync origin tracking.
+		 * This transaction will be ended within the finish_sync_worker().
+		 * Now, even, if we fail to remove this here, the apply worker will
+		 * ensure to clean it up afterward.
+		 *
+		 * We need to do this after the table state is set to SYNCDONE.
+		 * Otherwise, if an error occurs while performing the database
+		 * operation, the worker will be restarted and the in-memory state of
+		 * replication progress (remote_lsn) won't be rolled-back which would
+		 * have been cleared before restart. So, the restarted worker will use
+		 * invalid replication progress state resulting in replay of
+		 * transactions that have already been applied.
+		 */
+		StartTransactionCommand();
+
+		ReplicationOriginNameForLogicalRep(MyLogicalRepWorker->subid,
+										   MyLogicalRepWorker->relid,
+										   originname,
+										   sizeof(originname));
+
+		/*
+		 * Resetting the origin session removes the ownership of the slot.
+		 * This is needed to allow the origin to be dropped.
+		 */
+		replorigin_session_reset();
+		replorigin_session_origin = InvalidRepOriginId;
+		replorigin_session_origin_lsn = InvalidXLogRecPtr;
+		replorigin_session_origin_timestamp = 0;
+
+		/*
+		 * Drop the tablesync's origin tracking if exists.
+		 *
+		 * There is a chance that the user is concurrently performing refresh
+		 * for the subscription where we remove the table state and its origin
+		 * or the apply worker would have removed this origin. So passing
+		 * missing_ok = true.
+		 */
+		replorigin_drop_by_name(originname, true, false);
 
 		finish_sync_worker();
 	}
@@ -383,7 +426,7 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 	 * immediate restarts.  We don't need it if there are no tables that need
 	 * syncing.
 	 */
-	if (table_states_not_ready && !last_start_times)
+	if (table_states_not_ready != NIL && !last_start_times)
 	{
 		HASHCTL		ctl;
 
@@ -397,7 +440,7 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 	 * Clean up the hash table when we're done with all tables (just to
 	 * release the bit of memory).
 	 */
-	else if (!table_states_not_ready && last_start_times)
+	else if (table_states_not_ready == NIL && last_start_times)
 	{
 		hash_destroy(last_start_times);
 		last_start_times = NULL;
@@ -454,20 +497,18 @@ process_syncing_tables_for_apply(XLogRecPtr current_lsn)
 				/*
 				 * Remove the tablesync origin tracking if exists.
 				 *
-				 * The normal case origin drop is done here instead of in the
-				 * process_syncing_tables_for_sync function because we don't
-				 * allow to drop the origin till the process owning the origin
-				 * is alive.
-				 *
 				 * There is a chance that the user is concurrently performing
 				 * refresh for the subscription where we remove the table
-				 * state and its origin and by this time the origin might be
-				 * already removed. So passing missing_ok = true.
+				 * state and its origin or the tablesync worker would have
+				 * already removed this origin. We can't rely on tablesync
+				 * worker to remove the origin tracking as if there is any
+				 * error while dropping we won't restart it to drop the
+				 * origin. So passing missing_ok = true.
 				 */
-				ReplicationOriginNameForTablesync(MyLogicalRepWorker->subid,
-												  rstate->relid,
-												  originname,
-												  sizeof(originname));
+				ReplicationOriginNameForLogicalRep(MyLogicalRepWorker->subid,
+												   rstate->relid,
+												   originname,
+												   sizeof(originname));
 				replorigin_drop_by_name(originname, true, false);
 
 				/*
@@ -707,7 +748,6 @@ fetch_remote_table_info(char *nspname, char *relname,
 	bool		isnull;
 	int			natt;
 	ListCell   *lc;
-	bool		first;
 	Bitmapset  *included_cols = NULL;
 
 	lrel->nspname = nspname;
@@ -759,18 +799,15 @@ fetch_remote_table_info(char *nspname, char *relname,
 	if (walrcv_server_version(LogRepWorkerWalRcvConn) >= 150000)
 	{
 		WalRcvExecResult *pubres;
-		TupleTableSlot *slot;
+		TupleTableSlot *tslot;
 		Oid			attrsRow[] = {INT2VECTOROID};
 		StringInfoData pub_names;
-		bool		first = true;
-
 		initStringInfo(&pub_names);
 		foreach(lc, MySubscription->publications)
 		{
-			if (!first)
-				appendStringInfo(&pub_names, ", ");
+			if (foreach_current_index(lc) > 0)
+				appendStringInfoString(&pub_names, ", ");
 			appendStringInfoString(&pub_names, quote_literal_cstr(strVal(lfirst(lc))));
-			first = false;
 		}
 
 		/*
@@ -819,10 +856,10 @@ fetch_remote_table_info(char *nspname, char *relname,
 		 * If we find a NULL value, it means all the columns should be
 		 * replicated.
 		 */
-		slot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
-		if (tuplestore_gettupleslot(pubres->tuplestore, true, false, slot))
+		tslot = MakeSingleTupleTableSlot(pubres->tupledesc, &TTSOpsMinimalTuple);
+		if (tuplestore_gettupleslot(pubres->tuplestore, true, false, tslot))
 		{
-			Datum		cfval = slot_getattr(slot, 1, &isnull);
+			Datum		cfval = slot_getattr(tslot, 1, &isnull);
 
 			if (!isnull)
 			{
@@ -838,9 +875,9 @@ fetch_remote_table_info(char *nspname, char *relname,
 					included_cols = bms_add_member(included_cols, elems[natt]);
 			}
 
-			ExecClearTuple(slot);
+			ExecClearTuple(tslot);
 		}
-		ExecDropSingleTupleTableSlot(slot);
+		ExecDropSingleTupleTableSlot(tslot);
 
 		walrcv_clear_result(pubres);
 
@@ -941,8 +978,8 @@ fetch_remote_table_info(char *nspname, char *relname,
 	 *
 	 * 2) one of the subscribed publications has puballtables set to true
 	 *
-	 * 3) one of the subscribed publications is declared as ALL TABLES IN
-	 * SCHEMA that includes this relation
+	 * 3) one of the subscribed publications is declared as TABLES IN SCHEMA
+	 * that includes this relation
 	 */
 	if (walrcv_server_version(LogRepWorkerWalRcvConn) >= 150000)
 	{
@@ -950,14 +987,11 @@ fetch_remote_table_info(char *nspname, char *relname,
 
 		/* Build the pubname list. */
 		initStringInfo(&pub_names);
-		first = true;
 		foreach(lc, MySubscription->publications)
 		{
 			char	   *pubname = strVal(lfirst(lc));
 
-			if (first)
-				first = false;
-			else
+			if (foreach_current_index(lc) > 0)
 				appendStringInfoString(&pub_names, ", ");
 
 			appendStringInfoString(&pub_names, quote_literal_cstr(pubname));
@@ -1065,7 +1099,7 @@ copy_table(Relation rel)
 			appendStringInfoString(&cmd, quote_identifier(lrel.attnames[i]));
 		}
 
-		appendStringInfo(&cmd, ") TO STDOUT");
+		appendStringInfoString(&cmd, ") TO STDOUT");
 	}
 	else
 	{
@@ -1153,22 +1187,10 @@ copy_table(Relation rel)
  */
 void
 ReplicationSlotNameForTablesync(Oid suboid, Oid relid,
-								char *syncslotname, int szslot)
+								char *syncslotname, Size szslot)
 {
 	snprintf(syncslotname, szslot, "pg_%u_sync_%u_" UINT64_FORMAT, suboid,
 			 relid, GetSystemIdentifier());
-}
-
-/*
- * Form the origin name for tablesync.
- *
- * Return the name in the supplied buffer.
- */
-void
-ReplicationOriginNameForTablesync(Oid suboid, Oid relid,
-								  char *originname, int szorgname)
-{
-	snprintf(originname, szorgname, "pg_%u_%u", suboid, relid);
 }
 
 /*
@@ -1240,10 +1262,10 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 		   MyLogicalRepWorker->relstate == SUBREL_STATE_FINISHEDCOPY);
 
 	/* Assign the origin tracking record name. */
-	ReplicationOriginNameForTablesync(MySubscription->oid,
-									  MyLogicalRepWorker->relid,
-									  originname,
-									  sizeof(originname));
+	ReplicationOriginNameForLogicalRep(MySubscription->oid,
+									   MyLogicalRepWorker->relid,
+									   originname,
+									   sizeof(originname));
 
 	if (MyLogicalRepWorker->relstate == SUBREL_STATE_DATASYNC)
 	{
@@ -1327,7 +1349,7 @@ LogicalRepSyncTableStart(XLogRecPtr *origin_startpos)
 	if (check_enable_rls(RelationGetRelid(rel), InvalidOid, false) == RLS_ENABLED)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("\"%s\" cannot replicate into relation with row-level security enabled: \"%s\"",
+				 errmsg("user \"%s\" cannot replicate into relation with row-level security enabled: \"%s\"",
 						GetUserNameFromId(GetUserId(), true),
 						RelationGetRelationName(rel))));
 
@@ -1498,7 +1520,7 @@ FetchTableStates(bool *started_tx)
 		 * if table_state_not_ready was empty we still need to check again to
 		 * see if there are 0 tables.
 		 */
-		has_subrels = (list_length(table_states_not_ready) > 0) ||
+		has_subrels = (table_states_not_ready != NIL) ||
 			HasSubscriptionRelations(MySubscription->oid);
 
 		table_states_valid = true;
@@ -1534,7 +1556,7 @@ AllTablesyncsReady(void)
 	 * Return false when there are no tables in subscription or not all tables
 	 * are in ready state; true otherwise.
 	 */
-	return has_subrels && list_length(table_states_not_ready) == 0;
+	return has_subrels && (table_states_not_ready == NIL);
 }
 
 /*

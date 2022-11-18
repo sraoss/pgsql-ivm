@@ -372,18 +372,17 @@ extern const char *tuplesort_space_type_name(TuplesortSpaceType t);
 
 extern int	tuplesort_merge_order(int64 allowedMem);
 
-extern Size tuplesort_estimate_shared(int nworkers);
+extern Size tuplesort_estimate_shared(int nWorkers);
 extern void tuplesort_initialize_shared(Sharedsort *shared, int nWorkers,
 										dsm_segment *seg);
 extern void tuplesort_attach_shared(Sharedsort *shared, dsm_segment *seg);
 
 /*
- * These routines may only be called if randomAccess was specified 'true'.
- * Likewise, backwards scan in gettuple/getdatum is only allowed if
- * randomAccess was specified.  Note that parallel sorts do not support
- * randomAccess.
+ * These routines may only be called if TUPLESORT_RANDOMACCESS was specified
+ * during tuplesort_begin_*.  Additionally backwards scan in gettuple/getdatum
+ * also require TUPLESORT_RANDOMACCESS.  Note that parallel sorts do not
+ * support random access.
  */
-
 extern void tuplesort_rescan(Tuplesortstate *state);
 extern void tuplesort_markpos(Tuplesortstate *state);
 extern void tuplesort_restorepos(Tuplesortstate *state);
@@ -439,7 +438,7 @@ extern bool tuplesort_gettupleslot(Tuplesortstate *state, bool forward,
 								   bool copy, TupleTableSlot *slot, Datum *abbrev);
 extern HeapTuple tuplesort_getheaptuple(Tuplesortstate *state, bool forward);
 extern IndexTuple tuplesort_getindextuple(Tuplesortstate *state, bool forward);
-extern bool tuplesort_getdatum(Tuplesortstate *state, bool forward,
+extern bool tuplesort_getdatum(Tuplesortstate *state, bool forward, bool copy,
 							   Datum *val, bool *isNull, Datum *abbrev);
 
 

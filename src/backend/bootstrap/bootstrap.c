@@ -287,8 +287,8 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 					}
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
-					free(name);
-					free(value);
+					pfree(name);
+					pfree(value);
 					break;
 				}
 			default:
@@ -463,19 +463,19 @@ boot_openrel(char *relname)
  * ----------------
  */
 void
-closerel(char *name)
+closerel(char *relname)
 {
-	if (name)
+	if (relname)
 	{
 		if (boot_reldesc)
 		{
-			if (strcmp(RelationGetRelationName(boot_reldesc), name) != 0)
+			if (strcmp(RelationGetRelationName(boot_reldesc), relname) != 0)
 				elog(ERROR, "close of %s when %s was expected",
-					 name, RelationGetRelationName(boot_reldesc));
+					 relname, RelationGetRelationName(boot_reldesc));
 		}
 		else
 			elog(ERROR, "close of %s before any relation was opened",
-				 name);
+				 relname);
 	}
 
 	if (boot_reldesc == NULL)
@@ -648,7 +648,7 @@ InsertOneValue(char *value, int i)
 	Oid			typinput;
 	Oid			typoutput;
 
-	AssertArg(i >= 0 && i < MAXATTR);
+	Assert(i >= 0 && i < MAXATTR);
 
 	elog(DEBUG4, "inserting column %d value \"%s\"", i, value);
 

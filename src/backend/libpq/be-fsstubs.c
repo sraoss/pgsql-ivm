@@ -43,6 +43,7 @@
 #include <unistd.h>
 
 #include "access/xact.h"
+#include "catalog/pg_largeobject_metadata.h"
 #include "libpq/be-fsstubs.h"
 #include "libpq/libpq-fs.h"
 #include "miscadmin.h"
@@ -321,7 +322,7 @@ be_lo_unlink(PG_FUNCTION_ARGS)
 	 * relevant FDs.
 	 */
 	if (!lo_compat_privileges &&
-		!pg_largeobject_ownercheck(lobjId, GetUserId()))
+		!object_ownercheck(LargeObjectMetadataRelationId, lobjId, GetUserId()))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be owner of large object %u", lobjId)));
@@ -696,19 +697,16 @@ newLOfd(void)
 		newsize = 64;
 		cookies = (LargeObjectDesc **)
 			MemoryContextAllocZero(fscxt, newsize * sizeof(LargeObjectDesc *));
-		cookies_size = newsize;
 	}
 	else
 	{
 		/* Double size of array */
 		i = cookies_size;
 		newsize = cookies_size * 2;
-		cookies = (LargeObjectDesc **)
-			repalloc(cookies, newsize * sizeof(LargeObjectDesc *));
-		MemSet(cookies + cookies_size, 0,
-			   (newsize - cookies_size) * sizeof(LargeObjectDesc *));
-		cookies_size = newsize;
+		cookies =
+			repalloc0_array(cookies, LargeObjectDesc *, cookies_size, newsize);
 	}
+	cookies_size = newsize;
 
 	return i;
 }

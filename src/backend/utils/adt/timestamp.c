@@ -131,7 +131,7 @@ anytimestamp_typmodout(bool istz, int32 typmod)
 	if (typmod >= 0)
 		return psprintf("(%d)%s", (int) typmod, tz);
 	else
-		return psprintf("%s", tz);
+		return pstrdup(tz);
 }
 
 
@@ -2034,9 +2034,9 @@ time2t(const int hour, const int min, const int sec, const fsec_t fsec)
 }
 
 static Timestamp
-dt2local(Timestamp dt, int tz)
+dt2local(Timestamp dt, int timezone)
 {
-	dt -= (tz * USECS_PER_SEC);
+	dt -= (timezone * USECS_PER_SEC);
 	return dt;
 }
 
@@ -3290,7 +3290,7 @@ interval_mul(PG_FUNCTION_ARGS)
 	 * cascade from months and days.  It might still be >24 if the combination
 	 * of cascade and the seconds factor operation itself.
 	 */
-	if (Abs(sec_remainder) >= SECS_PER_DAY)
+	if (fabs(sec_remainder) >= SECS_PER_DAY)
 	{
 		result->day += (int) (sec_remainder / SECS_PER_DAY);
 		sec_remainder -= (int) (sec_remainder / SECS_PER_DAY) * SECS_PER_DAY;
@@ -3347,7 +3347,7 @@ interval_div(PG_FUNCTION_ARGS)
 	sec_remainder = (orig_day / factor - result->day +
 					 month_remainder_days - (int) month_remainder_days) * SECS_PER_DAY;
 	sec_remainder = TSROUND(sec_remainder);
-	if (Abs(sec_remainder) >= SECS_PER_DAY)
+	if (fabs(sec_remainder) >= SECS_PER_DAY)
 	{
 		result->day += (int) (sec_remainder / SECS_PER_DAY);
 		sec_remainder -= (int) (sec_remainder / SECS_PER_DAY) * SECS_PER_DAY;

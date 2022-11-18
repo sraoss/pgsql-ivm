@@ -23,7 +23,6 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "funcapi.h"
-#include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
@@ -47,7 +46,6 @@
 /* string literal macros defining chunks of perl code */
 #include "perlchunks.h"
 #include "plperl.h"
-#include "plperl_helpers.h"
 /* defines PLPERL_SET_OPMASK */
 #include "plperl_opmask.h"
 
@@ -1850,7 +1848,7 @@ plperl_call_handler(PG_FUNCTION_ARGS)
 	{
 		current_call_data = &this_call_data;
 		if (CALLED_AS_TRIGGER(fcinfo))
-			retval = PointerGetDatum(plperl_trigger_handler(fcinfo));
+			retval = plperl_trigger_handler(fcinfo);
 		else if (CALLED_AS_EVENT_TRIGGER(fcinfo))
 		{
 			plperl_event_trigger_handler(fcinfo);

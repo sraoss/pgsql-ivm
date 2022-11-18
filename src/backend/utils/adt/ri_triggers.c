@@ -176,8 +176,7 @@ typedef struct RI_CompareHashEntry
 static HTAB *ri_constraint_cache = NULL;
 static HTAB *ri_query_cache = NULL;
 static HTAB *ri_compare_cache = NULL;
-static dlist_head ri_constraint_cache_valid_list;
-static int	ri_constraint_cache_valid_count = 0;
+static dclist_head ri_constraint_cache_valid_list;
 
 
 /*
@@ -196,7 +195,7 @@ static void ri_GenerateQual(StringInfo buf,
 							Oid opoid,
 							const char *rightop, Oid rightoptype);
 static void ri_GenerateQualCollation(StringInfo buf, Oid collation);
-static int	ri_NullCheck(TupleDesc tupdesc, TupleTableSlot *slot,
+static int	ri_NullCheck(TupleDesc tupDesc, TupleTableSlot *slot,
 						 const RI_ConstraintInfo *riinfo, bool rel_is_pk);
 static void ri_BuildQueryKey(RI_QueryKey *key,
 							 const RI_ConstraintInfo *riinfo,
@@ -1428,9 +1427,9 @@ RI_Initial_Check(Trigger *trigger, Relation fk_rel, Relation pk_rel)
 	 */
 	if (!has_bypassrls_privilege(GetUserId()) &&
 		((pk_rel->rd_rel->relrowsecurity &&
-		  !pg_class_ownercheck(pkrte->relid, GetUserId())) ||
+		  !object_ownercheck(RelationRelationId, pkrte->relid, GetUserId())) ||
 		 (fk_rel->rd_rel->relrowsecurity &&
-		  !pg_class_ownercheck(fkrte->relid, GetUserId()))))
+		  !object_ownercheck(RelationRelationId, fkrte->relid, GetUserId()))))
 		return false;
 
 	/*----------
@@ -2172,10 +2171,9 @@ ri_LoadConstraintInfo(Oid constraintOid)
 
 	/*
 	 * For efficient processing of invalidation messages below, we keep a
-	 * doubly-linked list, and a count, of all currently valid entries.
+	 * doubly-linked count list of all currently valid entries.
 	 */
-	dlist_push_tail(&ri_constraint_cache_valid_list, &riinfo->valid_link);
-	ri_constraint_cache_valid_count++;
+	dclist_push_tail(&ri_constraint_cache_valid_list, &riinfo->valid_link);
 
 	riinfo->valid = true;
 
@@ -2233,13 +2231,13 @@ InvalidateConstraintCacheCallBack(Datum arg, int cacheid, uint32 hashvalue)
 	 * O(N^2) behavior in situations where a session touches many foreign keys
 	 * and also does many ALTER TABLEs, such as a restore from pg_dump.
 	 */
-	if (ri_constraint_cache_valid_count > 1000)
+	if (dclist_count(&ri_constraint_cache_valid_list) > 1000)
 		hashvalue = 0;			/* pretend it's a cache reset */
 
-	dlist_foreach_modify(iter, &ri_constraint_cache_valid_list)
+	dclist_foreach_modify(iter, &ri_constraint_cache_valid_list)
 	{
-		RI_ConstraintInfo *riinfo = dlist_container(RI_ConstraintInfo,
-													valid_link, iter.cur);
+		RI_ConstraintInfo *riinfo = dclist_container(RI_ConstraintInfo,
+													 valid_link, iter.cur);
 
 		/*
 		 * We must invalidate not only entries directly matching the given
@@ -2252,8 +2250,7 @@ InvalidateConstraintCacheCallBack(Datum arg, int cacheid, uint32 hashvalue)
 		{
 			riinfo->valid = false;
 			/* Remove invalidated entries from the list, too */
-			dlist_delete(iter.cur);
-			ri_constraint_cache_valid_count--;
+			dclist_delete_from(&ri_constraint_cache_valid_list, iter.cur);
 		}
 	}
 }

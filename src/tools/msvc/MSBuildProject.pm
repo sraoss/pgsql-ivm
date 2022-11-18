@@ -312,6 +312,8 @@ sub WriteItemDefinitionGroup
 
 	my $targetmachine =
 	  $self->{platform} eq 'Win32' ? 'MachineX86' : 'MachineX64';
+	my $arch =
+	  $self->{platform} eq 'Win32' ? 'x86' : 'x86_64';
 
 	my $includes = join ';', @{ $self->{includes} }, "";
 
@@ -347,7 +349,6 @@ sub WriteItemDefinitionGroup
       <ProgramDatabaseFile>.\\$cfgname\\$self->{name}\\$self->{name}.pdb</ProgramDatabaseFile>
       <GenerateMapFile>false</GenerateMapFile>
       <MapFileName>.\\$cfgname\\$self->{name}\\$self->{name}.map</MapFileName>
-      <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <!-- Permit links to MinGW-built, 32-bit DLLs (default before VS2012). -->
       <ImageHasSafeExceptionHandlers/>
       <SubSystem>Console</SubSystem>
@@ -381,7 +382,7 @@ EOF
 		print $f <<EOF;
     <PreLinkEvent>
       <Message>Generate DEF file</Message>
-      <Command>perl src\\tools\\msvc\\gendef.pl $cfgname\\$self->{name} $self->{platform}</Command>
+      <Command>perl src\\tools\\msvc\\gendef.pl --arch $arch --deffile $cfgname\\$self->{name}\\$self->{name}.def $cfgname\\$self->{name}</Command>
     </PreLinkEvent>
 EOF
 	}

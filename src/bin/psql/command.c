@@ -63,6 +63,7 @@ static backslashResult exec_command(const char *cmd,
 									PQExpBuffer query_buf,
 									PQExpBuffer previous_buf);
 static backslashResult exec_command_a(PsqlScanState scan_state, bool active_branch);
+static backslashResult exec_command_bind(PsqlScanState scan_state, bool active_branch);
 static backslashResult exec_command_C(PsqlScanState scan_state, bool active_branch);
 static backslashResult exec_command_connect(PsqlScanState scan_state, bool active_branch);
 static backslashResult exec_command_cd(PsqlScanState scan_state, bool active_branch,
@@ -308,6 +309,8 @@ exec_command(const char *cmd,
 
 	if (strcmp(cmd, "a") == 0)
 		status = exec_command_a(scan_state, active_branch);
+	else if (strcmp(cmd, "bind") == 0)
+		status = exec_command_bind(scan_state, active_branch);
 	else if (strcmp(cmd, "C") == 0)
 		status = exec_command_C(scan_state, active_branch);
 	else if (strcmp(cmd, "c") == 0 || strcmp(cmd, "connect") == 0)
@@ -451,6 +454,40 @@ exec_command_a(PsqlScanState scan_state, bool active_branch)
 	}
 
 	return success ? PSQL_CMD_SKIP_LINE : PSQL_CMD_ERROR;
+}
+
+/*
+ * \bind -- set query parameters
+ */
+static backslashResult
+exec_command_bind(PsqlScanState scan_state, bool active_branch)
+{
+	backslashResult status = PSQL_CMD_SKIP_LINE;
+
+	if (active_branch)
+	{
+		char	   *opt;
+		int			nparams = 0;
+		int			nalloc = 0;
+
+		pset.bind_params = NULL;
+
+		while ((opt = psql_scan_slash_option(scan_state, OT_NORMAL, NULL, false)))
+		{
+			nparams++;
+			if (nparams > nalloc)
+			{
+				nalloc = nalloc ? nalloc * 2 : 1;
+				pset.bind_params = pg_realloc_array(pset.bind_params, char *, nalloc);
+			}
+			pset.bind_params[nparams - 1] = pg_strdup(opt);
+		}
+
+		pset.bind_nparams = nparams;
+		pset.bind_flag = true;
+	}
+
+	return status;
 }
 
 /*
@@ -2661,6 +2698,7 @@ exec_command_write(PsqlScanState scan_state, bool active_branch,
 				if (fname[0] == '|')
 				{
 					is_pipe = true;
+					fflush(NULL);
 					disable_sigpipe_trap();
 					fd = popen(&fname[1], "w");
 				}
@@ -2693,14 +2731,24 @@ exec_command_write(PsqlScanState scan_state, bool active_branch,
 				fprintf(fd, "%s\n", previous_buf->data);
 
 			if (is_pipe)
+			{
 				result = pclose(fd);
+
+				if (result != 0)
+				{
+					pg_log_error("%s: %s", fname, wait_result_to_str(result));
+					status = PSQL_CMD_ERROR;
+				}
+			}
 			else
+			{
 				result = fclose(fd);
 
-			if (result == EOF)
-			{
-				pg_log_error("%s: %m", fname);
-				status = PSQL_CMD_ERROR;
+				if (result == EOF)
+				{
+					pg_log_error("%s: %m", fname);
+					status = PSQL_CMD_ERROR;
+				}
 			}
 		}
 
@@ -3551,27 +3599,27 @@ do_connect(enum trivalue reuse_previous_specification,
 			param_is_newly_set(PQhost(o_conn), PQhost(pset.db)) ||
 			param_is_newly_set(PQport(o_conn), PQport(pset.db)))
 		{
-			char	   *host = PQhost(pset.db);
+			char	   *connhost = PQhost(pset.db);
 			char	   *hostaddr = PQhostaddr(pset.db);
 
-			if (is_unixsock_path(host))
+			if (is_unixsock_path(connhost))
 			{
-				/* hostaddr overrides host */
+				/* hostaddr overrides connhost */
 				if (hostaddr && *hostaddr)
 					printf(_("You are now connected to database \"%s\" as user \"%s\" on address \"%s\" at port \"%s\".\n"),
 						   PQdb(pset.db), PQuser(pset.db), hostaddr, PQport(pset.db));
 				else
 					printf(_("You are now connected to database \"%s\" as user \"%s\" via socket in \"%s\" at port \"%s\".\n"),
-						   PQdb(pset.db), PQuser(pset.db), host, PQport(pset.db));
+						   PQdb(pset.db), PQuser(pset.db), connhost, PQport(pset.db));
 			}
 			else
 			{
-				if (hostaddr && *hostaddr && strcmp(host, hostaddr) != 0)
+				if (hostaddr && *hostaddr && strcmp(connhost, hostaddr) != 0)
 					printf(_("You are now connected to database \"%s\" as user \"%s\" on host \"%s\" (address \"%s\") at port \"%s\".\n"),
-						   PQdb(pset.db), PQuser(pset.db), host, hostaddr, PQport(pset.db));
+						   PQdb(pset.db), PQuser(pset.db), connhost, hostaddr, PQport(pset.db));
 				else
 					printf(_("You are now connected to database \"%s\" as user \"%s\" on host \"%s\" at port \"%s\".\n"),
-						   PQdb(pset.db), PQuser(pset.db), host, PQport(pset.db));
+						   PQdb(pset.db), PQuser(pset.db), connhost, PQport(pset.db));
 			}
 		}
 		else
@@ -3834,6 +3882,7 @@ editFile(const char *fname, int lineno)
 		sys = psprintf("\"%s\" \"%s\"",
 					   editorName, fname);
 #endif
+	fflush(NULL);
 	result = system(sys);
 	if (result == -1)
 		pg_log_error("could not start editor \"%s\"", editorName);
@@ -4887,9 +4936,9 @@ pset_value_string(const char *param, printQueryOpt *popt)
 	else if (strcmp(param, "footer") == 0)
 		return pstrdup(pset_bool_string(popt->topt.default_footer));
 	else if (strcmp(param, "format") == 0)
-		return psprintf("%s", _align2string(popt->topt.format));
+		return pstrdup(_align2string(popt->topt.format));
 	else if (strcmp(param, "linestyle") == 0)
-		return psprintf("%s", get_line_style(&popt->topt)->name);
+		return pstrdup(get_line_style(&popt->topt)->name);
 	else if (strcmp(param, "null") == 0)
 		return pset_quoted_string(popt->nullPrint
 								  ? popt->nullPrint
@@ -4956,6 +5005,7 @@ do_shell(const char *command)
 {
 	int			result;
 
+	fflush(NULL);
 	if (!command)
 	{
 		char	   *sys;
@@ -5065,6 +5115,7 @@ do_watch(PQExpBuffer query_buf, double sleep)
 #endif
 	if (pagerprog && myopt.topt.pager)
 	{
+		fflush(NULL);
 		disable_sigpipe_trap();
 		pagerpipe = popen(pagerprog, "w");
 

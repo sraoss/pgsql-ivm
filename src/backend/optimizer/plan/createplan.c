@@ -311,7 +311,7 @@ static ModifyTable *make_modifytable(PlannerInfo *root, Plan *subplan,
 									 List *updateColnosLists,
 									 List *withCheckOptionLists, List *returningLists,
 									 List *rowMarks, OnConflictExpr *onconflict,
-									 List *mergeActionList, int epqParam);
+									 List *mergeActionLists, int epqParam);
 static GatherMerge *create_gather_merge_plan(PlannerInfo *root,
 											 GatherMergePath *best_path);
 
@@ -2462,7 +2462,7 @@ create_groupingsets_plan(PlannerInfo *root, GroupingSetsPath *best_path)
 
 			if (rollup->is_hashed)
 				strat = AGG_HASHED;
-			else if (list_length(linitial(rollup->gsets)) == 0)
+			else if (linitial(rollup->gsets) == NIL)
 				strat = AGG_PLAIN;
 			else
 				strat = AGG_SORTED;
@@ -4915,13 +4915,8 @@ replace_nestloop_params_mutator(Node *node, PlannerInfo *root)
 		/* Upper-level PlaceHolderVars should be long gone at this point */
 		Assert(phv->phlevelsup == 0);
 
-		/*
-		 * Check whether we need to replace the PHV.  We use bms_overlap as a
-		 * cheap/quick test to see if the PHV might be evaluated in the outer
-		 * rels, and then grab its PlaceHolderInfo to tell for sure.
-		 */
-		if (!bms_overlap(phv->phrels, root->curOuterRels) ||
-			!bms_is_subset(find_placeholder_info(root, phv, false)->ph_eval_at,
+		/* Check whether we need to replace the PHV */
+		if (!bms_is_subset(find_placeholder_info(root, phv)->ph_eval_at,
 						   root->curOuterRels))
 		{
 			/*
@@ -7083,12 +7078,32 @@ make_modifytable(PlannerInfo *root, Plan *subplan,
 			RelOptInfo *resultRel = root->simple_rel_array[rti];
 
 			fdwroutine = resultRel->fdwroutine;
+
+			/*
+			 * MERGE is not currently supported for foreign tables and we
+			 * already checked when the table mentioned in the query is
+			 * foreign; but we can still get here if a partitioned table has a
+			 * foreign table as partition.  Disallow that now, to avoid an
+			 * uglier error message later.
+			 */
+			if (operation == CMD_MERGE && fdwroutine != NULL)
+			{
+				RangeTblEntry *rte = root->simple_rte_array[rti];
+
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("cannot execute MERGE on relation \"%s\"",
+							   get_rel_name(rte->relid)),
+						errdetail_relkind_not_supported(rte->relkind));
+			}
+
 		}
 		else
 		{
 			RangeTblEntry *rte = planner_rt_fetch(rti, root);
 
 			Assert(rte->rtekind == RTE_RELATION);
+			Assert(operation != CMD_MERGE);
 			if (rte->relkind == RELKIND_FOREIGN_TABLE)
 				fdwroutine = GetFdwRoutineByRelId(rte->relid);
 			else

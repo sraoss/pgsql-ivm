@@ -44,7 +44,7 @@ static void pgoutput_begin_txn(LogicalDecodingContext *ctx,
 static void pgoutput_commit_txn(LogicalDecodingContext *ctx,
 								ReorderBufferTXN *txn, XLogRecPtr commit_lsn);
 static void pgoutput_change(LogicalDecodingContext *ctx,
-							ReorderBufferTXN *txn, Relation rel,
+							ReorderBufferTXN *txn, Relation relation,
 							ReorderBufferChange *change);
 static void pgoutput_truncate(LogicalDecodingContext *ctx,
 							  ReorderBufferTXN *txn, int nrelations, Relation relations[],
@@ -212,7 +212,7 @@ typedef struct PGOutputTxnData
 /* Map used to remember which relation schemas we sent. */
 static HTAB *RelationSyncCache = NULL;
 
-static void init_rel_sync_cache(MemoryContext decoding_context);
+static void init_rel_sync_cache(MemoryContext cachectx);
 static void cleanup_rel_sync_cache(TransactionId xid, bool is_commit);
 static RelationSyncEntry *get_rel_sync_entry(PGOutputData *data,
 											 Relation relation);
@@ -441,16 +441,16 @@ pgoutput_startup(LogicalDecodingContext *ctx, OutputPluginOptions *opt,
 		if (data->protocol_version > LOGICALREP_PROTO_MAX_VERSION_NUM)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("client sent proto_version=%d but we only support protocol %d or lower",
+					 errmsg("client sent proto_version=%d but server only supports protocol %d or lower",
 							data->protocol_version, LOGICALREP_PROTO_MAX_VERSION_NUM)));
 
 		if (data->protocol_version < LOGICALREP_PROTO_MIN_VERSION_NUM)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("client sent proto_version=%d but we only support protocol %d or higher",
+					 errmsg("client sent proto_version=%d but server only supports protocol %d or higher",
 							data->protocol_version, LOGICALREP_PROTO_MIN_VERSION_NUM)));
 
-		if (list_length(data->publication_names) < 1)
+		if (data->publication_names == NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("publication_names parameter missing")));
@@ -854,6 +854,7 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 	MemoryContext oldctx;
 	int			idx;
 	bool		has_filter = true;
+	Oid			schemaid = get_rel_namespace(entry->publish_as_relid);
 
 	/*
 	 * Find if there are any row filters for this relation. If there are, then
@@ -867,26 +868,26 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 	 * are multiple lists (one for each operation) to which row filters will
 	 * be appended.
 	 *
-	 * FOR ALL TABLES implies "don't use row filter expression" so it takes
-	 * precedence.
+	 * FOR ALL TABLES and FOR TABLES IN SCHEMA implies "don't use row
+	 * filter expression" so it takes precedence.
 	 */
 	foreach(lc, publications)
 	{
 		Publication *pub = lfirst(lc);
 		HeapTuple	rftuple = NULL;
 		Datum		rfdatum = 0;
-		bool		pub_no_filter = false;
+		bool		pub_no_filter = true;
 
-		if (pub->alltables)
-		{
-			/*
-			 * If the publication is FOR ALL TABLES then it is treated the
-			 * same as if this table has no row filters (even if for other
-			 * publications it does).
-			 */
-			pub_no_filter = true;
-		}
-		else
+		/*
+		 * If the publication is FOR ALL TABLES, or the publication includes a
+		 * FOR TABLES IN SCHEMA where the table belongs to the referred
+		 * schema, then it is treated the same as if there are no row filters
+		 * (even if other publications have a row filter).
+		 */
+		if (!pub->alltables &&
+			!SearchSysCacheExists2(PUBLICATIONNAMESPACEMAP,
+								   ObjectIdGetDatum(schemaid),
+								   ObjectIdGetDatum(pub->oid)))
 		{
 			/*
 			 * Check for the presence of a row filter in this publication.
@@ -901,10 +902,6 @@ pgoutput_row_filter_init(PGOutputData *data, List *publications,
 				rfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, rftuple,
 										  Anum_pg_publication_rel_prqual,
 										  &pub_no_filter);
-			}
-			else
-			{
-				pub_no_filter = true;
 			}
 		}
 
@@ -1014,8 +1011,7 @@ pgoutput_column_list_init(PGOutputData *data, List *publications,
 	 * need to check all the given publication-table mappings and report an
 	 * error if any publications have a different column list.
 	 *
-	 * FOR ALL TABLES and FOR ALL TABLES IN SCHEMA implies "don't use column
-	 * list".
+	 * FOR ALL TABLES and FOR TABLES IN SCHEMA imply "don't use column list".
 	 */
 	foreach(lc, publications)
 	{

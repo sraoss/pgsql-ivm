@@ -480,6 +480,8 @@ fi
 [Unit]
 Description=PostgreSQL database server
 Documentation=man:postgres(1)
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=notify
@@ -1258,11 +1260,12 @@ default:\
     <itemizedlist>
      <listitem>
       <para>
-      On <productname>Linux</productname>
-      <filename>/proc/sys/fs/file-max</filename> determines the
-      maximum number of open files that the kernel will support.  It can
-      be changed by writing a different number into the file or by
-      adding an assignment in <filename>/etc/sysctl.conf</filename>.
+      On <productname>Linux</productname> the kernel parameter
+      <varname>fs.file-max</varname> determines the maximum number of open
+      files that the kernel will support.  It can be changed with
+      <literal>sysctl -w fs.file-max=<replaceable>N</replaceable></literal>.
+      To make the setting persist across reboots, add an assignment
+      in <filename>/etc/sysctl.conf</filename>.
       The maximum limit of files per process is fixed at the time the
       kernel is compiled; see
       <filename>/usr/src/linux/Documentation/proc.txt</filename> for
@@ -1297,6 +1300,22 @@ default:\
     system-wide limit, you can set <productname>PostgreSQL</productname>'s <xref
     linkend="guc-max-files-per-process"/> configuration parameter to
     limit the consumption of open files.
+   </para>
+
+   <para>
+    Another kernel limit that may be of concern when supporting large
+    numbers of client connections is the maximum socket connection queue
+    length.  If more than that many connection requests arrive within a very
+    short period, some may get rejected before the postmaster can service
+    the requests, with those clients receiving unhelpful connection failure
+    errors such as <quote>Resource temporarily unavailable</quote> or
+    <quote>Connection refused</quote>.  The default queue length limit is 128
+    on many platforms.  To raise it, adjust the appropriate kernel parameter
+    via <application>sysctl</application>, then restart the postmaster.
+    The parameter is variously named <varname>net.core.somaxconn</varname>
+    on Linux, <varname>kern.ipc.soacceptqueue</varname> on newer FreeBSD,
+    and <varname>kern.ipc.somaxconn</varname> on macOS and other BSD
+    variants.
    </para>
   </sect2>
 
@@ -2187,7 +2206,7 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    With <acronym>SSL</acronym> support compiled in, the
    <productname>PostgreSQL</productname> server can be started with
    support for encrypted connections using <acronym>TLS</acronym> protocols
-   enabled by by setting the parameter
+   enabled by setting the parameter
    <xref linkend="guc-ssl"/> to <literal>on</literal> in
    <filename>postgresql.conf</filename>.  The server will listen for both normal
    and <acronym>SSL</acronym> connections on the same TCP port, and will negotiate

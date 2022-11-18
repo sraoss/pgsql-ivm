@@ -250,7 +250,7 @@ static void ReorderBufferSerializeChange(ReorderBuffer *rb, ReorderBufferTXN *tx
 static Size ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 										TXNEntryFile *file, XLogSegNo *segno);
 static void ReorderBufferRestoreChange(ReorderBuffer *rb, ReorderBufferTXN *txn,
-									   char *change);
+									   char *data);
 static void ReorderBufferRestoreCleanup(ReorderBuffer *rb, ReorderBufferTXN *txn);
 static void ReorderBufferTruncateTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 									 bool txn_prepared);
@@ -366,6 +366,7 @@ ReorderBufferAllocate(void)
 
 	dlist_init(&buffer->toplevel_by_lsn);
 	dlist_init(&buffer->txns_by_base_snapshot_lsn);
+	dclist_init(&buffer->catchange_txns);
 
 	/*
 	 * Ensure there's no stale data from prior uses of this slot, in case some
@@ -817,7 +818,7 @@ ReorderBufferQueueChange(ReorderBuffer *rb, TransactionId xid, XLogRecPtr lsn,
  */
 void
 ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
-						  Snapshot snapshot, XLogRecPtr lsn,
+						  Snapshot snap, XLogRecPtr lsn,
 						  bool transactional, const char *prefix,
 						  Size message_size, const char *message)
 {
@@ -844,7 +845,7 @@ ReorderBufferQueueMessage(ReorderBuffer *rb, TransactionId xid,
 	else
 	{
 		ReorderBufferTXN *txn = NULL;
-		volatile Snapshot snapshot_now = snapshot;
+		volatile Snapshot snapshot_now = snap;
 
 		if (xid != InvalidTransactionId)
 			txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
@@ -878,9 +879,23 @@ static void
 AssertTXNLsnOrder(ReorderBuffer *rb)
 {
 #ifdef USE_ASSERT_CHECKING
+	LogicalDecodingContext *ctx = rb->private_data;
 	dlist_iter	iter;
 	XLogRecPtr	prev_first_lsn = InvalidXLogRecPtr;
 	XLogRecPtr	prev_base_snap_lsn = InvalidXLogRecPtr;
+
+	/*
+	 * Skip the verification if we don't reach the LSN at which we start
+	 * decoding the contents of transactions yet because until we reach the
+	 * LSN, we could have transactions that don't have the association between
+	 * the top-level transaction and subtransaction yet and consequently have
+	 * the same LSN.  We don't guarantee this association until we try to
+	 * decode the actual contents of transaction. The ordering of the records
+	 * prior to the start_decoding_at LSN should have been checked before the
+	 * restart.
+	 */
+	if (SnapBuildXactNeedsSkip(ctx->snapshot_builder, ctx->reader->EndRecPtr))
+		return;
 
 	dlist_foreach(iter, &rb->toplevel_by_lsn)
 	{
@@ -1526,14 +1541,17 @@ ReorderBufferCleanupTXN(ReorderBuffer *rb, ReorderBufferTXN *txn)
 	}
 
 	/*
-	 * Remove TXN from its containing list.
+	 * Remove TXN from its containing lists.
 	 *
 	 * Note: if txn is known as subxact, we are deleting the TXN from its
 	 * parent's list of known subxacts; this leaves the parent's nsubxacts
 	 * count too high, but we don't care.  Otherwise, we are deleting the TXN
-	 * from the LSN-ordered list of toplevel TXNs.
+	 * from the LSN-ordered list of toplevel TXNs. We remove the TXN from the
+	 * list of catalog modifying transactions as well.
 	 */
 	dlist_delete(&txn->node);
+	if (rbtxn_has_catalog_changes(txn))
+		dclist_delete_from(&rb->catchange_txns, &txn->catchange_node);
 
 	/* now remove reference from buffer */
 	hash_search(rb->by_txn,
@@ -2085,6 +2103,8 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 			Relation	relation = NULL;
 			Oid			reloid;
 
+			CHECK_FOR_INTERRUPTS();
+
 			/*
 			 * We can't call start stream callback before processing first
 			 * change.
@@ -2307,17 +2327,17 @@ ReorderBufferProcessTXN(ReorderBuffer *rb, ReorderBufferTXN *txn,
 						for (i = 0; i < nrelids; i++)
 						{
 							Oid			relid = change->data.truncate.relids[i];
-							Relation	relation;
+							Relation	rel;
 
-							relation = RelationIdGetRelation(relid);
+							rel = RelationIdGetRelation(relid);
 
-							if (!RelationIsValid(relation))
+							if (!RelationIsValid(rel))
 								elog(ERROR, "could not open relation with OID %u", relid);
 
-							if (!RelationIsLogicallyLogged(relation))
+							if (!RelationIsLogicallyLogged(rel))
 								continue;
 
-							relations[nrelations++] = relation;
+							relations[nrelations++] = rel;
 						}
 
 						/* Apply the truncate. */
@@ -3057,7 +3077,7 @@ ReorderBufferSetBaseSnapshot(ReorderBuffer *rb, TransactionId xid,
 	ReorderBufferTXN *txn;
 	bool		is_new;
 
-	AssertArg(snap != NULL);
+	Assert(snap != NULL);
 
 	/*
 	 * Fetch the transaction to operate on.  If we know it's a subtransaction,
@@ -3188,16 +3208,17 @@ ReorderBufferAddNewTupleCids(ReorderBuffer *rb, TransactionId xid,
 }
 
 /*
- * Setup the invalidation of the toplevel transaction.
+ * Accumulate the invalidations for executing them later.
  *
  * This needs to be called for each XLOG_XACT_INVALIDATIONS message and
- * accumulates all the invalidation messages in the toplevel transaction as
- * well as in the form of change in reorder buffer.  We require to record it in
- * form of the change so that we can execute only the required invalidations
- * instead of executing all the invalidations on each CommandId increment.  We
- * also need to accumulate these in the toplevel transaction because in some
- * cases we skip processing the transaction (see ReorderBufferForget), we need
- * to execute all the invalidations together.
+ * accumulates all the invalidation messages in the toplevel transaction, if
+ * available, otherwise in the current transaction, as well as in the form of
+ * change in reorder buffer.  We require to record it in form of the change
+ * so that we can execute only the required invalidations instead of executing
+ * all the invalidations on each CommandId increment.  We also need to
+ * accumulate these in the txn buffer because in some cases where we skip
+ * processing the transaction (see ReorderBufferForget), we need to execute
+ * all the invalidations together.
  */
 void
 ReorderBufferAddInvalidations(ReorderBuffer *rb, TransactionId xid,
@@ -3213,8 +3234,9 @@ ReorderBufferAddInvalidations(ReorderBuffer *rb, TransactionId xid,
 	oldcontext = MemoryContextSwitchTo(rb->context);
 
 	/*
-	 * Collect all the invalidations under the top transaction so that we can
-	 * execute them all together.  See comment atop this function
+	 * Collect all the invalidations under the top transaction, if available,
+	 * so that we can execute them all together.  See comments atop this
+	 * function.
 	 */
 	if (txn->toptxn)
 		txn = txn->toptxn;
@@ -3275,10 +3297,15 @@ ReorderBufferXidSetCatalogChanges(ReorderBuffer *rb, TransactionId xid,
 								  XLogRecPtr lsn)
 {
 	ReorderBufferTXN *txn;
+	ReorderBufferTXN *toptxn;
 
 	txn = ReorderBufferTXNByXid(rb, xid, true, NULL, lsn, true);
 
-	txn->txn_flags |= RBTXN_HAS_CATALOG_CHANGES;
+	if (!rbtxn_has_catalog_changes(txn))
+	{
+		txn->txn_flags |= RBTXN_HAS_CATALOG_CHANGES;
+		dclist_push_tail(&rb->catchange_txns, &txn->catchange_node);
+	}
 
 	/*
 	 * Mark top-level transaction as having catalog changes too if one of its
@@ -3286,8 +3313,49 @@ ReorderBufferXidSetCatalogChanges(ReorderBuffer *rb, TransactionId xid,
 	 * conveniently check just top-level transaction and decide whether to
 	 * build the hash table or not.
 	 */
-	if (txn->toptxn != NULL)
-		txn->toptxn->txn_flags |= RBTXN_HAS_CATALOG_CHANGES;
+	toptxn = txn->toptxn;
+	if (toptxn != NULL && !rbtxn_has_catalog_changes(toptxn))
+	{
+		toptxn->txn_flags |= RBTXN_HAS_CATALOG_CHANGES;
+		dclist_push_tail(&rb->catchange_txns, &toptxn->catchange_node);
+	}
+}
+
+/*
+ * Return palloc'ed array of the transactions that have changed catalogs.
+ * The returned array is sorted in xidComparator order.
+ *
+ * The caller must free the returned array when done with it.
+ */
+TransactionId *
+ReorderBufferGetCatalogChangesXacts(ReorderBuffer *rb)
+{
+	dlist_iter	iter;
+	TransactionId *xids = NULL;
+	size_t		xcnt = 0;
+
+	/* Quick return if the list is empty */
+	if (dclist_count(&rb->catchange_txns) == 0)
+		return NULL;
+
+	/* Initialize XID array */
+	xids = (TransactionId *) palloc(sizeof(TransactionId) *
+									dclist_count(&rb->catchange_txns));
+	dclist_foreach(iter, &rb->catchange_txns)
+	{
+		ReorderBufferTXN *txn = dclist_container(ReorderBufferTXN,
+												 catchange_node,
+												 iter.cur);
+
+		Assert(rbtxn_has_catalog_changes(txn));
+
+		xids[xcnt++] = txn->xid;
+	}
+
+	qsort(xids, xcnt, sizeof(TransactionId), xidComparator);
+
+	Assert(xcnt == dclist_count(&rb->catchange_txns));
+	return xids;
 }
 
 /*
@@ -4093,6 +4161,8 @@ ReorderBufferRestoreChanges(ReorderBuffer *rb, ReorderBufferTXN *txn,
 	{
 		int			readBytes;
 		ReorderBufferDiskChange *ondisk;
+
+		CHECK_FOR_INTERRUPTS();
 
 		if (*fd == -1)
 		{

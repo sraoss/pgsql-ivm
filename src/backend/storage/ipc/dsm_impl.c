@@ -53,13 +53,9 @@
 #include <unistd.h>
 #ifndef WIN32
 #include <sys/mman.h>
-#endif
-#include <sys/stat.h>
-#ifdef HAVE_SYS_IPC_H
 #include <sys/ipc.h>
-#endif
-#ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
+#include <sys/stat.h>
 #endif
 
 #include "common/file_perm.h"
@@ -113,7 +109,7 @@ const struct config_enum_entry dynamic_shared_memory_options[] = {
 };
 
 /* Implementation selector. */
-int			dynamic_shared_memory_type;
+int			dynamic_shared_memory_type = DEFAULT_DYNAMIC_SHARED_MEMORY_TYPE;
 
 /* Amount of space reserved for DSM segments in the main area. */
 int			min_dynamic_shared_memory;

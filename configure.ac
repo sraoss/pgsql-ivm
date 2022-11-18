@@ -508,6 +508,8 @@ if test "$GCC" = yes -a "$ICC" = no; then
   PGAC_PROG_CXX_CFLAGS_OPT([-Wimplicit-fallthrough=3])
   PGAC_PROG_CC_CFLAGS_OPT([-Wcast-function-type])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wcast-function-type])
+  PGAC_PROG_CC_CFLAGS_OPT([-Wshadow=compatible-local])
+  PGAC_PROG_CXX_CFLAGS_OPT([-Wshadow=compatible-local])
   # This was included in -Wall/-Wformat in older GCC versions
   PGAC_PROG_CC_CFLAGS_OPT([-Wformat-security])
   PGAC_PROG_CXX_CFLAGS_OPT([-Wformat-security])
@@ -524,17 +526,6 @@ if test "$GCC" = yes -a "$ICC" = no; then
   PGAC_PROG_CC_VAR_OPT(CFLAGS_UNROLL_LOOPS, [-funroll-loops])
   # Optimization flags for specific files that benefit from vectorization
   PGAC_PROG_CC_VAR_OPT(CFLAGS_VECTORIZE, [-ftree-vectorize])
-  #
-  # If the compiler knows how to hide symbols add the switch needed for that
-  # to CFLAGS_SL_MODULE and define HAVE_VISIBILITY_ATTRIBUTE.
-  PGAC_PROG_CC_VAR_OPT(CFLAGS_SL_MODULE, [-fvisibility=hidden])
-  if test "$pgac_cv_prog_CC_cflags__fvisibility_hidden" = yes; then
-     AC_DEFINE([HAVE_VISIBILITY_ATTRIBUTE], 1,
-               [Define to 1 if your compiler knows the visibility("hidden") attribute.])
-  fi
-  # For C++ we additionally want -fvisibility-inlines-hidden
-  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility=hidden])
-  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility-inlines-hidden])
   #
   # The following tests want to suppress various unhelpful warnings by adding
   # -Wno-foo switches.  But gcc won't complain about unrecognized -Wno-foo
@@ -582,6 +573,39 @@ elif test "$PORTNAME" = "aix"; then
   PGAC_PROG_CXX_CFLAGS_OPT([-qlonglong])
 fi
 
+# If the compiler knows how to hide symbols, add the switch needed for that to
+# CFLAGS_SL_MODULE and define HAVE_VISIBILITY_ATTRIBUTE.
+#
+# This is done separately from the above because -fvisibility is supported by
+# quite a few different compilers, making the required repetition bothersome.
+#
+# We might need to add a separate test to check if
+# __attribute__((visibility("hidden"))) is supported, if we encounter a
+# compiler that supports one of the supported variants of -fvisibility=hidden
+# but uses a different syntax to mark a symbol as exported.
+if test "$GCC" = yes -o "$SUN_STUDIO_CC" = yes ; then
+  PGAC_PROG_CC_VAR_OPT(CFLAGS_SL_MODULE, [-fvisibility=hidden])
+  # For C++ we additionally want -fvisibility-inlines-hidden
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility=hidden])
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-fvisibility-inlines-hidden])
+  have_visibility_attribute=$pgac_cv_prog_CC_cflags__fvisibility_hidden
+elif test "$PORTNAME" = "aix"; then
+  # Note that xlc accepts -fvisibility=hidden as a file.
+  PGAC_PROG_CC_VAR_OPT(CFLAGS_SL_MODULE, [-qvisibility=hidden])
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CXX, CXXFLAGS_SL_MODULE, [-qvisibility=hidden])
+  have_visibility_attribute=$pgac_cv_prog_CC_cflags__qvisibility_hidden
+  # Old xlc versions (<13.1) don't have support for -qvisibility. Use expfull to force
+  # all extension module symbols to be exported.
+  if test "$pgac_cv_prog_CC_cflags__qvisibility_hidden" != "yes"; then
+    CFLAGS_SL_MODULE="$CFLAGS_SL_MODULE -Wl,-b,expfull"
+  fi
+fi
+
+if test "$have_visibility_attribute" = "yes"; then
+  AC_DEFINE([HAVE_VISIBILITY_ATTRIBUTE], 1,
+            [Define to 1 if your compiler knows the visibility("hidden") attribute.])
+fi
+
 AC_SUBST(CFLAGS_UNROLL_LOOPS)
 AC_SUBST(CFLAGS_VECTORIZE)
 AC_SUBST(CFLAGS_SL_MODULE)
@@ -602,6 +626,9 @@ if test "$with_llvm" = yes ; then
   PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-fwrapv])
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-fexcess-precision=standard])
   PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-fexcess-precision=standard])
+
+  PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, BITCODE_CFLAGS, [-Xclang -no-opaque-pointers])
+  PGAC_PROG_VARCXX_VARFLAGS_OPT(CLANGXX, BITCODE_CXXFLAGS, [-Xclang -no-opaque-pointers])
 
   NOT_THE_CFLAGS=""
   PGAC_PROG_VARCC_VARFLAGS_OPT(CLANG, NOT_THE_CFLAGS, [-Wunused-command-line-argument])
@@ -1107,12 +1134,9 @@ AC_ARG_VAR(LDFLAGS_SL, [extra linker flags for linking shared libraries only])
 PGAC_PROG_LD
 AC_SUBST(LD)
 AC_SUBST(with_gnu_ld)
-AC_PROG_RANLIB
 PGAC_CHECK_STRIP
 AC_CHECK_TOOL(AR, ar, ar)
 if test "$PORTNAME" = "win32"; then
-  AC_CHECK_TOOL(DLLTOOL, dlltool, dlltool)
-  AC_CHECK_TOOL(DLLWRAP, dllwrap, dllwrap)
   AC_CHECK_TOOL(WINDRES, windres, windres)
 fi
 
@@ -1214,7 +1238,7 @@ LIBS="$LIBS $PTHREAD_LIBS"
 AC_CHECK_HEADER(pthread.h, [], [AC_MSG_ERROR([
 pthread.h not found;  use --disable-thread-safety to disable thread safety])])
 
-AC_CHECK_FUNCS([strerror_r gethostbyname_r])
+AC_CHECK_FUNCS([strerror_r])
 
 # Do test here with the proper thread flags
 PGAC_FUNC_STRERROR_R_INT
@@ -1248,7 +1272,6 @@ AC_SEARCH_LIBS(setproctitle, util)
 # required. Just checking for dlsym() ought to suffice.
 AC_SEARCH_LIBS(dlsym, dl)
 AC_SEARCH_LIBS(socket, [socket ws2_32])
-AC_SEARCH_LIBS(shl_load, dld)
 AC_SEARCH_LIBS(getopt_long, [getopt gnugetopt])
 AC_SEARCH_LIBS(shm_open, rt)
 AC_SEARCH_LIBS(shm_unlink, rt)
@@ -1261,7 +1284,6 @@ AC_SEARCH_LIBS(shmget, cygipc)
 AC_SEARCH_LIBS(backtrace_symbols, execinfo)
 
 if test "$enable_thread_safety" = yes; then
-  AC_SEARCH_LIBS(gethostbyname_r, nsl)
   AC_SEARCH_LIBS(pthread_barrier_wait, pthread)
 fi
 
@@ -1452,23 +1474,13 @@ AC_CHECK_HEADERS(m4_normalize([
 	ifaddrs.h
 	langinfo.h
 	mbarrier.h
-	net/if.h
-	netinet/tcp.h
 	sys/epoll.h
 	sys/event.h
-	sys/ipc.h
 	sys/personality.h
 	sys/prctl.h
 	sys/procctl.h
-	sys/resource.h
-	sys/select.h
-	sys/sem.h
-	sys/shm.h
 	sys/signalfd.h
-	sys/sockio.h
 	sys/ucred.h
-	sys/uio.h
-	sys/un.h
 	termios.h
 	ucred.h
 ]))
@@ -1530,6 +1542,7 @@ if test "$with_gssapi" = yes ; then
 	[AC_CHECK_HEADERS(gssapi.h, [], [AC_MSG_ERROR([gssapi.h header file is required for GSSAPI])])])
 fi
 
+PGAC_PATH_PROGS(OPENSSL, openssl)
 if test "$with_ssl" = openssl ; then
   AC_CHECK_HEADER(openssl/ssl.h, [], [AC_MSG_ERROR([header file <openssl/ssl.h> is required for OpenSSL])])
   AC_CHECK_HEADER(openssl/err.h, [], [AC_MSG_ERROR([header file <openssl/err.h> is required for OpenSSL])])
@@ -1559,15 +1572,15 @@ fi
 
 if test "$with_ldap" = yes ; then
   if test "$PORTNAME" != "win32"; then
-     AC_CHECK_HEADERS(ldap.h, [],
-                      [AC_MSG_ERROR([header file <ldap.h> is required for LDAP])])
+     AC_CHECK_HEADER(ldap.h, [],
+                     [AC_MSG_ERROR([header file <ldap.h> is required for LDAP])])
      PGAC_LDAP_SAFE
   else
-     AC_CHECK_HEADERS(winldap.h, [],
-                      [AC_MSG_ERROR([header file <winldap.h> is required for LDAP])],
-                      [AC_INCLUDES_DEFAULT
+     AC_CHECK_HEADER(winldap.h, [],
+                     [AC_MSG_ERROR([header file <winldap.h> is required for LDAP])],
+                     [AC_INCLUDES_DEFAULT
 #include <windows.h>
-                      ])
+                     ])
   fi
 fi
 
@@ -1626,10 +1639,7 @@ PGAC_C_COMPUTED_GOTO
 PGAC_STRUCT_TIMEZONE
 PGAC_UNION_SEMUN
 AC_CHECK_TYPES(socklen_t, [], [], [#include <sys/socket.h>])
-PGAC_STRUCT_SOCKADDR_UN
-PGAC_STRUCT_SOCKADDR_STORAGE
-PGAC_STRUCT_SOCKADDR_STORAGE_MEMBERS
-PGAC_STRUCT_ADDRINFO
+PGAC_STRUCT_SOCKADDR_SA_LEN
 
 PGAC_TYPE_LOCALE_T
 
@@ -1687,18 +1697,7 @@ case $host_cpu in
     fi
   ;;
   ppc*|powerpc*)
-    # On PPC, check if assembler supports LWARX instruction's mutex hint bit
-    AC_CACHE_CHECK([whether assembler supports lwarx hint bit],
-                   [pgac_cv_have_ppc_mutex_hint],
-    [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([],
-	[int a = 0; int *p = &a; int r;
-	 __asm__ __volatile__ (" lwarx %0,0,%1,1\n" : "=&r"(r) : "r"(p));])],
-	[pgac_cv_have_ppc_mutex_hint=yes],
-	[pgac_cv_have_ppc_mutex_hint=no])])
-    if test x"$pgac_cv_have_ppc_mutex_hint" = xyes ; then
-	AC_DEFINE(HAVE_PPC_LWARX_MUTEX_HINT, 1, [Define to 1 if the assembler supports PPC's LWARX mutex hint bit.])
-    fi
-    # Check if compiler accepts "i"(x) when __builtin_constant_p(x).
+    # On PPC, check if compiler accepts "i"(x) when __builtin_constant_p(x).
     AC_CACHE_CHECK([whether __builtin_constant_p(x) implies "i"(x) acceptance],
                    [pgac_cv_have_i_constraint__builtin_constant_p],
     [AC_COMPILE_IFELSE([AC_LANG_PROGRAM(
@@ -1827,12 +1826,6 @@ AC_CHECK_DECLS([pwritev], [], [AC_LIBOBJ(pwritev)], [#include <sys/uio.h>])
 # This is probably only present on macOS, but may as well check always
 AC_CHECK_DECLS(F_FULLFSYNC, [], [], [#include <fcntl.h>])
 
-AC_CHECK_TYPE([struct sockaddr_in6],
-        [AC_DEFINE(HAVE_IPV6, 1, [Define to 1 if you have support for IPv6.])],
-        [],
-[$ac_includes_default
-#include <netinet/in.h>])
-
 AC_CACHE_CHECK([for PS_STRINGS], [pgac_cv_var_PS_STRINGS],
 [AC_LINK_IFELSE([AC_LANG_PROGRAM(
 [#include <machine/vmparam.h>
@@ -1870,16 +1863,6 @@ if test "$PORTNAME" = "win32" -o "$PORTNAME" = "cygwin"; then
 	AC_MSG_NOTICE([On $host_os we will use our strtof wrapper.])
 fi
 
-# System's version of getaddrinfo(), if any, may be used only if we found
-# a definition for struct addrinfo; see notes in src/include/getaddrinfo.h.
-# We use only our own getaddrinfo.c on Windows, but it's time to revisit that.
-if test x"$ac_cv_type_struct_addrinfo" = xyes && \
-   test "$PORTNAME" != "win32"; then
-  AC_REPLACE_FUNCS([getaddrinfo])
-else
-  AC_LIBOBJ(getaddrinfo)
-fi
-
 # Similarly, use system's getopt_long() only if system provides struct option.
 if test x"$ac_cv_type_struct_option" = xyes ; then
   AC_REPLACE_FUNCS([getopt_long])
@@ -1904,7 +1887,6 @@ fi
 if test "$PORTNAME" = "win32"; then
   AC_CHECK_FUNCS(_configthreadlocale)
   AC_LIBOBJ(dirmod)
-  AC_LIBOBJ(getrusage)
   AC_LIBOBJ(kill)
   AC_LIBOBJ(open)
   AC_LIBOBJ(system)
@@ -1912,6 +1894,7 @@ if test "$PORTNAME" = "win32"; then
   AC_LIBOBJ(win32env)
   AC_LIBOBJ(win32error)
   AC_LIBOBJ(win32fdatasync)
+  AC_LIBOBJ(win32getrusage)
   AC_LIBOBJ(win32link)
   AC_LIBOBJ(win32ntdll)
   AC_LIBOBJ(win32pread)
@@ -2288,7 +2271,6 @@ if test "$with_tcl" = yes; then
     PGAC_PATH_TCLCONFIGSH([$with_tclconfig])
     PGAC_EVAL_TCLCONFIGSH([$TCL_CONFIG_SH],
                           [TCL_INCLUDE_SPEC,TCL_LIBS,TCL_LIB_SPEC,TCL_SHARED_BUILD])
-    AC_SUBST(TCL_SHLIB_LD_LIBS)dnl don't want to double-evaluate that one
     if test "$TCL_SHARED_BUILD" != 1; then
       AC_MSG_ERROR([cannot build PL/Tcl because Tcl is not a shared library
 Use --without-tcl to disable building PL/Tcl.])
@@ -2495,3 +2477,9 @@ AC_CONFIG_HEADERS([src/interfaces/ecpg/include/ecpg_config.h],
                   [echo >src/interfaces/ecpg/include/stamp-h])
 
 AC_OUTPUT
+
+# Ensure that any meson build directories would reconfigure and see that
+# there's a conflicting in-tree build and can error out.
+if test "$vpath_build"="no"; then
+  touch meson.build
+fi

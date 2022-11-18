@@ -138,7 +138,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 					 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
 
 		/* You must own the relation to create stats on it */
-		if (!pg_class_ownercheck(RelationGetRelid(rel), stxowner))
+		if (!object_ownercheck(RelationRelationId, RelationGetRelid(rel), stxowner))
 			aclcheck_error(ACLCHECK_NOT_OWNER, get_relkind_objtype(rel->rd_rel->relkind),
 						   RelationGetRelationName(rel));
 
@@ -339,7 +339,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	if ((list_length(stmt->exprs) == 1) && (list_length(stxexprs) == 1))
 	{
 		/* statistics kinds not specified */
-		if (list_length(stmt->stat_types) > 0)
+		if (stmt->stat_types != NIL)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("when building statistics on a single expression, statistics kinds may not be specified")));
@@ -391,7 +391,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	 * automatically. This allows calculating good estimates for stats that
 	 * consider per-clause estimates (e.g. functional dependencies).
 	 */
-	build_expressions = (list_length(stxexprs) > 0);
+	build_expressions = (stxexprs != NIL);
 
 	/*
 	 * Check that at least two columns were specified in the statement, or
@@ -665,7 +665,7 @@ AlterStatistics(AlterStatsStmt *stmt)
 		elog(ERROR, "cache lookup failed for extended statistics object %u", stxoid);
 
 	/* Must be owner of the existing statistics object */
-	if (!pg_statistics_object_ownercheck(stxoid, GetUserId()))
+	if (!object_ownercheck(StatisticExtRelationId, stxoid, GetUserId()))
 		aclcheck_error(ACLCHECK_NOT_OWNER, OBJECT_STATISTIC_EXT,
 					   NameListToString(stmt->defnames));
 

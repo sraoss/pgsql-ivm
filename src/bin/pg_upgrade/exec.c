@@ -35,17 +35,22 @@ get_bin_version(ClusterInfo *cluster)
 	char		cmd[MAXPGPATH],
 				cmd_output[MAX_STRING];
 	FILE	   *output;
+	int			rc;
 	int			v1 = 0,
 				v2 = 0;
 
 	snprintf(cmd, sizeof(cmd), "\"%s/pg_ctl\" --version", cluster->bindir);
+	fflush(NULL);
 
 	if ((output = popen(cmd, "r")) == NULL ||
 		fgets(cmd_output, sizeof(cmd_output), output) == NULL)
 		pg_fatal("could not get pg_ctl version data using %s: %s",
 				 cmd, strerror(errno));
 
-	pclose(output);
+	rc = pclose(output);
+	if (rc != 0)
+		pg_fatal("could not get pg_ctl version data using %s: %s",
+				 cmd, wait_result_to_str(rc));
 
 	if (sscanf(cmd_output, "%*s %*s %d.%d", &v1, &v2) < 1)
 		pg_fatal("could not get pg_ctl version output from %s", cmd);
@@ -125,7 +130,10 @@ exec_prog(const char *log_filename, const char *opt_log_file,
 	 * the file do not see to help.
 	 */
 	if (mainThreadId != GetCurrentThreadId())
+	{
+		fflush(NULL);
 		result = system(cmd);
+	}
 #endif
 
 	log = fopen(log_file, "a");
@@ -174,7 +182,10 @@ exec_prog(const char *log_filename, const char *opt_log_file,
 	/* see comment above */
 	if (mainThreadId == GetCurrentThreadId())
 #endif
+	{
+		fflush(NULL);
 		result = system(cmd);
+	}
 
 	if (result != 0 && report_error)
 	{

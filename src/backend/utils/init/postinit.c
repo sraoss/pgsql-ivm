@@ -58,7 +58,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
-#include "utils/guc.h"
+#include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/portal.h"
@@ -359,7 +359,7 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 		 * and save a few cycles.)
 		 */
 		if (!am_superuser &&
-			pg_database_aclcheck(MyDatabaseId, GetUserId(),
+			object_aclcheck(DatabaseRelationId, MyDatabaseId, GetUserId(),
 								 ACL_CONNECT) != ACLCHECK_OK)
 			ereport(FATAL,
 					(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -454,9 +454,10 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 
 		actual_versionstr = get_collation_actual_version(dbform->datlocprovider, dbform->datlocprovider == COLLPROVIDER_ICU ? iculocale : collate);
 		if (!actual_versionstr)
-			ereport(WARNING,
-					(errmsg("database \"%s\" has no actual collation version, but a version was recorded",
-							name)));
+			/* should not happen */
+			elog(WARNING,
+				 "database \"%s\" has no actual collation version, but a version was recorded",
+				 name);
 		else if (strcmp(actual_versionstr, collversionstr) != 0)
 			ereport(WARNING,
 					(errmsg("database \"%s\" has a collation version mismatch",
@@ -560,6 +561,54 @@ InitializeMaxBackends(void)
 	/* internal error because the values were all checked previously */
 	if (MaxBackends > MAX_BACKENDS)
 		elog(ERROR, "too many backends configured");
+}
+
+/*
+ * GUC check_hook for max_connections
+ */
+bool
+check_max_connections(int *newval, void **extra, GucSource source)
+{
+	if (*newval + autovacuum_max_workers + 1 +
+		max_worker_processes + max_wal_senders > MAX_BACKENDS)
+		return false;
+	return true;
+}
+
+/*
+ * GUC check_hook for autovacuum_max_workers
+ */
+bool
+check_autovacuum_max_workers(int *newval, void **extra, GucSource source)
+{
+	if (MaxConnections + *newval + 1 +
+		max_worker_processes + max_wal_senders > MAX_BACKENDS)
+		return false;
+	return true;
+}
+
+/*
+ * GUC check_hook for max_worker_processes
+ */
+bool
+check_max_worker_processes(int *newval, void **extra, GucSource source)
+{
+	if (MaxConnections + autovacuum_max_workers + 1 +
+		*newval + max_wal_senders > MAX_BACKENDS)
+		return false;
+	return true;
+}
+
+/*
+ * GUC check_hook for max_wal_senders
+ */
+bool
+check_max_wal_senders(int *newval, void **extra, GucSource source)
+{
+	if (MaxConnections + autovacuum_max_workers + 1 +
+		max_worker_processes + *newval > MAX_BACKENDS)
+		return false;
+	return true;
 }
 
 /*
@@ -855,6 +904,10 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		Assert(MyProcPort != NULL);
 		PerformAuthentication(MyProcPort);
 		InitializeSessionUserId(username, useroid);
+		/* ensure that auth_method is actually valid, aka authn_id is not NULL */
+		if (MyClientConnectionInfo.authn_id)
+			InitializeSystemUser(MyClientConnectionInfo.authn_id,
+								 hba_authname(MyClientConnectionInfo.auth_method));
 		am_superuser = superuser();
 	}
 

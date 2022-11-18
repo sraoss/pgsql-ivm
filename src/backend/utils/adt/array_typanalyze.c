@@ -218,7 +218,6 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 {
 	ArrayAnalyzeExtraData *extra_data;
 	int			num_mcelem;
-	int			null_cnt = 0;
 	int			null_elem_cnt = 0;
 	int			analyzed_rows = 0;
 
@@ -320,8 +319,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		value = fetchfunc(stats, array_no, &isnull);
 		if (isnull)
 		{
-			/* array is null, just count that */
-			null_cnt++;
+			/* ignore arrays that are null overall */
 			continue;
 		}
 
@@ -543,12 +541,12 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 			 */
 			for (i = 0; i < num_mcelem; i++)
 			{
-				TrackItem  *item = sort_table[i];
+				TrackItem  *titem = sort_table[i];
 
-				mcelem_values[i] = datumCopy(item->key,
+				mcelem_values[i] = datumCopy(titem->key,
 											 extra_data->typbyval,
 											 extra_data->typlen);
-				mcelem_freqs[i] = (double) item->frequency /
+				mcelem_freqs[i] = (double) titem->frequency /
 					(double) nonnull_cnt;
 			}
 			mcelem_freqs[i++] = (double) minfreq / (double) nonnull_cnt;

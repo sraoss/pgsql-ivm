@@ -142,7 +142,7 @@ typedef unsigned char slock_t;
 static __inline__ int
 tas(volatile slock_t *lock)
 {
-	register slock_t _res = 1;
+	slock_t		_res = 1;
 
 	/*
 	 * Use a non-locking test before asserting the bus lock.  Note that the
@@ -223,7 +223,7 @@ typedef unsigned char slock_t;
 static __inline__ int
 tas(volatile slock_t *lock)
 {
-	register slock_t _res = 1;
+	slock_t		_res = 1;
 
 	__asm__ __volatile__(
 		"	lock			\n"
@@ -256,7 +256,7 @@ spin_delay(void)
  * We use the int-width variant of the builtin because it works on more chips
  * than other widths.
  */
-#if defined(__arm__) || defined(__arm) || defined(__aarch64__) || defined(__aarch64)
+#if defined(__arm__) || defined(__arm) || defined(__aarch64__)
 #ifdef HAVE_GCC__SYNC_INT32_TAS
 #define HAS_TEST_AND_SET
 
@@ -277,7 +277,7 @@ tas(volatile slock_t *lock)
  * high-core-count ARM64 processors.  It seems mostly a wash for smaller gear,
  * and ISB doesn't exist at all on pre-v7 ARM chips.
  */
-#if defined(__aarch64__) || defined(__aarch64)
+#if defined(__aarch64__)
 
 #define SPIN_DELAY() spin_delay()
 
@@ -288,32 +288,9 @@ spin_delay(void)
 		" isb;				\n");
 }
 
-#endif	 /* __aarch64__ || __aarch64 */
+#endif	 /* __aarch64__ */
 #endif	 /* HAVE_GCC__SYNC_INT32_TAS */
-#endif	 /* __arm__ || __arm || __aarch64__ || __aarch64 */
-
-
-/*
- * RISC-V likewise uses __sync_lock_test_and_set(int *, int) if available.
- */
-#if defined(__riscv)
-#ifdef HAVE_GCC__SYNC_INT32_TAS
-#define HAS_TEST_AND_SET
-
-#define TAS(lock) tas(lock)
-
-typedef int slock_t;
-
-static __inline__ int
-tas(volatile slock_t *lock)
-{
-	return __sync_lock_test_and_set(lock, 1);
-}
-
-#define S_UNLOCK(lock) __sync_lock_release(lock)
-
-#endif	 /* HAVE_GCC__SYNC_INT32_TAS */
-#endif	 /* __riscv */
+#endif	 /* __arm__ || __arm || __aarch64__ */
 
 
 /* S/390 and S/390x Linux (32- and 64-bit zSeries) */
@@ -356,7 +333,7 @@ typedef unsigned char slock_t;
 static __inline__ int
 tas(volatile slock_t *lock)
 {
-	register slock_t _res;
+	slock_t		_res;
 
 	/*
 	 *	See comment in src/backend/port/tas/sunstudio_sparc.s for why this
@@ -435,7 +412,8 @@ typedef unsigned int slock_t;
  *
  * NOTE: per the Enhanced PowerPC Architecture manual, v1.0 dated 7-May-2002,
  * an isync is a sufficient synchronization barrier after a lwarx/stwcx loop.
- * On newer machines, we can use lwsync instead for better performance.
+ * But if the spinlock is in ordinary memory, we can use lwsync instead for
+ * better performance.
  *
  * Ordinarily, we'd code the branches here using GNU-style local symbols, that
  * is "1f" referencing "1:" and so on.  But some people run gcc on AIX with
@@ -450,23 +428,15 @@ tas(volatile slock_t *lock)
 	int _res;
 
 	__asm__ __volatile__(
-#ifdef USE_PPC_LWARX_MUTEX_HINT
 "	lwarx   %0,0,%3,1	\n"
-#else
-"	lwarx   %0,0,%3		\n"
-#endif
 "	cmpwi   %0,0		\n"
 "	bne     $+16		\n"		/* branch to li %1,1 */
 "	addi    %0,%0,1		\n"
 "	stwcx.  %0,0,%3		\n"
-"	beq     $+12		\n"		/* branch to lwsync/isync */
+"	beq     $+12		\n"		/* branch to lwsync */
 "	li      %1,1		\n"
 "	b       $+12		\n"		/* branch to end of asm sequence */
-#ifdef USE_PPC_LWSYNC
 "	lwsync				\n"
-#else
-"	isync				\n"
-#endif
 "	li      %1,0		\n"
 
 :	"=&b"(_t), "=r"(_res), "+m"(*lock)
@@ -477,23 +447,14 @@ tas(volatile slock_t *lock)
 
 /*
  * PowerPC S_UNLOCK is almost standard but requires a "sync" instruction.
- * On newer machines, we can use lwsync instead for better performance.
+ * But we can use lwsync instead for better performance.
  */
-#ifdef USE_PPC_LWSYNC
 #define S_UNLOCK(lock)	\
 do \
 { \
 	__asm__ __volatile__ ("	lwsync \n" ::: "memory"); \
 	*((volatile slock_t *) (lock)) = 0; \
 } while (0)
-#else
-#define S_UNLOCK(lock)	\
-do \
-{ \
-	__asm__ __volatile__ ("	sync \n" ::: "memory"); \
-	*((volatile slock_t *) (lock)) = 0; \
-} while (0)
-#endif /* USE_PPC_LWSYNC */
 
 #endif /* powerpc */
 
@@ -527,9 +488,9 @@ typedef unsigned int slock_t;
 static __inline__ int
 tas(volatile slock_t *lock)
 {
-	register volatile slock_t *_l = lock;
-	register int _res;
-	register int _tmp;
+	volatile slock_t *_l = lock;
+	int			_res;
+	int			_tmp;
 
 	__asm__ __volatile__(
 		"       .set push           \n"
@@ -590,7 +551,7 @@ static __inline__ int
 tas(volatile slock_t *lock)
 {
 	volatile int *lockword = TAS_ACTIVE_WORD(lock);
-	register int lockval;
+	int			lockval;
 
 	/*
 	 * The LDCWX instruction atomically clears the target word and
@@ -633,6 +594,50 @@ tas(volatile slock_t *lock)
 #define S_LOCK_FREE(lock)	(*TAS_ACTIVE_WORD(lock) != 0)
 
 #endif	 /* __hppa || __hppa__ */
+
+
+/*
+ * If we have no platform-specific knowledge, but we found that the compiler
+ * provides __sync_lock_test_and_set(), use that.  Prefer the int-width
+ * version over the char-width version if we have both, on the rather dubious
+ * grounds that that's known to be more likely to work in the ARM ecosystem.
+ * (But we dealt with ARM above.)
+ */
+#if !defined(HAS_TEST_AND_SET)
+
+#if defined(HAVE_GCC__SYNC_INT32_TAS)
+#define HAS_TEST_AND_SET
+
+#define TAS(lock) tas(lock)
+
+typedef int slock_t;
+
+static __inline__ int
+tas(volatile slock_t *lock)
+{
+	return __sync_lock_test_and_set(lock, 1);
+}
+
+#define S_UNLOCK(lock) __sync_lock_release(lock)
+
+#elif defined(HAVE_GCC__SYNC_CHAR_TAS)
+#define HAS_TEST_AND_SET
+
+#define TAS(lock) tas(lock)
+
+typedef char slock_t;
+
+static __inline__ int
+tas(volatile slock_t *lock)
+{
+	return __sync_lock_test_and_set(lock, 1);
+}
+
+#define S_UNLOCK(lock) __sync_lock_release(lock)
+
+#endif	 /* HAVE_GCC__SYNC_INT32_TAS */
+
+#endif	/* !defined(HAS_TEST_AND_SET) */
 
 
 /*

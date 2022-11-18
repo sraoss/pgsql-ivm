@@ -75,6 +75,7 @@
 #include <dirent.h>
 #include <sys/file.h>
 #include <sys/param.h>
+#include <sys/resource.h>		/* for getrlimit */
 #include <sys/stat.h>
 #include <sys/types.h>
 #ifndef WIN32
@@ -83,9 +84,6 @@
 #include <limits.h>
 #include <unistd.h>
 #include <fcntl.h>
-#ifdef HAVE_SYS_RESOURCE_H
-#include <sys/resource.h>		/* for getrlimit */
-#endif
 
 #include "access/xact.h"
 #include "access/xlog.h"
@@ -95,7 +93,6 @@
 #include "common/pg_prng.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "port/pg_iovec.h"
 #include "portability/mem.h"
 #include "postmaster/startup.h"
 #include "storage/fd.h"
@@ -980,7 +977,7 @@ set_max_safe_fds(void)
 		ereport(FATAL,
 				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
 				 errmsg("insufficient file descriptors available to start server process"),
-				 errdetail("System allows %d, we need at least %d.",
+				 errdetail("System allows %d, server needs at least %d.",
 						   max_safe_fds + NUM_RESERVED_FDS,
 						   FD_MINFREE + NUM_RESERVED_FDS)));
 
@@ -2055,7 +2052,7 @@ FileRead(File file, char *buffer, int amount, off_t offset,
 
 retry:
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pread(vfdP->fd, buffer, amount, offset);
+	returnCode = pg_pread(vfdP->fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	if (returnCode < 0)
@@ -2137,7 +2134,7 @@ FileWrite(File file, char *buffer, int amount, off_t offset,
 retry:
 	errno = 0;
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pwrite(VfdCache[file].fd, buffer, amount, offset);
+	returnCode = pg_pwrite(VfdCache[file].fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	/* if write didn't set errno, assume problem is no disk space */
@@ -2505,8 +2502,7 @@ OpenPipeStream(const char *command, const char *mode)
 	ReleaseLruFiles();
 
 TryAgain:
-	fflush(stdout);
-	fflush(stderr);
+	fflush(NULL);
 	pqsignal(SIGPIPE, SIG_DFL);
 	errno = 0;
 	file = popen(command, mode);
@@ -3159,17 +3155,11 @@ RemovePgTempFilesInDir(const char *tmpdirname, bool missing_ok, bool unlink_all)
 					PG_TEMP_FILE_PREFIX,
 					strlen(PG_TEMP_FILE_PREFIX)) == 0)
 		{
-			struct stat statbuf;
+			PGFileType	type = get_dirent_type(rm_path, temp_de, false, LOG);
 
-			if (lstat(rm_path, &statbuf) < 0)
-			{
-				ereport(LOG,
-						(errcode_for_file_access(),
-						 errmsg("could not stat file \"%s\": %m", rm_path)));
+			if (type == PGFILETYPE_ERROR)
 				continue;
-			}
-
-			if (S_ISDIR(statbuf.st_mode))
+			else if (type == PGFILETYPE_DIR)
 			{
 				/* recursively remove contents, then directory itself */
 				RemovePgTempFilesInDir(rm_path, false, true);
@@ -3746,68 +3736,4 @@ int
 data_sync_elevel(int elevel)
 {
 	return data_sync_retry ? elevel : PANIC;
-}
-
-/*
- * A convenience wrapper for pwritev() that retries on partial write.  If an
- * error is returned, it is unspecified how much has been written.
- */
-ssize_t
-pg_pwritev_with_retry(int fd, const struct iovec *iov, int iovcnt, off_t offset)
-{
-	struct iovec iov_copy[PG_IOV_MAX];
-	ssize_t		sum = 0;
-	ssize_t		part;
-
-	/* We'd better have space to make a copy, in case we need to retry. */
-	if (iovcnt > PG_IOV_MAX)
-	{
-		errno = EINVAL;
-		return -1;
-	}
-
-	for (;;)
-	{
-		/* Write as much as we can. */
-		part = pwritev(fd, iov, iovcnt, offset);
-		if (part < 0)
-			return -1;
-
-#ifdef SIMULATE_SHORT_WRITE
-		part = Min(part, 4096);
-#endif
-
-		/* Count our progress. */
-		sum += part;
-		offset += part;
-
-		/* Step over iovecs that are done. */
-		while (iovcnt > 0 && iov->iov_len <= part)
-		{
-			part -= iov->iov_len;
-			++iov;
-			--iovcnt;
-		}
-
-		/* Are they all done? */
-		if (iovcnt == 0)
-		{
-			/* We don't expect the kernel to write more than requested. */
-			Assert(part == 0);
-			break;
-		}
-
-		/*
-		 * Move whatever's left to the front of our mutable copy and adjust
-		 * the leading iovec.
-		 */
-		Assert(iovcnt > 0);
-		memmove(iov_copy, iov, sizeof(*iov) * iovcnt);
-		Assert(iov->iov_len > part);
-		iov_copy[0].iov_base = (char *) iov_copy[0].iov_base + part;
-		iov_copy[0].iov_len -= part;
-		iov = iov_copy;
-	}
-
-	return sum;
 }

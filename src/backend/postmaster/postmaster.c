@@ -70,16 +70,13 @@
 #include <time.h>
 #include <sys/wait.h>
 #include <ctype.h>
+#include <sys/select.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <sys/param.h>
 #include <netdb.h>
 #include <limits.h>
-
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
 
 #ifdef USE_BONJOUR
 #include <dns_sd.h>
@@ -199,7 +196,7 @@ BackgroundWorker *MyBgworkerEntry = NULL;
 
 
 /* The socket number we are listening for connections on */
-int			PostPortNumber;
+int			PostPortNumber = DEF_PGPORT;
 
 /* The directory names for Unix socket(s) */
 char	   *Unix_socket_directories;
@@ -417,7 +414,7 @@ static void report_fork_failure_to_client(Port *port, int errnum);
 static CAC_state canAcceptConnections(int backend_type);
 static bool RandomCancelKey(int32 *cancel_key);
 static void signal_child(pid_t pid, int signal);
-static bool SignalSomeChildren(int signal, int targets);
+static bool SignalSomeChildren(int signal, int target);
 static void TerminateChildren(int signal);
 
 #define SignalChildren(sig)			   SignalSomeChildren(sig, BACKEND_TYPE_ALL)
@@ -623,10 +620,10 @@ PostmasterMain(int argc, char *argv[])
 	 * is used by all child processes and client processes).  That has a
 	 * couple of special behaviors:
 	 *
-	 * 1. Except on Windows, we tell sigaction() to block all signals for the
-	 * duration of the signal handler.  This is faster than our old approach
-	 * of blocking/unblocking explicitly in the signal handler, and it should
-	 * also prevent excessive stack consumption if signals arrive quickly.
+	 * 1. We tell sigaction() to block all signals for the duration of the
+	 * signal handler.  This is faster than our old approach of
+	 * blocking/unblocking explicitly in the signal handler, and it should also
+	 * prevent excessive stack consumption if signals arrive quickly.
 	 *
 	 * 2. We do not set the SA_RESTART flag.  This is because signals will be
 	 * blocked at all times except when ServerLoop is waiting for something to
@@ -852,8 +849,8 @@ PostmasterMain(int argc, char *argv[])
 					}
 
 					SetConfigOption(name, value, PGC_POSTMASTER, PGC_S_ARGV);
-					free(name);
-					free(value);
+					pfree(name);
+					pfree(value);
 					break;
 				}
 
@@ -1300,7 +1297,6 @@ PostmasterMain(int argc, char *argv[])
 	}
 #endif
 
-#ifdef HAVE_UNIX_SOCKETS
 	if (Unix_socket_directories)
 	{
 		char	   *rawstring;
@@ -1350,7 +1346,6 @@ PostmasterMain(int argc, char *argv[])
 		list_free_deep(elemlist);
 		pfree(rawstring);
 	}
-#endif
 
 	/*
 	 * check that we have some socket to listen on
@@ -2285,11 +2280,7 @@ retry1:
 				 */
 				if (strcmp(nameptr, "application_name") == 0)
 				{
-					char	   *tmp_app_name = pstrdup(valptr);
-
-					pg_clean_ascii(tmp_app_name);
-
-					port->application_name = tmp_app_name;
+					port->application_name = pg_clean_ascii(valptr, 0);
 				}
 			}
 			offset = valoffset + strlen(valptr) + 1;
@@ -2607,9 +2598,9 @@ ConnCreate(int serverFd)
  * to do here.
  */
 static void
-ConnFree(Port *conn)
+ConnFree(Port *port)
 {
-	free(conn);
+	free(port);
 }
 
 
@@ -2735,14 +2726,6 @@ SIGHUP_handler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
 
-	/*
-	 * We rely on the signal mechanism to have blocked all signals ... except
-	 * on Windows, which lacks sigaction(), so we have to do it manually.
-	 */
-#ifdef WIN32
-	PG_SETMASK(&BlockSig);
-#endif
-
 	if (Shutdown <= SmartShutdown)
 	{
 		ereport(LOG,
@@ -2799,10 +2782,6 @@ SIGHUP_handler(SIGNAL_ARGS)
 #endif
 	}
 
-#ifdef WIN32
-	PG_SETMASK(&UnBlockSig);
-#endif
-
 	errno = save_errno;
 }
 
@@ -2814,14 +2793,6 @@ static void
 pmdie(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
-
-	/*
-	 * We rely on the signal mechanism to have blocked all signals ... except
-	 * on Windows, which lacks sigaction(), so we have to do it manually.
-	 */
-#ifdef WIN32
-	PG_SETMASK(&BlockSig);
-#endif
 
 	ereport(DEBUG2,
 			(errmsg_internal("postmaster received signal %d",
@@ -2947,10 +2918,6 @@ pmdie(SIGNAL_ARGS)
 			break;
 	}
 
-#ifdef WIN32
-	PG_SETMASK(&UnBlockSig);
-#endif
-
 	errno = save_errno;
 }
 
@@ -2963,14 +2930,6 @@ reaper(SIGNAL_ARGS)
 	int			save_errno = errno;
 	int			pid;			/* process id of dead child process */
 	int			exitstatus;		/* its exit status */
-
-	/*
-	 * We rely on the signal mechanism to have blocked all signals ... except
-	 * on Windows, which lacks sigaction(), so we have to do it manually.
-	 */
-#ifdef WIN32
-	PG_SETMASK(&BlockSig);
-#endif
 
 	ereport(DEBUG4,
 			(errmsg_internal("reaping dead processes")));
@@ -3263,11 +3222,6 @@ reaper(SIGNAL_ARGS)
 	 * or actions to make.
 	 */
 	PostmasterStateMachine();
-
-	/* Done with signal handler */
-#ifdef WIN32
-	PG_SETMASK(&UnBlockSig);
-#endif
 
 	errno = save_errno;
 }
@@ -4462,7 +4416,7 @@ BackendInitialize(Port *port)
 	appendStringInfo(&ps_data, "%s ", port->user_name);
 	if (!am_walsender)
 		appendStringInfo(&ps_data, "%s ", port->database_name);
-	appendStringInfo(&ps_data, "%s", port->remote_host);
+	appendStringInfoString(&ps_data, port->remote_host);
 	if (port->remote_port[0] != '\0')
 		appendStringInfo(&ps_data, "(%s)", port->remote_port);
 
@@ -4896,7 +4850,7 @@ SubPostmasterMain(int argc, char *argv[])
 	 * If testing EXEC_BACKEND on Linux, you should run this as root before
 	 * starting the postmaster:
 	 *
-	 * echo 0 >/proc/sys/kernel/randomize_va_space
+	 * sysctl -w kernel.randomize_va_space=0
 	 *
 	 * This prevents using randomized stack and code addresses that cause the
 	 * child process's memory map to be different from the parent's, making it
@@ -5116,14 +5070,6 @@ sigusr1_handler(SIGNAL_ARGS)
 	int			save_errno = errno;
 
 	/*
-	 * We rely on the signal mechanism to have blocked all signals ... except
-	 * on Windows, which lacks sigaction(), so we have to do it manually.
-	 */
-#ifdef WIN32
-	PG_SETMASK(&BlockSig);
-#endif
-
-	/*
 	 * RECOVERY_STARTED and BEGIN_HOT_STANDBY signals are ignored in
 	 * unexpected states. If the startup process quickly starts up, completes
 	 * recovery, exits, we might process the death of the startup process
@@ -5262,10 +5208,6 @@ sigusr1_handler(SIGNAL_ARGS)
 		 */
 		signal_child(StartupPID, SIGUSR2);
 	}
-
-#ifdef WIN32
-	PG_SETMASK(&UnBlockSig);
-#endif
 
 	errno = save_errno;
 }

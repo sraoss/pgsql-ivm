@@ -23,18 +23,10 @@
 #include <limits.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
-#ifdef HAVE_SYS_RESOURCE_H
-#include <sys/time.h>
 #include <sys/resource.h>
-#endif
-
-#ifdef WIN32
-#include "rusagestub.h"
-#endif
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #include "access/parallel.h"
 #include "access/printtup.h"
@@ -75,6 +67,7 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/guc_hooks.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -610,10 +603,22 @@ pg_parse_query(const char *query_string)
 #endif
 
 	/*
-	 * Currently, outfuncs/readfuncs support is missing for many raw parse
-	 * tree nodes, so we don't try to implement WRITE_READ_PARSE_PLAN_TREES
-	 * here.
+	 * Optional debugging check: pass raw parsetrees through
+	 * outfuncs/readfuncs
 	 */
+#ifdef WRITE_READ_PARSE_PLAN_TREES
+	{
+		char	   *str = nodeToString(raw_parsetree_list);
+		List	   *new_list = stringToNodeWithLocations(str);
+
+		pfree(str);
+		/* This checks both outfuncs/readfuncs and the equal() routines... */
+		if (!equal(new_list, raw_parsetree_list))
+			elog(WARNING, "outfuncs/readfuncs failed to produce an equal raw parse tree");
+		else
+			raw_parsetree_list = new_list;
+	}
+#endif
 
 	TRACE_POSTGRESQL_QUERY_PARSE_DONE(query_string);
 
@@ -796,7 +801,7 @@ pg_rewrite_query(Query *query)
 		new_list = copyObject(querytree_list);
 		/* This checks both copyObject() and the equal() routines... */
 		if (!equal(new_list, querytree_list))
-			elog(WARNING, "copyObject() failed to produce equal parse tree");
+			elog(WARNING, "copyObject() failed to produce an equal rewritten parse tree");
 		else
 			querytree_list = new_list;
 	}
@@ -808,35 +813,25 @@ pg_rewrite_query(Query *query)
 		List	   *new_list = NIL;
 		ListCell   *lc;
 
-		/*
-		 * We currently lack outfuncs/readfuncs support for most utility
-		 * statement types, so only attempt to write/read non-utility queries.
-		 */
 		foreach(lc, querytree_list)
 		{
-			Query	   *query = lfirst_node(Query, lc);
+			Query	   *curr_query = lfirst_node(Query, lc);
+			char	   *str = nodeToString(curr_query);
+			Query	   *new_query = stringToNodeWithLocations(str);
 
-			if (query->commandType != CMD_UTILITY)
-			{
-				char	   *str = nodeToString(query);
-				Query	   *new_query = stringToNodeWithLocations(str);
+			/*
+			 * queryId is not saved in stored rules, but we must preserve it
+			 * here to avoid breaking pg_stat_statements.
+			 */
+			new_query->queryId = curr_query->queryId;
 
-				/*
-				 * queryId is not saved in stored rules, but we must preserve
-				 * it here to avoid breaking pg_stat_statements.
-				 */
-				new_query->queryId = query->queryId;
-
-				new_list = lappend(new_list, new_query);
-				pfree(str);
-			}
-			else
-				new_list = lappend(new_list, query);
+			new_list = lappend(new_list, new_query);
+			pfree(str);
 		}
 
 		/* This checks both outfuncs/readfuncs and the equal() routines... */
 		if (!equal(new_list, querytree_list))
-			elog(WARNING, "outfuncs/readfuncs failed to produce equal parse tree");
+			elog(WARNING, "outfuncs/readfuncs failed to produce an equal rewritten parse tree");
 		else
 			querytree_list = new_list;
 	}
@@ -1668,7 +1663,7 @@ exec_bind_message(StringInfo input_message)
 	numPFormats = pq_getmsgint(input_message, 2);
 	if (numPFormats > 0)
 	{
-		pformats = (int16 *) palloc(numPFormats * sizeof(int16));
+		pformats = palloc_array(int16, numPFormats);
 		for (int i = 0; i < numPFormats; i++)
 			pformats[i] = pq_getmsgint(input_message, 2);
 	}
@@ -1856,8 +1851,7 @@ exec_bind_message(StringInfo input_message)
 						oldcxt = MemoryContextSwitchTo(MessageContext);
 
 						if (knownTextValues == NULL)
-							knownTextValues =
-								palloc0(numParams * sizeof(char *));
+							knownTextValues = palloc0_array(char *, numParams);
 
 						if (log_parameter_max_length_on_error < 0)
 							knownTextValues[paramno] = pstrdup(pstring);
@@ -1966,7 +1960,7 @@ exec_bind_message(StringInfo input_message)
 	numRFormats = pq_getmsgint(input_message, 2);
 	if (numRFormats > 0)
 	{
-		rformats = (int16 *) palloc(numRFormats * sizeof(int16));
+		rformats = palloc_array(int16, numRFormats);
 		for (int i = 0; i < numRFormats; i++)
 			rformats[i] = pq_getmsgint(input_message, 2);
 	}
@@ -3514,6 +3508,58 @@ assign_max_stack_depth(int newval, void *extra)
 	max_stack_depth_bytes = newval_bytes;
 }
 
+/*
+ * GUC check_hook for client_connection_check_interval
+ */
+bool
+check_client_connection_check_interval(int *newval, void **extra, GucSource source)
+{
+	if (!WaitEventSetCanReportClosed() && *newval != 0)
+	{
+		GUC_check_errdetail("client_connection_check_interval must be set to 0 on this platform.");
+		return false;
+	}
+	return true;
+}
+
+/*
+ * GUC check_hook for log_parser_stats, log_planner_stats, log_executor_stats
+ *
+ * This function and check_log_stats interact to prevent their variables from
+ * being set in a disallowed combination.  This is a hack that doesn't really
+ * work right; for example it might fail while applying pg_db_role_setting
+ * values even though the final state would have been acceptable.  However,
+ * since these variables are legacy settings with little production usage,
+ * we tolerate that.
+ */
+bool
+check_stage_log_stats(bool *newval, void **extra, GucSource source)
+{
+	if (*newval && log_statement_stats)
+	{
+		GUC_check_errdetail("Cannot enable parameter when \"log_statement_stats\" is true.");
+		return false;
+	}
+	return true;
+}
+
+/*
+ * GUC check_hook for log_statement_stats
+ */
+bool
+check_log_stats(bool *newval, void **extra, GucSource source)
+{
+	if (*newval &&
+		(log_parser_stats || log_planner_stats || log_executor_stats))
+	{
+		GUC_check_errdetail("Cannot enable \"log_statement_stats\" when "
+							"\"log_parser_stats\", \"log_planner_stats\", "
+							"or \"log_executor_stats\" is true.");
+		return false;
+	}
+	return true;
+}
+
 
 /*
  * set_debug_options --- apply "-d N" command line option
@@ -3825,8 +3871,8 @@ process_postgres_switches(int argc, char *argv[], GucContext ctx,
 											optarg)));
 					}
 					SetConfigOption(name, value, ctx, gucsource);
-					free(name);
-					free(value);
+					pfree(name);
+					pfree(value);
 					break;
 				}
 
@@ -4004,8 +4050,8 @@ PostgresMain(const char *dbname, const char *username)
 	bool		idle_in_transaction_timeout_enabled = false;
 	bool		idle_session_timeout_enabled = false;
 
-	AssertArg(dbname != NULL);
-	AssertArg(username != NULL);
+	Assert(dbname != NULL);
+	Assert(username != NULL);
 
 	SetProcessingMode(InitProcessing);
 
@@ -4525,7 +4571,7 @@ PostgresMain(const char *dbname, const char *username)
 					numParams = pq_getmsgint(&input_message, 2);
 					if (numParams > 0)
 					{
-						paramTypes = (Oid *) palloc(numParams * sizeof(Oid));
+						paramTypes = palloc_array(Oid, numParams);
 						for (int i = 0; i < numParams; i++)
 							paramTypes[i] = pq_getmsgint(&input_message, 4);
 					}
@@ -4862,7 +4908,7 @@ ShowUsage(const char *title)
 	 * The following rusage fields are not defined by POSIX, but they're
 	 * present on all current Unix-like systems so we use them without any
 	 * special checks.  Some of these could be provided in our Windows
-	 * emulation in src/port/getrusage.c with more work.
+	 * emulation in src/port/win32getrusage.c with more work.
 	 */
 	appendStringInfo(&str,
 					 "!\t%ld kB max resident size\n",

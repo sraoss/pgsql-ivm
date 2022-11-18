@@ -27,8 +27,8 @@
  *
  */
 
-#ifdef WIN32
-#define FD_SETSIZE 1024			/* must set before winsock2.h is included */
+#if defined(WIN32) && FD_SETSIZE < 1024
+#error FD_SETSIZE needs to have been increased
 #endif
 
 #include "postgres_fe.h"
@@ -40,9 +40,7 @@
 #include <signal.h>
 #include <time.h>
 #include <sys/time.h>
-#ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>		/* for getrlimit */
-#endif
 
 /* For testing, PGBENCH_USE_SELECT can be defined to force use of that code */
 #if defined(HAVE_PPOLL) && !defined(PGBENCH_USE_SELECT)
@@ -52,9 +50,7 @@
 #endif
 #else							/* no ppoll(), so use select() */
 #define POLL_USING_SELECT
-#ifdef HAVE_SYS_SELECT_H
 #include <sys/select.h>
-#endif
 #endif
 
 #include "common/int.h"
@@ -912,7 +908,7 @@ usage(void)
 		   "                           protocol for submitting queries (default: simple)\n"
 		   "  -n, --no-vacuum          do not run VACUUM before tests\n"
 		   "  -P, --progress=NUM       show thread progress report every NUM seconds\n"
-		   "  -r, --report-per-command report latencies, failures and retries per command\n"
+		   "  -r, --report-per-command report latencies, failures, and retries per command\n"
 		   "  -R, --rate=NUM           target rate in transactions per second\n"
 		   "  -s, --scale=NUM          report this scale factor in output\n"
 		   "  -t, --transactions=NUM   number of transactions each client runs (default: 10)\n"
@@ -2977,6 +2973,8 @@ runShellCommand(Variables *variables, char *variable, char **argv, int argc)
 
 	command[len] = '\0';
 
+	fflush(NULL);				/* needed before either system() or popen() */
+
 	/* Fast path for non-assignment case */
 	if (variable == NULL)
 	{
@@ -3004,7 +3002,7 @@ runShellCommand(Variables *variables, char *variable, char **argv, int argc)
 	}
 	if (pclose(fp) < 0)
 	{
-		pg_log_error("%s: could not close shell command", argv[0]);
+		pg_log_error("%s: could not run shell command: %m", argv[0]);
 		return false;
 	}
 
@@ -3113,7 +3111,6 @@ sendCommand(CState *st, Command *command)
 			for (j = 0; commands[j] != NULL; j++)
 			{
 				PGresult   *res;
-				char		name[MAX_PREPARE_NAME];
 
 				if (commands[j]->type != SQL_COMMAND)
 					continue;
@@ -3515,10 +3512,9 @@ printVerboseErrorMessages(CState *st, pg_time_usec_t *now, bool is_retry)
 		resetPQExpBuffer(buf);
 
 	printfPQExpBuffer(buf, "client %d ", st->id);
-	appendPQExpBuffer(buf, "%s",
-					  (is_retry ?
-					   "repeats the transaction after the error" :
-					   "ends the failed transaction"));
+	appendPQExpBufferStr(buf, (is_retry ?
+							   "repeats the transaction after the error" :
+							   "ends the failed transaction"));
 	appendPQExpBuffer(buf, " (try %u", st->tries);
 
 	/* Print max_tries if it is not unlimitted. */
@@ -3535,7 +3531,7 @@ printVerboseErrorMessages(CState *st, pg_time_usec_t *now, bool is_retry)
 		appendPQExpBuffer(buf, ", %.3f%% of the maximum time of tries was used",
 						  (100.0 * (*now - st->txn_scheduled) / latency_limit));
 	}
-	appendPQExpBuffer(buf, ")\n");
+	appendPQExpBufferStr(buf, ")\n");
 
 	pg_log_info("%s", buf->data);
 }
@@ -3807,8 +3803,6 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				/* quickly skip commands until something to do... */
 				while (true)
 				{
-					Command    *command;
-
 					command = sql_script[st->use_file].commands[st->command];
 
 					/* cannot reach end of script in that state */
@@ -3963,8 +3957,6 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 */
 				if (report_per_command)
 				{
-					Command    *command;
-
 					pg_time_now_lazy(&now);
 
 					command = sql_script[st->use_file].commands[st->command];
@@ -4423,7 +4415,7 @@ executeMetaCommand(CState *st, pg_time_usec_t *now)
 }
 
 /*
- * Return the number fo failed transactions.
+ * Return the number of failed transactions.
  */
 static int64
 getFailures(const StatsData *stats)
@@ -7514,9 +7506,9 @@ threadRun(void *arg)
 		/* progress report is made by thread 0 for all threads */
 		if (progress && thread->tid == 0)
 		{
-			pg_time_usec_t now = pg_time_now();
+			pg_time_usec_t now2 = pg_time_now();
 
-			if (now >= next_report)
+			if (now2 >= next_report)
 			{
 				/*
 				 * Horrible hack: this relies on the thread pointer we are
@@ -7524,7 +7516,7 @@ threadRun(void *arg)
 				 * entry of the threads array.  That is why this MUST be done
 				 * by thread 0 and not any other.
 				 */
-				printProgressReport(thread, thread_start, now,
+				printProgressReport(thread, thread_start, now2,
 									&last, &last_report);
 
 				/*
@@ -7534,7 +7526,7 @@ threadRun(void *arg)
 				do
 				{
 					next_report += (int64) 1000000 * progress;
-				} while (now >= next_report);
+				} while (now2 >= next_report);
 			}
 		}
 	}

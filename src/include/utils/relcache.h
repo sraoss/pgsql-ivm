@@ -15,6 +15,7 @@
 #define RELCACHE_H
 
 #include "access/tupdesc.h"
+#include "common/relpath.h"
 #include "nodes/bitmapset.h"
 
 
@@ -50,7 +51,7 @@ extern Oid	RelationGetReplicaIndex(Relation relation);
 extern List *RelationGetIndexExpressions(Relation relation);
 extern List *RelationGetDummyIndexExpressions(Relation relation);
 extern List *RelationGetIndexPredicate(Relation relation);
-extern Datum *RelationGetIndexRawAttOptions(Relation relation);
+extern Datum *RelationGetIndexRawAttOptions(Relation indexrel);
 extern bytea **RelationGetIndexAttOptions(Relation relation, bool copy);
 
 typedef enum IndexAttrBitmapKind

@@ -62,13 +62,13 @@ static void DecodePrepare(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 
 
 /* common function to decode tuples */
-static void DecodeXLogTuple(char *data, Size len, ReorderBufferTupleBuf *tup);
+static void DecodeXLogTuple(char *data, Size len, ReorderBufferTupleBuf *tuple);
 
 /* helper functions for decoding transactions */
 static inline bool FilterPrepare(LogicalDecodingContext *ctx,
 								 TransactionId xid, const char *gid);
 static bool DecodeTXNNeedSkip(LogicalDecodingContext *ctx,
-							  XLogRecordBuffer *buf, Oid dbId,
+							  XLogRecordBuffer *buf, Oid txn_dbid,
 							  RepOriginId origin_id);
 
 /*
@@ -126,7 +126,7 @@ LogicalDecodingProcessRecord(LogicalDecodingContext *ctx, XLogReaderState *recor
 }
 
 /*
- * Handle rmgr XLOG_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr XLOG_ID records for LogicalDecodingProcessRecord().
  */
 void
 xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -169,7 +169,7 @@ xlog_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Handle rmgr XACT_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr XACT_ID records for LogicalDecodingProcessRecord().
  */
 void
 xact_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -326,7 +326,7 @@ xact_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Handle rmgr STANDBY_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr STANDBY_ID records for LogicalDecodingProcessRecord().
  */
 void
 standby_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -372,7 +372,7 @@ standby_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Handle rmgr HEAP2_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr HEAP2_ID records for LogicalDecodingProcessRecord().
  */
 void
 heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -432,7 +432,7 @@ heap2_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 }
 
 /*
- * Handle rmgr HEAP_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr HEAP_ID records for LogicalDecodingProcessRecord().
  */
 void
 heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -554,7 +554,7 @@ FilterByOrigin(LogicalDecodingContext *ctx, RepOriginId origin_id)
 }
 
 /*
- * Handle rmgr LOGICALMSG_ID records for DecodeRecordIntoReorderBuffer().
+ * Handle rmgr LOGICALMSG_ID records for LogicalDecodingProcessRecord().
  */
 void
 logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
@@ -594,7 +594,7 @@ logicalmsg_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 			  SnapBuildXactNeedsSkip(builder, buf->origptr)))
 		return;
 
-	snapshot = SnapBuildGetOrBuildSnapshot(builder, xid);
+	snapshot = SnapBuildGetOrBuildSnapshot(builder);
 	ReorderBufferQueueMessage(ctx->reorder, xid, snapshot, buf->endptr,
 							  message->transactional,
 							  message->message, /* first part of message is
@@ -628,7 +628,8 @@ DecodeCommit(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	}
 
 	SnapBuildCommitTxn(ctx->snapshot_builder, buf->origptr, xid,
-					   parsed->nsubxacts, parsed->subxacts);
+					   parsed->nsubxacts, parsed->subxacts,
+					   parsed->xinfo);
 
 	/* ----
 	 * Check whether we are interested in this specific transaction, and tell
@@ -713,7 +714,7 @@ DecodePrepare(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	SnapBuild  *builder = ctx->snapshot_builder;
 	XLogRecPtr	origin_lsn = parsed->origin_lsn;
 	TimestampTz prepare_time = parsed->xact_time;
-	XLogRecPtr	origin_id = XLogRecGetOrigin(buf->record);
+	RepOriginId	origin_id = XLogRecGetOrigin(buf->record);
 	int			i;
 	TransactionId xid = parsed->twophase_xid;
 
@@ -789,7 +790,7 @@ DecodeAbort(LogicalDecodingContext *ctx, XLogRecordBuffer *buf,
 	int			i;
 	XLogRecPtr	origin_lsn = InvalidXLogRecPtr;
 	TimestampTz abort_time = parsed->xact_time;
-	XLogRecPtr	origin_id = XLogRecGetOrigin(buf->record);
+	RepOriginId	origin_id = XLogRecGetOrigin(buf->record);
 	bool		skip_xact;
 
 	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)

@@ -1528,13 +1528,16 @@ alter table recur1 alter column f2 type recur2; -- fails
 
 -- SET STORAGE may need to add a TOAST table
 create table test_storage (a text, c text storage plain);
-alter table test_storage alter a set storage plain;
-alter table test_storage add b int default 0; -- rewrite table to remove its TOAST table
-alter table test_storage alter a set storage extended; -- re-add TOAST table
-
 select reltoastrelid <> 0 as has_toast_table
-from pg_class
-where oid = 'test_storage'::regclass;
+  from pg_class where oid = 'test_storage'::regclass;
+alter table test_storage alter a set storage plain;
+-- rewrite table to remove its TOAST table; need a non-constant column default
+alter table test_storage add b int default random()::int;
+select reltoastrelid <> 0 as has_toast_table
+  from pg_class where oid = 'test_storage'::regclass;
+alter table test_storage alter a set storage default; -- re-add TOAST table
+select reltoastrelid <> 0 as has_toast_table
+  from pg_class where oid = 'test_storage'::regclass;
 
 -- check STORAGE correctness
 create table test_storage_failed (a text, b int storage extended);
@@ -2325,6 +2328,9 @@ ALTER TABLE partitioned ALTER COLUMN a TYPE char(5);
 ALTER TABLE partitioned DROP COLUMN b;
 ALTER TABLE partitioned ALTER COLUMN b TYPE char(5);
 
+-- specifying storage parameters for partitioned tables is not supported
+ALTER TABLE partitioned SET (fillfactor=100);
+
 -- partitioned table cannot participate in regular inheritance
 CREATE TABLE nonpartitioned (
 	a int,
@@ -3029,9 +3035,10 @@ create schema alter1;
 create schema alter2;
 create table alter1.t1 (a int);
 set client_min_messages = 'ERROR';
-create publication pub1 for table alter1.t1, all tables in schema alter2;
+create publication pub1 for table alter1.t1, tables in schema alter2;
 reset client_min_messages;
-alter table alter1.t1 set schema alter2; -- should fail
+alter table alter1.t1 set schema alter2;
+\d+ alter2.t1
 drop publication pub1;
 drop schema alter1 cascade;
 drop schema alter2 cascade;

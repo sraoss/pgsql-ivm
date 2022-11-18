@@ -1346,12 +1346,12 @@ create_append_path(PlannerInfo *root,
 			pathnode->path.total_cost = child->total_cost;
 		}
 		else
-			cost_append(pathnode, root);
+			cost_append(pathnode);
 		/* Must do this last, else cost_append complains */
 		pathnode->path.pathkeys = child->pathkeys;
 	}
 	else
-		cost_append(pathnode, root);
+		cost_append(pathnode);
 
 	/* If the caller provided a row estimate, override the computed value. */
 	if (rows >= 0)
@@ -3630,7 +3630,8 @@ create_lockrows_path(PlannerInfo *root, RelOptInfo *rel,
 
 /*
  * create_modifytable_path
- *	  Creates a pathnode that represents performing INSERT/UPDATE/DELETE mods
+ *	  Creates a pathnode that represents performing INSERT/UPDATE/DELETE/MERGE
+ *	  mods
  *
  * 'rel' is the parent relation associated with the result
  * 'subpath' is a Path producing source data
@@ -4026,8 +4027,8 @@ reparameterize_path_by_child(PlannerInfo *root, Path *path,
 #define ADJUST_CHILD_ATTRS(node) \
 	((node) = \
 	 (List *) adjust_appendrel_attrs_multilevel(root, (Node *) (node), \
-												child_rel->relids, \
-												child_rel->top_parent_relids))
+												child_rel, \
+												child_rel->top_parent))
 
 #define REPARAMETERIZE_CHILD_PATH(path) \
 do { \
@@ -4244,8 +4245,8 @@ do { \
 	old_ppi = new_path->param_info;
 	required_outer =
 		adjust_child_relids_multilevel(root, old_ppi->ppi_req_outer,
-									   child_rel->relids,
-									   child_rel->top_parent_relids);
+									   child_rel,
+									   child_rel->top_parent);
 
 	/* If we already have a PPI for this parameterization, just return it */
 	new_ppi = find_param_path_info(new_path->parent, required_outer);

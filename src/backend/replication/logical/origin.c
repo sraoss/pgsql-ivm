@@ -328,7 +328,7 @@ replorigin_create(const char *roname)
 	if (tuple == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("could not find free replication origin OID")));
+				 errmsg("could not find free replication origin ID")));
 
 	heap_freetuple(tuple);
 	return roident;
@@ -364,7 +364,7 @@ restart:
 				if (nowait)
 					ereport(ERROR,
 							(errcode(ERRCODE_OBJECT_IN_USE),
-							 errmsg("could not drop replication origin with OID %d, in use by PID %d",
+							 errmsg("could not drop replication origin with ID %d, in use by PID %d",
 									state->roident,
 									state->acquired_by)));
 
@@ -408,7 +408,7 @@ restart:
 	 */
 	tuple = SearchSysCache1(REPLORIGIDENT, ObjectIdGetDatum(roident));
 	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for replication origin with oid %u",
+		elog(ERROR, "cache lookup failed for replication origin with ID %d",
 			 roident);
 
 	CatalogTupleDelete(rel, &tuple->t_self);
@@ -485,7 +485,7 @@ replorigin_by_oid(RepOriginId roident, bool missing_ok, char **roname)
 		if (!missing_ok)
 			ereport(ERROR,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("replication origin with OID %u does not exist",
+					 errmsg("replication origin with ID %d does not exist",
 							roident)));
 
 		return false;
@@ -799,7 +799,7 @@ StartupReplicationOrigin(void)
 		last_state++;
 
 		ereport(LOG,
-				(errmsg("recovered replication state of node %u to %X/%X",
+				(errmsg("recovered replication state of node %d to %X/%X",
 						disk_state.roident,
 						LSN_FORMAT_ARGS(disk_state.remote_lsn))));
 	}
@@ -937,7 +937,7 @@ replorigin_advance(RepOriginId node,
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_IN_USE),
-					 errmsg("replication origin with OID %d is already active for PID %d",
+					 errmsg("replication origin with ID %d is already active for PID %d",
 							replication_state->roident,
 							replication_state->acquired_by)));
 		}
@@ -948,7 +948,7 @@ replorigin_advance(RepOriginId node,
 	if (replication_state == NULL && free_state == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-				 errmsg("could not find free replication state slot for replication origin with OID %u",
+				 errmsg("could not find free replication state slot for replication origin with ID %d",
 						node),
 				 errhint("Increase max_replication_slots and try again.")));
 
@@ -1126,7 +1126,7 @@ replorigin_session_setup(RepOriginId node)
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_OBJECT_IN_USE),
-					 errmsg("replication origin with OID %d is already active for PID %d",
+					 errmsg("replication origin with ID %d is already active for PID %d",
 							curstate->roident, curstate->acquired_by)));
 		}
 
@@ -1138,7 +1138,7 @@ replorigin_session_setup(RepOriginId node)
 	if (session_replication_state == NULL && free_slot == -1)
 		ereport(ERROR,
 				(errcode(ERRCODE_CONFIGURATION_LIMIT_EXCEEDED),
-				 errmsg("could not find free replication state slot for replication origin with OID %u",
+				 errmsg("could not find free replication state slot for replication origin with ID %d",
 						node),
 				 errhint("Increase max_replication_slots and try again.")));
 	else if (session_replication_state == NULL)
@@ -1503,7 +1503,7 @@ pg_show_replication_origin_status(PG_FUNCTION_ARGS)
 	/* we want to return 0 rows if slot is set to zero */
 	replorigin_check_prerequisites(false, true);
 
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
 	/* prevent slots from being concurrently dropped */
 	LWLockAcquire(ReplicationOriginLock, LW_SHARED);

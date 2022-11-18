@@ -52,6 +52,7 @@
 /* max sleep time between cycles (3min) */
 #define DEFAULT_NAPTIME_PER_CYCLE 180000L
 
+/* GUC variables */
 int			max_logical_replication_workers = 4;
 int			max_sync_workers_per_subscription = 2;
 
@@ -235,8 +236,8 @@ logicalrep_worker_find(Oid subid, Oid relid, bool only_running)
 }
 
 /*
- * Similar to logicalrep_worker_find(), but returns list of all workers for
- * the subscription, instead just one.
+ * Similar to logicalrep_worker_find(), but returns a list of all workers for
+ * the subscription, instead of just one.
  */
 List *
 logicalrep_workers_find(Oid subid, bool only_running)
@@ -930,7 +931,7 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 	int			i;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 
-	SetSingleFuncCall(fcinfo, 0);
+	InitMaterializedSRF(fcinfo, 0);
 
 	/* Make sure we get consistent view of the workers. */
 	LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);

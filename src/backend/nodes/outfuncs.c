@@ -17,6 +17,7 @@
 #include <ctype.h>
 
 #include "access/attnum.h"
+#include "common/shortest_dec.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
@@ -25,6 +26,7 @@
 #include "utils/datum.h"
 
 static void outChar(StringInfo str, char c);
+static void outDouble(StringInfo str, double d);
 
 
 /*
@@ -69,9 +71,10 @@ static void outChar(StringInfo str, char c);
 	appendStringInfo(str, " :" CppAsString(fldname) " %d", \
 					 (int) node->fldname)
 
-/* Write a float field --- caller must give format to define precision */
-#define WRITE_FLOAT_FIELD(fldname,format) \
-	appendStringInfo(str, " :" CppAsString(fldname) " " format, node->fldname)
+/* Write a float field (actually, they're double) */
+#define WRITE_FLOAT_FIELD(fldname) \
+	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
+	 outDouble(str, node->fldname))
 
 /* Write a boolean field */
 #define WRITE_BOOL_FIELD(fldname) \
@@ -135,14 +138,21 @@ static void outChar(StringInfo str, char c);
  *	  Convert an ordinary string (eg, an identifier) into a form that
  *	  will be decoded back to a plain token by read.c's functions.
  *
- *	  If a null or empty string is given, it is encoded as "<>".
+ *	  If a null string pointer is given, it is encoded as '<>'.
+ *	  An empty string is encoded as '""'.  To avoid ambiguity, input
+ *	  strings beginning with '<' or '"' receive a leading backslash.
  */
 void
 outToken(StringInfo str, const char *s)
 {
-	if (s == NULL || *s == '\0')
+	if (s == NULL)
 	{
 		appendStringInfoString(str, "<>");
+		return;
+	}
+	if (*s == '\0')
+	{
+		appendStringInfoString(str, "\"\"");
 		return;
 	}
 
@@ -178,10 +188,29 @@ outChar(StringInfo str, char c)
 {
 	char		in[2];
 
+	/* Traditionally, we've represented \0 as <>, so keep doing that */
+	if (c == '\0')
+	{
+		appendStringInfoString(str, "<>");
+		return;
+	}
+
 	in[0] = c;
 	in[1] = '\0';
 
 	outToken(str, in);
+}
+
+/*
+ * Convert a double value, attempting to ensure the value is preserved exactly.
+ */
+static void
+outDouble(StringInfo str, double d)
+{
+	char		buf[DOUBLE_SHORTEST_DECIMAL_LEN];
+
+	double_to_shortest_decimal_buf(d, buf);
+	appendStringInfoString(str, buf);
 }
 
 /*
@@ -285,6 +314,9 @@ _outList(StringInfo str, const List *node)
  *	   converts a bitmap set of integers
  *
  * Note: the output format is "(b int int ...)", similar to an integer List.
+ *
+ * We export this function for use by extensions that define extensible nodes.
+ * That's somewhat historical, though, because calling outNode() will work.
  */
 void
 outBitmapset(StringInfo str, const Bitmapset *bms)
@@ -511,7 +543,7 @@ _outRangeTblEntry(StringInfo str, const RangeTblEntry *node)
 			break;
 		case RTE_NAMEDTUPLESTORE:
 			WRITE_STRING_FIELD(enrname);
-			WRITE_FLOAT_FIELD(enrtuples, "%.0f");
+			WRITE_FLOAT_FIELD(enrtuples);
 			WRITE_OID_FIELD(relid);
 			WRITE_NODE_FIELD(coltypes);
 			WRITE_NODE_FIELD(coltypmods);
@@ -545,65 +577,62 @@ _outA_Expr(StringInfo str, const A_Expr *node)
 	switch (node->kind)
 	{
 		case AEXPR_OP:
-			appendStringInfoChar(str, ' ');
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_OP_ANY:
-			appendStringInfoChar(str, ' ');
+			appendStringInfoString(str, " ANY");
 			WRITE_NODE_FIELD(name);
-			appendStringInfoString(str, " ANY ");
 			break;
 		case AEXPR_OP_ALL:
-			appendStringInfoChar(str, ' ');
+			appendStringInfoString(str, " ALL");
 			WRITE_NODE_FIELD(name);
-			appendStringInfoString(str, " ALL ");
 			break;
 		case AEXPR_DISTINCT:
-			appendStringInfoString(str, " DISTINCT ");
+			appendStringInfoString(str, " DISTINCT");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_NOT_DISTINCT:
-			appendStringInfoString(str, " NOT_DISTINCT ");
+			appendStringInfoString(str, " NOT_DISTINCT");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_NULLIF:
-			appendStringInfoString(str, " NULLIF ");
+			appendStringInfoString(str, " NULLIF");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_IN:
-			appendStringInfoString(str, " IN ");
+			appendStringInfoString(str, " IN");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_LIKE:
-			appendStringInfoString(str, " LIKE ");
+			appendStringInfoString(str, " LIKE");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_ILIKE:
-			appendStringInfoString(str, " ILIKE ");
+			appendStringInfoString(str, " ILIKE");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_SIMILAR:
-			appendStringInfoString(str, " SIMILAR ");
+			appendStringInfoString(str, " SIMILAR");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_BETWEEN:
-			appendStringInfoString(str, " BETWEEN ");
+			appendStringInfoString(str, " BETWEEN");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_NOT_BETWEEN:
-			appendStringInfoString(str, " NOT_BETWEEN ");
+			appendStringInfoString(str, " NOT_BETWEEN");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_BETWEEN_SYM:
-			appendStringInfoString(str, " BETWEEN_SYM ");
+			appendStringInfoString(str, " BETWEEN_SYM");
 			WRITE_NODE_FIELD(name);
 			break;
 		case AEXPR_NOT_BETWEEN_SYM:
-			appendStringInfoString(str, " NOT_BETWEEN_SYM ");
+			appendStringInfoString(str, " NOT_BETWEEN_SYM");
 			WRITE_NODE_FIELD(name);
 			break;
 		default:
-			appendStringInfoString(str, " ??");
+			elog(ERROR, "unrecognized A_Expr_Kind: %d", (int) node->kind);
 			break;
 	}
 
@@ -639,7 +668,8 @@ _outString(StringInfo str, const String *node)
 {
 	/*
 	 * We use outToken to provide escaping of the string's content, but we
-	 * don't want it to do anything with an empty string.
+	 * don't want it to convert an empty string to '""', because we're putting
+	 * double quotes around the string already.
 	 */
 	appendStringInfoChar(str, '"');
 	if (node->sval[0] != '\0')
@@ -660,7 +690,7 @@ _outA_Const(StringInfo str, const A_Const *node)
 	WRITE_NODE_TYPE("A_CONST");
 
 	if (node->isnull)
-		appendStringInfoString(str, "NULL");
+		appendStringInfoString(str, " NULL");
 	else
 	{
 		appendStringInfoString(str, " :val ");
@@ -698,8 +728,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 
 		case CONSTR_IDENTITY:
 			appendStringInfoString(str, "IDENTITY");
-			WRITE_NODE_FIELD(raw_expr);
-			WRITE_STRING_FIELD(cooked_expr);
+			WRITE_NODE_FIELD(options);
 			WRITE_CHAR_FIELD(generated_when);
 			break;
 
@@ -715,6 +744,8 @@ _outConstraint(StringInfo str, const Constraint *node)
 			WRITE_BOOL_FIELD(is_no_inherit);
 			WRITE_NODE_FIELD(raw_expr);
 			WRITE_STRING_FIELD(cooked_expr);
+			WRITE_BOOL_FIELD(skip_validation);
+			WRITE_BOOL_FIELD(initially_valid);
 			break;
 
 		case CONSTR_PRIMARY:
@@ -784,8 +815,7 @@ _outConstraint(StringInfo str, const Constraint *node)
 			break;
 
 		default:
-			appendStringInfo(str, "<unrecognized_constraint %d>",
-							 (int) node->contype);
+			elog(ERROR, "unrecognized ConstrType: %d", (int) node->contype);
 			break;
 	}
 }
@@ -817,6 +847,8 @@ outNode(StringInfo str, const void *obj)
 		_outString(str, (String *) obj);
 	else if (IsA(obj, BitString))
 		_outBitString(str, (BitString *) obj);
+	else if (IsA(obj, Bitmapset))
+		outBitmapset(str, (Bitmapset *) obj);
 	else
 	{
 		appendStringInfoChar(str, '{');

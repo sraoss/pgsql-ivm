@@ -23,7 +23,13 @@
 #include "catalog/pg_authid.h"
 #include "catalog/pg_class.h"
 #include "catalog/pg_database.h"
+#include "catalog/pg_foreign_data_wrapper.h"
+#include "catalog/pg_foreign_server.h"
+#include "catalog/pg_language.h"
+#include "catalog/pg_namespace.h"
 #include "catalog/pg_parameter_acl.h"
+#include "catalog/pg_proc.h"
+#include "catalog/pg_tablespace.h"
 #include "catalog/pg_type.h"
 #include "commands/dbcommands.h"
 #include "commands/proclang.h"
@@ -66,7 +72,7 @@ typedef struct
  */
 enum RoleRecurseType
 {
-	ROLERECURSE_PRIVS = 0,		/* recurse if rolinherit */
+	ROLERECURSE_PRIVS = 0,		/* recurse through inheritable grants */
 	ROLERECURSE_MEMBERS = 1		/* recurse unconditionally */
 };
 static Oid	cached_role[] = {InvalidOid, InvalidOid};
@@ -807,7 +813,7 @@ acldefault(ObjectType objtype, Oid ownerId)
 			owner_default = ACL_ALL_RIGHTS_PARAMETER_ACL;
 			break;
 		default:
-			elog(ERROR, "unrecognized objtype: %d", (int) objtype);
+			elog(ERROR, "unrecognized object type: %d", (int) objtype);
 			world_default = ACL_NO_RIGHTS;	/* keep compiler quiet */
 			owner_default = ACL_NO_RIGHTS;
 			break;
@@ -904,7 +910,7 @@ acldefault_sql(PG_FUNCTION_ARGS)
 			objtype = OBJECT_TYPE;
 			break;
 		default:
-			elog(ERROR, "unrecognized objtype abbreviation: %c", objtypec);
+			elog(ERROR, "unrecognized object type abbreviation: %c", objtypec);
 	}
 
 	PG_RETURN_ACL_P(acldefault(objtype, owner));
@@ -2902,7 +2908,7 @@ has_database_privilege_name_name(PG_FUNCTION_ARGS)
 	databaseoid = convert_database_name(databasename);
 	mode = convert_database_priv_string(priv_type_text);
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -2927,7 +2933,7 @@ has_database_privilege_name(PG_FUNCTION_ARGS)
 	databaseoid = convert_database_name(databasename);
 	mode = convert_database_priv_string(priv_type_text);
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -2953,7 +2959,7 @@ has_database_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(DATABASEOID, ObjectIdGetDatum(databaseoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -2979,7 +2985,7 @@ has_database_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(DATABASEOID, ObjectIdGetDatum(databaseoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3002,7 +3008,7 @@ has_database_privilege_id_name(PG_FUNCTION_ARGS)
 	databaseoid = convert_database_name(databasename);
 	mode = convert_database_priv_string(priv_type_text);
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3026,7 +3032,7 @@ has_database_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(DATABASEOID, ObjectIdGetDatum(databaseoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_database_aclcheck(databaseoid, roleid, mode);
+	aclresult = object_aclcheck(DatabaseRelationId, databaseoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3099,7 +3105,7 @@ has_foreign_data_wrapper_privilege_name_name(PG_FUNCTION_ARGS)
 	fdwid = convert_foreign_data_wrapper_name(fdwname);
 	mode = convert_foreign_data_wrapper_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3124,7 +3130,7 @@ has_foreign_data_wrapper_privilege_name(PG_FUNCTION_ARGS)
 	fdwid = convert_foreign_data_wrapper_name(fdwname);
 	mode = convert_foreign_data_wrapper_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3150,7 +3156,7 @@ has_foreign_data_wrapper_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNDATAWRAPPEROID, ObjectIdGetDatum(fdwid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3176,7 +3182,7 @@ has_foreign_data_wrapper_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNDATAWRAPPEROID, ObjectIdGetDatum(fdwid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3199,7 +3205,7 @@ has_foreign_data_wrapper_privilege_id_name(PG_FUNCTION_ARGS)
 	fdwid = convert_foreign_data_wrapper_name(fdwname);
 	mode = convert_foreign_data_wrapper_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3223,7 +3229,7 @@ has_foreign_data_wrapper_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNDATAWRAPPEROID, ObjectIdGetDatum(fdwid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_data_wrapper_aclcheck(fdwid, roleid, mode);
+	aclresult = object_aclcheck(ForeignDataWrapperRelationId, fdwid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3290,7 +3296,7 @@ has_function_privilege_name_name(PG_FUNCTION_ARGS)
 	functionoid = convert_function_name(functionname);
 	mode = convert_function_priv_string(priv_type_text);
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3315,7 +3321,7 @@ has_function_privilege_name(PG_FUNCTION_ARGS)
 	functionoid = convert_function_name(functionname);
 	mode = convert_function_priv_string(priv_type_text);
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3341,7 +3347,7 @@ has_function_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(PROCOID, ObjectIdGetDatum(functionoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3367,7 +3373,7 @@ has_function_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(PROCOID, ObjectIdGetDatum(functionoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3390,7 +3396,7 @@ has_function_privilege_id_name(PG_FUNCTION_ARGS)
 	functionoid = convert_function_name(functionname);
 	mode = convert_function_priv_string(priv_type_text);
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3414,7 +3420,7 @@ has_function_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(PROCOID, ObjectIdGetDatum(functionoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_proc_aclcheck(functionoid, roleid, mode);
+	aclresult = object_aclcheck(ProcedureRelationId, functionoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3490,7 +3496,7 @@ has_language_privilege_name_name(PG_FUNCTION_ARGS)
 	languageoid = convert_language_name(languagename);
 	mode = convert_language_priv_string(priv_type_text);
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3515,7 +3521,7 @@ has_language_privilege_name(PG_FUNCTION_ARGS)
 	languageoid = convert_language_name(languagename);
 	mode = convert_language_priv_string(priv_type_text);
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3541,7 +3547,7 @@ has_language_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(LANGOID, ObjectIdGetDatum(languageoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3567,7 +3573,7 @@ has_language_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(LANGOID, ObjectIdGetDatum(languageoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3590,7 +3596,7 @@ has_language_privilege_id_name(PG_FUNCTION_ARGS)
 	languageoid = convert_language_name(languagename);
 	mode = convert_language_priv_string(priv_type_text);
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3614,7 +3620,7 @@ has_language_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(LANGOID, ObjectIdGetDatum(languageoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_language_aclcheck(languageoid, roleid, mode);
+	aclresult = object_aclcheck(LanguageRelationId, languageoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3681,7 +3687,7 @@ has_schema_privilege_name_name(PG_FUNCTION_ARGS)
 	schemaoid = convert_schema_name(schemaname);
 	mode = convert_schema_priv_string(priv_type_text);
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3706,7 +3712,7 @@ has_schema_privilege_name(PG_FUNCTION_ARGS)
 	schemaoid = convert_schema_name(schemaname);
 	mode = convert_schema_priv_string(priv_type_text);
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3732,7 +3738,7 @@ has_schema_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(NAMESPACEOID, ObjectIdGetDatum(schemaoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3758,7 +3764,7 @@ has_schema_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(NAMESPACEOID, ObjectIdGetDatum(schemaoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3781,7 +3787,7 @@ has_schema_privilege_id_name(PG_FUNCTION_ARGS)
 	schemaoid = convert_schema_name(schemaname);
 	mode = convert_schema_priv_string(priv_type_text);
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3805,7 +3811,7 @@ has_schema_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(NAMESPACEOID, ObjectIdGetDatum(schemaoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_namespace_aclcheck(schemaoid, roleid, mode);
+	aclresult = object_aclcheck(NamespaceRelationId, schemaoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3874,7 +3880,7 @@ has_server_privilege_name_name(PG_FUNCTION_ARGS)
 	serverid = convert_server_name(servername);
 	mode = convert_server_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3899,7 +3905,7 @@ has_server_privilege_name(PG_FUNCTION_ARGS)
 	serverid = convert_server_name(servername);
 	mode = convert_server_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3925,7 +3931,7 @@ has_server_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNSERVEROID, ObjectIdGetDatum(serverid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3951,7 +3957,7 @@ has_server_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNSERVEROID, ObjectIdGetDatum(serverid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3974,7 +3980,7 @@ has_server_privilege_id_name(PG_FUNCTION_ARGS)
 	serverid = convert_server_name(servername);
 	mode = convert_server_priv_string(priv_type_text);
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -3998,7 +4004,7 @@ has_server_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(FOREIGNSERVEROID, ObjectIdGetDatum(serverid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_foreign_server_aclcheck(serverid, roleid, mode);
+	aclresult = object_aclcheck(ForeignServerRelationId, serverid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4065,7 +4071,7 @@ has_tablespace_privilege_name_name(PG_FUNCTION_ARGS)
 	tablespaceoid = convert_tablespace_name(tablespacename);
 	mode = convert_tablespace_priv_string(priv_type_text);
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4090,7 +4096,7 @@ has_tablespace_privilege_name(PG_FUNCTION_ARGS)
 	tablespaceoid = convert_tablespace_name(tablespacename);
 	mode = convert_tablespace_priv_string(priv_type_text);
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4116,7 +4122,7 @@ has_tablespace_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TABLESPACEOID, ObjectIdGetDatum(tablespaceoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4142,7 +4148,7 @@ has_tablespace_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TABLESPACEOID, ObjectIdGetDatum(tablespaceoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4165,7 +4171,7 @@ has_tablespace_privilege_id_name(PG_FUNCTION_ARGS)
 	tablespaceoid = convert_tablespace_name(tablespacename);
 	mode = convert_tablespace_priv_string(priv_type_text);
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4189,7 +4195,7 @@ has_tablespace_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TABLESPACEOID, ObjectIdGetDatum(tablespaceoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_tablespace_aclcheck(tablespaceoid, roleid, mode);
+	aclresult = object_aclcheck(TableSpaceRelationId, tablespaceoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4255,7 +4261,7 @@ has_type_privilege_name_name(PG_FUNCTION_ARGS)
 	typeoid = convert_type_name(typename);
 	mode = convert_type_priv_string(priv_type_text);
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4280,7 +4286,7 @@ has_type_privilege_name(PG_FUNCTION_ARGS)
 	typeoid = convert_type_name(typename);
 	mode = convert_type_priv_string(priv_type_text);
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4306,7 +4312,7 @@ has_type_privilege_name_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TYPEOID, ObjectIdGetDatum(typeoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4332,7 +4338,7 @@ has_type_privilege_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TYPEOID, ObjectIdGetDatum(typeoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4355,7 +4361,7 @@ has_type_privilege_id_name(PG_FUNCTION_ARGS)
 	typeoid = convert_type_name(typename);
 	mode = convert_type_priv_string(priv_type_text);
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4379,7 +4385,7 @@ has_type_privilege_id_id(PG_FUNCTION_ARGS)
 	if (!SearchSysCacheExists1(TYPEOID, ObjectIdGetDatum(typeoid)))
 		PG_RETURN_NULL();
 
-	aclresult = pg_type_aclcheck(typeoid, roleid, mode);
+	aclresult = object_aclcheck(TypeRelationId, typeoid, roleid, mode);
 
 	PG_RETURN_BOOL(aclresult == ACLCHECK_OK);
 }
@@ -4735,8 +4741,8 @@ initialize_acl(void)
 
 		/*
 		 * In normal mode, set a callback on any syscache invalidation of rows
-		 * of pg_auth_members (for roles_is_member_of()), pg_authid (for
-		 * has_rolinherit()), or pg_database (for roles_is_member_of())
+		 * of pg_auth_members (for roles_is_member_of()) pg_database (for
+		 * roles_is_member_of())
 		 */
 		CacheRegisterSyscacheCallback(AUTHMEMROLEMEM,
 									  RoleMembershipCacheCallback,
@@ -4769,31 +4775,11 @@ RoleMembershipCacheCallback(Datum arg, int cacheid, uint32 hashvalue)
 	cached_role[ROLERECURSE_MEMBERS] = InvalidOid;
 }
 
-
-/* Check if specified role has rolinherit set */
-static bool
-has_rolinherit(Oid roleid)
-{
-	bool		result = false;
-	HeapTuple	utup;
-
-	utup = SearchSysCache1(AUTHOID, ObjectIdGetDatum(roleid));
-	if (HeapTupleIsValid(utup))
-	{
-		result = ((Form_pg_authid) GETSTRUCT(utup))->rolinherit;
-		ReleaseSysCache(utup);
-	}
-	return result;
-}
-
-
 /*
  * Get a list of roles that the specified roleid is a member of
  *
- * Type ROLERECURSE_PRIVS recurses only through roles that have rolinherit
- * set, while ROLERECURSE_MEMBERS recurses through all roles.  This sets
- * *is_admin==true if and only if role "roleid" has an ADMIN OPTION membership
- * in role "admin_of".
+ * Type ROLERECURSE_PRIVS recurses only through inheritable grants,
+ * while ROLERECURSE_MEMBERS recurses through all grants.
  *
  * Since indirect membership testing is relatively expensive, we cache
  * a list of memberships.  Hence, the result is only guaranteed good until
@@ -4801,10 +4787,15 @@ has_rolinherit(Oid roleid)
  *
  * For the benefit of select_best_grantor, the result is defined to be
  * in breadth-first order, ie, closer relationships earlier.
+ *
+ * If admin_of is not InvalidOid, this function sets *admin_role, either
+ * to the OID of the first role in the result list that directly possesses
+ * ADMIN OPTION on the role corresponding to admin_of, or to InvalidOid if
+ * there is no such role.
  */
 static List *
 roles_is_member_of(Oid roleid, enum RoleRecurseType type,
-				   Oid admin_of, bool *is_admin)
+				   Oid admin_of, Oid *admin_role)
 {
 	Oid			dba;
 	List	   *roles_list;
@@ -4812,7 +4803,9 @@ roles_is_member_of(Oid roleid, enum RoleRecurseType type,
 	List	   *new_cached_roles;
 	MemoryContext oldctx;
 
-	Assert(OidIsValid(admin_of) == PointerIsValid(is_admin));
+	Assert(OidIsValid(admin_of) == PointerIsValid(admin_role));
+	if (admin_role != NULL)
+		*admin_role = InvalidOid;
 
 	/* If cache is valid and ADMIN OPTION not sought, just return the list */
 	if (cached_role[type] == roleid && !OidIsValid(admin_of) &&
@@ -4856,25 +4849,26 @@ roles_is_member_of(Oid roleid, enum RoleRecurseType type,
 		CatCList   *memlist;
 		int			i;
 
-		if (type == ROLERECURSE_PRIVS && !has_rolinherit(memberid))
-			continue;			/* ignore non-inheriting roles */
-
 		/* Find roles that memberid is directly a member of */
 		memlist = SearchSysCacheList1(AUTHMEMMEMROLE,
 									  ObjectIdGetDatum(memberid));
 		for (i = 0; i < memlist->n_members; i++)
 		{
 			HeapTuple	tup = &memlist->members[i]->tuple;
-			Oid			otherid = ((Form_pg_auth_members) GETSTRUCT(tup))->roleid;
+			Form_pg_auth_members form = (Form_pg_auth_members) GETSTRUCT(tup);
+			Oid			otherid = form->roleid;
 
 			/*
 			 * While otherid==InvalidOid shouldn't appear in the catalog, the
 			 * OidIsValid() avoids crashing if that arises.
 			 */
-			if (otherid == admin_of &&
-				((Form_pg_auth_members) GETSTRUCT(tup))->admin_option &&
-				OidIsValid(admin_of))
-				*is_admin = true;
+			if (otherid == admin_of && form->admin_option &&
+				OidIsValid(admin_of) && !OidIsValid(*admin_role))
+				*admin_role = memberid;
+
+			/* If we're supposed to ignore non-heritable grants, do so. */
+			if (type == ROLERECURSE_PRIVS && !form->inherit_option)
+				continue;
 
 			/*
 			 * Even though there shouldn't be any loops in the membership
@@ -4915,8 +4909,8 @@ roles_is_member_of(Oid roleid, enum RoleRecurseType type,
 /*
  * Does member have the privileges of role (directly or indirectly)?
  *
- * This is defined not to recurse through roles that don't have rolinherit
- * set; for such roles, membership implies the ability to do SET ROLE, but
+ * This is defined not to recurse through grants that are not inherited;
+ * in such cases, membership implies the ability to do SET ROLE, but
  * the privileges are not available until you've done so.
  */
 bool
@@ -4943,7 +4937,7 @@ has_privs_of_role(Oid member, Oid role)
 /*
  * Is member a member of role (directly or indirectly)?
  *
- * This is defined to recurse through roles regardless of rolinherit.
+ * This is defined to recurse through grants whether they are inherited or not.
  *
  * Do not use this for privilege checking, instead use has_privs_of_role()
  */
@@ -5014,7 +5008,7 @@ is_member_of_role_nosuper(Oid member, Oid role)
 bool
 is_admin_of_role(Oid member, Oid role)
 {
-	bool		result = false;
+	Oid			admin_role;
 
 	if (superuser_arg(member))
 		return true;
@@ -5023,8 +5017,30 @@ is_admin_of_role(Oid member, Oid role)
 	if (member == role)
 		return false;
 
-	(void) roles_is_member_of(member, ROLERECURSE_MEMBERS, role, &result);
-	return result;
+	(void) roles_is_member_of(member, ROLERECURSE_MEMBERS, role, &admin_role);
+	return OidIsValid(admin_role);
+}
+
+/*
+ * Find a role whose privileges "member" inherits which has ADMIN OPTION
+ * on "role", ignoring super-userness.
+ *
+ * There might be more than one such role; prefer one which involves fewer
+ * hops. That is, if member has ADMIN OPTION, prefer that over all other
+ * options; if not, prefer a role from which member inherits more directly
+ * over more indirect inheritance.
+ */
+Oid
+select_best_admin(Oid member, Oid role)
+{
+	Oid			admin_role;
+
+	/* By policy, a role cannot have WITH ADMIN OPTION on itself. */
+	if (member == role)
+		return InvalidOid;
+
+	(void) roles_is_member_of(member, ROLERECURSE_PRIVS, role, &admin_role);
+	return admin_role;
 }
 
 
@@ -5281,7 +5297,7 @@ get_rolespec_name(const RoleSpec *role)
 
 /*
  * Given a RoleSpec, throw an error if the name is reserved, using detail_msg,
- * if provided.
+ * if provided (which must be already translated).
  *
  * If node is NULL, no error is thrown.  If detail_msg is NULL then no detail
  * message is provided.
@@ -5302,7 +5318,7 @@ check_rolespec_name(const RoleSpec *role, const char *detail_msg)
 					(errcode(ERRCODE_RESERVED_NAME),
 					 errmsg("role name \"%s\" is reserved",
 							role->rolename),
-					 errdetail("%s", detail_msg)));
+					 errdetail_internal("%s", detail_msg)));
 		else
 			ereport(ERROR,
 					(errcode(ERRCODE_RESERVED_NAME),
