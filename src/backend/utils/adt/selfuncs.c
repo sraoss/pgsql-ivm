@@ -2261,6 +2261,7 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	Form_pg_statistic stats2 = NULL;
 	bool		have_mcvs1 = false;
 	bool		have_mcvs2 = false;
+	bool		get_mcv_stats;
 	bool		join_is_reversed;
 	RelOptInfo *inner_rel;
 
@@ -2275,11 +2276,25 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	memset(&sslot1, 0, sizeof(sslot1));
 	memset(&sslot2, 0, sizeof(sslot2));
 
+	/*
+	 * There is no use in fetching one side's MCVs if we lack MCVs for the
+	 * other side, so do a quick check to verify that both stats exist.
+	 */
+	get_mcv_stats = (HeapTupleIsValid(vardata1.statsTuple) &&
+					 HeapTupleIsValid(vardata2.statsTuple) &&
+					 get_attstatsslot(&sslot1, vardata1.statsTuple,
+									  STATISTIC_KIND_MCV, InvalidOid,
+									  0) &&
+					 get_attstatsslot(&sslot2, vardata2.statsTuple,
+									  STATISTIC_KIND_MCV, InvalidOid,
+									  0));
+
 	if (HeapTupleIsValid(vardata1.statsTuple))
 	{
 		/* note we allow use of nullfrac regardless of security check */
 		stats1 = (Form_pg_statistic) GETSTRUCT(vardata1.statsTuple);
-		if (statistic_proc_security_check(&vardata1, opfuncoid))
+		if (get_mcv_stats &&
+			statistic_proc_security_check(&vardata1, opfuncoid))
 			have_mcvs1 = get_attstatsslot(&sslot1, vardata1.statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
@@ -2289,7 +2304,8 @@ eqjoinsel(PG_FUNCTION_ARGS)
 	{
 		/* note we allow use of nullfrac regardless of security check */
 		stats2 = (Form_pg_statistic) GETSTRUCT(vardata2.statsTuple);
-		if (statistic_proc_security_check(&vardata2, opfuncoid))
+		if (get_mcv_stats &&
+			statistic_proc_security_check(&vardata2, opfuncoid))
 			have_mcvs2 = get_attstatsslot(&sslot2, vardata2.statsTuple,
 										  STATISTIC_KIND_MCV, InvalidOid,
 										  ATTSTATSSLOT_VALUES | ATTSTATSSLOT_NUMBERS);
@@ -5948,7 +5964,7 @@ get_stats_slot_range(AttStatsSlot *sslot, Oid opfuncoid, FmgrInfo *opproc,
  *		and fetching its low and/or high values.
  *		If successful, store values in *min and *max, and return true.
  *		(Either pointer can be NULL if that endpoint isn't needed.)
- *		If no data available, return false.
+ *		If unsuccessful, return false.
  *
  * sortop is the "<" comparison operator to use.
  * collation is the required collation.
@@ -6077,11 +6093,11 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 			}
 			else
 			{
-				/* If min not requested, assume index is nonempty */
+				/* If min not requested, still want to fetch max */
 				have_data = true;
 			}
 
-			/* If max is requested, and we didn't find the index is empty */
+			/* If max is requested, and we didn't already fail ... */
 			if (max && have_data)
 			{
 				/* scan in the opposite direction; all else is the same */
@@ -6115,7 +6131,7 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
 
 /*
  * Get one endpoint datum (min or max depending on indexscandir) from the
- * specified index.  Return true if successful, false if index is empty.
+ * specified index.  Return true if successful, false if not.
  * On success, endpoint value is stored to *endpointDatum (and copied into
  * outercontext).
  *
@@ -6125,6 +6141,9 @@ get_actual_variable_range(PlannerInfo *root, VariableStatData *vardata,
  * to probe the heap.
  * (We could compute these values locally, but that would mean computing them
  * twice when get_actual_variable_range needs both the min and the max.)
+ *
+ * Failure occurs either when the index is empty, or we decide that it's
+ * taking too long to find a suitable tuple.
  */
 static bool
 get_actual_variable_endpoint(Relation heapRel,
@@ -6141,6 +6160,8 @@ get_actual_variable_endpoint(Relation heapRel,
 	SnapshotData SnapshotNonVacuumable;
 	IndexScanDesc index_scan;
 	Buffer		vmbuffer = InvalidBuffer;
+	BlockNumber last_heap_block = InvalidBlockNumber;
+	int			n_visited_heap_pages = 0;
 	ItemPointer tid;
 	Datum		values[INDEX_MAX_KEYS];
 	bool		isnull[INDEX_MAX_KEYS];
@@ -6183,6 +6204,12 @@ get_actual_variable_endpoint(Relation heapRel,
 	 * might get a bogus answer that's not close to the index extremal value,
 	 * or could even be NULL.  We avoid this hazard because we take the data
 	 * from the index entry not the heap.
+	 *
+	 * Despite all this care, there are situations where we might find many
+	 * non-visible tuples near the end of the index.  We don't want to expend
+	 * a huge amount of time here, so we give up once we've read too many heap
+	 * pages.  When we fail for that reason, the caller will end up using
+	 * whatever extremal value is recorded in pg_statistic.
 	 */
 	InitNonVacuumableSnapshot(SnapshotNonVacuumable,
 							  GlobalVisTestFor(heapRel));
@@ -6197,13 +6224,37 @@ get_actual_variable_endpoint(Relation heapRel,
 	/* Fetch first/next tuple in specified direction */
 	while ((tid = index_getnext_tid(index_scan, indexscandir)) != NULL)
 	{
+		BlockNumber block = ItemPointerGetBlockNumber(tid);
+
 		if (!VM_ALL_VISIBLE(heapRel,
-							ItemPointerGetBlockNumber(tid),
+							block,
 							&vmbuffer))
 		{
 			/* Rats, we have to visit the heap to check visibility */
 			if (!index_fetch_heap(index_scan, tableslot))
+			{
+				/*
+				 * No visible tuple for this index entry, so we need to
+				 * advance to the next entry.  Before doing so, count heap
+				 * page fetches and give up if we've done too many.
+				 *
+				 * We don't charge a page fetch if this is the same heap page
+				 * as the previous tuple.  This is on the conservative side,
+				 * since other recently-accessed pages are probably still in
+				 * buffers too; but it's good enough for this heuristic.
+				 */
+#define VISITED_PAGES_LIMIT 100
+
+				if (block != last_heap_block)
+				{
+					last_heap_block = block;
+					n_visited_heap_pages++;
+					if (n_visited_heap_pages > VISITED_PAGES_LIMIT)
+						break;
+				}
+
 				continue;		/* no visible tuple, try next index entry */
+			}
 
 			/* We don't actually need the heap tuple for anything */
 			ExecClearTuple(tableslot);

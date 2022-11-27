@@ -55,6 +55,78 @@ on_failure_meson: &on_failure_meson
     type: text/plain
 
 
+# To avoid unnecessarily spinning up a lot of VMs / containers for entirely
+# broken commits, have a minimal task that all others depend on.
+task:
+  name: SanityCheck
+
+  # If a specific OS is requested, don't run the sanity check. This shortens
+  # push-wait-for-ci cycle time a bit when debugging operating system specific
+  # failures. Uses skip instead of only_if, as cirrus otherwise warns about
+  # only_if conditions not matching.
+  skip: $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:.*'
+
+  env:
+    CPUS: 4
+    BUILD_JOBS: 8
+    TEST_JOBS: 8
+    CCACHE_DIR: ${CIRRUS_WORKING_DIR}/ccache_dir
+    # no options enabled, should be small
+    CCACHE_MAXSIZE: "150M"
+
+  # Container starts up quickly, but is slower at runtime, particularly for
+  # tests. Good for the briefly running sanity check.
+  container:
+    image: $CONTAINER_REPO/linux_debian_bullseye_ci:latest
+    cpu: $CPUS
+
+  ccache_cache:
+    folder: $CCACHE_DIR
+
+  create_user_script: |
+    useradd -m postgres
+    chown -R postgres:postgres .
+    mkdir -p ${CCACHE_DIR}
+    chown -R postgres:postgres ${CCACHE_DIR}
+    echo '* - memlock 134217728' > /etc/security/limits.d/postgres.conf
+    su postgres -c "ulimit -l -H && ulimit -l -S"
+    # Can't change container's kernel.core_pattern. Postgres user can't write
+    # to / normally. Change that.
+    chown root:postgres /
+    chmod g+rwx /
+
+  configure_script: |
+    su postgres <<-EOF
+      meson setup \
+        --buildtype=debug \
+        --auto-features=disabled \
+        -Dtap_tests=enabled \
+        build
+    EOF
+  build_script: |
+    su postgres <<-EOF
+      ninja -C build -j${BUILD_JOBS}
+    EOF
+  upload_caches: ccache
+
+  # Run a minimal set of tests. The main regression tests take too long for
+  # this purpose. For now this is a random quick pg_regress style test, and a
+  # tap test that exercises both a frontend binary and the backend.
+  test_minimal_script: |
+    su postgres <<-EOF
+      ulimit -c unlimited
+      meson test $MTEST_ARGS --num-processes ${TEST_JOBS} \
+        tmp_install cube/regress pg_ctl/001_start_stop
+    EOF
+
+  on_failure:
+    <<: *on_failure_meson
+    cores_script: |
+      mkdir -m 770 /tmp/cores
+      find / -maxdepth 1 -type f -name 'core*' -exec mv '{}' /tmp/cores/ \;
+      src/tools/ci/cores_backtrace.sh linux /tmp/cores
+
+
 task:
   name: FreeBSD - 13 - Meson
 
@@ -69,6 +141,7 @@ task:
     CPPFLAGS: -DRELCACHE_FORCE_RELEASE -DCOPY_PARSE_PLAN_TREES -DWRITE_READ_PARSE_PLAN_TREES -DRAW_EXPRESSION_COVERAGE_TEST
     CFLAGS: -Og -ggdb
 
+  depends_on: SanityCheck
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*freebsd.*'
 
   compute_engine_instance:
@@ -162,14 +235,35 @@ task:
     CCACHE_DIR: /tmp/ccache_dir
     DEBUGINFOD_URLS: "https://debuginfod.debian.net"
 
-    CFLAGS: -Og -ggdb
-    CXXFLAGS: -Og -ggdb
+    # Enable a reasonable set of sanitizers. Use the linux task for that, as
+    # it one of the fastest tasks (without sanitizers). Also several of the
+    # sanitizers work best on linux.
+    #
+    # The overhead of alignment sanitizer is low, undefined behaviour has
+    # moderate overhead. Test alignment sanitizer in the meson task, as it
+    # does both 32 and 64 bit builds and is thus more likely to expose
+    # alignment bugs.
+    #
+    # Address sanitizer in contrast is somewhat expensive. Enable it in the
+    # autoconf task, as the meson task tests both 32 and 64bit.
+    #
+    # disable_coredump=0, abort_on_error=1: for useful backtraces in case of crashes
+    # print_stacktraces=1,verbosity=2, duh
+    # detect_leaks=0: too many uninteresting leak errors in short-lived binaries
+    UBSAN_OPTIONS: print_stacktrace=1:disable_coredump=0:abort_on_error=1:verbosity=2
+    ASAN_OPTIONS: print_stacktrace=1:disable_coredump=0:abort_on_error=1:detect_leaks=0
+
+    # SANITIZER_FLAGS is set in the tasks below
+    CFLAGS: -Og -ggdb -fno-sanitize-recover=all $SANITIZER_FLAGS
+    CXXFLAGS: $CFLAGS
+    LDFLAGS: $SANITIZER_FLAGS
     CC: ccache gcc
     CXX: ccache g++
 
     LINUX_CONFIGURE_FEATURES: *LINUX_CONFIGURE_FEATURES
     LINUX_MESON_FEATURES: *LINUX_MESON_FEATURES
 
+  depends_on: SanityCheck
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*linux.*'
 
   compute_engine_instance:
@@ -206,6 +300,9 @@ task:
   matrix:
     - name: Linux - Debian Bullseye - Autoconf
 
+      env:
+        SANITIZER_FLAGS: -fsanitize=address
+
       configure_script: |
         su postgres <<-EOF
           ./configure \
@@ -232,6 +329,7 @@ task:
 
       env:
         CCACHE_MAXSIZE: "400M" # tests two different builds
+        SANITIZER_FLAGS: -fsanitize=alignment,undefined
 
       configure_script: |
         su postgres <<-EOF
@@ -311,6 +409,7 @@ task:
     CFLAGS: -Og -ggdb
     CXXFLAGS: -Og -ggdb
 
+  depends_on: SanityCheck
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*(macos|darwin|osx).*'
 
   osx_instance:
@@ -420,15 +519,6 @@ task:
 
   env:
     TEST_JOBS: 8 # wild guess, data based value welcome
-    # Avoid re-installing over and over
-    NO_TEMP_INSTALL: 1
-
-    # startcreate_script starts a postgres instance that we don't want to get
-    # killed at the end of that script (it's stopped in stop_script). Can't
-    # trivially use background_scripts because a) need pg_ctl's dropping of
-    # permissions b) need to wait for startup to have finished, and we don't
-    # currently have a tool for that...
-    CIRRUS_ESCAPING_PROCESSES: 1
 
     # Cirrus defaults to SetErrorMode(SEM_NOGPFAULTERRORBOX | ...). That
     # prevents crash reporting from working unless binaries do SetErrorMode()
@@ -439,6 +529,7 @@ task:
     # 0x8001 is SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
     CIRRUS_WINDOWS_ERROR_MODE: 0x8001
 
+  depends_on: SanityCheck
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*windows.*'
 
   windows_container:
@@ -478,6 +569,8 @@ task:
   # worth using only_if despite being manual, otherwise this task will show up
   # when e.g. ci-os-only: linux is used.
   only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*mingw.*'
+  # otherwise it'll be sorted before other tasks
+  depends_on: SanityCheck
 
   windows_container:
     image: $CONTAINER_REPO/windows_ci_mingw64:latest
@@ -532,9 +625,12 @@ task:
 task:
   name: CompilerWarnings
 
-  # To limit unnecessary work only run this once the normal linux test succeeds
-  depends_on:
-    - Linux - Debian Bullseye - Meson
+  # To limit unnecessary work only run this once the SanityCheck
+  # succeeds. This is particularly important for this task as we intentionally
+  # use always: to continue after failures. Task that did not run count as a
+  # success, so we need to recheck SanityChecks's condition here ...
+  depends_on: SanityCheck
+  only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*'
 
   env:
     CPUS: 4
@@ -547,10 +643,6 @@ task:
 
     LINUX_CONFIGURE_FEATURES: *LINUX_CONFIGURE_FEATURES
     LINUX_MESON_FEATURES: *LINUX_MESON_FEATURES
-
-  # task that did not run, count as a success, so we need to recheck Linux'
-  # condition here ...
-  only_if: $CIRRUS_CHANGE_MESSAGE !=~ '.*\nci-os-only:.*' || $CIRRUS_CHANGE_MESSAGE =~ '.*\nci-os-only:[^\n]*linux.*'
 
   container:
     image: $CONTAINER_REPO/linux_debian_bullseye_ci:latest

@@ -59,33 +59,33 @@ typedef struct AclItem
 } AclItem;
 
 /*
- * The upper 16 bits of the ai_privs field of an AclItem are the grant option
- * bits, and the lower 16 bits are the actual privileges.  We use "rights"
+ * The upper 32 bits of the ai_privs field of an AclItem are the grant option
+ * bits, and the lower 32 bits are the actual privileges.  We use "rights"
  * to mean the combined grant option and privilege bits fields.
  */
-#define ACLITEM_GET_PRIVS(item)    ((item).ai_privs & 0xFFFF)
-#define ACLITEM_GET_GOPTIONS(item) (((item).ai_privs >> 16) & 0xFFFF)
+#define ACLITEM_GET_PRIVS(item)    ((item).ai_privs & 0xFFFFFFFF)
+#define ACLITEM_GET_GOPTIONS(item) (((item).ai_privs >> 32) & 0xFFFFFFFF)
 #define ACLITEM_GET_RIGHTS(item)   ((item).ai_privs)
 
-#define ACL_GRANT_OPTION_FOR(privs) (((AclMode) (privs) & 0xFFFF) << 16)
-#define ACL_OPTION_TO_PRIVS(privs)	(((AclMode) (privs) >> 16) & 0xFFFF)
+#define ACL_GRANT_OPTION_FOR(privs) (((AclMode) (privs) & 0xFFFFFFFF) << 32)
+#define ACL_OPTION_TO_PRIVS(privs)	(((AclMode) (privs) >> 32) & 0xFFFFFFFF)
 
 #define ACLITEM_SET_PRIVS(item,privs) \
-  ((item).ai_privs = ((item).ai_privs & ~((AclMode) 0xFFFF)) | \
-					 ((AclMode) (privs) & 0xFFFF))
+  ((item).ai_privs = ((item).ai_privs & ~((AclMode) 0xFFFFFFFF)) | \
+					 ((AclMode) (privs) & 0xFFFFFFFF))
 #define ACLITEM_SET_GOPTIONS(item,goptions) \
-  ((item).ai_privs = ((item).ai_privs & ~(((AclMode) 0xFFFF) << 16)) | \
-					 (((AclMode) (goptions) & 0xFFFF) << 16))
+  ((item).ai_privs = ((item).ai_privs & ~(((AclMode) 0xFFFFFFFF) << 32)) | \
+					 (((AclMode) (goptions) & 0xFFFFFFFF) << 32))
 #define ACLITEM_SET_RIGHTS(item,rights) \
   ((item).ai_privs = (AclMode) (rights))
 
 #define ACLITEM_SET_PRIVS_GOPTIONS(item,privs,goptions) \
-  ((item).ai_privs = ((AclMode) (privs) & 0xFFFF) | \
-					 (((AclMode) (goptions) & 0xFFFF) << 16))
+  ((item).ai_privs = ((AclMode) (privs) & 0xFFFFFFFF) | \
+					 (((AclMode) (goptions) & 0xFFFFFFFF) << 32))
 
 
-#define ACLITEM_ALL_PRIV_BITS		((AclMode) 0xFFFF)
-#define ACLITEM_ALL_GOPTION_BITS	((AclMode) 0xFFFF << 16)
+#define ACLITEM_ALL_PRIV_BITS		((AclMode) 0xFFFFFFFF)
+#define ACLITEM_ALL_GOPTION_BITS	((AclMode) 0xFFFFFFFF << 32)
 
 /*
  * Definitions for convenient access to Acl (array of AclItem).
@@ -209,11 +209,12 @@ extern AclMode aclmask(const Acl *acl, Oid roleid, Oid ownerId,
 extern int	aclmembers(const Acl *acl, Oid **roleids);
 
 extern bool has_privs_of_role(Oid member, Oid role);
+extern bool member_can_set_role(Oid member, Oid role);
+extern void check_can_set_role(Oid member, Oid role);
 extern bool is_member_of_role(Oid member, Oid role);
 extern bool is_member_of_role_nosuper(Oid member, Oid role);
 extern bool is_admin_of_role(Oid member, Oid role);
 extern Oid	select_best_admin(Oid member, Oid role);
-extern void check_is_member_of_role(Oid member, Oid role);
 extern Oid	get_role_oid(const char *rolname, bool missing_ok);
 extern Oid	get_role_oid_or_public(const char *rolname);
 extern Oid	get_rolespec_oid(const RoleSpec *role, bool missing_ok);
