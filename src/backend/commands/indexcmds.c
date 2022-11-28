@@ -1089,7 +1089,7 @@ DefineIndex(Oid relationId,
 	 */
 	if (RelationIsIVM(rel) && stmt->unique)
 	{
-		for (i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
+		for (int i = 0; i < indexInfo->ii_NumIndexKeyAttrs; i++)
 		{
 			AttrNumber	attno = indexInfo->ii_IndexAttrNumbers[i];
 			if (attno > 0)

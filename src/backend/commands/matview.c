@@ -1715,7 +1715,6 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 		foreach(lc2, table->rte_paths)
 		{
 			List *rte_path = lfirst(lc2);
-			int i;
 			Query *querytree = rewritten;
 			RangeTblEntry  *rte;
 			TupleDesc		tupdesc_old;
@@ -1726,10 +1725,10 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			char   *count_colname = NULL;
 
 			/* check if the modified table is in EXISTS clause. */
-			for (i = 0; i< list_length(rte_path); i++)
+			for (int j = 0; j < list_length(rte_path); j++)
 			{
-				int index =  lfirst_int(list_nth_cell(rte_path, i));
-				rte = (RangeTblEntry *)lfirst(list_nth_cell(querytree->rtable, index - 1));
+				int index =  lfirst_int(list_nth_cell(rte_path, j));
+				rte = (RangeTblEntry *) lfirst(list_nth_cell(querytree->rtable, index - 1));
 
 				if (rte != NULL && rte->rtekind == RTE_SUBQUERY)
 				{
@@ -2031,7 +2030,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 {
 	StringInfoData str;
 	RawStmt *raw;
-	Query *sub;
+	Query *subquery;
 	Relation rel;
 	ParseState *pstate;
 	char *relname;
@@ -2043,7 +2042,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 
 	/*
 	 * We can use NoLock here since AcquireRewriteLocks should
-	 * have locked the rel already.
+	 * have locked the relation already.
 	 */
 	rel = table_open(table->table_id, NoLock);
 	relname = quote_qualified_identifier(
@@ -2051,13 +2050,20 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 									   RelationGetRelationName(rel));
 	table_close(rel, NoLock);
 
-	/* add pseudo ctid to ENR using row_number */
+	/*
+	 * Filtering inserted row using the snapshot taken before the table
+	 * is modified. ctid is required for maintaining outer join views.
+	 */
 	initStringInfo(&str);
 	appendStringInfo(&str,
 		"SELECT t.* , ctid::text, tableoid FROM %s t"
 		" WHERE ivm_visible_in_prestate(t.tableoid, t.ctid ,%d::oid)",
 			relname, matviewid);
 
+	/*
+	 * Append deleted rows contained in old transition tables.
+	 * Pseudo ctid for outer join views is also added to the ENR using row_number().
+	 */
 	for (i = 0; i < list_length(table->old_tuplestores); i++)
 	{
 		appendStringInfo(&str, " UNION ALL ");
@@ -2069,27 +2075,31 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 			make_delta_enr_name("old", table->table_id, i));
 	}
 
+	/* Get a subquery representing pre-state of the table */
 	raw = (RawStmt*)linitial(raw_parser(str.data, RAW_PARSE_DEFAULT));
-	sub = transformStmt(pstate, raw->stmt);
+	subquery = transformStmt(pstate, raw->stmt);
 
-	/* If this query has setOperations, RTEs in rtables has a subquery which contains ENR */
-	if (sub->setOperations != NULL)
+	/*
+	 * If the query has setOperations, this must be UNION ALL combining ENRs of
+	 * old transition tables. In this case, we have to add securityQuals as same
+	 * as the original table to ENRs.
+	 */
+	if (subquery->setOperations != NULL)
 	{
 		ListCell *lc;
 
-		/* add securityQuals for tuplestores */
-		foreach (lc, sub->rtable)
+		foreach (lc, subquery->rtable)
 		{
-			RangeTblEntry *rte;
+			RangeTblEntry *child_rte;
 			RangeTblEntry *sub_rte;
 
-			rte = (RangeTblEntry *)lfirst(lc);
-			Assert(rte->subquery != NULL);
+			child_rte = (RangeTblEntry *) lfirst(lc);
+			Assert(child_rte->subquery != NULL);
 
-			sub_rte = (RangeTblEntry *)linitial(rte->subquery->rtable);
+			sub_rte = (RangeTblEntry *) linitial(child_rte->subquery->rtable);
 			if (sub_rte->rtekind == RTE_NAMEDTUPLESTORE)
-				/* rt_index is always 1, bacause subquery has enr_rte only */
-				sub_rte->securityQuals = get_securityQuals(sub_rte->relid, 1, sub);
+				/* rt_index is always 1 bacause subquery must not have any other RTE */
+				sub_rte->securityQuals = get_securityQuals(sub_rte->relid, 1, subquery);
 		}
 	}
 
@@ -2097,7 +2107,7 @@ get_prestate_rte(RangeTblEntry *rte, MV_TriggerTable *table,
 	table->original_rte = copyObject(rte);
 
 	rte->rtekind = RTE_SUBQUERY;
-	rte->subquery = sub;
+	rte->subquery = subquery;
 	rte->eref->colnames = lappend(rte->eref->colnames, makeString(pstrdup("ctid")));
 	rte->security_barrier = false;
 	/* Clear fields that should not be set in a subquery RTE */

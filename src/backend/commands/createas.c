@@ -50,6 +50,7 @@
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
 #include "nodes/makefuncs.h"
+#include "nodes/multibitmapset.h"
 #include "nodes/nodeFuncs.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
@@ -457,7 +458,6 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 {
 	Query *rewritten;
 
-	TargetEntry *tle;
 	Node *node;
 	ParseState *pstate = make_parsestate(NULL);
 	FuncCall *fn;
@@ -500,10 +500,10 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 
 			if (countCol != NULL)
 			{
-				tle = makeTargetEntry((Expr *) countCol,
-											list_length(rewritten->targetList) + 1,
-											pstrdup(columnName),
-											false);
+				TargetEntry *tle = makeTargetEntry((Expr *) countCol,
+												   list_length(rewritten->targetList) + 1,
+												   pstrdup(columnName),
+												   false);
 				rewritten->targetList = list_concat(rewritten->targetList, list_make1(tle));
 			}
 		}
@@ -549,6 +549,8 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 	/* Add count(*) for counting distinct tuples in views */
 	if (rewritten->distinctClause || rewritten->hasAggs)
 	{
+		TargetEntry *tle;
+
 		fn = makeFuncCall(list_make1(makeString("count")), NIL, COERCE_EXPLICIT_CALL, -1);
 		fn->agg_star = true;
 
@@ -1292,8 +1294,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 				/* additional restriction checks for exists subquery */
 				if (context->exists_qual_vars != NIL && context->sublevels_up == 0)
 				{
-					ListCell *lc;
-
 					foreach (lc, context->exists_qual_vars)
 					{
 						Var	*var = (Var *) lfirst(lc);
@@ -1328,7 +1328,6 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					List	*where_quals_vars = NIL;
 					List	*nonnullable_vars = find_nonnullable_vars((Node *) qry->jointree->quals);
 					List	*qual_vars = NIL;
-					ListCell *lc;
 
 					foreach (lc, context->join_quals)
 					{
@@ -1372,12 +1371,16 @@ check_ivm_restriction_walker(Node *node, check_ivm_restriction_context *context)
 					}
 
 					where_quals_vars = pull_vars_of_level(flatten_join_alias_vars(qry, (Node *) qry->jointree->quals), 0);
-
-					if (list_length(list_difference(where_quals_vars, nonnullable_vars)) > 0)
-						ereport(ERROR,
-								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-								 errmsg("this query is not allowed on incrementally maintainable materialized view"),
-								 errhint("WHERE cannot contain non null-rejecting predicates with outer join")));
+					foreach (lc, where_quals_vars)
+					{
+						Var	*var = lfirst(lc);
+						if (!mbms_is_member(var->varno, var->varattno - FirstLowInvalidHeapAttributeNumber,
+										   nonnullable_vars))
+							ereport(ERROR,
+									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+									 errmsg("this query is not allowed on incrementally maintainable materialized view"),
+									 errhint("WHERE cannot contain non null-rejecting predicates with outer join")));
+					}
 
 					if (contain_nonstrict_functions((Node *) qry->targetList))
 							ereport(ERROR,
@@ -1862,14 +1865,14 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 	query = copyObject(query);
 	foreach (lc, query->cteList)
 	{
-		PlannerInfo root;
+		PlannerInfo root_cte;
 		CommonTableExpr *cte = (CommonTableExpr *) lfirst(lc);
 
 		if (cte->cterefcount == 0)
 			continue;
 
-		root.parse = query;
-		inline_cte(&root, cte);
+		root_cte.parse = query;
+		inline_cte(&root_cte, cte);
 	}
 	query->cteList = NIL;
 
