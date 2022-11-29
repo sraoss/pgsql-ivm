@@ -6114,6 +6114,29 @@ SELECT * FROM ivm_rls2 ORDER BY 1,2,3;
   3 | baz_2 | ivm_user | three_2
 (2 rows)
 
+-- automatic index creation
+BEGIN;
+CREATE TABLE base_a (i int primary key, j int);
+CREATE TABLE base_b (i int primary key, j int);
+--- group by: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx1 AS SELECT i, sum(j) FROM base_a GROUP BY i;
+NOTICE:  created index "mv_idx1_index" on materialized view "mv_idx1"
+--- distinct: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx2 AS SELECT DISTINCT j FROM base_a;
+NOTICE:  created index "mv_idx2_index" on materialized view "mv_idx2"
+--- with all pkey columns: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx3(i_a, i_b) AS SELECT a.i, b.i FROM base_a a, base_b b;
+NOTICE:  created index "mv_idx3_index" on materialized view "mv_idx3"
+--- missing some pkey columns: no index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx4 AS SELECT j FROM base_a;
+NOTICE:  could not create an index on materialized view "mv_idx4" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
+HINT:  Create an index on the materialized view for efficient incremental maintenance.
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx5 AS SELECT a.i, b.j FROM base_a a, base_b b;
+NOTICE:  could not create an index on materialized view "mv_idx5" automatically
+DETAIL:  This target list does not have all the primary key columns, or this view does not contain GROUP BY or DISTINCT clause.
+HINT:  Create an index on the materialized view for efficient incremental maintenance.
+-- cleanup
 DROP TABLE rls_tbl CASCADE;
 NOTICE:  drop cascades to 2 other objects
 DETAIL:  drop cascades to materialized view ivm_rls
