@@ -49,6 +49,7 @@
 #include "miscadmin.h"
 #include "optimizer/clauses.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/prep.h"
 #include "nodes/makefuncs.h"
 #include "nodes/multibitmapset.h"
 #include "nodes/nodeFuncs.h"
@@ -1855,8 +1856,6 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 	int i;
 	Bitmapset *keys = NULL;
 	Relids	rels_in_from;
-	PlannerInfo root;
-
 
 	/* This can recurse, so check for excessive recursion */
 	check_stack_depth();
@@ -1932,24 +1931,24 @@ get_primary_key_attnos_from_query(Query *query, List **constraintList, bool is_c
 		if (IsA(tle->expr, Var))
 		{
 			Var *var = (Var*) tle->expr;
-			Bitmapset *attnos = list_nth(key_attnos_list, var->varno - 1);
+			Bitmapset *key_attnos = list_nth(key_attnos_list, var->varno - 1);
 
 			/* check if this attribute is from a base table's primary key */
-			if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber, attnos))
+			if (bms_is_member(var->varattno - FirstLowInvalidHeapAttributeNumber, key_attnos))
 			{
 				/*
 				 * Remove found key attributes from key_attnos_list, and add this
 				 * to the result list.
 				 */
-				bms_del_member(attnos, var->varattno - FirstLowInvalidHeapAttributeNumber);
+				bms_del_member(key_attnos, var->varattno - FirstLowInvalidHeapAttributeNumber);
 				keys = bms_add_member(keys, i - FirstLowInvalidHeapAttributeNumber);
 			}
 		}
 		i++;
 	}
 
-	/* Collect relations appearing in the FROM clause */
-	rels_in_from = pull_varnos_of_level(&root, (Node *)query->jointree, 0);
+	/* Collect RTE indexes of relations appearing in the FROM clause */
+	rels_in_from = get_relids_in_jointree((Node *) query->jointree, false);
 
 	/*
 	 * Check if all key attributes of relations in FROM are appearing in the target

@@ -1834,6 +1834,26 @@ WITH
 SELECT;
 SELECT * FROM ivm_rls2 ORDER BY 1,2,3;
 
+-- automatic index creation
+BEGIN;
+CREATE TABLE base_a (i int primary key, j int);
+CREATE TABLE base_b (i int primary key, j int);
+
+--- group by: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx1 AS SELECT i, sum(j) FROM base_a GROUP BY i;
+
+--- distinct: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx2 AS SELECT DISTINCT j FROM base_a;
+
+--- with all pkey columns: create an index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx3(i_a, i_b) AS SELECT a.i, b.i FROM base_a a, base_b b;
+
+--- missing some pkey columns: no index
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx4 AS SELECT j FROM base_a;
+CREATE INCREMENTAL MATERIALIZED VIEW mv_idx5 AS SELECT a.i, b.j FROM base_a a, base_b b;
+
+-- cleanup
+
 DROP TABLE rls_tbl CASCADE;
 DROP TABLE num_tbl CASCADE;
 DROP USER ivm_user;
