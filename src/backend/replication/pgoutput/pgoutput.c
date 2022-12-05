@@ -1125,7 +1125,7 @@ init_tuple_slot(PGOutputData *data, Relation relation,
 		/* Map must live as long as the session does. */
 		oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 
-		entry->attrmap = build_attrmap_by_name_if_req(indesc, outdesc);
+		entry->attrmap = build_attrmap_by_name_if_req(indesc, outdesc, false);
 
 		MemoryContextSwitchTo(oldctx);
 		RelationClose(ancestor);
@@ -1532,7 +1532,8 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 					break;
 				case REORDER_BUFFER_CHANGE_DELETE:
 					logicalrep_write_delete(ctx->out, xid, targetrel,
-											old_slot, data->binary);
+											old_slot, data->binary,
+											relentry->columns);
 					break;
 				default:
 					Assert(false);
@@ -1578,7 +1579,8 @@ pgoutput_change(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 
 				OutputPluginPrepareWrite(ctx, true);
 				logicalrep_write_delete(ctx->out, xid, targetrel,
-										old_slot, data->binary);
+										old_slot, data->binary,
+										relentry->columns);
 				OutputPluginWrite(ctx, true);
 			}
 			else

@@ -3420,6 +3420,10 @@ string_to_privilege(const char *privname)
 		return ACL_SET;
 	if (strcmp(privname, "alter system") == 0)
 		return ACL_ALTER_SYSTEM;
+	if (strcmp(privname, "vacuum") == 0)
+		return ACL_VACUUM;
+	if (strcmp(privname, "analyze") == 0)
+		return ACL_ANALYZE;
 	if (strcmp(privname, "rule") == 0)
 		return 0;				/* ignore old RULE privileges */
 	ereport(ERROR,
@@ -3461,6 +3465,10 @@ privilege_to_string(AclMode privilege)
 			return "SET";
 		case ACL_ALTER_SYSTEM:
 			return "ALTER SYSTEM";
+		case ACL_VACUUM:
+			return "VACUUM";
+		case ACL_ANALYZE:
+			return "ANALYZE";
 		default:
 			elog(ERROR, "unrecognized privilege: %d", (int) privilege);
 	}
@@ -4193,6 +4201,26 @@ pg_class_aclmask_ext(Oid table_oid, Oid roleid, AclMode mask,
 		!(result & (ACL_INSERT | ACL_UPDATE | ACL_DELETE)) &&
 		has_privs_of_role(roleid, ROLE_PG_WRITE_ALL_DATA))
 		result |= (mask & (ACL_INSERT | ACL_UPDATE | ACL_DELETE));
+
+	/*
+	 * Check if ACL_VACUUM is being checked and, if so, and not already set as
+	 * part of the result, then check if the user is a member of the
+	 * pg_vacuum_all_tables role, which allows VACUUM on all relations.
+	 */
+	if (mask & ACL_VACUUM &&
+		!(result & ACL_VACUUM) &&
+		has_privs_of_role(roleid, ROLE_PG_VACUUM_ALL_TABLES))
+		result |= ACL_VACUUM;
+
+	/*
+	 * Check if ACL_ANALYZE is being checked and, if so, and not already set as
+	 * part of the result, then check if the user is a member of the
+	 * pg_analyze_all_tables role, which allows ANALYZE on all relations.
+	 */
+	if (mask & ACL_ANALYZE &&
+		!(result & ACL_ANALYZE) &&
+		has_privs_of_role(roleid, ROLE_PG_ANALYZE_ALL_TABLES))
+		result |= ACL_ANALYZE;
 
 	return result;
 }

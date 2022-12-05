@@ -87,7 +87,7 @@ my %pgdump_runs = (
 		compile_option => 'gzip',
 		dump_cmd       => [
 			'pg_dump',                              '--jobs=2',
-			'--format=directory',                   '--compress=1',
+			'--format=directory',                   '--compress=gzip:1',
 			"--file=$tempdir/compression_gzip_dir", 'postgres',
 		],
 		# Give coverage for manually compressed blob.toc files during
@@ -200,6 +200,7 @@ my %pgdump_runs = (
 	# Do not use --no-sync to give test coverage for data sync.
 	defaults_custom_format => {
 		test_key => 'defaults',
+		compile_option => 'gzip',
 		dump_cmd => [
 			'pg_dump', '-Fc', '-Z6',
 			"--file=$tempdir/defaults_custom_format.dump", 'postgres',
@@ -566,7 +567,7 @@ my %tests = (
 			\QREVOKE ALL ON TABLES  FROM regress_dump_test_role;\E\n
 			\QALTER DEFAULT PRIVILEGES \E
 			\QFOR ROLE regress_dump_test_role \E
-			\QGRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,UPDATE ON TABLES  TO regress_dump_test_role;\E
+			\QGRANT INSERT,REFERENCES,DELETE,TRIGGER,TRUNCATE,VACUUM,ANALYZE,UPDATE ON TABLES  TO regress_dump_test_role;\E
 			/xm,
 		like => { %full_runs, section_post_data => 1, },
 		unlike => { no_privs => 1, },

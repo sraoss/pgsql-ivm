@@ -4610,24 +4610,6 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
         </listitem>
        </varlistentry>
 
-       <varlistentry id="guc-promote-trigger-file" xreflabel="promote_trigger_file">
-        <term><varname>promote_trigger_file</varname> (<type>string</type>)
-        <indexterm>
-          <primary><varname>promote_trigger_file</varname> configuration parameter</primary>
-        </indexterm>
-        </term>
-        <listitem>
-         <para>
-          Specifies a trigger file whose presence ends recovery in the
-          standby.  Even if this value is not set, you can still promote
-          the standby using <command>pg_ctl promote</command> or calling
-          <function>pg_promote()</function>.
-          This parameter can only be set in the <filename>postgresql.conf</filename>
-          file or on the server command line.
-         </para>
-        </listitem>
-       </varlistentry>
-
      <varlistentry id="guc-hot-standby" xreflabel="hot_standby">
       <term><varname>hot_standby</varname> (<type>boolean</type>)
       <indexterm>
@@ -7229,12 +7211,14 @@ local0.*    /var/log/postgresql
             </row>
             <row>
              <entry><literal>%v</literal></entry>
-             <entry>Virtual transaction ID (backendID/localXID)</entry>
+             <entry>Virtual transaction ID (backendID/localXID);  see
+             <xref linkend="transaction-id"/></entry>
              <entry>no</entry>
             </row>
             <row>
              <entry><literal>%x</literal></entry>
-             <entry>Transaction ID (0 if none is assigned)</entry>
+             <entry>Transaction ID (0 if none is assigned);  see
+             <xref linkend="transaction-id"/></entry>
              <entry>no</entry>
             </row>
             <row>
@@ -7501,7 +7485,7 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
         Temporary files can be
         created for sorts, hashes, and temporary query results.
         If enabled by this setting, a log entry is emitted for each
-        temporary file when it is deleted.
+        temporary file, with the file size specified in bytes, when it is deleted.
         A value of zero logs all temporary file information, while positive
         values log only files whose size is greater than or equal to
         the specified amount of data.
@@ -11115,7 +11099,7 @@ dynamic_library_path = 'C:\tools\postgresql;H:\my_project\lib;$libdir'
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-locks" xreflabel="trace_locks">
       <term><varname>trace_locks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_locks</varname> configuration parameter</primary>
@@ -11156,7 +11140,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lwlocks" xreflabel="trace_lwlocks">
       <term><varname>trace_lwlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_lwlocks</varname> configuration parameter</primary>
@@ -11176,7 +11160,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-userlocks" xreflabel="trace_userlocks">
       <term><varname>trace_userlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>trace_userlocks</varname> configuration parameter</primary>
@@ -11195,7 +11179,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lock-oidmin" xreflabel="trace_lock_oidmin">
       <term><varname>trace_lock_oidmin</varname> (<type>integer</type>)
       <indexterm>
        <primary><varname>trace_lock_oidmin</varname> configuration parameter</primary>
@@ -11214,7 +11198,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-trace-lock-table" xreflabel="trace_lock_table">
       <term><varname>trace_lock_table</varname> (<type>integer</type>)
       <indexterm>
        <primary><varname>trace_lock_table</varname> configuration parameter</primary>
@@ -11232,7 +11216,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-debug-deadlocks" xreflabel="debug_deadlocks">
       <term><varname>debug_deadlocks</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>debug_deadlocks</varname> configuration parameter</primary>
@@ -11251,7 +11235,7 @@ LOG:  CleanUpLock: deleting: lock(0xb7acd844) id(24688,24696,0,0,0,1)
       </listitem>
      </varlistentry>
 
-     <varlistentry>
+     <varlistentry id="guc-log-btree-build-stats" xreflabel="log_btree_build_stats">
       <term><varname>log_btree_build_stats</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>log_btree_build_stats</varname> configuration parameter</primary>

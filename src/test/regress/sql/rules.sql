@@ -884,33 +884,14 @@ drop rule "_RETURN" on rules_fooview;
 drop view rules_fooview;
 
 --
--- test conversion of table to view (needed to load some pg_dump files)
+-- We used to allow converting a table to a view by creating a "_RETURN"
+-- rule for it, but no more.
 --
 
 create table rules_fooview (x int, y text);
-select xmin, * from rules_fooview;
-
 create rule "_RETURN" as on select to rules_fooview do instead
   select 1 as x, 'aaa'::text as y;
-
-select * from rules_fooview;
-select xmin, * from rules_fooview;  -- fail, views don't have such a column
-
-select reltoastrelid, relkind, relfrozenxid
-  from pg_class where oid = 'rules_fooview'::regclass;
-
-drop view rules_fooview;
-
--- cannot convert an inheritance parent or child to a view, though
-create table rules_fooview (x int, y text);
-create table rules_fooview_child () inherits (rules_fooview);
-
-create rule "_RETURN" as on select to rules_fooview do instead
-  select 1 as x, 'aaa'::text as y;
-create rule "_RETURN" as on select to rules_fooview_child do instead
-  select 1 as x, 'aaa'::text as y;
-
-drop table rules_fooview cascade;
+drop table rules_fooview;
 
 -- likewise, converting a partitioned table or partition to view is not allowed
 create table rules_fooview (x int, y text) partition by list (x);
@@ -1016,11 +997,11 @@ select pg_get_viewdef('shoe'::regclass,0) as prettier;
 -- check multi-row VALUES in rules
 --
 
-create table rules_src(f1 int, f2 int);
-create table rules_log(f1 int, f2 int, tag text);
+create table rules_src(f1 int, f2 int default 0);
+create table rules_log(f1 int, f2 int, tag text, id serial);
 insert into rules_src values(1,2), (11,12);
 create rule r1 as on update to rules_src do also
-  insert into rules_log values(old.*, 'old'), (new.*, 'new');
+  insert into rules_log values(old.*, 'old', default), (new.*, 'new', default);
 update rules_src set f2 = f2 + 1;
 update rules_src set f2 = f2 * 10;
 select * from rules_src;
@@ -1028,16 +1009,19 @@ select * from rules_log;
 create rule r2 as on update to rules_src do also
   values(old.*, 'old'), (new.*, 'new');
 update rules_src set f2 = f2 / 10;
+create rule r3 as on insert to rules_src do also
+  insert into rules_log values(null, null, '-', default), (new.*, 'new', default);
+insert into rules_src values(22,23), (33,default);
 select * from rules_src;
 select * from rules_log;
-create rule r3 as on delete to rules_src do notify rules_src_deletion;
+create rule r4 as on delete to rules_src do notify rules_src_deletion;
 \d+ rules_src
 
 --
 -- Ensure an aliased target relation for insert is correctly deparsed.
 --
-create rule r4 as on insert to rules_src do instead insert into rules_log AS trgt SELECT NEW.* RETURNING trgt.f1, trgt.f2;
-create rule r5 as on update to rules_src do instead UPDATE rules_log AS trgt SET tag = 'updated' WHERE trgt.f1 = new.f1;
+create rule r5 as on insert to rules_src do instead insert into rules_log AS trgt SELECT NEW.* RETURNING trgt.f1, trgt.f2;
+create rule r6 as on update to rules_src do instead UPDATE rules_log AS trgt SET tag = 'updated' WHERE trgt.f1 = new.f1;
 \d+ rules_src
 
 --
