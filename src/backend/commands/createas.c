@@ -539,10 +539,11 @@ rewriteQueryForIMMV(Query *query, List *colNames)
 		foreach(lc, rewritten->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
-			char *resname = (colNames == NIL ? tle->resname : strVal(list_nth(colNames, tle->resno - 1)));
+			char *resname = (colNames == NIL || foreach_current_index(lc) >= list_length(colNames) ?
+								tle->resname : strVal(list_nth(colNames, tle->resno - 1)));
 
 			if (IsA(tle->expr, Aggref))
-				makeIvmAggColumn(pstate, (Aggref *)tle->expr, resname, &next_resno, &aggs);
+				makeIvmAggColumn(pstate, (Aggref *) tle->expr, resname, &next_resno, &aggs);
 		}
 		rewritten->targetList = list_concat(rewritten->targetList, aggs);
 	}
@@ -776,7 +777,8 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 		ColumnDef  *col;
 		char	   *colname;
 
-		if (lc)
+		/* Don't override hidden columns added for IVM */
+		if (lc && !isIvmName(NameStr(attribute->attname)))
 		{
 			colname = strVal(lfirst(lc));
 			lc = lnext(into->colNames, lc);
