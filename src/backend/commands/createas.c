@@ -956,10 +956,22 @@ CreateIvmTriggersOnBaseTables(Query *qry, Oid matviewOid, bool is_create)
 	 * deadlock.
 	 */
 
+	/*
 	rte = list_nth(qry->rtable, first_rtindex - 1);
 	if (list_length(qry->rtable) > first_rtindex ||
 		rte->rtekind != RTE_RELATION)
 		ex_lock = true;
+	*/
+
+	/*
+	 * XXX: We must use exclusive lock for now because apply_old_delta(_with_count)
+	 * doesn't work in concurrent situations. If the view doesn't have aggregate,
+	 * distinct, or tuple duplicate, then it would work. However, we don't have
+	 * any way to guarantee the view has a unique key before opening the IMMV
+	 * at the maintenance time because users may drop the unique index.
+	 * We need something to resolve the issue!!
+	 */
+	ex_lock = true;
 
 	CreateIvmTriggersOnBaseTablesRecurse(qry, (Node *)qry, matviewOid, &relids, ex_lock);
 
