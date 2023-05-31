@@ -53,6 +53,7 @@
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "parser/parse_clause.h"
+#include "parser/parse_func.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/smgr.h"
 #include "tcop/tcopprot.h"
@@ -309,6 +310,9 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 					 errhint("functions must be marked IMMUTABLE")));
 
 		check_ivm_restriction((Node *) query);
+
+		/* For IMMV, we need to rewrite matview query */
+		query = rewriteQueryForIMMV(query, into->colNames);
 	}
 
 	if (into->skipData)
@@ -411,6 +415,49 @@ ExecCreateTableAs(ParseState *pstate, CreateTableAsStmt *stmt,
 	}
 
 	return address;
+}
+
+/*
+ * rewriteQueryForIMMV -- rewrite view definition query for IMMV
+ *
+ * count(*) is added for counting distinct tuples in views.
+ */
+Query *
+rewriteQueryForIMMV(Query *query, List *colNames)
+{
+	Query *rewritten;
+
+	Node *node;
+	ParseState *pstate = make_parsestate(NULL);
+	FuncCall *fn;
+
+	rewritten = copyObject(query);
+	pstate->p_expr_kind = EXPR_KIND_SELECT_TARGET;
+
+	/*
+	 * Convert DISTINCT to GROUP BY and add count(*) for counting distinct
+	 * tuples in views.
+	 */
+	if (rewritten->distinctClause)
+	{
+		TargetEntry *tle;
+
+		rewritten->groupClause = transformDistinctClause(NULL, &rewritten->targetList, rewritten->sortClause, false);
+
+		fn = makeFuncCall(SystemFuncName("count"), NIL, COERCE_EXPLICIT_CALL, -1);
+		fn->agg_star = true;
+
+		node = ParseFuncOrColumn(pstate, fn->funcname, NIL, NULL, fn, false, -1);
+
+		tle = makeTargetEntry((Expr *) node,
+								list_length(rewritten->targetList) + 1,
+								pstrdup("__ivm_count__"),
+								false);
+		rewritten->targetList = lappend(rewritten->targetList, tle);
+		rewritten->hasAggs = true;
+	}
+
+	return rewritten;
 }
 
 /*
@@ -536,7 +583,8 @@ intorel_startup(DestReceiver *self, int operation, TupleDesc typeinfo)
 		ColumnDef  *col;
 		char	   *colname;
 
-		if (lc)
+		/* Don't override hidden columns added for IVM */
+		if (lc && !isIvmName(NameStr(attribute->attname)))
 		{
 			colname = strVal(lfirst(lc));
 			lc = lnext(into->colNames, lc);
@@ -940,10 +988,6 @@ check_ivm_restriction_walker(Node *node, void *context)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("LIMIT/OFFSET clause is not supported on incrementally maintainable materialized view")));
-				if (qry->distinctClause)
-					ereport(ERROR,
-							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							 errmsg("DISTINCT is not supported on incrementally maintainable materialized view")));
 				if (qry->hasDistinctOn)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -1090,11 +1134,17 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 	char		idxname[NAMEDATALEN];
 	List	   *indexoidlist = RelationGetIndexList(matviewRel);
 	ListCell   *indexoidscan;
-	Bitmapset *key_attnos;
 
 	snprintf(idxname, sizeof(idxname), "%s_index", RelationGetRelationName(matviewRel));
 
 	index = makeNode(IndexStmt);
+
+	/*
+	 * We consider null values not distinct to make sure that views with DISTINCT
+	 * or GROUP BY don't contain multiple NULL rows when NULL is inserted to
+	 * a base table concurrently.
+	 */
+	index->nulls_not_distinct = true;
 
 	index->unique = true;
 	index->primary = false;
@@ -1122,41 +1172,68 @@ CreateIndexOnIMMV(Query *query, Relation matviewRel)
 	index->concurrent = false;
 	index->if_not_exists = false;
 
-	/* create index on the base tables' primary key columns */
-	key_attnos = get_primary_key_attnos_from_query(query, &constraintList);
-	if (key_attnos)
+	if (query->distinctClause)
 	{
+		/* create unique constraint on all columns */
 		foreach(lc, query->targetList)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(lc);
 			Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+			IndexElem  *iparam;
 
-			if (bms_is_member(tle->resno - FirstLowInvalidHeapAttributeNumber, key_attnos))
-			{
-				IndexElem  *iparam;
-
-				iparam = makeNode(IndexElem);
-				iparam->name = pstrdup(NameStr(attr->attname));
-				iparam->expr = NULL;
-				iparam->indexcolname = NULL;
-				iparam->collation = NIL;
-				iparam->opclass = NIL;
-				iparam->opclassopts = NIL;
-				iparam->ordering = SORTBY_DEFAULT;
-				iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
-				index->indexParams = lappend(index->indexParams, iparam);
-			}
+			iparam = makeNode(IndexElem);
+			iparam->name = pstrdup(NameStr(attr->attname));
+			iparam->expr = NULL;
+			iparam->indexcolname = NULL;
+			iparam->collation = NIL;
+			iparam->opclass = NIL;
+			iparam->opclassopts = NIL;
+			iparam->ordering = SORTBY_DEFAULT;
+			iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+			index->indexParams = lappend(index->indexParams, iparam);
 		}
 	}
 	else
 	{
-		/* create no index, just notice that an appropriate index is necessary for efficient IVM */
-		ereport(NOTICE,
-				(errmsg("could not create an index on materialized view \"%s\" automatically",
-						RelationGetRelationName(matviewRel)),
-				 errdetail("This target list does not have all the primary key columns. "),
-				 errhint("Create an index on the materialized view for efficient incremental maintenance.")));
-		return;
+		Bitmapset *key_attnos;
+
+		/* create index on the base tables' primary key columns */
+		key_attnos = get_primary_key_attnos_from_query(query, &constraintList);
+		if (key_attnos)
+		{
+			foreach(lc, query->targetList)
+			{
+				TargetEntry *tle = (TargetEntry *) lfirst(lc);
+				Form_pg_attribute attr = TupleDescAttr(matviewRel->rd_att, tle->resno - 1);
+
+				if (bms_is_member(tle->resno - FirstLowInvalidHeapAttributeNumber, key_attnos))
+				{
+					IndexElem  *iparam;
+
+					iparam = makeNode(IndexElem);
+					iparam->name = pstrdup(NameStr(attr->attname));
+					iparam->expr = NULL;
+					iparam->indexcolname = NULL;
+					iparam->collation = NIL;
+					iparam->opclass = NIL;
+					iparam->opclassopts = NIL;
+					iparam->ordering = SORTBY_DEFAULT;
+					iparam->nulls_ordering = SORTBY_NULLS_DEFAULT;
+					index->indexParams = lappend(index->indexParams, iparam);
+				}
+			}
+		}
+		else
+		{
+			/* create no index, just notice that an appropriate index is necessary for efficient IVM */
+			ereport(NOTICE,
+					(errmsg("could not create an index on materialized view \"%s\" automatically",
+							RelationGetRelationName(matviewRel)),
+					 errdetail("This target list does not have all the primary key columns, "
+							   "or this view does not contain DISTINCT clause."),
+					 errhint("Create an index on the materialized view for efficient incremental maintenance.")));
+			return;
+		}
 	}
 
 	/* If we have a compatible index, we don't need to create another. */

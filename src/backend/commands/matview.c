@@ -152,11 +152,15 @@ static Query *rewrite_query_for_postupdate_state(Query *query, MV_TriggerTable *
 
 static void apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *new_tuplestores,
 			TupleDesc tupdesc_old, TupleDesc tupdesc_new,
-			Query *query);
+			Query *query, bool use_count, char *count_colname);
 static void apply_old_delta(const char *matviewname, const char *deltaname_old,
 				List *keys);
+static void apply_old_delta_with_count(const char *matviewname, const char *deltaname_old,
+				List *keys, const char *count_colname);
 static void apply_new_delta(const char *matviewname, const char *deltaname_new,
 				StringInfo target_list);
+static void apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
+				List *keys, StringInfo target_list, const char* count_colname);
 static char *get_matching_condition_string(List *keys);
 static void generate_equal(StringInfo querybuf, Oid opttype,
 			   const char *leftop, const char *rightop);
@@ -271,6 +275,7 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	Oid			matviewOid;
 	Relation	matviewRel;
 	Query	   *dataQuery;
+	Query	   *viewQuery;
 	Oid			tableSpace;
 	Oid			relowner;
 	Oid			OIDNewHeap;
@@ -330,8 +335,13 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 						"CONCURRENTLY", "WITH NO DATA")));
 
 
-	dataQuery = get_matview_query(matviewRel);
+	viewQuery = get_matview_query(matviewRel);
 
+	/* For IMMV, we need to rewrite matview query */
+	if (!stmt->skipData && RelationIsIVM(matviewRel))
+		dataQuery = rewriteQueryForIMMV(viewQuery,NIL);
+	else
+		dataQuery = viewQuery;
 
 	/*
 	 * Check that there is a unique index with no WHERE clause on one or more
@@ -511,8 +521,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 
 	if (!stmt->skipData && RelationIsIVM(matviewRel) && !oldPopulated)
 	{
-		CreateIndexOnIMMV(dataQuery, matviewRel);
-		CreateIvmTriggersOnBaseTables(dataQuery, matviewOid);
+		CreateIndexOnIMMV(viewQuery, matviewRel);
+		CreateIvmTriggersOnBaseTables(viewQuery, matviewOid);
 	}
 
 	table_close(matviewRel, NoLock);
@@ -1512,6 +1522,13 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			int	rte_index = lfirst_int(lc2);
 			TupleDesc		tupdesc_old;
 			TupleDesc		tupdesc_new;
+			bool	use_count = false;
+			char   *count_colname = NULL;
+
+			count_colname = pstrdup("__ivm_count__");
+
+			if (query->distinctClause)
+				use_count = true;
 
 			/* calculate delta tables */
 			calc_delta(table, rte_index, rewritten, dest_old, dest_new,
@@ -1524,7 +1541,8 @@ IVM_immediate_maintenance(PG_FUNCTION_ARGS)
 			{
 				/* apply the delta tables to the materialized view */
 				apply_delta(matviewOid, old_tuplestore, new_tuplestore,
-							tupdesc_old, tupdesc_new, query);
+							tupdesc_old, tupdesc_new, query, use_count,
+							count_colname);
 			}
 			PG_CATCH();
 			{
@@ -1997,7 +2015,7 @@ rewrite_query_for_postupdate_state(Query *query, MV_TriggerTable *table, int rte
 static void
 apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *new_tuplestores,
 			TupleDesc tupdesc_old, TupleDesc tupdesc_new,
-			Query *query)
+			Query *query, bool use_count, char *count_colname)
 {
 	StringInfoData querybuf;
 	StringInfoData target_list_buf;
@@ -2073,7 +2091,12 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 		if (rc != SPI_OK_REL_REGISTER)
 			elog(ERROR, "SPI_register failed");
 
-		apply_old_delta(matviewname, OLD_DELTA_ENRNAME, keys);
+		if (use_count)
+			/* apply old delta and get rows to be recalculated */
+			apply_old_delta_with_count(matviewname, OLD_DELTA_ENRNAME,
+									   keys, count_colname);
+		else
+			apply_old_delta(matviewname, OLD_DELTA_ENRNAME, keys);
 
 	}
 	/* For tuple insertion */
@@ -2095,7 +2118,11 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 			elog(ERROR, "SPI_register failed");
 
 		/* apply new delta */
-		apply_new_delta(matviewname, NEW_DELTA_ENRNAME, &target_list_buf);
+		if (use_count)
+			apply_new_delta_with_count(matviewname, NEW_DELTA_ENRNAME,
+								keys, &target_list_buf, count_colname);
+		else
+			apply_new_delta(matviewname, NEW_DELTA_ENRNAME, &target_list_buf);
 	}
 
 	/* We're done maintaining the materialized view. */
@@ -2106,6 +2133,51 @@ apply_delta(Oid matviewOid, Tuplestorestate *old_tuplestores, Tuplestorestate *n
 	/* Close SPI context. */
 	if (SPI_finish() != SPI_OK_FINISH)
 		elog(ERROR, "SPI_finish failed");
+}
+
+/*
+ * apply_old_delta_with_count
+ *
+ * Execute a query for applying a delta table given by deltname_old
+ * which contains tuples to be deleted from to a materialized view given by
+ * matviewname.  This is used when counting is required, that is, the view
+ * has aggregate or distinct.
+ */
+static void
+apply_old_delta_with_count(const char *matviewname, const char *deltaname_old,
+				List *keys, const char *count_colname)
+{
+	StringInfoData	querybuf;
+	char   *match_cond;
+
+	/* build WHERE condition for searching tuples to be deleted */
+	match_cond = get_matching_condition_string(keys);
+
+	/* Search for matching tuples from the view and update or delete if found. */
+	initStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					"WITH t AS ("			/* collecting tid of target tuples in the view */
+						"SELECT diff.%s, "			/* count column */
+								"(diff.%s OPERATOR(pg_catalog.=) mv.%s) AS for_dlt, "
+								"mv.ctid "
+						"FROM %s AS mv, %s AS diff "
+						"WHERE %s"					/* tuple matching condition */
+					"), updt AS ("			/* update a tuple if this is not to be deleted */
+						"UPDATE %s AS mv SET %s = mv.%s OPERATOR(pg_catalog.-) t.%s "
+						"FROM t WHERE mv.ctid OPERATOR(pg_catalog.=) t.ctid AND NOT for_dlt "
+					")"
+					/* delete a tuple if this is to be deleted */
+					"DELETE FROM %s AS mv USING t "
+					"WHERE mv.ctid OPERATOR(pg_catalog.=) t.ctid AND for_dlt",
+					count_colname,
+					count_colname, count_colname,
+					matviewname, deltaname_old,
+					match_cond,
+					matviewname, count_colname, count_colname, count_colname,
+					matviewname);
+
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 }
 
 /*
@@ -2154,6 +2226,66 @@ apply_old_delta(const char *matviewname, const char *deltaname_old,
 					match_cond);
 
 	if (SPI_exec(querybuf.data, 0) != SPI_OK_DELETE)
+		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
+}
+
+/*
+ * apply_new_delta_with_count
+ *
+ * Execute a query for applying a delta table given by deltname_new
+ * which contains tuples to be inserted into a materialized view given by
+ * matviewname.  This is used when counting is required, that is, the view
+ * has aggregate or distinct. Also, when a table in EXISTS sub queries
+ * is modified.
+ */
+static void
+apply_new_delta_with_count(const char *matviewname, const char* deltaname_new,
+				List *keys, StringInfo target_list, const char* count_colname)
+{
+	StringInfoData	querybuf;
+	StringInfoData	returning_keys;
+	ListCell	*lc;
+	char	*match_cond = "";
+
+	/* build WHERE condition for searching tuples to be updated */
+	match_cond = get_matching_condition_string(keys);
+
+	/* build string of keys list */
+	initStringInfo(&returning_keys);
+	if (keys)
+	{
+		foreach (lc, keys)
+		{
+			Form_pg_attribute attr = (Form_pg_attribute) lfirst(lc);
+			char   *resname = NameStr(attr->attname);
+			appendStringInfo(&returning_keys, "%s", quote_qualified_identifier("mv", resname));
+			if (lnext(keys, lc))
+				appendStringInfo(&returning_keys, ", ");
+		}
+	}
+	else
+		appendStringInfo(&returning_keys, "NULL");
+
+	/* Search for matching tuples from the view and update if found or insert if not. */
+	initStringInfo(&querybuf);
+	appendStringInfo(&querybuf,
+					"WITH updt AS ("		/* update a tuple if this exists in the view */
+						"UPDATE %s AS mv SET %s = mv.%s OPERATOR(pg_catalog.+) diff.%s "
+						"FROM %s AS diff "
+						"WHERE %s "					/* tuple matching condition */
+						"RETURNING %s"				/* returning keys of updated tuples */
+					") INSERT INTO %s (%s) "	/* insert a new tuple if this doesn't exist */
+						"SELECT %s FROM %s AS diff "
+						"WHERE NOT EXISTS (SELECT 1 FROM updt AS mv WHERE %s);",
+					matviewname, count_colname, count_colname, count_colname,
+					deltaname_new,
+					match_cond,
+					returning_keys.data,
+					matviewname, target_list->data,
+					target_list->data, deltaname_new,
+					match_cond);
+
+	if (SPI_exec(querybuf.data, 0) != SPI_OK_INSERT)
 		elog(ERROR, "SPI_exec failed: %s", querybuf.data);
 }
 
